@@ -1,0 +1,292 @@
+// Package security — securebuf_access.go implements the controlled access API
+// for SecureBuffer. All methods hold RLock for the ENTIRE operation duration,
+// preventing Destroy (which takes a write Lock) from racing with any in-flight
+// access.
+//
+// Locking protocol:
+//
+//	rLock — held by ALL access methods for the full duration.
+//	        Multiple concurrent reads are safe.
+//	lock  — held ONLY by Destroy. Blocks until all rLocks drain.
+//
+// This eliminates the TOCTOU race present in the old SecretBytes design where
+// View() would lock → copy pointer → unlock → use pointer. Between the unlock
+// and the callback, Destroy could Munmap the region, causing a SIGSEGV.
+package secmem
+
+import (
+	"crypto/subtle"
+	"errors"
+	"fmt"
+	"io"
+)
+
+// WithBytes calls fn with the underlying byte slice. The slice is valid ONLY
+// for the duration of fn — it MUST NOT be stored or referenced after fn returns.
+//
+// The RLock is held for the entire callback, so Destroy blocks until fn returns.
+// This is the preferred access pattern; use WithBytesErr when fn returns an error.
+//
+// NOT REENTRANT: fn MUST NOT call any access method on the SAME buffer
+// (WithBytes, WithBytesErr, Read, ConstantEqual, …). The lock is writer-
+// preferring, so if another goroutine calls Destroy/Write/Seal/ReadOnly while
+// fn holds the read lock, a nested same-buffer read lock would block on the
+// waiting writer while that writer blocks on fn's outstanding read lock —
+// a deadlock. Nesting access to a DIFFERENT buffer (e.g. the decrypt-into
+// pattern: key.WithBytesErr → out.WithBytesErr) is safe and expected.
+//
+// Returns ErrDestroyed if the buffer has been destroyed.
+func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
+	if s == nil {
+		return ErrDestroyed
+	}
+	s.mu.rLock()
+	defer s.mu.rUnlock()
+	if s.data == nil {
+		return ErrDestroyed
+	}
+	if s.sealed {
+		return ErrSealed
+	}
+	fn(s.data)
+	return nil
+}
+
+// WithBytesErr is like WithBytes but fn may return an error, which is propagated.
+// Returns ErrDestroyed if the buffer has been destroyed; fn is not called in that case.
+//
+// NOT REENTRANT: as with [SecureBuffer.WithBytes], fn must not call another
+// access method on the same buffer (deadlock risk under a concurrent writer);
+// nesting onto a different buffer is safe.
+func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
+	if s == nil {
+		return ErrDestroyed
+	}
+	s.mu.rLock()
+	defer s.mu.rUnlock()
+	if s.data == nil {
+		return ErrDestroyed
+	}
+	if s.sealed {
+		return ErrSealed
+	}
+	return fn(s.data)
+}
+
+// Read copies bytes from the buffer into dst, starting at srcOffset.
+// Returns the number of bytes copied (min of len(dst) and available bytes).
+//
+// The RLock is held for the entire copy. If dst is itself an off-heap region,
+// no heap copy occurs. If dst is heap-allocated, the caller is responsible
+// for wiping it.
+func (s *SecureBuffer) Read(dst []byte, srcOffset int) (int, error) {
+	if s == nil {
+		return 0, ErrDestroyed
+	}
+	s.mu.rLock()
+	defer s.mu.rUnlock()
+	if s.data == nil {
+		return 0, ErrDestroyed
+	}
+	if s.sealed {
+		return 0, ErrSealed
+	}
+	if srcOffset < 0 || srcOffset >= len(s.data) {
+		return 0, fmt.Errorf("security.SecureBuffer.Read: srcOffset %d out of range [0, %d)", srcOffset, len(s.data))
+	}
+	return copy(dst, s.data[srcOffset:]), nil
+}
+
+// Write copies bytes from src into the buffer, starting at dstOffset.
+// Returns the number of bytes written (min of len(src) and available space).
+//
+// The exclusive lock is held for the copy, serializing all concurrent writes
+// and preventing races with ReadOnly/ReadWrite page-protection changes.
+func (s *SecureBuffer) Write(src []byte, dstOffset int) (int, error) {
+	if s == nil {
+		return 0, ErrDestroyed
+	}
+	s.mu.lock()
+	defer s.mu.unlock()
+	if s.data == nil {
+		return 0, ErrDestroyed
+	}
+	if s.sealed {
+		return 0, ErrSealed
+	}
+	if dstOffset < 0 || dstOffset >= len(s.data) {
+		return 0, fmt.Errorf("security.SecureBuffer.Write: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
+	}
+	return copy(s.data[dstOffset:], src), nil
+}
+
+// ByteAt returns the byte at index i.
+// Returns an error if i is out of range or the buffer has been destroyed.
+//
+// Design note (D5): The v2.2 reference panics on bad index; secmem
+// returns an error instead, honoring the library's "no panics in
+// library code" policy.
+func (s *SecureBuffer) ByteAt(i int) (byte, error) {
+	if s == nil {
+		return 0, ErrDestroyed
+	}
+	s.mu.rLock()
+	defer s.mu.rUnlock()
+	if s.data == nil {
+		return 0, ErrDestroyed
+	}
+	if s.sealed {
+		return 0, ErrSealed
+	}
+	if i < 0 || i >= len(s.data) {
+		return 0, fmt.Errorf("security.SecureBuffer.ByteAt: index %d out of range [0, %d)", i, len(s.data))
+	}
+	return s.data[i], nil
+}
+
+// SetByteAt sets the byte at index i to v.
+// Returns an error if i is out of range or the buffer has been destroyed.
+//
+// The exclusive lock is held to prevent races with ReadOnly/ReadWrite and
+// concurrent Write calls (SB-1 fix).
+func (s *SecureBuffer) SetByteAt(i int, v byte) error {
+	if s == nil {
+		return ErrDestroyed
+	}
+	s.mu.lock()
+	defer s.mu.unlock()
+	if s.data == nil {
+		return ErrDestroyed
+	}
+	if s.sealed {
+		return ErrSealed
+	}
+	if i < 0 || i >= len(s.data) {
+		return fmt.Errorf("security.SecureBuffer.SetByteAt: index %d out of range [0, %d)", i, len(s.data))
+	}
+	s.data[i] = v
+	return nil
+}
+
+// ConstantEqual performs a constant-time comparison of the buffer contents
+// against other. Returns (false, nil) when lengths differ.
+// Returns (false, ErrDestroyed) if the buffer has been destroyed.
+func (s *SecureBuffer) ConstantEqual(other []byte) (bool, error) {
+	if s == nil {
+		return false, ErrDestroyed
+	}
+	s.mu.rLock()
+	defer s.mu.rUnlock()
+	if s.data == nil {
+		return false, ErrDestroyed
+	}
+	if s.sealed {
+		return false, ErrSealed
+	}
+	if len(s.data) != len(other) {
+		return false, nil
+	}
+	return subtle.ConstantTimeCompare(s.data, other) == 1, nil
+}
+
+// WriteTo implements io.WriterTo. Copies the buffer contents into a temporary
+// heap slice under the read lock, releases the lock, then writes the copy to w.
+//
+// This decouples Destroy from any I/O latency: a stalled network peer or slow
+// pipe no longer prevents Destroy (including the signal wipe path) from
+// proceeding. The temporary copy is wiped via secureWipeSlice after the write.
+//
+// NOTE: For network or pipe targets, wrap w with a write deadline before
+// calling WriteTo to bound the lifetime of the in-flight copy (SB-7).
+func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
+	if s == nil {
+		return 0, ErrDestroyed
+	}
+	s.mu.rLock()
+	if s.data == nil {
+		s.mu.rUnlock()
+		return 0, ErrDestroyed
+	}
+	if s.sealed {
+		s.mu.rUnlock()
+		return 0, ErrSealed
+	}
+	// Copy under rLock so the snapshot is consistent; release before blocking I/O.
+	tmp := make([]byte, len(s.data))
+	copy(tmp, s.data)
+	s.mu.rUnlock()
+
+	n, err := w.Write(tmp)
+	secureWipeSlice(tmp) // wipe the heap copy regardless of write outcome
+	return int64(n), err
+}
+
+// ReadFrom implements io.ReaderFrom. Reads up to Len() bytes from r into the
+// buffer. The exclusive lock is NOT held during io.ReadFull: data is read into
+// a temporary heap slice first, then copied into secure memory under the lock.
+//
+// This prevents a stalled network peer or slow pipe from blocking Destroy
+// (including the signal wipe path). The temporary slice is wiped via
+// secureWipeSlice after the copy regardless of outcome.
+func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
+	if s == nil {
+		return 0, ErrDestroyed
+	}
+	// Determine buffer size under rLock (brief, non-blocking).
+	s.mu.rLock()
+	if s.data == nil {
+		s.mu.rUnlock()
+		return 0, ErrDestroyed
+	}
+	if s.sealed {
+		s.mu.rUnlock()
+		return 0, ErrSealed
+	}
+	size := len(s.data)
+	s.mu.rUnlock()
+
+	// Read into a temporary heap buffer without holding any lock.
+	tmp := make([]byte, size)
+	n, err := io.ReadFull(r, tmp)
+	if errors.Is(err, io.ErrUnexpectedEOF) {
+		// Reader had fewer bytes than buffer — partial fill is acceptable.
+		err = nil
+	}
+	if err != nil {
+		secureWipeSlice(tmp)
+		return int64(n), err
+	}
+
+	// Copy into secure memory under the exclusive lock.
+	s.mu.lock()
+	if s.data == nil {
+		s.mu.unlock()
+		secureWipeSlice(tmp)
+		return 0, ErrDestroyed
+	}
+	if s.sealed {
+		s.mu.unlock()
+		secureWipeSlice(tmp)
+		return 0, ErrSealed
+	}
+	copy(s.data, tmp[:n])
+	s.mu.unlock()
+	secureWipeSlice(tmp)
+	return int64(n), nil
+}
+
+// NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.
+// The returned buffer may be partially filled if r returns fewer than size bytes;
+// the returned count reports how many bytes were read.
+func NewBufferFromReader(r io.Reader, size int) (*SecureBuffer, int64, error) {
+	buf, err := NewEmptyBuffer(size)
+	if err != nil {
+		return nil, 0, err
+	}
+	n, err := buf.ReadFrom(r)
+	if err != nil {
+		_ = buf.Destroy()
+		return nil, n, err
+	}
+	return buf, n, nil
+}

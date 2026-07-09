@@ -15,6 +15,7 @@ go.work.sum
 # Editor / IDE and OS cruft.
 .idea/
 .vscode/
+*.code-workspace
 *.swp
 .DS_Store
 Thumbs.db

@@ -1,0 +1,28 @@
+package secmem
+
+import "errors"
+
+// ErrDestroyed is returned by SecureBuffer methods after the buffer has been
+// destroyed. It is the canonical sentinel for the destroyed/wiped state.
+var ErrDestroyed = errors.New("secure buffer has been destroyed")
+
+// ErrInvalidInput is returned by Keyring implementations when service/key are empty.
+var ErrInvalidInput = errors.New("invalid input: service and key must not be empty")
+
+// ErrNotFound is returned by Keyring Get/Delete when the key does not exist.
+var ErrNotFound = errors.New("credential not found in keyring")
+
+// ErrArenaDestroyed is returned by SecureArena and ArenaSlot methods after the
+// arena has been destroyed via Destroy().
+var ErrArenaDestroyed = errors.New("secure arena has been destroyed")
+
+// ErrArenaFull is returned by SecureArena.Acquire when all slots are in use.
+var ErrArenaFull = errors.New("secure arena is full — no free slots")
+
+// ErrSlotReleased is returned by ArenaSlot methods after the slot has been
+// released via Release(). Calling Release again is a no-op (idempotent).
+var ErrSlotReleased = errors.New("arena slot has been released")
+
+// ErrSealed is returned by SecureBuffer access methods when the buffer is in
+// the sealed (PROT_NONE) state. Call [SecureBuffer.Unseal] before accessing.
+var ErrSealed = errors.New("secure buffer is sealed")
