@@ -1,0 +1,25 @@
+# Compiled binaries and test artifacts.
+*.exe
+*.test
+*.out
+*.prof
+
+# Coverage output.
+coverage.txt
+coverage.html
+
+# Local Go workspace — used for cross-module dev, never published.
+go.work
+go.work.sum
+
+# Editor / IDE and OS cruft.
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db
+
+# Agent tooling and scratch — must never be committed.
+.claude/
+scratch/
+tmp/

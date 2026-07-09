@@ -1,0 +1,25 @@
+# Normalize line endings on checkin; check out LF on every platform.
+# Authored on Windows — this keeps .go/.s sources and the diff LF-clean.
+* text=auto eol=lf
+
+# Go source and assembly — always LF.
+*.go text eol=lf diff=golang
+*.s  text eol=lf
+
+# Documentation and config.
+*.md   text diff=markdown
+*.yml  text
+*.yaml text
+*.toml text
+*.json text
+
+# Shell scripts — always LF.
+*.sh text eol=lf
+
+# Binary formats.
+*.png binary
+*.jpg binary
+*.gif binary
+*.ico binary
+*.gz  binary
+*.zip binary
