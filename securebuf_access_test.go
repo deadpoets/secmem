@@ -229,30 +229,103 @@ func TestNewBufferFromReader(t *testing.T) {
 	}
 }
 
-func TestUseAsString(t *testing.T) {
+// TestExposeString_ReturnsCopy verifies ExposeString returns the exact buffer
+// contents, including the len==1 case (which the runtime serves from a shared
+// static table rather than a fresh allocation).
+func TestExposeString_ReturnsCopy(t *testing.T) {
 	t.Parallel()
 
-	raw := []byte("string-boundary-secret")
-	want := append([]byte(nil), raw...)
-	buf, err := NewBuffer(raw)
+	for _, want := range []string{"s", "expose-string-secret"} {
+		t.Run(want, func(t *testing.T) {
+			t.Parallel()
+			buf, err := NewBuffer([]byte(want))
+			if err != nil {
+				t.Fatalf("NewBuffer: %v", err)
+			}
+			defer func() { _ = buf.Destroy() }()
+
+			got, err := buf.ExposeString()
+			if err != nil {
+				t.Fatalf("ExposeString: %v", err)
+			}
+			if got != want {
+				t.Errorf("ExposeString = %q, want %q", got, want)
+			}
+		})
+	}
+}
+
+// TestExposeString_BufferStateErrors verifies ExposeString returns the
+// buffer-state sentinel and an empty string on a nil, destroyed, or sealed
+// buffer.
+func TestExposeString_BufferStateErrors(t *testing.T) {
+	t.Parallel()
+
+	cases := []struct {
+		name  string
+		setup func(t *testing.T) *SecureBuffer
+		want  error
+	}{
+		{"nil_buffer", func(t *testing.T) *SecureBuffer { return nil }, ErrDestroyed},
+		{"destroyed", func(t *testing.T) *SecureBuffer {
+			buf, err := NewEmptyBuffer(16)
+			if err != nil {
+				t.Fatalf("NewEmptyBuffer: %v", err)
+			}
+			if err := buf.Destroy(); err != nil {
+				t.Fatalf("Destroy: %v", err)
+			}
+			return buf
+		}, ErrDestroyed},
+		{"sealed", func(t *testing.T) *SecureBuffer {
+			buf, err := NewEmptyBuffer(16)
+			if err != nil {
+				t.Fatalf("NewEmptyBuffer: %v", err)
+			}
+			if err := buf.Seal(); err != nil {
+				t.Fatalf("Seal: %v", err)
+			}
+			t.Cleanup(func() { _ = buf.Destroy() })
+			return buf
+		}, ErrSealed},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			buf := tc.setup(t)
+			got, err := buf.ExposeString()
+			if !errors.Is(err, tc.want) {
+				t.Errorf("ExposeString err = %v, want %v", err, tc.want)
+			}
+			if got != "" {
+				t.Errorf("ExposeString returned %q on error, want empty string", got)
+			}
+		})
+	}
+}
+
+// TestExposeString_CopySurvivesDestroy pins the load-bearing contract: the
+// returned string is an independent copy that stays valid after the buffer is
+// destroyed. A future switch to a wiped or zero-copy handoff would break this —
+// and every real consumer that keeps the string.
+func TestExposeString_CopySurvivesDestroy(t *testing.T) {
+	t.Parallel()
+
+	const want = "retained-past-destroy"
+	buf, err := NewBuffer([]byte(want))
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	defer func() { _ = buf.Destroy() }()
 
-	var gotLen int
-	err = UseAsString(buf, "test-boundary", func(s string) error {
-		if s != string(want) {
-			t.Errorf("UseAsString got %q, want %q", s, want)
-		}
-		gotLen = len(s)
-		return nil
-	})
+	got, err := buf.ExposeString()
 	if err != nil {
-		t.Fatalf("UseAsString: %v", err)
+		t.Fatalf("ExposeString: %v", err)
 	}
-	if gotLen != len(want) {
-		t.Errorf("UseAsString length = %d, want %d", gotLen, len(want))
+	if err := buf.Destroy(); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if got != want {
+		t.Errorf("string = %q after Destroy, want %q", got, want)
 	}
 }
 

@@ -1,13 +1,17 @@
-// securebuf_access.go implements the controlled access API
-// for SecureBuffer. All methods hold RLock for the ENTIRE operation duration,
-// preventing Destroy (which takes a write Lock) from racing with any in-flight
-// access.
+// securebuf_access.go implements the controlled access API for SecureBuffer.
+//
+// The borrowing accessors hold the lock for the whole operation, so Destroy
+// (which takes the write lock) cannot race an in-flight access. The copy-out
+// methods (ExposeString, WriteTo, ReadFrom) are the deliberate exception: they
+// snapshot the contents under the lock and release it before returning or
+// streaming the copy, so a slow reader/writer cannot block Destroy, including
+// the signal-wipe path.
 //
 // Locking protocol:
 //
-//	rLock — held by ALL access methods for the full duration.
-//	        Multiple concurrent reads are safe.
-//	lock  — held ONLY by Destroy. Blocks until all rLocks drain.
+//	rLock — held by the read accessors for the full operation; concurrent
+//	        reads are safe.
+//	lock  — held by Destroy and the mutating methods; blocks until rLocks drain.
 //
 // This eliminates the classic TOCTOU race of lock → copy pointer → unlock →
 // use pointer: between the unlock and the use, Destroy could Munmap the
@@ -72,6 +76,46 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 		return ErrSealed
 	}
 	return fn(s.data)
+}
+
+// ExposeString returns the buffer contents as a Go string, for third-party
+// APIs that accept only strings. It is the weakest accessor in the package;
+// prefer [SecureBuffer.WithBytes] or [SecureBuffer.WithBytesErr] whenever the
+// consumer can take a []byte.
+//
+// Because Go strings are immutable, the returned string is a copy of the secret
+// that secmem can neither lock, exclude from core dumps, nor wipe. A fresh copy
+// is made on every call. It is unaffected by Destroy and lives until the
+// garbage collector reclaims it — and the GC does not zero reclaimed memory, so
+// the bytes may linger until that memory is reused.
+//
+// Keeping the returned string is safe — connection pools, loggers, and caches
+// routinely do — but it extends the secret's lifetime beyond secmem's control.
+// Do not use ExposeString for material whose exposure must end at Destroy.
+//
+// The copy is taken under the read lock. On GOEXPERIMENT=runtimesecret builds
+// it is a garbage-collector-tracked allocation, erased once nothing references
+// it — best-effort timing, never a guarantee; a string you keep is never
+// erased.
+//
+// Returns ErrDestroyed if the buffer has been destroyed and ErrSealed if it is
+// sealed.
+func (s *SecureBuffer) ExposeString() (string, error) {
+	var str string
+	if err := s.WithBytesErr(func(b []byte) error {
+		// Snapshot the secret as a string under the read lock. Do NOT try to
+		// wipe str afterwards: for len(b)==1 the runtime returns a string
+		// aliasing its global staticuint64s table (no copy is made), and
+		// mutating a string a caller may have retained violates Go's
+		// immutability contract and races readers invisibly to the race
+		// detector. On runtimesecret builds SecretDo makes the copy a
+		// GC-tracked allocation that is erased once nothing references it.
+		SecretDo(func() { str = string(b) }) //nolint:secmem-lint
+		return nil
+	}); err != nil {
+		return "", err
+	}
+	return str, nil
 }
 
 // Read copies bytes from the buffer into dst, starting at srcOffset.
