@@ -1,23 +1,18 @@
 //go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && !amd64
 
-// Non-amd64 stubs for the legacy hardening layer.
+// Non-amd64 stubs for the legacy wipe helpers.
 //
-// DO NOT REMOVE — required for Windows/Darwin. See hardened_legacy.go header.
+// wipeScratchFrameFull is a no-op: we cannot safely zero stack memory without
+// architecture-specific assembly, so SecretDo's frame scrub is a no-op here and
+// secret hygiene relies on the Go runtime eventually zeroing freed goroutine
+// stacks.
 //
-// wipeScratchFrame and wipeScratchFrameFull are no-ops:
-// we cannot safely zero stack memory without architecture-specific assembly.
-// On these platforms, recover() isolation in SecureContext remains active;
-// the Go GC eventually zeros freed goroutine stack frames.
-//
-// wipeBytes uses crypto/subtle.ConstantTimeSelect to defeat compiler
-// dead-store elimination. The optimizer cannot prove the zeros are unused
-// because ConstantTimeSelect's result is data-dependent from its perspective.
+// wipeBytes uses crypto/subtle.ConstantTimeSelect to defeat compiler dead-store
+// elimination: the optimizer cannot prove the zeros are unused because
+// ConstantTimeSelect's result is data-dependent from its perspective.
 package secmem
 
 import "crypto/subtle"
-
-// wipeScratchFrame is a no-op on non-amd64 platforms.
-func wipeScratchFrame() {}
 
 // wipeScratchFrameFull is a no-op on non-amd64 platforms.
 func wipeScratchFrameFull() {}

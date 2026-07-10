@@ -1,19 +1,15 @@
 //go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && amd64
 
-// Legacy hardening assembly for AMD64.
+// Legacy wipe assembly for AMD64.
 //
-// DO NOT REMOVE — required for Windows/Darwin. See hardened_legacy.go header.
+// Provides two functions:
 //
-// Provides three functions for the legacy-path SecureContext:
-//
-//   wipeScratchFrame()      — zeros a 2 KiB local frame using REP STOSB + SFENCE.
 //   wipeScratchFrameFull()  — zeros a 32 KiB local frame using REP STOSB + SFENCE.
-//
-//     These functions allocate a fixed-size local stack frame and zero it using
-//     REP STOSB. Because they are //go:noinline, the local frame is separate
-//     from the caller's frame. Zeroing it covers register spills and local
-//     variable storage for the current execution context. This is safe because
-//     we only write within our own allocated frame — never past it.
+//     Allocates a fixed-size local stack frame and zeros it. Because it is
+//     //go:noinline, the frame is separate from the caller's; zeroing it covers
+//     register spills and local variable storage for the current execution
+//     context. Safe because it only writes within its own allocated frame —
+//     never past it.
 //
 //   wipeBytes(b []byte) — zeros the bytes in b using REP STOSB + SFENCE.
 //     Intentionally omits CLFLUSH/CLFLUSHOPT: those are for evicting mmap'd
@@ -26,30 +22,11 @@
 
 #include "textflag.h"
 
-// func wipeScratchFrame()
-//
-// Allocates 2048 bytes of local frame, zeros it with REP STOSB + SFENCE.
-// Local frame is stacked contiguously with the caller's frame in the goroutine
-// stack — zeroing it covers recent register spills and stack-allocated secrets.
-//
-// Not NOSPLIT: Go may grow the goroutine stack if needed (safe).
-// Must be //go:noinline at the Go level to guarantee a separate frame.
-TEXT ·wipeScratchFrame(SB), $2048-0
-	// DI = top of our 2048-byte local frame.
-	// After function prologue, SP points to the bottom of our local frame.
-	// The local area is [SP, SP+2048). Zero it from SP.
-	MOVQ	$2048, CX
-	MOVQ	SP, DI
-	XORQ	AX, AX
-	REP
-	STOSB
-	SFENCE
-	RET
-
 // func wipeScratchFrameFull()
 //
 // Allocates 32768 bytes of local frame, zeros it with REP STOSB + SFENCE.
-// Used by SecureContext.Close() for a wider coverage scrub on scope exit.
+// Deferred by SecretDo/SecretDoErr on the legacy path for a wide-coverage scrub
+// after a secret-touching call tree returns.
 TEXT ·wipeScratchFrameFull(SB), $32768-0
 	MOVQ	$32768, CX
 	MOVQ	SP, DI
