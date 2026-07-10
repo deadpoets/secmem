@@ -363,6 +363,9 @@ func (a *SecureArena) ReadWrite() error {
 // a goroutine.  Returns [ErrSlotReleased] if the slot has been released.
 // Returns [ErrArenaDestroyed] if the arena has been destroyed.
 func (s *ArenaSlot) WithBytes(fn func([]byte)) error {
+	if fn == nil {
+		return errors.New("secmem.ArenaSlot.WithBytes: nil fn")
+	}
 	return s.WithBytesErr(func(b []byte) error {
 		fn(b)
 		return nil
@@ -371,6 +374,9 @@ func (s *ArenaSlot) WithBytes(fn func([]byte)) error {
 
 // WithBytesErr is like [ArenaSlot.WithBytes] but fn may return an error.
 func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
+	if fn == nil {
+		return errors.New("secmem.ArenaSlot.WithBytesErr: nil fn")
+	}
 	if s == nil {
 		return ErrSlotReleased
 	}

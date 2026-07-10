@@ -229,3 +229,22 @@ func TestWithBytesHardenedErr(t *testing.T) {
 		}
 	})
 }
+
+// TestWithBytesHardened_NilCallback verifies the hardened wrappers return an
+// error instead of panicking on a nil callback.
+func TestWithBytesHardened_NilCallback(t *testing.T) {
+	t.Parallel()
+
+	buf, err := NewEmptyBuffer(16)
+	if err != nil {
+		t.Fatalf("NewEmptyBuffer: %v", err)
+	}
+	defer func() { _ = buf.Destroy() }()
+
+	if err := WithBytesHardened(buf, nil); err == nil {
+		t.Error("WithBytesHardened(nil): expected error, got nil")
+	}
+	if err := WithBytesHardenedErr(buf, nil); err == nil {
+		t.Error("WithBytesHardenedErr(nil): expected error, got nil")
+	}
+}

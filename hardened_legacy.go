@@ -27,6 +27,7 @@
 package secmem
 
 import (
+	"errors"
 	"fmt"
 	"runtime/debug"
 )
@@ -134,6 +135,9 @@ func (c *SecureContext) Close() {
 //
 //	secret.Do(func() { buf.WithBytes(fn) })
 func WithBytesHardened(buf *SecureBuffer, fn func([]byte)) error {
+	if fn == nil {
+		return errors.New("secmem.WithBytesHardened: nil fn")
+	}
 	sc := NewSecureContext()
 	defer sc.Close()
 	return sc.DoErr(func() error {
@@ -149,6 +153,9 @@ func WithBytesHardened(buf *SecureBuffer, fn func([]byte)) error {
 //
 //	secret.Do(func() { _ = buf.WithBytesErr(fn) })
 func WithBytesHardenedErr(buf *SecureBuffer, fn func([]byte) error) error {
+	if fn == nil {
+		return errors.New("secmem.WithBytesHardenedErr: nil fn")
+	}
 	sc := NewSecureContext()
 	defer sc.Close()
 	return sc.DoErr(func() error {

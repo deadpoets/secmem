@@ -329,6 +329,52 @@ func TestExposeString_CopySurvivesDestroy(t *testing.T) {
 	}
 }
 
+// TestNilCallback_ReturnsError verifies the borrowing accessors return an error
+// instead of panicking when handed a nil callback (no-panic rule).
+func TestNilCallback_ReturnsError(t *testing.T) {
+	t.Parallel()
+
+	buf, err := NewBuffer([]byte("nil-callback-secret"))
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer func() { _ = buf.Destroy() }()
+
+	arena, err := NewArena(16, 2)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = arena.Destroy() }()
+	slot, err := arena.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+
+	goodCtor := func() (*SecureBuffer, error) { return NewEmptyBuffer(16) }
+	goodFn := func(*SecureBuffer) error { return nil }
+
+	cases := []struct {
+		name string
+		call func() error
+	}{
+		{"SecureBuffer.WithBytes", func() error { return buf.WithBytes(nil) }},
+		{"SecureBuffer.WithBytesErr", func() error { return buf.WithBytesErr(nil) }},
+		{"ArenaSlot.WithBytes", func() error { return slot.WithBytes(nil) }},
+		{"ArenaSlot.WithBytesErr", func() error { return slot.WithBytesErr(nil) }},
+		{"Scope", func() error { return Scope(16, nil) }},
+		{"ScopeWith_nil_ctor", func() error { return ScopeWith(nil, goodFn) }},
+		{"ScopeWith_nil_fn", func() error { return ScopeWith(goodCtor, nil) }},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			if err := tc.call(); err == nil {
+				t.Errorf("%s(nil): expected error, got nil", tc.name)
+			}
+		})
+	}
+}
+
 // TestRead_Write_BoundsCheck verifies that Read and Write return errors for
 // out-of-range offsets rather than panicking.
 func TestRead_Write_BoundsCheck(t *testing.T) {

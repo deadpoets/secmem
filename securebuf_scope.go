@@ -26,6 +26,9 @@ import "errors"
 //
 // This ensures that a failed Munmap is never silently discarded.
 func Scope(size int, fn func(*SecureBuffer) error) (retErr error) {
+	if fn == nil {
+		return errors.New("secmem.Scope: nil fn")
+	}
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
 		return err
@@ -61,6 +64,12 @@ func Scope(size int, fn func(*SecureBuffer) error) (retErr error) {
 //	    },
 //	)
 func ScopeWith(ctor func() (*SecureBuffer, error), fn func(*SecureBuffer) error) (retErr error) {
+	if ctor == nil {
+		return errors.New("secmem.ScopeWith: nil ctor")
+	}
+	if fn == nil {
+		return errors.New("secmem.ScopeWith: nil fn")
+	}
 	buf, err := ctor()
 	if err != nil {
 		return err

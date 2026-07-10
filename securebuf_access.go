@@ -42,6 +42,9 @@ import (
 //
 // Returns ErrDestroyed if the buffer has been destroyed.
 func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
+	if fn == nil {
+		return errors.New("secmem.SecureBuffer.WithBytes: nil fn")
+	}
 	if s == nil {
 		return ErrDestroyed
 	}
@@ -64,6 +67,9 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 // access method on the same buffer (deadlock risk under a concurrent writer);
 // nesting onto a different buffer is safe.
 func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
+	if fn == nil {
+		return errors.New("secmem.SecureBuffer.WithBytesErr: nil fn")
+	}
 	if s == nil {
 		return ErrDestroyed
 	}
