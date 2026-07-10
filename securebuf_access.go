@@ -1,4 +1,4 @@
-// Package security — securebuf_access.go implements the controlled access API
+// securebuf_access.go implements the controlled access API
 // for SecureBuffer. All methods hold RLock for the ENTIRE operation duration,
 // preventing Destroy (which takes a write Lock) from racing with any in-flight
 // access.
@@ -9,9 +9,10 @@
 //	        Multiple concurrent reads are safe.
 //	lock  — held ONLY by Destroy. Blocks until all rLocks drain.
 //
-// This eliminates the TOCTOU race present in the old SecretBytes design where
-// View() would lock → copy pointer → unlock → use pointer. Between the unlock
-// and the callback, Destroy could Munmap the region, causing a SIGSEGV.
+// This eliminates the classic TOCTOU race of lock → copy pointer → unlock →
+// use pointer: between the unlock and the use, Destroy could Munmap the
+// region, causing a SIGSEGV.
+
 package secmem
 
 import (
@@ -92,7 +93,7 @@ func (s *SecureBuffer) Read(dst []byte, srcOffset int) (int, error) {
 		return 0, ErrSealed
 	}
 	if srcOffset < 0 || srcOffset >= len(s.data) {
-		return 0, fmt.Errorf("security.SecureBuffer.Read: srcOffset %d out of range [0, %d)", srcOffset, len(s.data))
+		return 0, fmt.Errorf("secmem.SecureBuffer.Read: srcOffset %d out of range [0, %d)", srcOffset, len(s.data))
 	}
 	return copy(dst, s.data[srcOffset:]), nil
 }
@@ -115,7 +116,7 @@ func (s *SecureBuffer) Write(src []byte, dstOffset int) (int, error) {
 		return 0, ErrSealed
 	}
 	if dstOffset < 0 || dstOffset >= len(s.data) {
-		return 0, fmt.Errorf("security.SecureBuffer.Write: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
+		return 0, fmt.Errorf("secmem.SecureBuffer.Write: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
 	}
 	return copy(s.data[dstOffset:], src), nil
 }
@@ -123,9 +124,9 @@ func (s *SecureBuffer) Write(src []byte, dstOffset int) (int, error) {
 // ByteAt returns the byte at index i.
 // Returns an error if i is out of range or the buffer has been destroyed.
 //
-// Design note (D5): The v2.2 reference panics on bad index; secmem
-// returns an error instead, honoring the library's "no panics in
-// library code" policy.
+// Design note: a conventional implementation panics on a bad index; secmem
+// returns an error instead, honoring the library's "no panics in library
+// code" policy.
 func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 	if s == nil {
 		return 0, ErrDestroyed
@@ -139,7 +140,7 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 		return 0, ErrSealed
 	}
 	if i < 0 || i >= len(s.data) {
-		return 0, fmt.Errorf("security.SecureBuffer.ByteAt: index %d out of range [0, %d)", i, len(s.data))
+		return 0, fmt.Errorf("secmem.SecureBuffer.ByteAt: index %d out of range [0, %d)", i, len(s.data))
 	}
 	return s.data[i], nil
 }
@@ -148,7 +149,7 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 // Returns an error if i is out of range or the buffer has been destroyed.
 //
 // The exclusive lock is held to prevent races with ReadOnly/ReadWrite and
-// concurrent Write calls (SB-1 fix).
+// concurrent Write calls.
 func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	if s == nil {
 		return ErrDestroyed
@@ -162,7 +163,7 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 		return ErrSealed
 	}
 	if i < 0 || i >= len(s.data) {
-		return fmt.Errorf("security.SecureBuffer.SetByteAt: index %d out of range [0, %d)", i, len(s.data))
+		return fmt.Errorf("secmem.SecureBuffer.SetByteAt: index %d out of range [0, %d)", i, len(s.data))
 	}
 	s.data[i] = v
 	return nil
@@ -197,7 +198,7 @@ func (s *SecureBuffer) ConstantEqual(other []byte) (bool, error) {
 // proceeding. The temporary copy is wiped via secureWipeSlice after the write.
 //
 // NOTE: For network or pipe targets, wrap w with a write deadline before
-// calling WriteTo to bound the lifetime of the in-flight copy (SB-7).
+// calling WriteTo to bound the lifetime of the in-flight copy.
 func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 	if s == nil {
 		return 0, ErrDestroyed

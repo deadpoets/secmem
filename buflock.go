@@ -1,4 +1,4 @@
-// Package security — buflock.go implements a sync.Cond-based reader-writer lock
+// buflock.go implements a sync.Cond-based reader-writer lock
 // that is compatible with testing/synctest.
 //
 // # Why not sync.RWMutex?
@@ -27,7 +27,8 @@
 // acquire/release pairs in lock() and unlock() provide the necessary
 // happens-before edges for memory visibility of data accessed between them.
 //
-// This type is internal to the security package — all methods are unexported.
+// This type is internal to the secmem package — all methods are unexported.
+
 package secmem
 
 import "sync"

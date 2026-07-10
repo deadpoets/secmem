@@ -1,10 +1,11 @@
 //go:build !goexperiment.runtimesecret || !(linux && (amd64 || arm64))
 
-// Package security — secretdo_legacy.go is the best-effort SecretDo for builds
+// secretdo_legacy.go is the best-effort SecretDo for builds
 // without GOEXPERIMENT=runtimesecret, or on platforms the experiment does not
 // support (Windows, Darwin, non-amd64/arm64). It exports the same API as the
 // primary path in secretdo_runtimesecret.go. See that file for the full
 // SecretDo contract.
+
 package secmem
 
 // SecretDo runs fn, then scrubs a local stack frame via assembly (REP STOSB +

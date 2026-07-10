@@ -9,7 +9,7 @@ import (
 )
 
 // TestSecureBuffer_New verifies basic construction, size reporting, and that
-// the buffer is writable. Mirrors NewBuffer in the v2.2 reference.
+// the buffer is writable.
 func TestSecureBuffer_New(t *testing.T) {
 	t.Parallel()
 

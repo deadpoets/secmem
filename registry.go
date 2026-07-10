@@ -72,7 +72,7 @@ func wipeAndFree(region janitorRegion, lockHeld bool) error {
 	}
 
 	if err := mprotectSecretMem(region.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
-		slog.Error("security: janitor mprotect failed — continuing cleanup",
+		slog.Error("secmem: janitor mprotect failed — continuing cleanup",
 			slog.Any("error", err),
 		)
 	}
@@ -103,7 +103,7 @@ func (j *janitor) wipeAll() {
 
 	for _, region := range regions {
 		if err := wipeAndFree(region, false); err != nil {
-			slog.Error("security: emergencyJanitor wipe failed during signal shutdown",
+			slog.Error("secmem: emergencyJanitor wipe failed during signal shutdown",
 				slog.Any("error", err),
 			)
 		}

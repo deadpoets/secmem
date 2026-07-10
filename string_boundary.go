@@ -16,7 +16,7 @@ func UseAsString(buf *SecureBuffer, purpose string, fn func(string) error) error
 		purpose = "unspecified"
 	}
 	if purpose == "unspecified" {
-		slog.Warn("security: UseAsString called with unspecified purpose — document the string boundary",
+		slog.Warn("secmem: UseAsString called with unspecified purpose — document the string boundary",
 			slog.String("advice", "pass a descriptive purpose string to UseAsString"))
 	}
 	return buf.WithBytesErr(func(b []byte) error {

@@ -1,4 +1,4 @@
-// Package security — securebuf_scope.go provides deterministic lifetime
+// securebuf_scope.go provides deterministic lifetime
 // management for SecureBuffer via Scope and ScopeWith.
 //
 // # Design Decision
@@ -10,6 +10,7 @@
 // Destroy() errors are propagated via named return + errors.Join, not discarded.
 // A failed Munmap means secret memory is still mapped — callers can detect this
 // and react (e.g., trigger a security alert, terminate an SSH connection).
+
 package secmem
 
 import "errors"
@@ -46,11 +47,11 @@ func Scope(size int, fn func(*SecureBuffer) error) (retErr error) {
 //
 // Example:
 //
-//	err := security.ScopeWith(
-//	    func() (*security.SecureBuffer, error) {
-//	        return security.NewSyscallSafeBuffer(rawKey)
+//	err := secmem.ScopeWith(
+//	    func() (*secmem.SecureBuffer, error) {
+//	        return secmem.NewSyscallSafeBuffer(rawKey)
 //	    },
-//	    func(buf *security.SecureBuffer) error {
+//	    func(buf *secmem.SecureBuffer) error {
 //	        return buf.WithBytesErr(func(key []byte) error {
 //	            block, err := aes.NewCipher(key)
 //	            if err != nil { return err }

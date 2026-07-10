@@ -1,9 +1,10 @@
 //go:build goexperiment.runtimesecret && linux && (amd64 || arm64)
 
-// Package security — secretdo_runtimesecret.go is the primary-path SecretDo
+// secretdo_runtimesecret.go is the primary-path SecretDo
 // backed by runtime/secret (GOEXPERIMENT=runtimesecret, linux/amd64|arm64).
 // The legacy best-effort equivalent lives in secretdo_legacy.go; the two files
 // are mutually exclusive by build tag and export an identical API.
+
 package secmem
 
 import "runtime/secret"

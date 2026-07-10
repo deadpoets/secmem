@@ -73,7 +73,7 @@ func (e *PanicError) Error() string {
 // For the primary path (linux/amd64|arm64 + GOEXPERIMENT=runtimesecret) this
 // type is not compiled; callers should use secret.Do(func() { buf.WithBytesErr(...) }).
 //
-//	sc := security.NewSecureContext()
+//	sc := secmem.NewSecureContext()
 //	defer sc.Close() // full 32 KiB scrub on scope exit
 //
 //	err := sc.DoErr(func() error {

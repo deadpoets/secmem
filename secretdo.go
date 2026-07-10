@@ -1,7 +1,8 @@
-// Package security — secretdo.go holds the build-tag-independent SecretDo
+// secretdo.go holds the build-tag-independent SecretDo
 // surface: the startup posture assertion. The SecretDo/SecretDoErr/
 // RuntimeSecretActive implementations are split across secretdo_runtimesecret.go
 // (primary) and secretdo_legacy.go (best-effort) by build tag.
+
 package secmem
 
 import "errors"

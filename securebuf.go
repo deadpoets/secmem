@@ -1,5 +1,4 @@
-// Package security — securebuf.go implements SecureBuffer, the hardened
-// off-heap memory type that supersedes SecretBytes.
+// securebuf.go implements SecureBuffer, the hardened off-heap memory type.
 //
 // # Architecture layering
 //
@@ -23,6 +22,7 @@
 //   - cleanup.Stop() is called before the wipe in Destroy to prevent double-free.
 //     runtime.KeepAlive(s) is called at the end of Destroy to keep the GC from
 //     running the cleanup between Stop() and the actual wipe.
+
 package secmem
 
 import (
@@ -86,11 +86,11 @@ type SecureBuffer struct {
 // `ulimit -l` or systemd LimitMEMLOCK=).
 func NewBuffer(raw []byte) (*SecureBuffer, error) {
 	if len(raw) == 0 {
-		return nil, errors.New("security.NewBuffer: empty input")
+		return nil, errors.New("secmem.NewBuffer: empty input")
 	}
 	allocRaw, data, err := allocSecretMem(len(raw))
 	if err != nil {
-		return nil, fmt.Errorf("security.NewBuffer: %w", err)
+		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	copy(data, raw)
 	secureWipeSlice(raw) // zero the caller's copy defense-in-depth
@@ -101,11 +101,11 @@ func NewBuffer(raw []byte) (*SecureBuffer, error) {
 // Equivalent to NewBuffer(make([]byte, size)) without the intermediate heap copy.
 func NewEmptyBuffer(size int) (*SecureBuffer, error) {
 	if size <= 0 {
-		return nil, fmt.Errorf("security.NewEmptyBuffer: invalid size %d", size)
+		return nil, fmt.Errorf("secmem.NewEmptyBuffer: invalid size %d", size)
 	}
 	allocRaw, data, err := allocSecretMem(size)
 	if err != nil {
-		return nil, fmt.Errorf("security.NewEmptyBuffer: %w", err)
+		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
 	return newSecureBuffer(allocRaw, data), nil
 }
@@ -116,11 +116,11 @@ func NewEmptyBuffer(size int) (*SecureBuffer, error) {
 // arrives from a kernel-controlled channel.
 func NewSyscallSafeBuffer(raw []byte) (*SecureBuffer, error) {
 	if len(raw) == 0 {
-		return nil, errors.New("security.NewSyscallSafeBuffer: empty input")
+		return nil, errors.New("secmem.NewSyscallSafeBuffer: empty input")
 	}
 	allocRaw, data, err := allocMapAnon(len(raw))
 	if err != nil {
-		return nil, fmt.Errorf("security.NewSyscallSafeBuffer: %w", err)
+		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	copy(data, raw)
 	secureWipeSlice(raw)
@@ -154,12 +154,12 @@ func newSecureBuffer(allocRaw, data []byte) *SecureBuffer {
 	// references to data are gone.  Any retained []byte from WithBytes
 	// becomes a dangling pointer after the cleanup runs.
 	sb.cleanup = runtime.AddCleanup(sb, func(key uintptr) {
-		slog.Warn("security: SecureBuffer finalized without explicit Destroy()",
+		slog.Warn("secmem: SecureBuffer finalized without explicit Destroy()",
 			slog.Int("size", len(allocRaw)),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
 		)
 		if err := emergencyJanitor.release(key, false); err != nil {
-			slog.Error("security: SecureBuffer cleanup release failed",
+			slog.Error("secmem: SecureBuffer cleanup release failed",
 				slog.Any("error", err),
 			)
 		}
@@ -218,7 +218,7 @@ func (s *SecureBuffer) Destroy() error {
 	runtime.KeepAlive(s)
 
 	if err != nil {
-		return fmt.Errorf("security.SecureBuffer.Destroy: %w", err)
+		return fmt.Errorf("secmem.SecureBuffer.Destroy: %w", err)
 	}
 	return nil
 }
@@ -265,24 +265,24 @@ func (s *SecureBuffer) MappedLen() int {
 //
 // The exclusive lock is held to drain all in-flight Write/SetByteAt calls
 // before the mprotect, preventing a SIGSEGV from a concurrent write hitting a
-// PROT_READ page (SB-3 fix).
+// PROT_READ page.
 //
 // NOTE: Operates on the full page-rounded region; sub-page protection
 // is not possible on any supported OS.
 func (s *SecureBuffer) ReadOnly() error {
 	if s == nil {
-		return errors.New("security.SecureBuffer.ReadOnly: nil receiver")
+		return errors.New("secmem.SecureBuffer.ReadOnly: nil receiver")
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.raw == nil {
-		return fmt.Errorf("security.SecureBuffer.ReadOnly: %w", ErrDestroyed)
+		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrDestroyed)
 	}
 	if s.sealed {
-		return fmt.Errorf("security.SecureBuffer.ReadOnly: %w", ErrSealed)
+		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrSealed)
 	}
 	if err := mprotectSecretMem(s.raw, 1 /*PROT_READ*/); err != nil {
-		return fmt.Errorf("security.SecureBuffer.ReadOnly: %w", err)
+		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", err)
 	}
 	return nil
 }
@@ -291,21 +291,21 @@ func (s *SecureBuffer) ReadOnly() error {
 // Must be called before [Destroy] if [ReadOnly] was previously applied.
 //
 // The exclusive lock is held to drain all in-flight access before the
-// mprotect (SB-3 fix).
+// mprotect.
 func (s *SecureBuffer) ReadWrite() error {
 	if s == nil {
-		return errors.New("security.SecureBuffer.ReadWrite: nil receiver")
+		return errors.New("secmem.SecureBuffer.ReadWrite: nil receiver")
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.raw == nil {
-		return fmt.Errorf("security.SecureBuffer.ReadWrite: %w", ErrDestroyed)
+		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrDestroyed)
 	}
 	if s.sealed {
-		return fmt.Errorf("security.SecureBuffer.ReadWrite: %w", ErrSealed)
+		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrSealed)
 	}
 	if err := mprotectSecretMem(s.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
-		return fmt.Errorf("security.SecureBuffer.ReadWrite: %w", err)
+		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", err)
 	}
 	return nil
 }
@@ -326,18 +326,18 @@ func (s *SecureBuffer) ReadWrite() error {
 // Seal is idempotent: calling it on an already-sealed buffer is a no-op.
 func (s *SecureBuffer) Seal() error {
 	if s == nil {
-		return errors.New("security.SecureBuffer.Seal: nil receiver")
+		return errors.New("secmem.SecureBuffer.Seal: nil receiver")
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.raw == nil {
-		return fmt.Errorf("security.SecureBuffer.Seal: %w", ErrDestroyed)
+		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", ErrDestroyed)
 	}
 	if s.sealed {
 		return nil // idempotent
 	}
 	if err := mprotectSecretMem(s.raw, 0 /*PROT_NONE*/); err != nil {
-		return fmt.Errorf("security.SecureBuffer.Seal: %w", err)
+		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 	}
 	s.sealed = true
 	return nil
@@ -352,18 +352,18 @@ func (s *SecureBuffer) Seal() error {
 // Unseal is idempotent: calling it on an already-unsealed buffer is a no-op.
 func (s *SecureBuffer) Unseal() error {
 	if s == nil {
-		return errors.New("security.SecureBuffer.Unseal: nil receiver")
+		return errors.New("secmem.SecureBuffer.Unseal: nil receiver")
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.raw == nil {
-		return fmt.Errorf("security.SecureBuffer.Unseal: %w", ErrDestroyed)
+		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", ErrDestroyed)
 	}
 	if !s.sealed {
 		return nil // idempotent
 	}
 	if err := mprotectSecretMem(s.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
-		return fmt.Errorf("security.SecureBuffer.Unseal: %w", err)
+		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
 	}
 	s.sealed = false
 	return nil
@@ -386,15 +386,15 @@ func (s *SecureBuffer) IsSealed() bool {
 // full-page allocation regardless of Truncate calls.
 func (s *SecureBuffer) Truncate(n int) error {
 	if s == nil {
-		return errors.New("security.SecureBuffer.Truncate: nil receiver")
+		return errors.New("secmem.SecureBuffer.Truncate: nil receiver")
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.raw == nil {
-		return fmt.Errorf("security.SecureBuffer.Truncate: %w", ErrDestroyed)
+		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrDestroyed)
 	}
 	if n < 0 || n > len(s.data) {
-		return fmt.Errorf("security.SecureBuffer.Truncate: n=%d out of range [0, %d]", n, len(s.data))
+		return fmt.Errorf("secmem.SecureBuffer.Truncate: n=%d out of range [0, %d]", n, len(s.data))
 	}
 	tail := s.data[n:]
 	if len(tail) > 0 {

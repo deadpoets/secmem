@@ -1,11 +1,11 @@
-// Package security — securearena.go implements SecureArena, a fixed-size slot
+// securearena.go implements SecureArena, a fixed-size slot
 // pool backed by a single mmap'd slab.
 //
 // # Motivation
 //
 // Each SecureBuffer occupies at least one full OS page (≥4 KiB on amd64) and
 // registers individually with the emergency janitor.  For O(10) long-lived
-// secrets this is correct.  At Phase 5 SSH server concurrency (hundreds of
+// secrets this is correct.  Under server-grade concurrency (hundreds of
 // short-lived per-session keys), per-buffer page overhead would exhaust
 // RLIMIT_MEMLOCK and create O(N) janitor entries.
 //
@@ -45,6 +45,7 @@
 // Because multiple slots share a page, sub-page mprotect is not possible.
 // ReadOnly / ReadWrite operate on the full slab — use judiciously.  Slot
 // indices are bounds-checked on every access to prevent cross-slot writes.
+
 package secmem
 
 import (
@@ -141,19 +142,19 @@ type ArenaSlot struct {
 // Common errors: EPERM / ENOMEM from mlock (RLIMIT_MEMLOCK exceeded).
 func NewArena(slotSize, count int) (*SecureArena, error) {
 	if slotSize <= 0 {
-		return nil, fmt.Errorf("security.NewArena: slotSize must be > 0, got %d", slotSize)
+		return nil, fmt.Errorf("secmem.NewArena: slotSize must be > 0, got %d", slotSize)
 	}
 	if count <= 0 {
-		return nil, fmt.Errorf("security.NewArena: count must be > 0, got %d", count)
+		return nil, fmt.Errorf("secmem.NewArena: count must be > 0, got %d", count)
 	}
 	if slotSize > math.MaxInt/count {
-		return nil, fmt.Errorf("security.NewArena: slotSize*count overflows int (slotSize=%d, count=%d)", slotSize, count)
+		return nil, fmt.Errorf("secmem.NewArena: slotSize*count overflows int (slotSize=%d, count=%d)", slotSize, count)
 	}
 
 	totalBytes := slotSize * count
 	allocRaw, _, err := allocSecretMem(totalBytes)
 	if err != nil {
-		return nil, fmt.Errorf("security.NewArena: %w", err)
+		return nil, fmt.Errorf("secmem.NewArena: %w", err)
 	}
 
 	a := &SecureArena{
@@ -172,12 +173,12 @@ func NewArena(slotSize, count int) (*SecureArena, error) {
 	// so that the cleanup closure cannot keep a alive and prevent it from
 	// becoming unreachable.
 	a.cleanup = runtime.AddCleanup(a, func(key uintptr) {
-		slog.Warn("security: SecureArena finalized without explicit Destroy()",
+		slog.Warn("secmem: SecureArena finalized without explicit Destroy()",
 			slog.Int("slab_bytes", len(allocRaw)),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
 		)
 		if err := emergencyJanitor.release(key, false); err != nil {
-			slog.Error("security: SecureArena cleanup release failed",
+			slog.Error("secmem: SecureArena cleanup release failed",
 				slog.Any("error", err),
 			)
 		}
@@ -233,7 +234,7 @@ func (a *SecureArena) Destroy() error {
 	runtime.KeepAlive(a)
 
 	if err != nil {
-		return fmt.Errorf("security.SecureArena.Destroy: %w", err)
+		return fmt.Errorf("secmem.SecureArena.Destroy: %w", err)
 	}
 	return nil
 }
@@ -320,15 +321,15 @@ func (a *SecureArena) SlotSize() int {
 // a PROT_READ page (SB-3 / arena equivalent fix).
 func (a *SecureArena) ReadOnly() error {
 	if a == nil {
-		return errors.New("security.SecureArena.ReadOnly: nil receiver")
+		return errors.New("secmem.SecureArena.ReadOnly: nil receiver")
 	}
 	a.mu.lock()
 	defer a.mu.unlock()
 	if a.raw == nil {
-		return fmt.Errorf("security.SecureArena.ReadOnly: %w", ErrArenaDestroyed)
+		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", ErrArenaDestroyed)
 	}
 	if err := mprotectSecretMem(a.raw, 1 /*PROT_READ*/); err != nil {
-		return fmt.Errorf("security.SecureArena.ReadOnly: %w", err)
+		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", err)
 	}
 	return nil
 }
@@ -339,15 +340,15 @@ func (a *SecureArena) ReadOnly() error {
 // mprotect (arena SB-3 equivalent fix).
 func (a *SecureArena) ReadWrite() error {
 	if a == nil {
-		return errors.New("security.SecureArena.ReadWrite: nil receiver")
+		return errors.New("secmem.SecureArena.ReadWrite: nil receiver")
 	}
 	a.mu.lock()
 	defer a.mu.unlock()
 	if a.raw == nil {
-		return fmt.Errorf("security.SecureArena.ReadWrite: %w", ErrArenaDestroyed)
+		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", ErrArenaDestroyed)
 	}
 	if err := mprotectSecretMem(a.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
-		return fmt.Errorf("security.SecureArena.ReadWrite: %w", err)
+		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", err)
 	}
 	return nil
 }

@@ -12,8 +12,8 @@ package secmem
 //
 // Pair with [AssertRuntimeSecret] in main():
 //
-//	if err := security.AssertRuntimeSecret(); err != nil {
-//	    if security.RuntimeSecretEnforced() {
+//	if err := secmem.AssertRuntimeSecret(); err != nil {
+//	    if secmem.RuntimeSecretEnforced() {
 //	        // fatal
 //	    }
 //	    // warn

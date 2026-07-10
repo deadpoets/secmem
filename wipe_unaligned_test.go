@@ -3,7 +3,7 @@ package secmem
 import "testing"
 
 // TestSecureWipe_UnalignedSubSlices is the regression guard for the amd64
-// cache-flush alignment fix (SB-1). secureWipe is called on many non-page-
+// cache-flush alignment fix. secureWipe is called on many non-page-
 // aligned heap/stack slices (digests, derived keys, arena slots), so the wipe
 // must:
 //   - zero EXACTLY the target range for every start offset and length, and

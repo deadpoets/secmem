@@ -1,8 +1,8 @@
 //go:build goexperiment.runtimesecret
 
-// Package security — securebuf_secretdo_test.go
 // Integration test for the runtime/secret.Do + SecureBuffer.WithBytesErr pattern.
 // Build-tagged so the main test suite compiles without GOEXPERIMENT=runtimesecret.
+
 package secmem
 
 import (
