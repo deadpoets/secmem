@@ -87,10 +87,15 @@ type SecureBuffer struct {
 // this call. If the same secret must be used multiple times, copy it first.
 //
 // Common errors: EPERM / ENOMEM from mlock (RLIMIT_MEMLOCK exceeded — check
-// `ulimit -l` or systemd LimitMEMLOCK=).
-func NewBuffer(raw []byte) (*SecureBuffer, error) {
+// `ulimit -l` or systemd LimitMEMLOCK=). On platforms with no lockable
+// off-heap memory the error is [ErrNoSecureMemory] unless
+// [WithInsecureFallback] is passed.
+func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("secmem.NewBuffer: empty input")
+	}
+	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	allocRaw, data, info, err := allocSecretMem(len(raw))
 	if err != nil {
@@ -103,9 +108,12 @@ func NewBuffer(raw []byte) (*SecureBuffer, error) {
 
 // NewEmptyBuffer allocates an mlock'd zero-filled region of exactly size bytes.
 // Equivalent to NewBuffer(make([]byte, size)) without the intermediate heap copy.
-func NewEmptyBuffer(size int) (*SecureBuffer, error) {
+func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: invalid size %d", size)
+	}
+	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
 	allocRaw, data, info, err := allocSecretMem(size)
 	if err != nil {
@@ -118,9 +126,12 @@ func NewEmptyBuffer(size int) (*SecureBuffer, error) {
 // Use this for ingestion paths where syscall arguments are read directly into
 // the buffer — memfd_secret's extra isolation is not needed because the data
 // arrives from a kernel-controlled channel.
-func NewSyscallSafeBuffer(raw []byte) (*SecureBuffer, error) {
+func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("secmem.NewSyscallSafeBuffer: empty input")
+	}
+	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	allocRaw, data, info, err := allocMapAnon(len(raw))
 	if err != nil {

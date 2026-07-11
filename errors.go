@@ -20,3 +20,10 @@ var ErrArenaFull = errors.New("secmem: secure arena is full — no free slots")
 // ErrSlotReleased is returned by ArenaSlot methods after the slot has been
 // released via Release(). Calling Release again is a no-op (idempotent).
 var ErrSlotReleased = errors.New("secmem: arena slot has been released")
+
+// ErrNoSecureMemory is returned by constructors on platforms with no lockable
+// off-heap memory (everything except linux, darwin, and windows). secmem
+// refuses to place secrets on the unprotected Go heap; a caller that accepts
+// that exposure must say so explicitly with [WithInsecureFallback].
+var ErrNoSecureMemory = errors.New(
+	"secmem: no lockable off-heap memory on this platform — refusing the unprotected heap (opt in with WithInsecureFallback)")

@@ -143,8 +143,10 @@ type ArenaSlot struct {
 //
 // slotSize and count must both be > 0.
 //
-// Common errors: EPERM / ENOMEM from mlock (RLIMIT_MEMLOCK exceeded).
-func NewArena(slotSize, count int) (*SecureArena, error) {
+// Common errors: EPERM / ENOMEM from mlock (RLIMIT_MEMLOCK exceeded). On
+// platforms with no lockable off-heap memory the error is [ErrNoSecureMemory]
+// unless [WithInsecureFallback] is passed.
+func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	if slotSize <= 0 {
 		return nil, fmt.Errorf("secmem.NewArena: slotSize must be > 0, got %d", slotSize)
 	}
@@ -153,6 +155,9 @@ func NewArena(slotSize, count int) (*SecureArena, error) {
 	}
 	if slotSize > math.MaxInt/count {
 		return nil, fmt.Errorf("secmem.NewArena: slotSize*count overflows int (slotSize=%d, count=%d)", slotSize, count)
+	}
+	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+		return nil, fmt.Errorf("secmem.NewArena: %w", err)
 	}
 
 	totalBytes := slotSize * count

@@ -170,3 +170,7 @@ func allocMemfdSecret(size, roundedSize int) (raw, data []byte, err error) {
 
 	return r, r[:size], nil
 }
+
+// platformHasSecureMemory: Linux provides mmap+mlock (and memfd_secret where
+// available) — constructors never need the insecure-fallback gate here.
+const platformHasSecureMemory = true

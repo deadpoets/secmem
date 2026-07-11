@@ -110,3 +110,7 @@ func mprotectSecretMem(raw []byte, prot int) error {
 func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
 	return allocSecretMem(size)
 }
+
+// platformHasSecureMemory: Windows provides VirtualAlloc+VirtualLock —
+// constructors never need the insecure-fallback gate here.
+const platformHasSecureMemory = true

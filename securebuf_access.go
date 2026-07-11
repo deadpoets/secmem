@@ -332,8 +332,8 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 // NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.
 // The returned buffer may be partially filled if r returns fewer than size bytes;
 // the returned count reports how many bytes were read.
-func NewBufferFromReader(r io.Reader, size int) (*SecureBuffer, int64, error) {
-	buf, err := NewEmptyBuffer(size)
+func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, int64, error) {
+	buf, err := NewEmptyBuffer(size, opts...)
 	if err != nil {
 		return nil, 0, err
 	}
