@@ -28,11 +28,22 @@ import "runtime/secret"
 // Constraints (inherited from runtime/secret.Do): fn should be allocation-light
 // and goroutine-free, and erasure does NOT extend to globals written by fn or
 // to goroutines fn spawns. Panics from fn propagate (as if from SecretDo).
-func SecretDo(fn func()) { secret.Do(fn) }
+//
+// SecretDo(nil) is a no-op.
+func SecretDo(fn func()) {
+	if fn == nil {
+		return
+	}
+	secret.Do(fn)
+}
 
 // SecretDoErr is [SecretDo] for a fn that returns an error. The returned error
-// is referenced by the caller and so is not erased.
+// is referenced by the caller and so is not erased. SecretDoErr(nil) is a no-op
+// that returns nil.
 func SecretDoErr(fn func() error) error {
+	if fn == nil {
+		return nil
+	}
 	var err error
 	secret.Do(func() { err = fn() })
 	return err

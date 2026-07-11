@@ -106,3 +106,13 @@ func TestAssertRuntimeSecret_ConsistentWithActive(t *testing.T) {
 		t.Fatalf("unexpected AssertRuntimeSecret error: %v", err)
 	}
 }
+
+// TestSecretDo_NilIsNoop verifies SecretDo(nil)/SecretDoErr(nil) do not panic
+// and that SecretDoErr(nil) returns nil.
+func TestSecretDo_NilIsNoop(t *testing.T) {
+	t.Parallel()
+	SecretDo(nil) // must not panic
+	if err := SecretDoErr(nil); err != nil {
+		t.Errorf("SecretDoErr(nil) = %v, want nil", err)
+	}
+}
