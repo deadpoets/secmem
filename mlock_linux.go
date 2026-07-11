@@ -184,6 +184,7 @@ func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
 	// [inner, inner+rounded) with the secretmem mapping. The guards stay anon
 	// PROT_NONE. MAP_FIXED is only safe because we own the target range — it
 	// would clobber arbitrary mappings otherwise.
+	//nolint:gosec // G103: the pre-reserved middle's address is the MAP_FIXED target; audited above.
 	mapped, err := unix.MmapPtr(intFD, 0, unsafe.Pointer(&inner[0]), uintptr(rounded),
 		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_FIXED)
 	// The fd is closed on every path — the mapping (if any) keeps the
@@ -193,6 +194,7 @@ func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
 		_ = unix.Munmap(outer)
 		return secRegion{}, fmt.Errorf("mmap memfd_secret MAP_FIXED: %w", err)
 	}
+	//nolint:gosec // G103: comparing the returned mapping address against our reservation; verification only.
 	if uintptr(mapped) != uintptr(unsafe.Pointer(&inner[0])) {
 		// Cannot happen per MAP_FIXED semantics; checked anyway because a
 		// mapping at the wrong address would put the secret outside the

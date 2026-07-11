@@ -34,5 +34,6 @@ func secureWipeSlice(b []byte) {
 	if len(b) == 0 {
 		return
 	}
+	//nolint:gosec // G103: passing the slice base to the asm wipe routine; the only way to reach it.
 	secureWipe(unsafe.Pointer(&b[0]), uintptr(len(b)))
 }

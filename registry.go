@@ -56,6 +56,7 @@ func init() { //nolint:gochecknoinits // Emergency janitor must be initialized b
 // regionKey returns a stable per-mapping key: the base address of the outer
 // reservation, which is unique for the mapping's whole lifetime.
 func regionKey(region secRegion) uintptr {
+	//nolint:gosec // G103: deriving a stable identity key from the mapping base; no dereference.
 	return uintptr(unsafe.Pointer(&region.outer[0]))
 }
 
