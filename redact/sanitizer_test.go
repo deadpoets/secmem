@@ -99,6 +99,31 @@ func TestSanitize_Idempotent(t *testing.T) {
 	}
 }
 
+// TestSanitize_Idempotent_TruncationBoundary is the regression for the bug the
+// fuzzer found: truncation runs after the rules and its marker introduces a
+// word boundary, which lets an entropy rule match on a later pass what it
+// could not on the first. A run of hex characters longer than maxLen, broken
+// by a non-hex word character past the cut point, has no word boundary around
+// its hex span originally — but once truncation drops the tail and appends the
+// marker, the surviving prefix is bounded by '[' and becomes matchable. A
+// single-pass Sanitize was therefore not idempotent; the fixpoint loop fixes
+// it.
+func TestSanitize_Idempotent_TruncationBoundary(t *testing.T) {
+	t.Parallel()
+	s := redact.NewSanitizer(redact.DefaultRules(), redact.WithMaxLen(50))
+
+	in := strings.Repeat("a", 60) + "r" + strings.Repeat("a", 60)
+	once := s.Sanitize(in)
+	twice := s.Sanitize(once)
+	if once != twice {
+		t.Errorf("truncation-boundary non-idempotence:\n once: %q\ntwice: %q", once, twice)
+	}
+	// And the surviving prefix must actually be redacted, not left bare.
+	if strings.HasPrefix(once, "aaaa") {
+		t.Errorf("truncated hex prefix left unredacted: %q", once)
+	}
+}
+
 func TestSanitize_Truncation(t *testing.T) {
 	t.Parallel()
 	s := redact.NewSanitizer(redact.DefaultRules(), redact.WithMaxLen(10))

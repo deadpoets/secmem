@@ -103,14 +103,36 @@ func NewSanitizer(rules []Rule, opts ...Option) *Sanitizer {
 	return s
 }
 
+// maxSanitizePasses bounds the fixpoint iteration in [Sanitize]. Tags never
+// re-match a rule, so convergence is normally 1–3 passes; the bound only
+// guards against a pathological rule set and is never expected to be reached.
+const maxSanitizePasses = 16
+
 // Sanitize applies every rule to message and returns the result. It is
-// idempotent: [REDACTED:*] tags never match a rule, so re-sanitizing is a
-// no-op. Control characters left after rule application are replaced, and an
-// over-length result is truncated last.
+// idempotent — Sanitize(Sanitize(x)) == Sanitize(x) — because it iterates to a
+// fixpoint. That matters: truncation runs after the rules and its marker
+// creates a word boundary, which can let a rule match on a later pass what it
+// could not on the first; a single pass would therefore not be stable, and
+// callers (including [Handler], which may see already-sanitized text) rely on
+// re-sanitizing being a no-op. Control characters are replaced and an
+// over-length result is truncated within each pass.
 func (s *Sanitizer) Sanitize(message string) string {
 	if message == "" {
 		return message
 	}
+	prev := message
+	for i := 0; i < maxSanitizePasses; i++ {
+		cur := s.onePass(prev)
+		if cur == prev {
+			return cur // fixpoint reached
+		}
+		prev = cur
+	}
+	return prev
+}
+
+// onePass applies the rules once, strips control characters, and truncates.
+func (s *Sanitizer) onePass(message string) string {
 	result := message
 	for _, rule := range s.rules {
 		if rule.Category == CategoryEntropy && len(s.allowlist) > 0 {
