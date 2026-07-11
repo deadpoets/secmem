@@ -82,16 +82,21 @@ func TestSecret_NeverLeaksThroughFormatting(t *testing.T) {
 	}
 	w := wrapper{Name: "db", Token: s, Ptr: &s}
 
+	// Route through any so the verb dispatches at runtime exactly as a caller's
+	// would (fmt still invokes String/Format/GoString), while the static
+	// analyzer cannot fold "%s of a Stringer" into a direct String() call —
+	// which would defeat the very path under test.
+	sf := func(format string, v any) string { return fmt.Sprintf(format, v) }
 	outputs := map[string]string{
-		"%v direct":     fmt.Sprintf("%v", s),
-		"%s direct":     fmt.Sprintf("%s", s),
-		"%#v direct":    fmt.Sprintf("%#v", s),
-		"%v pointer":    fmt.Sprintf("%v", &s),
-		"%s pointer":    fmt.Sprintf("%s", &s),
-		"%v struct":     fmt.Sprintf("%v", w),
-		"%+v struct":    fmt.Sprintf("%+v", w),
-		"%#v struct":    fmt.Sprintf("%#v", w),
-		"Sprint":        fmt.Sprint(s),
+		"%v direct":     sf("%v", s),
+		"%s direct":     sf("%s", s),
+		"%#v direct":    sf("%#v", s),
+		"%v pointer":    sf("%v", &s),
+		"%s pointer":    sf("%s", &s),
+		"%v struct":     sf("%v", w),
+		"%+v struct":    sf("%+v", w),
+		"%#v struct":    sf("%#v", w),
+		"Sprint":        fmt.Sprint(any(s)),
 		"string concat": s.String(),
 	}
 	for name, out := range outputs {

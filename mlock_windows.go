@@ -58,6 +58,7 @@ func werExcludeFromDumps(inner []byte) bool {
 	if len(inner) == 0 || len(inner) > int(^uint32(0)) {
 		return false
 	}
+	//nolint:gosec // G103: registering the secret area's address with WER; OS memory, audited.
 	hr, _, _ := procWerRegisterExcludedMemoryBlock.Call(
 		uintptr(unsafe.Pointer(&inner[0])),
 		uintptr(uint32(len(inner))),
@@ -71,6 +72,7 @@ func werUnexclude(inner []byte) {
 	if len(inner) == 0 {
 		return
 	}
+	//nolint:gosec // G103: unregistering the secret area's address from WER; OS memory, audited.
 	_, _, _ = procWerUnregisterExcludedMemoryBlock.Call(uintptr(unsafe.Pointer(&inner[0])))
 }
 

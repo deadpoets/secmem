@@ -56,6 +56,7 @@ func sealCipherCall(proc *windows.LazyProc, region secRegion) error {
 		return fmt.Errorf("secmem: seal cipher: area %d bytes is not a multiple of %d", len(inner), cryptProtectMemoryBlockSize)
 	}
 	r1, _, callErr := proc.Call(
+		//nolint:gosec // G103: passing the secret area's address to the crypt32 in-place cipher; OS-mapped, audited.
 		uintptr(unsafe.Pointer(&inner[0])),
 		uintptr(len(inner)),
 		cryptProtectMemorySameProcess,

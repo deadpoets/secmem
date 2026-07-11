@@ -43,6 +43,7 @@ var procSetProcessMitigationPolicy = windows.NewLazySystemDLL("kernel32.dll").Ne
 func setMitigationPolicy(policy uintptr, flags uint32) error {
 	r1, _, callErr := procSetProcessMitigationPolicy.Call(
 		policy,
+		//nolint:gosec // G103: passing a stack local's address to a syscall wrapper; not OS memory.
 		uintptr(unsafe.Pointer(&flags)),
 		unsafe.Sizeof(flags),
 	)

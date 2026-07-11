@@ -1,0 +1,49 @@
+# golangci-lint configuration for secmem.
+#
+# Config lives in-repo; CI wiring is a later step. The set is curated, not
+# maximal — trust is inversely proportional to surface, tooling included. Run
+# with `make lint` (which also runs standalone staticcheck and, via `make
+# vuln`, govulncheck).
+version: "2"
+
+linters:
+  default: standard # govet, staticcheck, errcheck, ineffassign, unused
+  enable:
+    - gosec # security analyzer — on-brand for this library
+    - bodyclose
+    - misspell
+    - unconvert
+    - unparam
+    - nilerr
+    - errorlint
+    - copyloopvar
+    - predeclared
+
+  exclusions:
+    # These are the only rule-level suppressions, each for a documented,
+    # verified reason — not blanket silence.
+    rules:
+      # go vet's unsafeptr check has no exemption for non-stdlib syscall
+      # wrappers, so converting an OS-owned address (VirtualAlloc) to a
+      # pointer is a false positive. See the mlock_windows.go file header.
+      - path: mlock_windows\.go
+        linters: [govet]
+        text: "possible misuse of unsafe.Pointer"
+
+      # Guard-page and dead-stack proof tests deliberately read addresses that
+      # are outside any Go object (a fault is the thing under test), which
+      # unsafeptr cannot distinguish from a bug.
+      - path: (guard_canary_test|scrub_amd64_test)\.go
+        linters: [govet, gosec]
+        text: "(possible misuse of unsafe.Pointer|G103|G304|unsafe)"
+
+      # Tests legitimately exercise error paths, panics, and unsafe probes.
+      - path: _test\.go
+        linters: [gosec, errcheck, unparam]
+
+formatters:
+  enable:
+    - gofmt
+  settings:
+    gofmt:
+      simplify: true
