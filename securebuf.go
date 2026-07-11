@@ -30,6 +30,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"sync/atomic"
 )
 
 // SecureBuffer holds sensitive data in a page-aligned, mlock'd, off-heap memory
@@ -71,6 +72,11 @@ type SecureBuffer struct {
 	// All access methods return ErrSealed while sealed is true.
 	// Protected by mu (same lock used for all state changes).
 	sealed bool
+
+	// sealCipher is true while the contents are seal-cipher ciphertext
+	// (Windows: CryptProtectMemory under Seal). Atomic because the janitor's
+	// signal path reads it without holding mu. Shared with janitorRegion.
+	sealCipher *atomic.Bool
 
 	// backing records which protections this allocation actually received.
 	// Immutable after construction; read by Capabilities without the lock.
@@ -165,10 +171,11 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 // through emergencyJanitor's raw-mapping registry.
 func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBuffer {
 	sb := &SecureBuffer{
-		data:    data,
-		region:  region,
-		mu:      newBufferRWLock(),
-		backing: backing,
+		data:       data,
+		region:     region,
+		mu:         newBufferRWLock(),
+		backing:    backing,
+		sealCipher: new(atomic.Bool),
 	}
 
 	// The canary zone is the slack between the caller's size and the page
@@ -181,7 +188,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 
 	// Register with the emergency janitor first. The janitor stores raw mapping
 	// metadata (not *SecureBuffer), so this does not keep sb reachable for GC.
-	sb.janitorKey = emergencyJanitor.register(region, zones, sb.mu)
+	sb.janitorKey = emergencyJanitor.register(region, zones, sb.mu, sb.sealCipher)
 
 	// Safety-net cleanup: if the caller forgets Destroy(), this wipes and frees
 	// the mmap'd region when the *SecureBuffer is GC'd.
@@ -241,6 +248,18 @@ func (s *SecureBuffer) Destroy() error {
 	// (the expected path), the cleanup is no longer needed.  Stop() is a no-op
 	// if the cleanup has already fired.
 	s.cleanup.Stop()
+
+	// A sealed-encrypted buffer is decrypted before release so the janitor's
+	// canary verification sees the real slack, not ciphertext. On any failure
+	// the flag stays set and wipeAndFree skips the canary check instead —
+	// the wipe and unmap are never skipped.
+	if s.sealCipher.Load() {
+		if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err == nil {
+			if derr := sealDecrypt(s.region); derr == nil {
+				s.sealCipher.Store(false)
+			}
+		}
+	}
 
 	// Take exclusive ownership from janitor registry and wipe/free exactly once.
 	// If the entry is already gone (cleanup/signal path won the race), treat as
@@ -356,11 +375,22 @@ func (s *SecureBuffer) ReadWrite() error {
 // (including speculative reads) cause a hardware fault. This is the hardened
 // dormant state for long-lived secrets that are not actively being used.
 //
-// While sealed, all access methods (WithBytes, WithBytesErr, Read, Write, etc.)
-// return [ErrSealed]. Call [SecureBuffer.Unseal] before accessing the buffer.
+// On Windows, Seal additionally encrypts the contents in place with a
+// KERNEL-HELD per-boot key (CryptProtectMemory): a full process memory dump
+// taken while the buffer is sealed — procdump, Task Manager, a WER full dump,
+// the hibernation file — contains ciphertext, and the key is not in the dump.
+// This protects the sealed window only, and is not a defense against code
+// executing inside the process (which can call CryptUnprotectMemory itself)
+// nor against cold-boot RAM capture (the kernel's key is in RAM too). On
+// other platforms Seal is page protection only; on Linux the allocation-time
+// protections (memfd_secret, MADV_DONTDUMP) are the dump defenses.
+//
+// While sealed, all access methods (WithBytes, WithBytesErr, CopyOut, CopyIn,
+// etc.) return [ErrSealed]. Call [SecureBuffer.Unseal] before accessing the
+// buffer.
 //
 // [SecureBuffer.Destroy] works correctly on sealed buffers — it lifts the
-// PROT_NONE restriction internally before wiping.
+// PROT_NONE restriction (and decrypts) internally before wiping.
 //
 // Note: [ReadOnly] and [ReadWrite] return [ErrSealed] while sealed. To
 // transition from Sealed to ReadOnly, call Unseal then ReadOnly.
@@ -378,7 +408,22 @@ func (s *SecureBuffer) Seal() error {
 	if s.sealed {
 		return nil // idempotent
 	}
+	// Encrypt BEFORE dropping write access. The flag is set immediately so
+	// the janitor's signal path never canary-checks ciphertext.
+	applied, err := sealEncrypt(s.region)
+	if err != nil {
+		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
+	}
+	if applied {
+		s.sealCipher.Store(true)
+	}
 	if err := mprotectSecretMem(s.region, 0 /*PROT_NONE*/); err != nil {
+		// Roll the cipher back so the buffer stays usable plaintext.
+		if applied {
+			if derr := sealDecrypt(s.region); derr == nil {
+				s.sealCipher.Store(false)
+			}
+		}
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 	}
 	s.sealed = true
@@ -406,6 +451,15 @@ func (s *SecureBuffer) Unseal() error {
 	}
 	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
+	}
+	if s.sealCipher.Load() {
+		if err := sealDecrypt(s.region); err != nil {
+			// Contents are still ciphertext: re-protect and stay sealed so
+			// no access method can hand out garbage as the secret.
+			_ = mprotectSecretMem(s.region, 0 /*PROT_NONE*/)
+			return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
+		}
+		s.sealCipher.Store(false)
 	}
 	s.sealed = false
 	return nil

@@ -209,7 +209,8 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	}
 
 	// Register the slab with emergency janitor using raw metadata only.
-	a.janitorKey = emergencyJanitor.register(region, zones, a.mu)
+	// Arenas have no Seal, hence no seal-cipher state.
+	a.janitorKey = emergencyJanitor.register(region, zones, a.mu, nil)
 
 	// Safety-net cleanup: wipe and free the slab if Destroy was forgotten.
 	// Only the slab size is captured (not a reference to a) so that the

@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/signal"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"unsafe"
 )
@@ -25,6 +26,13 @@ type janitorRegion struct {
 	// restoring RW protection, before the wipe destroys the evidence — and
 	// reports ErrCanaryViolation without ever skipping the teardown.
 	canaryZones [][2]int
+
+	// sealCipher, when non-nil and true, records that the region's contents
+	// are currently CryptProtectMemory ciphertext (Windows sealed state).
+	// Ciphertext would read as a canary violation, so wipeAndFree skips the
+	// canary check while set — the wipe itself proceeds unconditionally.
+	// Shared with the owning SecureBuffer; nil for arenas (no Seal).
+	sealCipher *atomic.Bool
 }
 
 // janitor tracks live secret mappings and wipes them on process termination via
@@ -52,11 +60,12 @@ func regionKey(region secRegion) uintptr {
 }
 
 // register records one live secret mapping and returns its janitor key.
-// canaryZones may be nil when the allocation has no armed slack.
-func (j *janitor) register(region secRegion, canaryZones [][2]int, mu *bufferRWLock) uintptr {
+// canaryZones may be nil when the allocation has no armed slack; sealCipher
+// may be nil when the owner has no seal-cipher state (arenas).
+func (j *janitor) register(region secRegion, canaryZones [][2]int, mu *bufferRWLock, sealCipher *atomic.Bool) uintptr {
 	key := regionKey(region)
 	j.mu.Lock()
-	j.regions[key] = janitorRegion{region: region, mu: mu, canaryZones: canaryZones}
+	j.regions[key] = janitorRegion{region: region, mu: mu, canaryZones: canaryZones, sealCipher: sealCipher}
 	j.mu.Unlock()
 	return key
 }
@@ -95,11 +104,16 @@ func wipeAndFree(region janitorRegion, lockHeld bool) error {
 		)
 	}
 
+	// Ciphertext (Windows sealed state) cannot be canary-verified — skip the
+	// check, never the wipe. The explicit Destroy path decrypts first, so
+	// this branch is only reached by the signal and GC-cleanup paths.
 	var canaryErr error
-	for _, zone := range region.canaryZones {
-		if !canaryIntact(region.region.inner[zone[0]:zone[1]]) {
-			canaryErr = ErrCanaryViolation
-			break
+	if region.sealCipher == nil || !region.sealCipher.Load() {
+		for _, zone := range region.canaryZones {
+			if !canaryIntact(region.region.inner[zone[0]:zone[1]]) {
+				canaryErr = ErrCanaryViolation
+				break
+			}
 		}
 	}
 
