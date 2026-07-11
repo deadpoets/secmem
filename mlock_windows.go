@@ -33,10 +33,11 @@ import (
 //   - data: raw[:size] — the usable portion (caller's requested size).
 //
 // Protection: VirtualAlloc (off-heap) + VirtualLock (no swapping) = L3.
-// No L4 equivalent exists on Windows.
-func allocSecretMem(size int) (raw, data []byte, err error) {
+// No L4 equivalent exists on Windows. info records off-heap and mlocked for
+// Capabilities; Windows has no core-dump or fork-inheritance controls.
+func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, fmt.Errorf("allocSecretMem: invalid size %d", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
 
 	pageSize := os.Getpagesize()
@@ -45,7 +46,7 @@ func allocSecretMem(size int) (raw, data []byte, err error) {
 	addr, allocErr := windows.VirtualAlloc(0, uintptr(roundedSize),
 		windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_READWRITE)
 	if allocErr != nil {
-		return nil, nil, fmt.Errorf("VirtualAlloc: %w", allocErr)
+		return nil, nil, allocInfo{}, fmt.Errorf("VirtualAlloc: %w", allocErr)
 	}
 
 	// addr is OS-managed memory outside the GC heap — VirtualAlloc returns a
@@ -59,10 +60,10 @@ func allocSecretMem(size int) (raw, data []byte, err error) {
 
 	if lockErr := windows.VirtualLock(addr, uintptr(roundedSize)); lockErr != nil {
 		_ = windows.VirtualFree(addr, 0, windows.MEM_RELEASE)
-		return nil, nil, fmt.Errorf("VirtualLock: %w", lockErr)
+		return nil, nil, allocInfo{}, fmt.Errorf("VirtualLock: %w", lockErr)
 	}
 
-	return r, r[:size], nil
+	return r, r[:size], allocInfo{offHeap: true, mlocked: true}, nil
 }
 
 // madviseBeforeFree is a no-op on Windows — there is no equivalent to MADV_DONTNEED.
@@ -106,6 +107,6 @@ func mprotectSecretMem(raw []byte, prot int) error {
 }
 
 // allocMapAnon allocates off-heap memory. On Windows this is identical to allocSecretMem.
-func allocMapAnon(size int) (raw, data []byte, err error) {
+func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
 	return allocSecretMem(size)
 }

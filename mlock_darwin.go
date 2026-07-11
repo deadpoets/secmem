@@ -11,10 +11,12 @@ import (
 // allocSecretMem allocates a page-aligned, locked, non-swappable memory region on Darwin.
 // MADV_DONTDUMP and memfd_secret are Linux-only; this uses mmap + mlock only.
 //
-// Returns (raw, data) where raw is the full page-rounded mapping and data is raw[:size].
-func allocSecretMem(size int) (raw, data []byte, err error) {
+// Returns (raw, data, info) where raw is the full page-rounded mapping and
+// data is raw[:size]. info records the protections for Capabilities: off-heap
+// and mlocked only — Darwin has no memfd_secret, MADV_DONTDUMP, or DONTFORK.
+func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, fmt.Errorf("allocSecretMem: invalid size %d", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
 
 	pageSize := unix.Getpagesize()
@@ -25,15 +27,15 @@ func allocSecretMem(size int) (raw, data []byte, err error) {
 		unix.MAP_ANON|unix.MAP_PRIVATE,
 	)
 	if e != nil {
-		return nil, nil, fmt.Errorf("mmap: %w", e)
+		return nil, nil, allocInfo{}, fmt.Errorf("mmap: %w", e)
 	}
 
 	if e = unix.Mlock(r); e != nil {
 		_ = unix.Munmap(r)
-		return nil, nil, fmt.Errorf("mlock: %w", e)
+		return nil, nil, allocInfo{}, fmt.Errorf("mlock: %w", e)
 	}
 
-	return r, r[:size], nil
+	return r, r[:size], allocInfo{offHeap: true, mlocked: true}, nil
 }
 
 // freeSecretMem unlocks and unmaps memory allocated by allocSecretMem.
@@ -55,7 +57,7 @@ func mprotectSecretMem(raw []byte, prot int) error {
 }
 
 // allocMapAnon allocates via MAP_ANON + mlock. No memfd_secret on Darwin.
-// Returns (raw, data) with the same page-aligned contract as allocSecretMem.
-func allocMapAnon(size int) (raw, data []byte, err error) {
+// Returns (raw, data, info) with the same page-aligned contract as allocSecretMem.
+func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
 	return allocSecretMem(size)
 }

@@ -20,6 +20,7 @@ const sysMemfdSecret = 447
 // Returns:
 //   - raw: the full page-rounded mmap region — use for all syscalls (Mprotect, Madvise, Munlock, Munmap).
 //   - data: raw[:size] — the usable portion (caller's requested size).
+//   - info: which protections this allocation actually received, for Capabilities.
 //
 // Attempts in order:
 //   - L4: memfd_secret (Linux 5.14+, kernel-enforced isolation, amd64 only)
@@ -27,20 +28,29 @@ const sysMemfdSecret = 447
 //
 // CRITICAL: Always pass raw (not data) to freeSecretMem and mprotect calls.
 // Syscalls require the exact base address and page-aligned length of the mapping.
-func allocSecretMem(size int) (raw, data []byte, err error) {
+func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, fmt.Errorf("allocSecretMem: invalid size %d", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
 
 	pageSize := unix.Getpagesize()
 	if size > math.MaxInt-pageSize {
-		return nil, nil, fmt.Errorf("allocSecretMem: size %d too large (would overflow page rounding)", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: size %d too large (would overflow page rounding)", size)
 	}
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
 
 	// L4: memfd_secret — amd64 only (other arches fall through to L3).
+	// memfd_secret pages are kernel-locked (never swapped) and invisible to
+	// core dumps by construction, so mlocked and noDump are inherently true.
+	// The MAP_SHARED mapping IS inherited across fork — noFork is honestly
+	// false. TODO(secmem): evaluate MADV_DONTFORK on the memfd mapping.
 	if r, d, e := allocMemfdSecret(size, roundedSize); e == nil {
-		return r, d, nil
+		return r, d, allocInfo{
+			offHeap:     true,
+			mlocked:     true,
+			memfdSecret: true,
+			noDump:      true,
+		}, nil
 	}
 
 	// L3: mmap + mlock + madvise.
@@ -49,19 +59,25 @@ func allocSecretMem(size int) (raw, data []byte, err error) {
 		unix.MAP_ANON|unix.MAP_PRIVATE,
 	)
 	if e != nil {
-		return nil, nil, fmt.Errorf("mmap: %w", e)
+		return nil, nil, allocInfo{}, fmt.Errorf("mmap: %w", e)
 	}
 
 	if e = unix.Mlock(r); e != nil {
 		_ = unix.Munmap(r)
-		return nil, nil, fmt.Errorf("mlock: %w", e)
+		return nil, nil, allocInfo{}, fmt.Errorf("mlock: %w", e)
 	}
 
-	// Best-effort: ignore errors — not all kernels support both flags.
-	_ = unix.Madvise(r, unix.MADV_DONTDUMP)
-	_ = unix.Madvise(r, unix.MADV_DONTFORK)
+	// Best-effort — not all kernels support both flags. The outcome is not
+	// swallowed: it is recorded in info so Capabilities can report the truth.
+	noDump := unix.Madvise(r, unix.MADV_DONTDUMP) == nil
+	noFork := unix.Madvise(r, unix.MADV_DONTFORK) == nil
 
-	return r, r[:size], nil
+	return r, r[:size], allocInfo{
+		offHeap: true,
+		mlocked: true,
+		noDump:  noDump,
+		noFork:  noFork,
+	}, nil
 }
 
 // freeSecretMem unlocks and unmaps memory allocated by allocSecretMem.
@@ -85,15 +101,15 @@ func mprotectSecretMem(raw []byte, prot int) error {
 
 // allocMapAnon allocates via MAP_ANON only — no memfd_secret attempt.
 // Used by NewSyscallSafe for Layer 2 ingestion paths.
-// Returns (raw, data) with the same page-aligned contract as allocSecretMem.
-func allocMapAnon(size int) (raw, data []byte, err error) {
+// Returns (raw, data, info) with the same page-aligned contract as allocSecretMem.
+func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, fmt.Errorf("allocMapAnon: invalid size %d", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocMapAnon: invalid size %d", size)
 	}
 
 	pageSize := unix.Getpagesize()
 	if size > math.MaxInt-pageSize {
-		return nil, nil, fmt.Errorf("allocMapAnon: size %d too large (would overflow page rounding)", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocMapAnon: size %d too large (would overflow page rounding)", size)
 	}
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
 
@@ -102,18 +118,23 @@ func allocMapAnon(size int) (raw, data []byte, err error) {
 		unix.MAP_ANON|unix.MAP_PRIVATE,
 	)
 	if e != nil {
-		return nil, nil, fmt.Errorf("mmap: %w", e)
+		return nil, nil, allocInfo{}, fmt.Errorf("mmap: %w", e)
 	}
 
 	if e = unix.Mlock(r); e != nil {
 		_ = unix.Munmap(r)
-		return nil, nil, fmt.Errorf("mlock: %w", e)
+		return nil, nil, allocInfo{}, fmt.Errorf("mlock: %w", e)
 	}
 
-	_ = unix.Madvise(r, unix.MADV_DONTDUMP)
-	_ = unix.Madvise(r, unix.MADV_DONTFORK)
+	noDump := unix.Madvise(r, unix.MADV_DONTDUMP) == nil
+	noFork := unix.Madvise(r, unix.MADV_DONTFORK) == nil
 
-	return r, r[:size], nil
+	return r, r[:size], allocInfo{
+		offHeap: true,
+		mlocked: true,
+		noDump:  noDump,
+		noFork:  noFork,
+	}, nil
 }
 
 // allocMemfdSecret attempts to allocate via memfd_secret(2) on 64-bit Linux.

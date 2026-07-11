@@ -8,18 +8,20 @@ package secmem
 import "fmt"
 
 // allocSecretMem falls back to heap allocation on unsupported platforms.
-// Returns (raw, data) with the same interface contract as the linux/darwin implementations.
-// raw and data are the same slice (no page-rounding on heap allocations).
-func allocSecretMem(size int) (raw, data []byte, err error) {
+// Returns (raw, data, info) with the same interface contract as the
+// linux/darwin implementations; raw is page-rounded for contract consistency.
+// info.insecure is TRUE: this memory is plain GC heap with no protection —
+// Capabilities and Warnings report it as such.
+func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, fmt.Errorf("allocSecretMem: invalid size %d", size)
+		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
 	// Page-round for API consistency — heap allocations don't need it but
 	// the raw/data split contract must be maintained.
 	pageSize := 4096
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
 	r := make([]byte, roundedSize)
-	return r, r[:size], nil
+	return r, r[:size], allocInfo{insecure: true}, nil
 }
 
 // madviseBeforeFree is a no-op on platforms without madvise.
@@ -36,6 +38,6 @@ func mprotectSecretMem(_ []byte, _ int) error {
 }
 
 // allocMapAnon falls back to heap allocation on unsupported platforms.
-func allocMapAnon(size int) (raw, data []byte, err error) {
+func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
 	return allocSecretMem(size)
 }

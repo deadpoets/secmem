@@ -68,6 +68,10 @@ type SecureBuffer struct {
 	// All access methods return ErrSealed while sealed is true.
 	// Protected by mu (same lock used for all state changes).
 	sealed bool
+
+	// backing records which protections this allocation actually received.
+	// Immutable after construction; read by Capabilities without the lock.
+	backing allocInfo
 }
 
 // ---------------------------------------------------------------------------
@@ -88,13 +92,13 @@ func NewBuffer(raw []byte) (*SecureBuffer, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("secmem.NewBuffer: empty input")
 	}
-	allocRaw, data, err := allocSecretMem(len(raw))
+	allocRaw, data, info, err := allocSecretMem(len(raw))
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	copy(data, raw)
 	secureWipeSlice(raw) // zero the caller's copy defense-in-depth
-	return newSecureBuffer(allocRaw, data), nil
+	return newSecureBuffer(allocRaw, data, info), nil
 }
 
 // NewEmptyBuffer allocates an mlock'd zero-filled region of exactly size bytes.
@@ -103,11 +107,11 @@ func NewEmptyBuffer(size int) (*SecureBuffer, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: invalid size %d", size)
 	}
-	allocRaw, data, err := allocSecretMem(size)
+	allocRaw, data, info, err := allocSecretMem(size)
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
-	return newSecureBuffer(allocRaw, data), nil
+	return newSecureBuffer(allocRaw, data, info), nil
 }
 
 // NewSyscallSafeBuffer allocates via MAP_ANON only (no memfd_secret attempt).
@@ -118,25 +122,27 @@ func NewSyscallSafeBuffer(raw []byte) (*SecureBuffer, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("secmem.NewSyscallSafeBuffer: empty input")
 	}
-	allocRaw, data, err := allocMapAnon(len(raw))
+	allocRaw, data, info, err := allocMapAnon(len(raw))
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	copy(data, raw)
 	secureWipeSlice(raw)
-	return newSecureBuffer(allocRaw, data), nil
+	return newSecureBuffer(allocRaw, data, info), nil
 }
 
-// newSecureBuffer wires up a SecureBuffer from a pre-allocated (raw, data) pair
-// and registers the AddCleanup finalization fallback.
+// newSecureBuffer wires up a SecureBuffer from a pre-allocated (raw, data)
+// pair plus its allocation facts, and registers the AddCleanup finalization
+// fallback.
 //
 // The janitor key is passed to AddCleanup by value; cleanup resolution happens
 // through emergencyJanitor's raw-mapping registry.
-func newSecureBuffer(allocRaw, data []byte) *SecureBuffer {
+func newSecureBuffer(allocRaw, data []byte, backing allocInfo) *SecureBuffer {
 	sb := &SecureBuffer{
-		data: data,
-		raw:  allocRaw,
-		mu:   newBufferRWLock(),
+		data:    data,
+		raw:     allocRaw,
+		mu:      newBufferRWLock(),
+		backing: backing,
 	}
 
 	// Register with the emergency janitor first. The janitor stores raw mapping

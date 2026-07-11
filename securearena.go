@@ -106,6 +106,10 @@ type SecureArena struct {
 	// count is len(slots) — cached to avoid a len() on the hot path.
 	count int
 
+	// backing records which protections the slab allocation actually received.
+	// Immutable after construction; read by Capabilities without any lock.
+	backing allocInfo
+
 	// destroyed mirrors raw == nil under alloc, allowing early rejection of
 	// Acquire without acquiring mu.
 	destroyed bool
@@ -152,7 +156,7 @@ func NewArena(slotSize, count int) (*SecureArena, error) {
 	}
 
 	totalBytes := slotSize * count
-	allocRaw, _, err := allocSecretMem(totalBytes)
+	allocRaw, _, info, err := allocSecretMem(totalBytes)
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewArena: %w", err)
 	}
@@ -163,6 +167,7 @@ func NewArena(slotSize, count int) (*SecureArena, error) {
 		slots:    make([]slotMeta, count),
 		slotSize: slotSize,
 		count:    count,
+		backing:  info,
 	}
 
 	// Register the slab with emergency janitor using raw metadata only.
