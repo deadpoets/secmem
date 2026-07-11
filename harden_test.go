@@ -70,19 +70,23 @@ func TestAllocMemfdSecret_OrFallback(t *testing.T) {
 	const size = 64
 	pageSize := os.Getpagesize()
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
-	raw, buf, err := allocMemfdSecret(size, roundedSize)
+	region, err := allocMemfdSecret(pageSize, roundedSize, roundedSize+2*pageSize)
 	if err != nil {
 		// Not an error — just not supported on this kernel.
 		t.Logf("allocMemfdSecret unavailable on this kernel: %v (fallback to mmap)", err)
 		return
 	}
-	defer func() { _ = freeSecretMem(raw) }()
+	defer func() { _ = freeSecretMem(region) }()
 
-	if len(buf) != size {
-		t.Errorf("len(buf) = %d, want %d", len(buf), size)
+	if len(region.inner) != roundedSize {
+		t.Errorf("len(inner) = %d, want %d", len(region.inner), roundedSize)
+	}
+	if len(region.outer) != roundedSize+2*pageSize {
+		t.Errorf("len(outer) = %d, want %d (inner + two guard pages)", len(region.outer), roundedSize+2*pageSize)
 	}
 
-	// Write and read back to confirm the region is accessible.
+	// Write and read back to confirm the MAP_FIXED region is accessible.
+	buf := region.inner[:size]
 	buf[0] = 0xca
 	buf[size-1] = 0xfe
 	if buf[0] != 0xca || buf[size-1] != 0xfe {

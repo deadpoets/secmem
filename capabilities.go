@@ -61,9 +61,10 @@ type Capabilities struct {
 	// When false, Scrub is a best-effort stack-frame wipe.
 	RegisterScrub bool
 
-	// GuardPages reports PROT_NONE guard pages bracket the mapping so an
-	// overflow traps (SIGSEGV). A bug-catcher, not a secrecy mechanism.
-	// Not yet implemented: currently always false.
+	// GuardPages reports PROT_NONE guard pages bracket the mapping so a
+	// linear over/under-flow traps (SIGSEGV / access violation) instead of
+	// silently touching adjacent memory. A memory-safety bug-catcher, not a
+	// secrecy mechanism. False only on the insecure heap fallback.
 	GuardPages bool
 
 	// Insecure reports the memory is plain heap — NO protection is in force.
@@ -80,6 +81,7 @@ type allocInfo struct {
 	memfdSecret bool
 	noDump      bool
 	noFork      bool
+	guardPages  bool
 	insecure    bool
 }
 
@@ -96,7 +98,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		NoFork:         info.noFork,
 		GuaranteedWipe: archWipeGuaranteed,
 		RegisterScrub:  RuntimeSecretActive(),
-		GuardPages:     false, // guard pages are not yet implemented
+		GuardPages:     info.guardPages,
 		Insecure:       info.insecure,
 	}
 }
@@ -110,12 +112,12 @@ func capsFromAlloc(info allocInfo) Capabilities {
 // call. If even the probe allocation fails, the report is fully degraded
 // (every protection false) — treat that as this platform providing nothing.
 func Probe() Capabilities {
-	raw, _, info, err := allocSecretMem(1)
+	region, _, info, err := allocSecretMem(1)
 	if err != nil {
 		return capsFromAlloc(allocInfo{})
 	}
-	secureWipeSlice(raw)
-	_ = freeSecretMem(raw)
+	secureWipeSlice(region.inner)
+	_ = freeSecretMem(region)
 	return capsFromAlloc(info)
 }
 

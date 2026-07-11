@@ -1,67 +1,84 @@
 //go:build darwin
 
+// Darwin secure memory: guarded mmap + mlock (L3). memfd_secret and the
+// MADV_DONTDUMP/DONTFORK flags are Linux-only.
+//
+// Every allocation is bracketed by PROT_NONE guard pages (reserved address
+// space, no backing frames, not mlocked): reserve the whole
+// [guard|middle|guard] range PROT_NONE, mprotect the middle RW, mlock it.
+// Destroy unmaps the outer range in one munmap.
+
 package secmem
 
 import (
 	"fmt"
+	"math"
 
 	"golang.org/x/sys/unix"
 )
 
-// allocSecretMem allocates a page-aligned, locked, non-swappable memory region on Darwin.
-// MADV_DONTDUMP and memfd_secret are Linux-only; this uses mmap + mlock only.
-//
-// Returns (raw, data, info) where raw is the full page-rounded mapping and
-// data is raw[:size]. info records the protections for Capabilities: off-heap
-// and mlocked only — Darwin has no memfd_secret, MADV_DONTDUMP, or DONTFORK.
-func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
-	if size <= 0 {
-		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
-	}
-
-	pageSize := unix.Getpagesize()
-	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
-
-	r, e := unix.Mmap(-1, 0, roundedSize,
-		unix.PROT_READ|unix.PROT_WRITE,
-		unix.MAP_ANON|unix.MAP_PRIVATE,
-	)
-	if e != nil {
-		return nil, nil, allocInfo{}, fmt.Errorf("mmap: %w", e)
-	}
-
-	if e = unix.Mlock(r); e != nil {
-		_ = unix.Munmap(r)
-		return nil, nil, allocInfo{}, fmt.Errorf("mlock: %w", e)
-	}
-
-	return r, r[:size], allocInfo{offHeap: true, mlocked: true}, nil
-}
-
-// freeSecretMem unlocks and unmaps memory allocated by allocSecretMem.
-// raw must be the full page-rounded slice from allocSecretMem, not the data sub-slice.
-// madviseBeforeFree advises the kernel MADV_DONTNEED before unmapping.
-// On Darwin this is a no-op stub — MADV_DONTNEED behaviour differs from Linux.
-func madviseBeforeFree(_ []byte) {}
-
-func freeSecretMem(raw []byte) error {
-	_ = unix.Munlock(raw)
-	return unix.Munmap(raw)
-}
-
-// mprotectSecretMem applies the given protection flags to the raw mapping.
-//
-//nolint:unused // Called by SecureBuffer.Destroy() in PR 2a Step 3 — pre-declared here for allocation symmetry.
-func mprotectSecretMem(raw []byte, prot int) error {
-	return unix.Mprotect(raw, prot)
-}
-
-// allocMapAnon allocates via MAP_ANON + mlock. No memfd_secret on Darwin.
-// Returns (raw, data, info) with the same page-aligned contract as allocSecretMem.
-func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
-	return allocSecretMem(size)
-}
-
 // platformHasSecureMemory: Darwin provides mmap+mlock — constructors never
 // need the insecure-fallback gate here.
 const platformHasSecureMemory = true
+
+// allocSecretMem allocates a guarded, page-aligned, locked, non-swappable
+// region. Returns region (outer = unmap target, inner = wipe/lock/protect
+// target), data = inner[:size:size] (capacity-clamped so it cannot be
+// re-sliced into the canary slack), and the allocation's protection record:
+// off-heap, mlocked, and guard pages — Darwin has no memfd_secret,
+// MADV_DONTDUMP, or DONTFORK.
+func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, err error) {
+	if size <= 0 {
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
+	}
+	pageSize := unix.Getpagesize()
+	if size > math.MaxInt-3*pageSize {
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: size %d too large (page rounding + guards overflow)", size)
+	}
+	rounded := ((size + pageSize - 1) / pageSize) * pageSize
+	total := rounded + 2*pageSize
+
+	outer, e := unix.Mmap(-1, 0, total, unix.PROT_NONE, unix.MAP_ANON|unix.MAP_PRIVATE)
+	if e != nil {
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("mmap guard reservation: %w", e)
+	}
+	inner := outer[pageSize : pageSize+rounded]
+
+	if e := unix.Mprotect(inner, unix.PROT_READ|unix.PROT_WRITE); e != nil {
+		_ = unix.Munmap(outer)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("mprotect inner RW: %w", e)
+	}
+	if e := unix.Mlock(inner); e != nil {
+		_ = unix.Munmap(outer)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("mlock: %w", e)
+	}
+
+	region = secRegion{outer: outer, inner: inner}
+	return region, inner[:size:size], allocInfo{offHeap: true, mlocked: true, guardPages: true}, nil
+}
+
+// allocMapAnon allocates via the same guarded MAP_ANON + mlock layout.
+// No memfd_secret exists on Darwin, so this is identical to allocSecretMem.
+func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err error) {
+	return allocSecretMem(size)
+}
+
+// freeSecretMem unlocks the secret area and unmaps the ENTIRE reservation —
+// guards and middle in one munmap. Never unmap the fields separately.
+func freeSecretMem(region secRegion) error {
+	if region.outer == nil {
+		return nil
+	}
+	_ = unix.Munlock(region.inner)
+	return unix.Munmap(region.outer)
+}
+
+// madviseBeforeFree is a no-op on Darwin — MADV_DONTNEED behaviour differs
+// from Linux and is not relied upon.
+func madviseBeforeFree(_ secRegion) {}
+
+// mprotectSecretMem applies prot to the secret area ONLY. The guards are
+// permanently PROT_NONE and never touched.
+func mprotectSecretMem(region secRegion, prot int) error {
+	return unix.Mprotect(region.inner, prot)
+}

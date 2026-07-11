@@ -91,17 +91,27 @@ type SecureArena struct {
 	// Never held across a callback or across mu.lock.
 	alloc sync.Mutex
 
-	// raw is the full page-rounded mmap slab.  All syscalls (mprotect, madvise,
-	// munlock, munmap) MUST use raw.  Nil after Destroy.
-	raw []byte
+	// region is the guarded slab: inner (wipe/lock/protect target, canary
+	// strips included) bracketed by PROT_NONE guard pages inside outer (the
+	// unmap target). See secRegion for the field contract. Zeroed after
+	// Destroy.
+	region secRegion
 
 	// slots is the metadata index.  Pointer-free leaf — GC scans the slice
 	// header but NOT the backing array.  len(slots) == count.
 	slots []slotMeta
 
-	// slotSize is the usable bytes per slot (caller-requested; access is always
-	// raw[idx*slotSize : (idx+1)*slotSize]).
+	// slotSize is the usable bytes per slot (caller-requested).
 	slotSize int
+
+	// stride is slotSize + canaryLen: each slot is followed by a canary strip
+	// so an overflow out of slot i corrupts the strip instead of silently
+	// running into slot i+1's secret. Slot i's data is
+	// inner[i*stride : i*stride+slotSize]; its strip fills the rest of the
+	// stride. Guard PAGES between slots are deliberately absent — a page per
+	// gap would defeat the slab's O(1)-OS-overhead purpose; the slab's two
+	// outer edges are guarded by the allocation itself.
+	stride int
 
 	// count is len(slots) — cached to avoid a len() on the hot path.
 	count int
@@ -110,8 +120,8 @@ type SecureArena struct {
 	// Immutable after construction; read by Capabilities without any lock.
 	backing allocInfo
 
-	// destroyed mirrors raw == nil under alloc, allowing early rejection of
-	// Acquire without acquiring mu.
+	// destroyed mirrors region.inner == nil under alloc, allowing early
+	// rejection of Acquire without acquiring mu.
 	destroyed bool
 
 	// cleanup is the AddCleanup handle.  Stopped by Destroy.
@@ -137,8 +147,12 @@ type ArenaSlot struct {
 // NewArena creates a SecureArena with count fixed-size slots, each of
 // slotSize bytes.
 //
-// The underlying slab is one contiguous mmap'd region of exactly
-// count*slotSize bytes (page-rounded), mlock'd and MADV_DONTDUMP'd.
+// The underlying slab is one contiguous guarded mmap region: PROT_NONE guard
+// pages bracket the slab's two outer edges, and each slot is followed by a
+// canaryLen-byte canary strip, verified on [ArenaSlot.Release] and on
+// [SecureArena.Destroy]. There are deliberately NO guard pages between slots
+// (a page per gap would defeat the slab's O(1)-OS-overhead purpose); the
+// strips detect inter-slot overflows instead of trapping them.
 // A single emergency janitor registration covers all slots.
 //
 // slotSize and count must both be > 0.
@@ -153,38 +167,58 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	if count <= 0 {
 		return nil, fmt.Errorf("secmem.NewArena: count must be > 0, got %d", count)
 	}
-	if slotSize > math.MaxInt/count {
-		return nil, fmt.Errorf("secmem.NewArena: slotSize*count overflows int (slotSize=%d, count=%d)", slotSize, count)
+	stride := slotSize + canaryLen
+	if slotSize > math.MaxInt/count-canaryLen {
+		return nil, fmt.Errorf("secmem.NewArena: (slotSize+canary)*count overflows int (slotSize=%d, count=%d)", slotSize, count)
 	}
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewArena: %w", err)
 	}
 
-	totalBytes := slotSize * count
-	allocRaw, _, info, err := allocSecretMem(totalBytes)
+	totalBytes := stride * count
+	region, _, info, err := allocSecretMem(totalBytes)
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewArena: %w", err)
 	}
 
+	// Arm the canary strips (one after each slot) and the page-rounding tail.
+	// These are also the janitor's verification zones, checked before the
+	// slab is wiped on Destroy or signal shutdown.
+	zones := make([][2]int, 0, count+1)
+	for i := 0; i < count; i++ {
+		zones = append(zones, [2]int{i*stride + slotSize, (i + 1) * stride})
+	}
+	if count*stride < len(region.inner) {
+		zones = append(zones, [2]int{count * stride, len(region.inner)})
+	}
+	for _, z := range zones {
+		if err := fillCanary(region.inner[z[0]:z[1]]); err != nil {
+			_ = freeSecretMem(region) // nothing secret written yet
+			return nil, fmt.Errorf("secmem.NewArena: %w", err)
+		}
+	}
+
 	a := &SecureArena{
 		mu:       newBufferRWLock(),
-		raw:      allocRaw,
+		region:   region,
 		slots:    make([]slotMeta, count),
 		slotSize: slotSize,
+		stride:   stride,
 		count:    count,
 		backing:  info,
 	}
 
 	// Register the slab with emergency janitor using raw metadata only.
-	a.janitorKey = emergencyJanitor.register(allocRaw, a.mu)
+	a.janitorKey = emergencyJanitor.register(region, zones, a.mu)
 
 	// Safety-net cleanup: wipe and free the slab if Destroy was forgotten.
-	// The raw slice is passed as the cleanup argument (not a reference to a)
-	// so that the cleanup closure cannot keep a alive and prevent it from
-	// becoming unreachable.
+	// Only the slab size is captured (not a reference to a) so that the
+	// cleanup closure cannot keep a alive and prevent it from becoming
+	// unreachable.
+	slabBytes := len(region.inner)
 	a.cleanup = runtime.AddCleanup(a, func(key uintptr) {
 		slog.Warn("secmem: SecureArena finalized without explicit Destroy()",
-			slog.Int("slab_bytes", len(allocRaw)),
+			slog.Int("slab_bytes", slabBytes),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
 		)
 		if err := emergencyJanitor.release(key, false); err != nil {
@@ -230,7 +264,7 @@ func (a *SecureArena) Destroy() error {
 	a.mu.lock()
 	defer a.mu.unlock()
 
-	if a.raw == nil {
+	if a.region.inner == nil {
 		return nil // idempotent double-check under exclusive lock
 	}
 
@@ -239,7 +273,7 @@ func (a *SecureArena) Destroy() error {
 	// Take exclusive ownership from janitor registry and wipe/free exactly once.
 	// If cleanup/signal already released the slab, do not touch raw again.
 	err := emergencyJanitor.release(a.janitorKey, true)
-	a.raw = nil
+	a.region = secRegion{}
 
 	runtime.KeepAlive(a)
 
@@ -335,10 +369,10 @@ func (a *SecureArena) ReadOnly() error {
 	}
 	a.mu.lock()
 	defer a.mu.unlock()
-	if a.raw == nil {
+	if a.region.inner == nil {
 		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", ErrArenaDestroyed)
 	}
-	if err := mprotectSecretMem(a.raw, 1 /*PROT_READ*/); err != nil {
+	if err := mprotectSecretMem(a.region, 1 /*PROT_READ*/); err != nil {
 		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", err)
 	}
 	return nil
@@ -354,10 +388,10 @@ func (a *SecureArena) ReadWrite() error {
 	}
 	a.mu.lock()
 	defer a.mu.unlock()
-	if a.raw == nil {
+	if a.region.inner == nil {
 		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", ErrArenaDestroyed)
 	}
-	if err := mprotectSecretMem(a.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+	if err := mprotectSecretMem(a.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", err)
 	}
 	return nil
@@ -407,13 +441,15 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 	s.arena.mu.rLock()
 	defer s.arena.mu.rUnlock()
 
-	if s.arena.raw == nil {
+	if s.arena.region.inner == nil {
 		return ErrArenaDestroyed
 	}
 
-	start := s.idx * s.arena.slotSize
+	// Capacity-clamped to the slot's usable bytes: fn cannot re-slice its
+	// argument into the canary strip or the neighbouring slot.
+	start := s.idx * s.arena.stride
 	end := start + s.arena.slotSize
-	return fn(s.arena.raw[start:end])
+	return fn(s.arena.region.inner[start:end:end])
 }
 
 // Release wipes the slot's byte region and returns it to the arena pool.
@@ -423,6 +459,11 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 //
 // The wipe happens BEFORE the slot is marked free (SA-1 fix): this ensures
 // the next Acquire cannot read stale secret data from this slot.
+//
+// Release also verifies the slot's trailing canary strip. If code overflowed
+// this slot, Release returns [ErrCanaryViolation] — the wipe, the re-arming
+// of the strip, and the return of the slot to the pool all complete
+// regardless; the error is a bug report, not a refusal.
 func (s *ArenaSlot) Release() error {
 	if s == nil {
 		return nil
@@ -436,14 +477,23 @@ func (s *ArenaSlot) Release() error {
 	}
 	s.arena.alloc.Unlock()
 
-	// Wipe FIRST — under rLock to prevent Destroy from unmapping mid-wipe.
-	// The slot is still marked inUse=1, so no other goroutine can Acquire
-	// the same index until we mark it free below.
+	// Verify + wipe FIRST — under rLock to prevent Destroy from unmapping
+	// mid-wipe. The slot is still marked inUse=1, so no other goroutine can
+	// Acquire the same index until we mark it free below.
+	var violated bool
 	s.arena.mu.rLock()
-	if s.arena.raw != nil {
-		start := s.idx * s.arena.slotSize
+	if s.arena.region.inner != nil {
+		start := s.idx * s.arena.stride
 		end := start + s.arena.slotSize
-		secureWipeSlice(s.arena.raw[start:end])
+		strip := s.arena.region.inner[end : start+s.arena.stride]
+		if !canaryIntact(strip) {
+			violated = true
+			// Re-arm the strip so a later overflow of the recycled slot is
+			// still detectable. fillCanary cannot fail here: the pattern was
+			// already initialized when the arena armed it at construction.
+			_ = fillCanary(strip)
+		}
+		secureWipeSlice(s.arena.region.inner[start:end])
 	}
 	// Arena was destroyed concurrently — Destroy already wiped everything.
 	s.arena.mu.rUnlock()
@@ -453,6 +503,9 @@ func (s *ArenaSlot) Release() error {
 	s.arena.slots[s.idx].inUse = 0
 	s.arena.alloc.Unlock()
 
+	if violated {
+		return fmt.Errorf("secmem.ArenaSlot.Release: %w", ErrCanaryViolation)
+	}
 	return nil
 }
 

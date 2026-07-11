@@ -564,8 +564,8 @@ func TestArena_MappedLenIsPageAligned(t *testing.T) {
 
 	// The raw slab must be a multiple of the OS page size.
 	pageSize := 4096 // minimum on all supported platforms
-	if len(a.raw)%pageSize != 0 {
-		t.Errorf("raw len %d is not page-aligned (page size %d)", len(a.raw), pageSize)
+	if len(a.region.inner)%pageSize != 0 {
+		t.Errorf("slab inner len %d is not page-aligned (page size %d)", len(a.region.inner), pageSize)
 	}
 }
 

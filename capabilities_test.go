@@ -17,9 +17,6 @@ func TestProbe_BuildIdentity(t *testing.T) {
 	if c.RegisterScrub != RuntimeSecretActive() {
 		t.Errorf("Probe().RegisterScrub = %v, want RuntimeSecretActive() = %v", c.RegisterScrub, RuntimeSecretActive())
 	}
-	if c.GuardPages {
-		t.Error("Probe().GuardPages = true, but guard pages are not implemented yet")
-	}
 }
 
 // TestProbe_SupportedPlatform pins the floor on linux/darwin/windows: the
@@ -37,6 +34,9 @@ func TestProbe_SupportedPlatform(t *testing.T) {
 	}
 	if !c.Mlocked {
 		t.Error("Probe().Mlocked = false on a supported platform")
+	}
+	if !c.GuardPages {
+		t.Error("Probe().GuardPages = false on a supported platform")
 	}
 	if c.Insecure {
 		t.Error("Probe().Insecure = true on a supported platform")

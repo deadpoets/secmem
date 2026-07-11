@@ -1,6 +1,7 @@
 package secmem
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
@@ -15,8 +16,15 @@ import (
 // access callbacks. It does NOT store *SecureBuffer or *SecureArena pointers,
 // so GC can still collect wrapper objects and run AddCleanup fallback.
 type janitorRegion struct {
-	raw []byte
-	mu  *bufferRWLock
+	region secRegion
+	mu     *bufferRWLock
+
+	// canaryZones are [start,end) offsets into region.inner that were filled
+	// with the canary pattern at allocation time (a buffer's tail slack; an
+	// arena's inter-slot strips and tail). wipeAndFree verifies them — after
+	// restoring RW protection, before the wipe destroys the evidence — and
+	// reports ErrCanaryViolation without ever skipping the teardown.
+	canaryZones [][2]int
 }
 
 // janitor tracks live secret mappings and wipes them on process termination via
@@ -37,17 +45,18 @@ func init() { //nolint:gochecknoinits // Emergency janitor must be initialized b
 	emergencyJanitor.install()
 }
 
-// regionKey returns a stable per-mapping key. raw must be a non-empty mapping
-// from allocSecretMem/allocMapAnon.
-func regionKey(raw []byte) uintptr {
-	return uintptr(unsafe.Pointer(&raw[0]))
+// regionKey returns a stable per-mapping key: the base address of the outer
+// reservation, which is unique for the mapping's whole lifetime.
+func regionKey(region secRegion) uintptr {
+	return uintptr(unsafe.Pointer(&region.outer[0]))
 }
 
 // register records one live secret mapping and returns its janitor key.
-func (j *janitor) register(raw []byte, mu *bufferRWLock) uintptr {
-	key := regionKey(raw)
+// canaryZones may be nil when the allocation has no armed slack.
+func (j *janitor) register(region secRegion, canaryZones [][2]int, mu *bufferRWLock) uintptr {
+	key := regionKey(region)
 	j.mu.Lock()
-	j.regions[key] = janitorRegion{raw: raw, mu: mu}
+	j.regions[key] = janitorRegion{region: region, mu: mu, canaryZones: canaryZones}
 	j.mu.Unlock()
 	return key
 }
@@ -63,22 +72,40 @@ func (j *janitor) take(key uintptr) (janitorRegion, bool) {
 	return region, ok
 }
 
-// wipeAndFree wipes and releases one raw mapping. When lockHeld is false, it
+// wipeAndFree wipes and releases one mapping. When lockHeld is false, it
 // first acquires the region's exclusive lock to block in-flight callbacks.
+//
+// Order is deliberate and load-bearing:
+//  1. mprotect RW — a sealed/read-only region must be writable to wipe, and
+//     readable to verify canaries.
+//  2. verify canary zones — BEFORE the wipe destroys the evidence.
+//  3. wipe + madvise + unmap — unconditionally: a canary violation reports a
+//     bug, it never leaves secret memory mapped.
+//
+// A canary violation and a free failure are both returned (joined).
 func wipeAndFree(region janitorRegion, lockHeld bool) error {
 	if !lockHeld {
 		region.mu.lock()
 		defer region.mu.unlock()
 	}
 
-	if err := mprotectSecretMem(region.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+	if err := mprotectSecretMem(region.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		slog.Error("secmem: janitor mprotect failed — continuing cleanup",
 			slog.Any("error", err),
 		)
 	}
-	secureWipeSlice(region.raw)
-	madviseBeforeFree(region.raw)
-	return freeSecretMem(region.raw)
+
+	var canaryErr error
+	for _, zone := range region.canaryZones {
+		if !canaryIntact(region.region.inner[zone[0]:zone[1]]) {
+			canaryErr = ErrCanaryViolation
+			break
+		}
+	}
+
+	secureWipeSlice(region.region.inner)
+	madviseBeforeFree(region.region)
+	return errors.Join(canaryErr, freeSecretMem(region.region))
 }
 
 // release wipes and frees the region for key exactly once. Safe to race with

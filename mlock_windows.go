@@ -1,8 +1,15 @@
 //go:build windows
 
-// Windows secure memory via VirtualAlloc + VirtualLock.
-// Provides L3 protection (off-heap, swap-proof, GC-invisible) — equivalent to
-// Linux mmap+mlock. There is no Windows equivalent of memfd_secret (L4).
+// Windows secure memory via VirtualAlloc + VirtualLock (L3), with guard
+// pages. There is no Windows equivalent of memfd_secret (L4).
+//
+// Guard layout: the ENTIRE [guard|middle|guard] range is reserved in one
+// VirtualAlloc(MEM_RESERVE) call, then only the middle is committed
+// (MEM_COMMIT, PAGE_READWRITE) and VirtualLock'd. The guards stay
+// reserved-but-uncommitted: touching them raises an access violation, they
+// consume no RAM, and they are not locked. VirtualFree(MEM_RELEASE) on the
+// reservation base releases the whole range — reserve base and commit base
+// are different addresses, which is exactly why secRegion keeps them apart.
 //
 // Note on go vet unsafeptr (mlock_windows.go only):
 // windows.VirtualAlloc returns a uintptr representing OS-managed memory that the
@@ -20,97 +27,120 @@ package secmem
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
 )
 
-// allocSecretMem allocates a page-aligned, VirtualLock'd off-heap memory region.
+// platformHasSecureMemory: Windows provides VirtualAlloc+VirtualLock —
+// constructors never need the insecure-fallback gate here.
+const platformHasSecureMemory = true
+
+// allocSecretMem allocates a guarded, page-aligned, VirtualLock'd off-heap
+// region.
 //
-// Returns:
-//   - raw: full page-rounded region — pass to VirtualUnlock and VirtualFree.
-//   - data: raw[:size] — the usable portion (caller's requested size).
-//
-// Protection: VirtualAlloc (off-heap) + VirtualLock (no swapping) = L3.
-// No L4 equivalent exists on Windows. info records off-heap and mlocked for
-// Capabilities; Windows has no core-dump or fork-inheritance controls.
-func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
+// Returns region (outer = the full reservation, the ONLY VirtualFree target;
+// inner = the committed middle, the wipe/lock/protect target), data =
+// inner[:size:size] (capacity-clamped so it cannot be re-sliced into the
+// canary slack), and the protection record: off-heap, mlocked, guard pages —
+// Windows has no core-dump or fork-inheritance controls.
+func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
-
 	pageSize := os.Getpagesize()
-	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
+	if size > math.MaxInt-3*pageSize {
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: size %d too large (page rounding + guards overflow)", size)
+	}
+	rounded := ((size + pageSize - 1) / pageSize) * pageSize
+	total := rounded + 2*pageSize
 
-	addr, allocErr := windows.VirtualAlloc(0, uintptr(roundedSize),
-		windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_READWRITE)
+	// Reserve the whole guarded range. Reserved-uncommitted pages fault on
+	// any access — the reservation itself IS the guard mechanism.
+	base, allocErr := windows.VirtualAlloc(0, uintptr(total),
+		windows.MEM_RESERVE, windows.PAGE_NOACCESS)
 	if allocErr != nil {
-		return nil, nil, allocInfo{}, fmt.Errorf("VirtualAlloc: %w", allocErr)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("VirtualAlloc reserve: %w", allocErr)
 	}
 
-	// addr is OS-managed memory outside the GC heap — VirtualAlloc returns a
-	// uintptr for kernel-owned pages the GC will never move or collect.
-	// unsafe.Pointer(addr) is valid here (Rule: OS allocation, not GC-tracked).
-	// go vet unsafeptr fires as a false-positive because VirtualAlloc is not
-	// in its syscall.Syscall exemption list. Suppressed in .golangci.yml.
+	// Commit only the middle.
+	innerAddr := base + uintptr(pageSize)
+	if _, commitErr := windows.VirtualAlloc(innerAddr, uintptr(rounded),
+		windows.MEM_COMMIT, windows.PAGE_READWRITE); commitErr != nil {
+		_ = windows.VirtualFree(base, 0, windows.MEM_RELEASE)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("VirtualAlloc commit: %w", commitErr)
+	}
+
+	// base/innerAddr are OS-managed memory outside the GC heap — VirtualAlloc
+	// returns uintptrs for kernel-owned pages the GC will never move or
+	// collect. unsafe.Pointer conversion is valid here (OS allocation, not
+	// GC-tracked). go vet unsafeptr fires as a false-positive because
+	// VirtualAlloc is not in its exemption list. Suppressed in .golangci.yml.
 	//
 	//nolint:gosec // G103: unsafe.Slice over VirtualAlloc OS memory, not GC-managed.
-	r := unsafe.Slice((*byte)(unsafe.Pointer(addr)), roundedSize) //nolint:govet // unsafeptr: OS memory, see file header
+	outer := unsafe.Slice((*byte)(unsafe.Pointer(base)), total) //nolint:govet // unsafeptr: OS memory, see file header
+	inner := outer[pageSize : pageSize+rounded]
 
-	if lockErr := windows.VirtualLock(addr, uintptr(roundedSize)); lockErr != nil {
-		_ = windows.VirtualFree(addr, 0, windows.MEM_RELEASE)
-		return nil, nil, allocInfo{}, fmt.Errorf("VirtualLock: %w", lockErr)
+	if lockErr := windows.VirtualLock(innerAddr, uintptr(rounded)); lockErr != nil {
+		_ = windows.VirtualFree(base, 0, windows.MEM_RELEASE)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("VirtualLock: %w", lockErr)
 	}
 
-	return r, r[:size], allocInfo{offHeap: true, mlocked: true}, nil
+	region = secRegion{outer: outer, inner: inner}
+	return region, inner[:size:size], allocInfo{offHeap: true, mlocked: true, guardPages: true}, nil
+}
+
+// allocMapAnon allocates off-heap memory. On Windows this is identical to
+// allocSecretMem (no memfd_secret variant exists to skip).
+func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err error) {
+	return allocSecretMem(size)
 }
 
 // madviseBeforeFree is a no-op on Windows — there is no equivalent to MADV_DONTNEED.
-func madviseBeforeFree(_ []byte) {}
+func madviseBeforeFree(_ secRegion) {}
 
-// freeSecretMem unlocks and frees memory allocated by allocSecretMem.
-// raw must be the full page-rounded slice, not the data sub-slice.
-func freeSecretMem(raw []byte) error {
-	if len(raw) == 0 {
+// freeSecretMem unlocks the committed middle and releases the ENTIRE
+// reservation. VirtualFree(MEM_RELEASE) must receive the RESERVATION base
+// (&outer[0]) with size 0 — passing the commit base or a nonzero size fails.
+func freeSecretMem(region secRegion) error {
+	if len(region.outer) == 0 {
 		return nil
 	}
-	//nolint:gosec // G103: recovering VirtualAlloc address for VirtualFree.
-	addr := uintptr(unsafe.Pointer(&raw[0]))
-	_ = windows.VirtualUnlock(addr, uintptr(len(raw)))
-	return windows.VirtualFree(addr, 0, windows.MEM_RELEASE)
+	//nolint:gosec // G103: recovering VirtualAlloc addresses for VirtualUnlock/VirtualFree.
+	innerAddr := uintptr(unsafe.Pointer(&region.inner[0]))
+	_ = windows.VirtualUnlock(innerAddr, uintptr(len(region.inner)))
+	//nolint:gosec // G103: see above.
+	base := uintptr(unsafe.Pointer(&region.outer[0]))
+	return windows.VirtualFree(base, 0, windows.MEM_RELEASE)
 }
 
-// mprotectSecretMem toggles the protection on raw.
-// prot follows unix conventions but maps to Windows PAGE_* constants:
+// mprotectSecretMem toggles the protection on the committed middle ONLY —
+// the guards are never touched (they are uncommitted and must stay so).
+// prot follows unix conventions and maps to Windows PAGE_* constants:
+//   - 0 (PROT_NONE)            → PAGE_NOACCESS  (seal)
 //   - unix.PROT_READ (1)       → PAGE_READONLY
 //   - unix.PROT_READ|WRITE (3) → PAGE_READWRITE
-//
-//nolint:unused // Called by SecureBuffer.Destroy() in PR 2a Step 3 — pre-declared here for allocation symmetry.
-func mprotectSecretMem(raw []byte, prot int) error {
-	if len(raw) == 0 {
+func mprotectSecretMem(region secRegion, prot int) error {
+	if len(region.inner) == 0 {
 		return nil
 	}
 	//nolint:gosec // G103: recovering VirtualAlloc address for VirtualProtect.
-	addr := uintptr(unsafe.Pointer(&raw[0]))
+	addr := uintptr(unsafe.Pointer(&region.inner[0]))
 
-	const protRead = 1 // unix.PROT_READ
 	var protect uint32
-	if prot == protRead {
+	switch prot {
+	case 0: // PROT_NONE — the sealed state. Previously mismapped to
+		// PAGE_READWRITE, which left "sealed" buffers readable and writable;
+		// PAGE_NOACCESS is what seal means.
+		protect = windows.PAGE_NOACCESS
+	case 1: // PROT_READ
 		protect = windows.PAGE_READONLY
-	} else {
+	default: // PROT_READ|PROT_WRITE
 		protect = windows.PAGE_READWRITE
 	}
 
 	var oldProtect uint32
-	return windows.VirtualProtect(addr, uintptr(len(raw)), protect, &oldProtect)
+	return windows.VirtualProtect(addr, uintptr(len(region.inner)), protect, &oldProtect)
 }
-
-// allocMapAnon allocates off-heap memory. On Windows this is identical to allocSecretMem.
-func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
-	return allocSecretMem(size)
-}
-
-// platformHasSecureMemory: Windows provides VirtualAlloc+VirtualLock —
-// constructors never need the insecure-fallback gate here.
-const platformHasSecureMemory = true

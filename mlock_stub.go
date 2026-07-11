@@ -2,7 +2,8 @@
 
 // Stub for platforms without native secure memory APIs (e.g., FreeBSD, plan9).
 // SECURITY DEGRADED: memory is heap-allocated, not locked, not excluded from
-// core dumps, and is visible to the GC.
+// core dumps, visible to the GC, and has NO guard pages — a heap slice has no
+// address-space bracket to protect. Capabilities report all of this.
 //
 // Constructors on these platforms fail with ErrNoSecureMemory unless the
 // caller opts in with WithInsecureFallback() — this file is reachable only
@@ -25,14 +26,14 @@ var insecureWarnOnce sync.Once
 
 // allocSecretMem falls back to heap allocation on unsupported platforms.
 // Reachable only via WithInsecureFallback() — the constructor gate rejects
-// un-opted-in callers before this runs. Returns (raw, data, info) with the
-// same interface contract as the linux/darwin implementations; raw is
-// page-rounded for contract consistency. info.insecure is TRUE: this memory
-// is plain GC heap with no protection — Capabilities and Warnings report it
-// as such, and the first allocation fires a one-time slog warning.
-func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
+// un-opted-in callers before this runs. outer and inner alias the same heap
+// slice (there are no guards to distinguish); data is capacity-clamped so it
+// cannot be re-sliced into the canary slack. info.insecure is TRUE and
+// guardPages FALSE: Capabilities and Warnings report the exposure, and the
+// first allocation fires a one-time slog warning.
+func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	if size <= 0 {
-		return nil, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
 	insecureWarnOnce.Do(func() {
 		slog.Warn("secmem: INSECURE fallback in use — secrets are on the unprotected Go heap "+
@@ -40,27 +41,30 @@ func allocSecretMem(size int) (raw, data []byte, info allocInfo, err error) {
 			"GOOS", runtime.GOOS, "GOARCH", runtime.GOARCH)
 	})
 	// Page-round for API consistency — heap allocations don't need it but
-	// the raw/data split contract must be maintained.
+	// the inner/data split contract (canary slack) must be maintained.
 	pageSize := 4096
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
 	r := make([]byte, roundedSize)
-	return r, r[:size], allocInfo{insecure: true}, nil
-}
-
-// madviseBeforeFree is a no-op on platforms without madvise.
-func madviseBeforeFree(_ []byte) {}
-
-// freeSecretMem is a no-op on platforms without mmap.
-func freeSecretMem(_ []byte) error {
-	return nil
-}
-
-// mprotectSecretMem is a no-op on platforms without mprotect.
-func mprotectSecretMem(_ []byte, _ int) error {
-	return nil
+	return secRegion{outer: r, inner: r}, r[:size:size], allocInfo{insecure: true}, nil
 }
 
 // allocMapAnon falls back to heap allocation on unsupported platforms.
-func allocMapAnon(size int) (raw, data []byte, info allocInfo, err error) {
+func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	return allocSecretMem(size)
+}
+
+// madviseBeforeFree is a no-op on platforms without madvise.
+func madviseBeforeFree(_ secRegion) {}
+
+// freeSecretMem is a no-op on platforms without mmap — the heap slice is
+// reclaimed by the GC after the wipe.
+func freeSecretMem(_ secRegion) error {
+	return nil
+}
+
+// mprotectSecretMem is a no-op on platforms without mprotect. Seal and
+// ReadOnly are therefore advisory-only here — the sealed flag blocks the API,
+// but the OS enforces nothing. Capabilities.Insecure already says as much.
+func mprotectSecretMem(_ secRegion, _ int) error {
+	return nil
 }

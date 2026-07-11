@@ -8,9 +8,9 @@
 //
 // # Critical invariants
 //
-//   - raw is IMMUTABLE after construction: it holds the exact slice returned
-//     by allocSecretMem/allocMapAnon.
-//     Truncate MUST NOT modify raw.
+//   - region is IMMUTABLE after construction: it holds the exact secRegion
+//     returned by allocSecretMem/allocMapAnon (guarded outer reservation +
+//     inner secret area). Truncate MUST NOT modify region.
 //
 //   - mu.rLock is held by ALL access methods for the duration of the operation.
 //     mu.lock is held ONLY by Destroy.  This prevents TOCTOU races between
@@ -43,14 +43,17 @@ import (
 // beyond the buffer's lifetime.  After Destroy,
 // the backing memory is unmapped; any retained slice becomes a dangling pointer.
 type SecureBuffer struct {
-	// data is the usable portion, raw[:requestedSize]. Access is controlled
-	// via methods — never exported directly to prevent heap copies.
+	// data is the usable portion, region.inner[:size:size]. Access is
+	// controlled via methods — never exported directly to prevent heap
+	// copies. The capacity is clamped to the requested size so no re-slice
+	// can reach the canary slack behind it.
 	data []byte
 
-	// raw is the full page-rounded mmap region as returned by allocSecretMem.
-	// ALL syscalls (mprotect, madvise, munlock, munmap) MUST use raw, never data.
-	// Invariant: &raw[0] == &data[0], len(raw) >= len(data), raw is IMMUTABLE.
-	raw []byte
+	// region is the guarded allocation: inner (wipe/lock/protect target,
+	// canary slack included) bracketed by PROT_NONE guard pages inside outer
+	// (the unmap target). See secRegion for the field contract.
+	// Invariant: &region.inner[0] == &data[0]; region is IMMUTABLE.
+	region secRegion
 
 	// mu: rLock=access methods, lock=Destroy. Prevents Munmap racing a callback.
 	// Uses a sync.Cond-based RWLock (not sync.RWMutex) so that all blocking
@@ -97,13 +100,17 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
-	allocRaw, data, info, err := allocSecretMem(len(raw))
+	region, data, info, err := allocSecretMem(len(raw))
 	if err != nil {
+		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
+	}
+	if err := fillCanary(region.inner[len(data):]); err != nil {
+		_ = freeSecretMem(region) // nothing secret written yet
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	copy(data, raw)
 	secureWipeSlice(raw) // zero the caller's copy defense-in-depth
-	return newSecureBuffer(allocRaw, data, info), nil
+	return newSecureBuffer(region, data, info), nil
 }
 
 // NewEmptyBuffer allocates an mlock'd zero-filled region of exactly size bytes.
@@ -115,11 +122,15 @@ func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
-	allocRaw, data, info, err := allocSecretMem(size)
+	region, data, info, err := allocSecretMem(size)
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
-	return newSecureBuffer(allocRaw, data, info), nil
+	if err := fillCanary(region.inner[len(data):]); err != nil {
+		_ = freeSecretMem(region)
+		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
+	}
+	return newSecureBuffer(region, data, info), nil
 }
 
 // NewSyscallSafeBuffer allocates via MAP_ANON only (no memfd_secret attempt).
@@ -133,32 +144,44 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
-	allocRaw, data, info, err := allocMapAnon(len(raw))
+	region, data, info, err := allocMapAnon(len(raw))
 	if err != nil {
+		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
+	}
+	if err := fillCanary(region.inner[len(data):]); err != nil {
+		_ = freeSecretMem(region)
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	copy(data, raw)
 	secureWipeSlice(raw)
-	return newSecureBuffer(allocRaw, data, info), nil
+	return newSecureBuffer(region, data, info), nil
 }
 
-// newSecureBuffer wires up a SecureBuffer from a pre-allocated (raw, data)
+// newSecureBuffer wires up a SecureBuffer from a pre-allocated (region, data)
 // pair plus its allocation facts, and registers the AddCleanup finalization
-// fallback.
+// fallback. The canary slack must already be filled by the caller.
 //
 // The janitor key is passed to AddCleanup by value; cleanup resolution happens
 // through emergencyJanitor's raw-mapping registry.
-func newSecureBuffer(allocRaw, data []byte, backing allocInfo) *SecureBuffer {
+func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBuffer {
 	sb := &SecureBuffer{
 		data:    data,
-		raw:     allocRaw,
+		region:  region,
 		mu:      newBufferRWLock(),
 		backing: backing,
 	}
 
+	// The canary zone is the slack between the caller's size and the page
+	// boundary. cap(data) is clamped to the original size and survives
+	// Truncate re-slices, so the zone stays correct for the buffer's lifetime.
+	var zones [][2]int
+	if cap(data) < len(region.inner) {
+		zones = [][2]int{{cap(data), len(region.inner)}}
+	}
+
 	// Register with the emergency janitor first. The janitor stores raw mapping
 	// metadata (not *SecureBuffer), so this does not keep sb reachable for GC.
-	sb.janitorKey = emergencyJanitor.register(allocRaw, sb.mu)
+	sb.janitorKey = emergencyJanitor.register(region, zones, sb.mu)
 
 	// Safety-net cleanup: if the caller forgets Destroy(), this wipes and frees
 	// the mmap'd region when the *SecureBuffer is GC'd.
@@ -172,7 +195,7 @@ func newSecureBuffer(allocRaw, data []byte, backing allocInfo) *SecureBuffer {
 	// becomes a dangling pointer after the cleanup runs.
 	sb.cleanup = runtime.AddCleanup(sb, func(key uintptr) {
 		slog.Warn("secmem: SecureBuffer finalized without explicit Destroy()",
-			slog.Int("size", len(allocRaw)),
+			slog.Int("size", len(region.inner)),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
 		)
 		if err := emergencyJanitor.release(key, false); err != nil {
@@ -210,7 +233,7 @@ func (s *SecureBuffer) Destroy() error {
 	s.mu.lock()
 	defer s.mu.unlock()
 
-	if s.raw == nil {
+	if s.region.inner == nil {
 		return nil // already destroyed — idempotent
 	}
 
@@ -226,7 +249,7 @@ func (s *SecureBuffer) Destroy() error {
 
 	// Step 5 — nil references.  Makes IsDestroyed() true and Destroy idempotent.
 	s.data = nil
-	s.raw = nil
+	s.region = secRegion{}
 
 	// Step 6 — ensure the GC does not run the cleanup concurrently between
 	// Stop() and here.  KeepAlive pins s in the liveness analysis until this
@@ -247,7 +270,7 @@ func (s *SecureBuffer) IsDestroyed() bool {
 	}
 	s.mu.rLock()
 	defer s.mu.rUnlock()
-	return s.raw == nil
+	return s.region.inner == nil
 }
 
 // ---------------------------------------------------------------------------
@@ -265,15 +288,17 @@ func (s *SecureBuffer) Len() int {
 	return len(s.data)
 }
 
-// MappedLen returns the actual size of the underlying mmap'd region.
-// Always a multiple of the OS page size (≥ Len).
+// MappedLen returns the size of the locked secret area (the page-rounded
+// region holding the data and its canary slack). Always a multiple of the OS
+// page size (≥ Len). The PROT_NONE guard pages bracketing the area are NOT
+// counted — they are reserved address space, not lockable memory.
 func (s *SecureBuffer) MappedLen() int {
 	if s == nil {
 		return 0
 	}
 	s.mu.rLock()
 	defer s.mu.rUnlock()
-	return len(s.raw)
+	return len(s.region.inner)
 }
 
 // ReadOnly sets the buffer's memory protection to read-only.
@@ -292,13 +317,13 @@ func (s *SecureBuffer) ReadOnly() error {
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
-	if s.raw == nil {
+	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrDestroyed)
 	}
 	if s.sealed {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrSealed)
 	}
-	if err := mprotectSecretMem(s.raw, 1 /*PROT_READ*/); err != nil {
+	if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", err)
 	}
 	return nil
@@ -315,13 +340,13 @@ func (s *SecureBuffer) ReadWrite() error {
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
-	if s.raw == nil {
+	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrDestroyed)
 	}
 	if s.sealed {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrSealed)
 	}
-	if err := mprotectSecretMem(s.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", err)
 	}
 	return nil
@@ -347,13 +372,13 @@ func (s *SecureBuffer) Seal() error {
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
-	if s.raw == nil {
+	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", ErrDestroyed)
 	}
 	if s.sealed {
 		return nil // idempotent
 	}
-	if err := mprotectSecretMem(s.raw, 0 /*PROT_NONE*/); err != nil {
+	if err := mprotectSecretMem(s.region, 0 /*PROT_NONE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 	}
 	s.sealed = true
@@ -373,13 +398,13 @@ func (s *SecureBuffer) Unseal() error {
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
-	if s.raw == nil {
+	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", ErrDestroyed)
 	}
 	if !s.sealed {
 		return nil // idempotent
 	}
-	if err := mprotectSecretMem(s.raw, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
 	}
 	s.sealed = false
@@ -407,7 +432,7 @@ func (s *SecureBuffer) Truncate(n int) error {
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
-	if s.raw == nil {
+	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrDestroyed)
 	}
 	if n < 0 || n > len(s.data) {

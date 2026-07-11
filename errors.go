@@ -27,3 +27,14 @@ var ErrSlotReleased = errors.New("secmem: arena slot has been released")
 // that exposure must say so explicitly with [WithInsecureFallback].
 var ErrNoSecureMemory = errors.New(
 	"secmem: no lockable off-heap memory on this platform — refusing the unprotected heap (opt in with WithInsecureFallback)")
+
+// ErrCanaryViolation is returned by Destroy (and ArenaSlot.Release) when the
+// canary slack adjacent to the secret was overwritten: some code in this
+// process wrote past the end of a buffer or slot. The wipe and release
+// complete regardless — the violation is reported, never left mapped.
+//
+// This is a memory-safety bug report, not a security breach by itself: treat
+// it like a failed assertion. Find and fix the overflow; do not suppress the
+// error.
+var ErrCanaryViolation = errors.New(
+	"secmem: canary violation — memory adjacent to a secret was overwritten (out-of-bounds write bug in this process)")
