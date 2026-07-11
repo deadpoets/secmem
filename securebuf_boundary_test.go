@@ -118,7 +118,7 @@ func TestTruncate_NonEmptyTail_Wiped(t *testing.T) {
 
 	// Read the first 16 bytes — should still be 'A'.
 	head := make([]byte, 16)
-	if n, err := buf.Read(head, 0); err != nil || n != 16 {
+	if n, err := buf.CopyOut(head, 0); err != nil || n != 16 {
 		t.Fatalf("Read head: n=%d, err=%v", n, err)
 	}
 	for i, b := range head {
@@ -128,7 +128,7 @@ func TestTruncate_NonEmptyTail_Wiped(t *testing.T) {
 	}
 
 	// Reading from offset 16 should fail (out of range after truncation).
-	if n, err := buf.Read(make([]byte, 1), 16); err == nil {
+	if n, err := buf.CopyOut(make([]byte, 1), 16); err == nil {
 		t.Errorf("Read past truncation returned n=%d, want error", n)
 	}
 }
@@ -202,9 +202,9 @@ func TestSetByteAt_ExactLastIndex(t *testing.T) {
 	}
 }
 
-// TestRead_ExactLastValidOffset verifies Read at offset=len-1 (1 byte available)
+// TestCopyOut_ExactLastValidOffset verifies Read at offset=len-1 (1 byte available)
 // returns 1 byte, and at offset=len returns an error.
-func TestRead_ExactLastValidOffset(t *testing.T) {
+func TestCopyOut_ExactLastValidOffset(t *testing.T) {
 	t.Parallel()
 	const size = 8
 	buf, err := NewBuffer([]byte("ABCDEFGH"))
@@ -216,19 +216,19 @@ func TestRead_ExactLastValidOffset(t *testing.T) {
 	dst := make([]byte, 4)
 
 	// offset = size-1: reads 1 byte from position 7.
-	n, err := buf.Read(dst, size-1)
+	n, err := buf.CopyOut(dst, size-1)
 	if err != nil || n != 1 {
 		t.Errorf("Read(offset=%d): got n=%d, err=%v; want n=1, nil", size-1, n, err)
 	}
 
 	// offset = size: must return an error.
-	if n, err := buf.Read(dst, size); err == nil {
+	if n, err := buf.CopyOut(dst, size); err == nil {
 		t.Errorf("Read(offset=%d): got n=%d nil, want error", size, n)
 	}
 }
 
-// TestWrite_ExactLastValidOffset verifies Write at offset=len-1 and offset=len.
-func TestWrite_ExactLastValidOffset(t *testing.T) {
+// TestCopyIn_ExactLastValidOffset verifies Write at offset=len-1 and offset=len.
+func TestCopyIn_ExactLastValidOffset(t *testing.T) {
 	t.Parallel()
 	const size = 8
 	buf, err := NewEmptyBuffer(size)
@@ -240,13 +240,13 @@ func TestWrite_ExactLastValidOffset(t *testing.T) {
 	src := []byte{0xFF, 0xFF}
 
 	// offset = size-1: writes 1 byte (only 1 byte available from position 7).
-	n, err := buf.Write(src, size-1)
+	n, err := buf.CopyIn(src, size-1)
 	if err != nil || n != 1 {
 		t.Errorf("Write(offset=%d): got n=%d, err=%v; want n=1, nil", size-1, n, err)
 	}
 
 	// offset = size: must return an error.
-	if n, err := buf.Write(src, size); err == nil {
+	if n, err := buf.CopyIn(src, size); err == nil {
 		t.Errorf("Write(offset=%d): got n=%d nil, want error", size, n)
 	}
 }

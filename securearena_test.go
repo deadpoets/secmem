@@ -537,19 +537,19 @@ func TestArena_DestroyRacesRelease(t *testing.T) {
 // GC leaf-struct property (documentation test)
 // ---------------------------------------------------------------------------
 
-// arenaSlotSize returns the size of secureArenaSlot in bytes.
+// arenaSlotSize returns the size of slotMeta in bytes.
 // Used to verify the cache-line padding in tests.
 func arenaSlotSize() uintptr {
-	return unsafe.Sizeof(secureArenaSlot{})
+	return unsafe.Sizeof(slotMeta{})
 }
 
-// TestArena_SlotStructSize verifies that secureArenaSlot is exactly 64 bytes —
+// TestArena_SlotStructSize verifies that slotMeta is exactly 64 bytes —
 // one cache line — confirming the pointer-free leaf and padding invariants.
 func TestArena_SlotStructSize(t *testing.T) {
 	t.Parallel()
 	const want = 64
 	if got := int(arenaSlotSize()); got != want {
-		t.Errorf("secureArenaSlot size = %d bytes, want %d (one cache line)", got, want)
+		t.Errorf("slotMeta size = %d bytes, want %d (one cache line)", got, want)
 	}
 }
 

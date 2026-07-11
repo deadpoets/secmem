@@ -68,8 +68,8 @@ func TestWithBytesErr_PropagatesError(t *testing.T) {
 	}
 }
 
-// TestReadWrite_RoundTrip verifies Read and Write.
-func TestReadWrite_RoundTrip(t *testing.T) {
+// TestCopyInOut_RoundTrip verifies Read and Write.
+func TestCopyInOut_RoundTrip(t *testing.T) {
 	t.Parallel()
 
 	buf, err := NewEmptyBuffer(8)
@@ -79,12 +79,12 @@ func TestReadWrite_RoundTrip(t *testing.T) {
 	defer func() { _ = buf.Destroy() }()
 
 	src := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
-	if n, err := buf.Write(src, 0); err != nil || n != len(src) {
+	if n, err := buf.CopyIn(src, 0); err != nil || n != len(src) {
 		t.Fatalf("Write: n=%d err=%v", n, err)
 	}
 
 	dst := make([]byte, 8)
-	if n, err := buf.Read(dst, 0); err != nil || n != len(src) {
+	if n, err := buf.CopyOut(dst, 0); err != nil || n != len(src) {
 		t.Fatalf("Read: n=%d err=%v", n, err)
 	}
 	if !bytes.Equal(dst, src) {
@@ -122,8 +122,8 @@ func TestSetByteAt_Error(t *testing.T) {
 	}
 }
 
-// TestConstantEqual verifies constant-time comparison.
-func TestConstantEqual(t *testing.T) {
+// TestConstantTimeEqual verifies constant-time comparison.
+func TestConstantTimeEqual(t *testing.T) {
 	t.Parallel()
 
 	data := []byte("secret-value-32-bytes-long-test!")
@@ -135,21 +135,21 @@ func TestConstantEqual(t *testing.T) {
 	}
 	defer func() { _ = buf.Destroy() }()
 
-	equal, err := buf.ConstantEqual(want)
+	equal, err := buf.ConstantTimeEqual(want)
 	if err != nil {
-		t.Fatalf("ConstantEqual: %v", err)
+		t.Fatalf("ConstantTimeEqual: %v", err)
 	}
 	if !equal {
-		t.Error("ConstantEqual: expected true for matching bytes")
+		t.Error("ConstantTimeEqual: expected true for matching bytes")
 	}
 
 	other := []byte("different-value-32-bytes-long---!")
-	notEqual, err := buf.ConstantEqual(other)
+	notEqual, err := buf.ConstantTimeEqual(other)
 	if err != nil {
-		t.Fatalf("ConstantEqual (different): %v", err)
+		t.Fatalf("ConstantTimeEqual (different): %v", err)
 	}
 	if notEqual {
-		t.Error("ConstantEqual: expected false for different bytes")
+		t.Error("ConstantTimeEqual: expected false for different bytes")
 	}
 }
 
@@ -375,9 +375,9 @@ func TestNilCallback_ReturnsError(t *testing.T) {
 	}
 }
 
-// TestRead_Write_BoundsCheck verifies that Read and Write return errors for
+// TestCopyOut_CopyIn_BoundsCheck verifies that Read and Write return errors for
 // out-of-range offsets rather than panicking.
-func TestRead_Write_BoundsCheck(t *testing.T) {
+func TestCopyOut_CopyIn_BoundsCheck(t *testing.T) {
 	t.Parallel()
 
 	const size = 16
@@ -401,7 +401,7 @@ func TestRead_Write_BoundsCheck(t *testing.T) {
 	for _, tc := range cases {
 		t.Run("Read/"+tc.name, func(t *testing.T) {
 			t.Parallel()
-			n, err := buf.Read(dst, tc.offset)
+			n, err := buf.CopyOut(dst, tc.offset)
 			if err == nil {
 				t.Errorf("Read(offset=%d): expected error, got n=%d nil", tc.offset, n)
 			}
@@ -409,7 +409,7 @@ func TestRead_Write_BoundsCheck(t *testing.T) {
 		t.Run("Write/"+tc.name, func(t *testing.T) {
 			t.Parallel()
 			src := make([]byte, 4)
-			n, err := buf.Write(src, tc.offset)
+			n, err := buf.CopyIn(src, tc.offset)
 			if err == nil {
 				t.Errorf("Write(offset=%d): expected error, got n=%d nil", tc.offset, n)
 			}
@@ -417,7 +417,7 @@ func TestRead_Write_BoundsCheck(t *testing.T) {
 	}
 
 	// A zero-length dst/src at offset 0 should always succeed.
-	if n, err := buf.Read(nil, 0); err != nil || n != 0 {
+	if n, err := buf.CopyOut(nil, 0); err != nil || n != 0 {
 		t.Errorf("Read(nil, 0): got n=%d, err=%v; want 0, nil", n, err)
 	}
 }

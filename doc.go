@@ -74,7 +74,7 @@
 // return:
 //
 //	err = secmem.Scope(len(rawBytes), func(buf *secmem.SecureBuffer) error {
-//	    if _, err := buf.Write(rawBytes, 0); err != nil {
+//	    if _, err := buf.CopyIn(rawBytes, 0); err != nil {
 //	        return fmt.Errorf("write: %w", err)
 //	    }
 //	    return doSomethingWith(buf)

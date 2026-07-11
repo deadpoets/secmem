@@ -112,7 +112,7 @@ func BenchmarkWithBytesErr_Sized(b *testing.B) {
 }
 
 // BenchmarkRead measures bulk read with copy.
-func BenchmarkRead(b *testing.B) {
+func BenchmarkCopyOut(b *testing.B) {
 	sizes := []int{32, 256, 4096}
 	for _, sz := range sizes {
 		b.Run(sizeName(sz), func(b *testing.B) {
@@ -122,14 +122,14 @@ func BenchmarkRead(b *testing.B) {
 			b.SetBytes(int64(sz))
 			b.ResetTimer()
 			for b.Loop() {
-				_, _ = buf.Read(dst, 0)
+				_, _ = buf.CopyOut(dst, 0)
 			}
 		})
 	}
 }
 
 // BenchmarkWrite measures bulk write with copy.
-func BenchmarkWrite(b *testing.B) {
+func BenchmarkCopyIn(b *testing.B) {
 	sizes := []int{32, 256, 4096}
 	for _, sz := range sizes {
 		b.Run(sizeName(sz), func(b *testing.B) {
@@ -139,7 +139,7 @@ func BenchmarkWrite(b *testing.B) {
 			b.SetBytes(int64(sz))
 			b.ResetTimer()
 			for b.Loop() {
-				_, _ = buf.Write(src, 0)
+				_, _ = buf.CopyIn(src, 0)
 			}
 		})
 	}
@@ -171,8 +171,8 @@ func BenchmarkSetByteAt(b *testing.B) {
 	b.ReportAllocs()
 }
 
-// BenchmarkConstantEqual measures constant-time comparison.
-func BenchmarkConstantEqual(b *testing.B) {
+// BenchmarkConstantTimeEqual measures constant-time comparison.
+func BenchmarkConstantTimeEqual(b *testing.B) {
 	sizes := []int{32, 256, 4096}
 	for _, sz := range sizes {
 		b.Run(sizeName(sz), func(b *testing.B) {
@@ -182,7 +182,7 @@ func BenchmarkConstantEqual(b *testing.B) {
 			b.SetBytes(int64(sz))
 			b.ResetTimer()
 			for b.Loop() {
-				_, _ = buf.ConstantEqual(other)
+				_, _ = buf.ConstantTimeEqual(other)
 			}
 		})
 	}
@@ -327,8 +327,8 @@ func BenchmarkWithBytesErr_Parallel_Sized(b *testing.B) {
 	runtime.KeepAlive(sink)
 }
 
-// BenchmarkRead_Parallel measures contended bulk read throughput.
-func BenchmarkRead_Parallel(b *testing.B) {
+// BenchmarkCopyOut_Parallel measures contended bulk read throughput.
+func BenchmarkCopyOut_Parallel(b *testing.B) {
 	buf := mustBuffer(b, 4096)
 	defer destroyBuffer(b, buf)
 
@@ -337,7 +337,7 @@ func BenchmarkRead_Parallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		dst := make([]byte, 4096)
 		for pb.Next() {
-			_, _ = buf.Read(dst, 0)
+			_, _ = buf.CopyOut(dst, 0)
 		}
 	})
 }

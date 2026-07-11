@@ -33,8 +33,8 @@ import (
 // This is the preferred access pattern; use WithBytesErr when fn returns an error.
 //
 // NOT REENTRANT: fn MUST NOT call any access method on the SAME buffer
-// (WithBytes, WithBytesErr, Read, ConstantEqual, …). The lock is writer-
-// preferring, so if another goroutine calls Destroy/Write/Seal/ReadOnly while
+// (WithBytes, WithBytesErr, CopyOut, ConstantTimeEqual, …). The lock is writer-
+// preferring, so if another goroutine calls Destroy/CopyIn/Seal/ReadOnly while
 // fn holds the read lock, a nested same-buffer read lock would block on the
 // waiting writer while that writer blocks on fn's outstanding read lock —
 // a deadlock. Nesting access to a DIFFERENT buffer (e.g. the decrypt-into
@@ -124,13 +124,14 @@ func (s *SecureBuffer) ExposeString() (string, error) {
 	return str, nil
 }
 
-// Read copies bytes from the buffer into dst, starting at srcOffset.
+// CopyOut copies bytes from the buffer into dst, starting at srcOffset.
 // Returns the number of bytes copied (min of len(dst) and available bytes).
 //
-// The RLock is held for the entire copy. If dst is itself an off-heap region,
-// no heap copy occurs. If dst is heap-allocated, the caller is responsible
-// for wiping it.
-func (s *SecureBuffer) Read(dst []byte, srcOffset int) (int, error) {
+// It is a random-access copy, not an [io.Reader]; the streaming counterpart is
+// [SecureBuffer.WriteTo]. The RLock is held for the entire copy. If dst is
+// itself an off-heap region, no heap copy occurs. If dst is heap-allocated,
+// the caller is responsible for wiping it.
+func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
@@ -143,17 +144,19 @@ func (s *SecureBuffer) Read(dst []byte, srcOffset int) (int, error) {
 		return 0, ErrSealed
 	}
 	if srcOffset < 0 || srcOffset >= len(s.data) {
-		return 0, fmt.Errorf("secmem.SecureBuffer.Read: srcOffset %d out of range [0, %d)", srcOffset, len(s.data))
+		return 0, fmt.Errorf("secmem.SecureBuffer.CopyOut: srcOffset %d out of range [0, %d)", srcOffset, len(s.data))
 	}
 	return copy(dst, s.data[srcOffset:]), nil
 }
 
-// Write copies bytes from src into the buffer, starting at dstOffset.
+// CopyIn copies bytes from src into the buffer, starting at dstOffset.
 // Returns the number of bytes written (min of len(src) and available space).
 //
-// The exclusive lock is held for the copy, serializing all concurrent writes
-// and preventing races with ReadOnly/ReadWrite page-protection changes.
-func (s *SecureBuffer) Write(src []byte, dstOffset int) (int, error) {
+// It is a random-access copy, not an [io.Writer]; the streaming counterpart is
+// [SecureBuffer.ReadFrom]. The exclusive lock is held for the copy,
+// serializing all concurrent writes and preventing races with
+// ReadOnly/ReadWrite page-protection changes.
+func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
@@ -166,7 +169,7 @@ func (s *SecureBuffer) Write(src []byte, dstOffset int) (int, error) {
 		return 0, ErrSealed
 	}
 	if dstOffset < 0 || dstOffset >= len(s.data) {
-		return 0, fmt.Errorf("secmem.SecureBuffer.Write: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
+		return 0, fmt.Errorf("secmem.SecureBuffer.CopyIn: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
 	}
 	return copy(s.data[dstOffset:], src), nil
 }
@@ -219,10 +222,10 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	return nil
 }
 
-// ConstantEqual performs a constant-time comparison of the buffer contents
+// ConstantTimeEqual performs a constant-time comparison of the buffer contents
 // against other. Returns (false, nil) when lengths differ.
 // Returns (false, ErrDestroyed) if the buffer has been destroyed.
-func (s *SecureBuffer) ConstantEqual(other []byte) (bool, error) {
+func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 	if s == nil {
 		return false, ErrDestroyed
 	}

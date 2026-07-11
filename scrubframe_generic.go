@@ -1,6 +1,6 @@
 //go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && !amd64
 
-// Non-amd64 stub for the legacy frame wipe.
+// Non-amd64 stub for the scrub-frame wipe.
 //
 // wipeScratchFrameFull is a no-op: we cannot safely zero stack memory without
 // architecture-specific assembly, so Scrub's frame scrub is a no-op here and

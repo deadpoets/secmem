@@ -112,18 +112,18 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 		}
 	})
 
-	t.Run("Read", func(t *testing.T) {
+	t.Run("CopyOut", func(t *testing.T) {
 		dst := make([]byte, 8)
-		_, gotErr := buf.Read(dst, 0)
+		_, gotErr := buf.CopyOut(dst, 0)
 		if !errors.Is(gotErr, ErrSealed) {
-			t.Errorf("Read = %v, want ErrSealed", gotErr)
+			t.Errorf("CopyOut = %v, want ErrSealed", gotErr)
 		}
 	})
 
-	t.Run("Write", func(t *testing.T) {
-		_, gotErr := buf.Write([]byte{0x00}, 0)
+	t.Run("CopyIn", func(t *testing.T) {
+		_, gotErr := buf.CopyIn([]byte{0x00}, 0)
 		if !errors.Is(gotErr, ErrSealed) {
-			t.Errorf("Write = %v, want ErrSealed", gotErr)
+			t.Errorf("CopyIn = %v, want ErrSealed", gotErr)
 		}
 	})
 
@@ -141,10 +141,10 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 		}
 	})
 
-	t.Run("ConstantEqual", func(t *testing.T) {
-		_, gotErr := buf.ConstantEqual(make([]byte, 32))
+	t.Run("ConstantTimeEqual", func(t *testing.T) {
+		_, gotErr := buf.ConstantTimeEqual(make([]byte, 32))
 		if !errors.Is(gotErr, ErrSealed) {
-			t.Errorf("ConstantEqual = %v, want ErrSealed", gotErr)
+			t.Errorf("ConstantTimeEqual = %v, want ErrSealed", gotErr)
 		}
 	})
 

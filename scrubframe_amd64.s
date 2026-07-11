@@ -1,6 +1,6 @@
 //go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && amd64
 
-// Legacy wipe assembly for AMD64.
+// Scrub-frame assembly for AMD64.
 //
 //   wipeScratchFrameFull()  — zeros a 32 KiB local frame using REP STOSB + SFENCE.
 //     Allocates a fixed-size local stack frame and zeros it. Because it is

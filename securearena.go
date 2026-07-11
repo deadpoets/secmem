@@ -15,8 +15,8 @@
 //
 // # Pointer-Free Slot Index
 //
-// secureArenaSlot contains only scalar fields (no pointer fields, no slice
-// headers, no interface values).  The GC treats a []secureArenaSlot as a
+// slotMeta contains only scalar fields (no pointer fields, no slice
+// headers, no interface values).  The GC treats a []slotMeta as a
 // "leaf" allocation — it scans the slice header but does NOT trace into the
 // backing array.  This eliminates per-slot GC scanning entirely.
 //
@@ -57,15 +57,15 @@ import (
 	"sync"
 )
 
-// secureArenaSlot holds per-slot metadata.
+// slotMeta holds per-slot metadata.
 //
 // Pointer-free: contains only uint32 and padding bytes.
-// The GC treats a []secureArenaSlot backing array as a leaf — no per-slot GC
+// The GC treats a []slotMeta backing array as a leaf — no per-slot GC
 // scanning occurs regardless of how many slots the arena contains.
 //
 // Padded to 64 bytes to align each slot metadata to a CPU cache line, avoiding
 // false-sharing between concurrent slot operations.
-type secureArenaSlot struct {
+type slotMeta struct {
 	// inUse is uint32 (not bool) to allow future lock-free upgrade to atomic.Uint32;
 	// 1 = live (acquired), 0 = free; accessed under arena.alloc.
 	inUse      uint32
@@ -97,7 +97,7 @@ type SecureArena struct {
 
 	// slots is the metadata index.  Pointer-free leaf — GC scans the slice
 	// header but NOT the backing array.  len(slots) == count.
-	slots []secureArenaSlot
+	slots []slotMeta
 
 	// slotSize is the usable bytes per slot (caller-requested; access is always
 	// raw[idx*slotSize : (idx+1)*slotSize]).
@@ -160,7 +160,7 @@ func NewArena(slotSize, count int) (*SecureArena, error) {
 	a := &SecureArena{
 		mu:       newBufferRWLock(),
 		raw:      allocRaw,
-		slots:    make([]secureArenaSlot, count),
+		slots:    make([]slotMeta, count),
 		slotSize: slotSize,
 		count:    count,
 	}
