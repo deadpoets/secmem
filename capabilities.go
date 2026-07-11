@@ -39,10 +39,12 @@ type Capabilities struct {
 	// Linux amd64 with kernel 5.14+ only, and can fail per-allocation.
 	MemfdSecret bool
 
-	// NoDump reports the allocation is excluded from core dumps
-	// (MADV_DONTDUMP took effect, or the memory is memfd_secret-backed).
-	// Process-wide exclusion (PR_SET_DUMPABLE=0) is [HardenProcess]'s job
-	// and is NOT reflected here.
+	// NoDump reports the allocation is excluded from crash dumps: on Linux,
+	// MADV_DONTDUMP took effect or the memory is memfd_secret-backed; on
+	// Windows, WerRegisterExcludedMemoryBlock succeeded — which covers
+	// WER-generated dumps only (a debugger-driven dump still captures the
+	// pages; Seal's cipher covers the dormant window there). Process-wide
+	// exclusion ([HardenProcess], [DisableCoreDumps]) is NOT reflected here.
 	NoDump bool
 
 	// NoFork reports MADV_DONTFORK took effect: forked children do not

@@ -38,6 +38,42 @@ import (
 // constructors never need the insecure-fallback gate here.
 const platformHasSecureMemory = true
 
+// WER dump exclusion — the Windows analog of MADV_DONTDUMP. Registered
+// per-allocation; HONEST LIMITS: it covers WER-generated dumps (crash
+// reporting, including full dumps) only. A debugger or an explicit
+// MiniDumpWriteDump by another process still captures the pages — Seal's
+// kernel-keyed cipher covers the dormant window there. Registration can fail
+// (WER caps the number of excluded blocks per process); the outcome is
+// recorded per-allocation in allocInfo.noDump, never assumed.
+//
+//nolint:gochecknoglobals // process-wide lazy handles to a System32 DLL.
+var (
+	procWerRegisterExcludedMemoryBlock   = windows.NewLazySystemDLL("kernel32.dll").NewProc("WerRegisterExcludedMemoryBlock")
+	procWerUnregisterExcludedMemoryBlock = windows.NewLazySystemDLL("kernel32.dll").NewProc("WerUnregisterExcludedMemoryBlock")
+)
+
+// werExcludeFromDumps registers the secret area for exclusion from WER
+// dumps. Returns whether the exclusion is in force (HRESULT S_OK == 0).
+func werExcludeFromDumps(inner []byte) bool {
+	if len(inner) == 0 || len(inner) > int(^uint32(0)) {
+		return false
+	}
+	hr, _, _ := procWerRegisterExcludedMemoryBlock.Call(
+		uintptr(unsafe.Pointer(&inner[0])),
+		uintptr(uint32(len(inner))),
+	)
+	return hr == 0
+}
+
+// werUnexclude removes the exclusion before the region is freed, releasing
+// the registration slot (WER caps them per process). Best-effort.
+func werUnexclude(inner []byte) {
+	if len(inner) == 0 {
+		return
+	}
+	_, _, _ = procWerUnregisterExcludedMemoryBlock.Call(uintptr(unsafe.Pointer(&inner[0])))
+}
+
 // allocSecretMem allocates a guarded, page-aligned, VirtualLock'd off-heap
 // region.
 //
@@ -88,8 +124,11 @@ func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, er
 		return secRegion{}, nil, allocInfo{}, fmt.Errorf("VirtualLock: %w", lockErr)
 	}
 
+	// Best-effort WER dump exclusion; the outcome is reported, not assumed.
+	noDump := werExcludeFromDumps(inner)
+
 	region = secRegion{outer: outer, inner: inner}
-	return region, inner[:size:size], allocInfo{offHeap: true, mlocked: true, guardPages: true}, nil
+	return region, inner[:size:size], allocInfo{offHeap: true, mlocked: true, noDump: noDump, guardPages: true}, nil
 }
 
 // allocMapAnon allocates off-heap memory. On Windows this is identical to
@@ -108,6 +147,7 @@ func freeSecretMem(region secRegion) error {
 	if len(region.outer) == 0 {
 		return nil
 	}
+	werUnexclude(region.inner) // release the WER registration slot
 	//nolint:gosec // G103: recovering VirtualAlloc addresses for VirtualUnlock/VirtualFree.
 	innerAddr := uintptr(unsafe.Pointer(&region.inner[0]))
 	_ = windows.VirtualUnlock(innerAddr, uintptr(len(region.inner)))
