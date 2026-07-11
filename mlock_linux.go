@@ -137,6 +137,18 @@ func allocMapAnonGuarded(pageSize, rounded, total int) (secRegion, allocInfo, er
 	noDump := unix.Madvise(inner, unix.MADV_DONTDUMP) == nil
 	noFork := unix.Madvise(inner, unix.MADV_DONTFORK) == nil
 
+	// Deny the kernel's page-copying optimizations — both can duplicate
+	// secret bytes onto physical frames outside our wipe's reach:
+	//   - NOHUGEPAGE: khugepaged collapses anon pages into a transparent
+	//     hugepage by COPYING them and freeing the originals unwiped.
+	//   - UNMERGEABLE: with PR_SET_MEMORY_MERGE (Linux 6.4+) a container
+	//     runtime can opt a whole process into KSM, deduplicating identical
+	//     secret pages across processes — a cross-process timing channel.
+	// Failures are swallowed deliberately: they mean the kernel was built
+	// without THP/KSM, i.e. the threat being disabled does not exist.
+	_ = unix.Madvise(inner, unix.MADV_NOHUGEPAGE)
+	_ = unix.Madvise(inner, unix.MADV_UNMERGEABLE)
+
 	return secRegion{outer: outer, inner: inner}, allocInfo{
 		offHeap:    true,
 		mlocked:    true,
@@ -189,6 +201,11 @@ func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
 		_ = unix.Munmap(outer)
 		return secRegion{}, errors.New("mmap memfd_secret MAP_FIXED: kernel returned a different address")
 	}
+
+	// Best-effort THP opt-out, as on the anon path. secretmem folios are not
+	// expected to be khugepaged candidates, but the call costs nothing and
+	// removes the assumption. (KSM is anon-only — not applicable here.)
+	_ = unix.Madvise(inner, unix.MADV_NOHUGEPAGE)
 
 	return secRegion{outer: outer, inner: inner}, nil
 }
