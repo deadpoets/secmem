@@ -7,9 +7,9 @@ import (
 	"unsafe"
 )
 
-// Regression guard for the legacy SecretDo stack scrub on amd64, where
+// Regression guard for the legacy Scrub stack scrub on amd64, where
 // wipeScratchFrameFull is real assembly. It pins the reserve-then-wipe fix:
-// SecretDo must reach the residue a SHALLOW call tree leaves, with NO manual
+// Scrub must reach the residue a SHALLOW call tree leaves, with NO manual
 // stack pre-growth — the exact case a single deferred wipe silently missed,
 // because allocating the 32 KiB wipe frame relocated the stack out from under
 // it. Without the entry-side reserve this test fails (markers survive).
@@ -60,21 +60,21 @@ func countMarkers(addr uintptr) int {
 	return c
 }
 
-// TestSecretDo_ScrubsShallowCallTree verifies SecretDo scrubs the stack residue
+// TestScrub_ScrubsShallowCallTree verifies Scrub scrubs the stack residue
 // its own shallow call tree leaves — without any manual pre-growth.
-func TestSecretDo_ScrubsShallowCallTree(t *testing.T) {
+func TestScrub_ScrubsShallowCallTree(t *testing.T) {
 	// Control: confirm markers are observable on dead stack when nothing scrubs
 	// them. If a future toolchain zeros eagerly, the subject would be vacuous.
 	if countMarkers(plantMarkers(4)) == 0 {
 		t.Skip("stack markers not observable on this build; scrub assertion would be vacuous")
 	}
 
-	// Subject: SecretDo must zero the residue of its own call tree.
+	// Subject: Scrub must zero the residue of its own call tree.
 	var addr uintptr
-	SecretDo(func() { addr = plantMarkers(4) })
+	Scrub(func() { addr = plantMarkers(4) })
 
 	if got := countMarkers(addr); got != 0 {
-		t.Errorf("SecretDo left %d/%d secret marker bytes on the stack — "+
+		t.Errorf("Scrub left %d/%d secret marker bytes on the stack — "+
 			"reserve-then-wipe regressed (a shallow-stack wipe relocated and missed)", got, scrubPad)
 	}
 }

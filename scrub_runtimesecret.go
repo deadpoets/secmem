@@ -1,16 +1,16 @@
 //go:build goexperiment.runtimesecret && linux && (amd64 || arm64)
 
-// secretdo_runtimesecret.go is the primary-path SecretDo
-// backed by runtime/secret (GOEXPERIMENT=runtimesecret, linux/amd64|arm64).
-// The legacy best-effort equivalent lives in secretdo_legacy.go; the two files
+// scrub_runtimesecret.go is the primary-path Scrub, backed by runtime/secret
+// (GOEXPERIMENT=runtimesecret, linux/amd64|arm64).
+// The legacy best-effort equivalent lives in scrub_legacy.go; the two files
 // are mutually exclusive by build tag and export an identical API.
 
 package secmem
 
 import "runtime/secret"
 
-// SecretDo runs fn with hardware-backed secret hygiene: the registers and stack
-// used by fn's entire call tree are erased before SecretDo returns, and heap
+// Scrub runs fn with hardware-backed secret hygiene: the registers and stack
+// used by fn's entire call tree are erased before Scrub returns, and heap
 // allocations made by fn are erased once the GC observes they are unreachable.
 //
 // Use it to wrap the "toxic-waste" trees that SecureBuffer cannot reach —
@@ -19,7 +19,7 @@ import "runtime/secret"
 // in CPU registers, stack spills, and intermediate heap are scrubbed rather
 // than left for swap/core-dump/`/proc/<pid>/mem` to expose.
 //
-// Result survival: a value produced inside fn survives SecretDo only while it
+// Result survival: a value produced inside fn survives Scrub only while it
 // remains referenced after fn returns (e.g. assigned to a variable declared
 // outside fn). Returned-and-retained values are therefore safe. For large or
 // grown allocations, copy the result into a caller-allocated buffer to avoid
@@ -27,20 +27,20 @@ import "runtime/secret"
 //
 // Constraints (inherited from runtime/secret.Do): fn should be allocation-light
 // and goroutine-free, and erasure does NOT extend to globals written by fn or
-// to goroutines fn spawns. Panics from fn propagate (as if from SecretDo).
+// to goroutines fn spawns. Panics from fn propagate (as if from Scrub).
 //
-// SecretDo(nil) is a no-op.
-func SecretDo(fn func()) {
+// Scrub(nil) is a no-op.
+func Scrub(fn func()) {
 	if fn == nil {
 		return
 	}
 	secret.Do(fn)
 }
 
-// SecretDoErr is [SecretDo] for a fn that returns an error. The returned error
-// is referenced by the caller and so is not erased. SecretDoErr(nil) is a no-op
+// ScrubErr is [Scrub] for a fn that returns an error. The returned error
+// is referenced by the caller and so is not erased. ScrubErr(nil) is a no-op
 // that returns nil.
-func SecretDoErr(fn func() error) error {
+func ScrubErr(fn func() error) error {
 	if fn == nil {
 		return nil
 	}

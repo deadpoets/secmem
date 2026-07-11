@@ -1,7 +1,7 @@
-// secretdo.go holds the build-tag-independent SecretDo
-// surface: the startup posture assertion. The SecretDo/SecretDoErr/
-// RuntimeSecretActive implementations are split across secretdo_runtimesecret.go
-// (primary) and secretdo_legacy.go (best-effort) by build tag.
+// scrub.go holds the build-tag-independent Scrub surface: the startup posture
+// assertion. The Scrub/ScrubErr/RuntimeSecretActive implementations are split
+// across scrub_runtimesecret.go (primary) and scrub_legacy.go (best-effort) by
+// build tag.
 
 package secmem
 
@@ -9,7 +9,7 @@ import "errors"
 
 // ErrRuntimeSecretInactive indicates the process was built without
 // GOEXPERIMENT=runtimesecret on a platform that supports it — the
-// register/stack/heap erasure layer ([SecretDo]) is therefore NOT active and
+// register/stack/heap erasure layer ([Scrub]) is therefore NOT active and
 // only the legacy best-effort frame scrub is in force.
 var ErrRuntimeSecretInactive = errors.New(
 	"runtime/secret erasure inactive: built without GOEXPERIMENT=runtimesecret on a supported platform")

@@ -25,7 +25,7 @@
 // func wipeScratchFrameFull()
 //
 // Allocates 32768 bytes of local frame, zeros it with REP STOSB + SFENCE.
-// Deferred by SecretDo/SecretDoErr on the legacy path for a wide-coverage scrub
+// Deferred by Scrub/ScrubErr on the legacy path for a wide-coverage scrub
 // after a secret-touching call tree returns.
 TEXT ·wipeScratchFrameFull(SB), $32768-0
 	MOVQ	$32768, CX

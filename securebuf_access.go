@@ -114,9 +114,9 @@ func (s *SecureBuffer) ExposeString() (string, error) {
 		// aliasing its global staticuint64s table (no copy is made), and
 		// mutating a string a caller may have retained violates Go's
 		// immutability contract and races readers invisibly to the race
-		// detector. On runtimesecret builds SecretDo makes the copy a
+		// detector. On runtimesecret builds Scrub makes the copy a
 		// GC-tracked allocation that is erased once nothing references it.
-		SecretDo(func() { str = string(b) }) //nolint:secmem-lint
+		Scrub(func() { str = string(b) }) //nolint:secmem-lint
 		return nil
 	}); err != nil {
 		return "", err

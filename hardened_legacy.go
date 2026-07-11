@@ -5,7 +5,7 @@
 // experiment disabled). On the primary path this file is excluded by the build
 // tag and runtime/secret handles scrubbing in hardware.
 //
-// The cross-platform secret-scrubbing entry point is SecretDo (secretdo_*.go),
+// The cross-platform secret-scrubbing entry point is Scrub (scrub_*.go),
 // which applies the legacy frame wipe on these builds and hardware erasure on
 // the primary path. This file provides only the WipeBytes / WipeArray helpers.
 

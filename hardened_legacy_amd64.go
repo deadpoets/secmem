@@ -5,7 +5,7 @@
 package secmem
 
 // wipeScratchFrameFull allocates a 32 KiB local frame and zeros it via
-// REP STOSB + SFENCE. SecretDo/SecretDoErr defer it on the legacy path to scrub
+// REP STOSB + SFENCE. Scrub/ScrubErr defer it on the legacy path to scrub
 // register spills and callee frame data after a secret-touching call tree
 // returns. Must NOT be inlined — inlining would merge the frame into the
 // caller's frame.

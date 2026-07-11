@@ -6,38 +6,38 @@ import (
 	"testing"
 )
 
-func TestSecretDo_RunsFn(t *testing.T) {
+func TestScrub_RunsFn(t *testing.T) {
 	t.Parallel()
 	ran := false
-	SecretDo(func() { ran = true })
+	Scrub(func() { ran = true })
 	if !ran {
-		t.Fatal("SecretDo did not invoke fn")
+		t.Fatal("Scrub did not invoke fn")
 	}
 }
 
-func TestSecretDoErr_PropagatesError(t *testing.T) {
+func TestScrubErr_PropagatesError(t *testing.T) {
 	t.Parallel()
 	sentinel := errors.New("boom")
-	err := SecretDoErr(func() error { return sentinel })
+	err := ScrubErr(func() error { return sentinel })
 	if !errors.Is(err, sentinel) {
-		t.Fatalf("SecretDoErr error = %v, want %v", err, sentinel)
+		t.Fatalf("ScrubErr error = %v, want %v", err, sentinel)
 	}
 }
 
-func TestSecretDoErr_NilOnSuccess(t *testing.T) {
+func TestScrubErr_NilOnSuccess(t *testing.T) {
 	t.Parallel()
-	if err := SecretDoErr(func() error { return nil }); err != nil {
-		t.Fatalf("SecretDoErr = %v, want nil", err)
+	if err := ScrubErr(func() error { return nil }); err != nil {
+		t.Fatalf("ScrubErr = %v, want nil", err)
 	}
 }
 
-// TestSecretDo_ResultSurvives is the guard against the runtime/secret erasure
-// zeroing a result we still need. A value produced inside SecretDo and kept
-// referenced (assigned to an outer variable) MUST remain intact after SecretDo
+// TestScrub_ResultSurvives is the guard against the runtime/secret erasure
+// zeroing a result we still need. A value produced inside Scrub and kept
+// referenced (assigned to an outer variable) MUST remain intact after Scrub
 // returns. Run under GOEXPERIMENT=runtimesecret to exercise the real erasure:
 //
 //	GOEXPERIMENT=runtimesecret CGO_ENABLED=0 go test -run ResultSurvives ./...
-func TestSecretDo_ResultSurvives(t *testing.T) {
+func TestScrub_ResultSurvives(t *testing.T) {
 	t.Parallel()
 
 	want := make([]byte, 64)
@@ -45,22 +45,22 @@ func TestSecretDo_ResultSurvives(t *testing.T) {
 		want[i] = byte(i*7 + 1)
 	}
 
-	// Produced inside SecretDo, retained via the outer variable `got`.
+	// Produced inside Scrub, retained via the outer variable `got`.
 	var got []byte
-	SecretDo(func() {
+	Scrub(func() {
 		got = make([]byte, 64)
 		for i := range got {
 			got[i] = byte(i*7 + 1)
 		}
 	})
 	if !bytes.Equal(got, want) {
-		t.Fatalf("result not preserved across SecretDo: got %x", got)
+		t.Fatalf("result not preserved across Scrub: got %x", got)
 	}
 
 	// Same via the error-returning form and a copy-out into a caller buffer
 	// (the documented best practice for results that must survive).
 	out := make([]byte, 64)
-	err := SecretDoErr(func() error {
+	err := ScrubErr(func() error {
 		tmp := make([]byte, 64)
 		for i := range tmp {
 			tmp[i] = byte(i*7 + 1)
@@ -69,21 +69,21 @@ func TestSecretDo_ResultSurvives(t *testing.T) {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("SecretDoErr: %v", err)
+		t.Fatalf("ScrubErr: %v", err)
 	}
 	if !bytes.Equal(out, want) {
 		t.Fatalf("copied-out result not preserved: got %x", out)
 	}
 }
 
-func TestSecretDo_PanicPropagates(t *testing.T) {
+func TestScrub_PanicPropagates(t *testing.T) {
 	t.Parallel()
 	defer func() {
 		if r := recover(); r == nil {
-			t.Fatal("expected panic to propagate through SecretDo")
+			t.Fatal("expected panic to propagate through Scrub")
 		}
 	}()
-	SecretDo(func() { panic("kaboom") })
+	Scrub(func() { panic("kaboom") })
 }
 
 // TestAssertRuntimeSecret_ConsistentWithActive verifies the posture policy:
@@ -107,12 +107,12 @@ func TestAssertRuntimeSecret_ConsistentWithActive(t *testing.T) {
 	}
 }
 
-// TestSecretDo_NilIsNoop verifies SecretDo(nil)/SecretDoErr(nil) do not panic
-// and that SecretDoErr(nil) returns nil.
-func TestSecretDo_NilIsNoop(t *testing.T) {
+// TestScrub_NilIsNoop verifies Scrub(nil)/ScrubErr(nil) do not panic
+// and that ScrubErr(nil) returns nil.
+func TestScrub_NilIsNoop(t *testing.T) {
 	t.Parallel()
-	SecretDo(nil) // must not panic
-	if err := SecretDoErr(nil); err != nil {
-		t.Errorf("SecretDoErr(nil) = %v, want nil", err)
+	Scrub(nil) // must not panic
+	if err := ScrubErr(nil); err != nil {
+		t.Errorf("ScrubErr(nil) = %v, want nil", err)
 	}
 }

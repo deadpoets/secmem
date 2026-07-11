@@ -3,7 +3,7 @@
 // Non-amd64 stubs for the legacy wipe helpers.
 //
 // wipeScratchFrameFull is a no-op: we cannot safely zero stack memory without
-// architecture-specific assembly, so SecretDo's frame scrub is a no-op here and
+// architecture-specific assembly, so Scrub's frame scrub is a no-op here and
 // secret hygiene relies on the Go runtime eventually zeroing freed goroutine
 // stacks.
 //

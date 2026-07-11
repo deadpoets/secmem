@@ -11,7 +11,7 @@ import (
 	"testing"
 )
 
-// TestSecretDo_WithBytesErr_Integration verifies that calling secret.Do wrapping
+// TestScrub_WithBytesErr_Integration verifies that calling secret.Do wrapping
 // a WithBytesErr callback:
 //   - Does not panic (no stack-manipulation interaction with bufferRWLock)
 //   - Provides access to the correct bytes inside the callback
@@ -19,7 +19,7 @@ import (
 //
 // This is the only test that imports runtime/secret. It is build-tagged to
 // ensure the main test suite compiles without GOEXPERIMENT=runtimesecret.
-func TestSecretDo_WithBytesErr_Integration(t *testing.T) {
+func TestScrub_WithBytesErr_Integration(t *testing.T) {
 	t.Parallel()
 
 	input := []byte("secret-do-integration-key")
