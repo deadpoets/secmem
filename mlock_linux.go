@@ -163,6 +163,14 @@ func allocMapAnonGuarded(pageSize, rounded, total int) (secRegion, allocInfo, er
 // (ENOSYS, EPERM, lockdown, disabled) if unavailable; the caller falls
 // through to L3.
 func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
+	// sysMemfdSecret (447) is the asm-generic syscall number, correct only on
+	// 64-bit architectures (amd64, arm64, riscv64). On 32-bit linux that
+	// number is a different syscall entirely, so do not attempt it — fall
+	// through to the mmap+mlock path. The check is a compile-time constant,
+	// so it costs nothing on 64-bit builds.
+	if unsafe.Sizeof(uintptr(0)) != 8 {
+		return secRegion{}, errors.New("memfd_secret: requires a 64-bit architecture")
+	}
 	fd, _, errno := unix.Syscall(sysMemfdSecret, 0, 0, 0)
 	if errno != 0 {
 		return secRegion{}, errno // ENOSYS = kernel too old / not built; EPERM = lockdown
