@@ -82,10 +82,13 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
 
-The suite has been executed on linux/amd64 (see [`KERNELS.md`](KERNELS.md));
-linux/arm64 uses the identical `memfd_secret` code path with the same
-(asm-generic) syscall number, but has not yet been run on real arm64 hardware —
-run the self-contained test binary there and it will confirm or skip honestly.
+The suite has been executed on real **linux/amd64 and linux/arm64** hardware,
+spanning kernels 5.10 through 7.x (see [`KERNELS.md`](KERNELS.md)). On arm64
+(Ampere Altra), the `memfd_secret` L4 path, the guard-page fault, the
+`/proc/self/mem` isolation proof, and the architecture-specific wipe assembly
+all pass. Whether `memfd_secret` is live depends on the kernel's
+`CONFIG_SECRETMEM`, not the version alone — where it is absent, secmem reports
+"fallback" and uses `mmap`+`mlock`, honestly, per allocation.
 
 Guard pages and the canary are a **memory-safety bug-catcher, not a
 confidentiality control** — they trap an accidental over/under-flow, and do
@@ -106,7 +109,9 @@ detailed in the godoc and the threat model.
 
 Full API docs, runnable examples, and per-symbol guarantees are on
 [pkg.go.dev](https://pkg.go.dev/github.com/deadpoets/secmem). Start with the
-package overview, then `THREAT-MODEL.md` for the limits.
+package overview, then [`THREAT-MODEL.md`](THREAT-MODEL.md) for the limits,
+[`ENVIRONMENTS.md`](ENVIRONMENTS.md) for behavior under root / non-root /
+containers, and [`KERNELS.md`](KERNELS.md) for the hardware the suite has run on.
 
 ## License
 

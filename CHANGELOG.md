@@ -44,5 +44,10 @@ mark the stability commitment.
   injection neutralization). Standard library only.
 - `KERNELS.md` — a log of the Linux kernels the suite has been executed on, with
   the guard-fault, `memfd_secret`-isolation, and canary proofs recorded per row.
+  Now includes real **arm64** (Ampere Altra) and a spread of amd64 kernels
+  (5.10 → 7.x) run on disposable cloud hardware.
+- `ENVIRONMENTS.md` — how secmem behaves across root / non-root / rootless and
+  constrained `RLIMIT_MEMLOCK`, and why `memfd_secret` availability is a kernel
+  `CONFIG_SECRETMEM` property rather than a version guarantee.
 
 [Unreleased]: https://github.com/deadpoets/secmem/commits/main

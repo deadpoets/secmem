@@ -28,8 +28,39 @@ VM (never cross-compiled-and-assumed). Columns:
 
 | Date | Kernel | Arch | Environment | secretmem | Suite | Proofs |
 |---|---|---|---|---|---|---|
+| 2026-07-12 | 6.17.0-1011-oracle | **arm64** | Oracle Cloud Ampere A1.Flex, Ubuntu 24.04 — **real aarch64 silicon** | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+| 2026-07-12 | 6.12.0-204.92.4.2.el9uek.aarch64 | **arm64** | Oracle Cloud Ampere A1.Flex, Oracle Linux 9 (UEK) | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+| 2026-07-12 | 6.8.0-1049-oracle | **arm64** | Oracle Cloud Ampere A1.Flex, Ubuntu 22.04 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+| 2026-07-12 | 6.12.0-204.92.4.2.el10uek.aarch64 | **arm64** | Oracle Cloud Ampere A1.Flex, Oracle Linux 10 (UEK) | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
+| 2026-07-11 | 7.0.8-200.fc44 | amd64 | Hetzner Cloud cx23, Fedora 44 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+| 2026-07-11 | 6.8.0-117-generic | amd64 | Hetzner Cloud cx23, Ubuntu 24.04 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+| 2026-07-11 | 6.1.0-47-amd64 | amd64 | Hetzner Cloud cx23, Debian 12 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
+| 2026-07-11 | 5.14.0-611.el9 | amd64 | Hetzner Cloud cx23, Rocky 9 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
+| 2026-07-11 | 5.10.0-43-amd64 | amd64 | Hetzner Cloud cx23, Debian 11 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
 | 2026-07-11 | 7.1.3 (mainline, `CONFIG_SECRETMEM=y`) | amd64 | WSL2 custom kernel, Ubuntu 26.04 on Windows 11 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
 | 2026-07-11 | 6.18.26.1-microsoft-standard-WSL2 | amd64 | WSL2 Ubuntu 26.04 on Windows 11 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+
+The cloud rows were executed on real, disposable hardware provisioned per-run
+(the arm64 rows on Ampere Altra), then torn down. Three things they establish:
+
+- **arm64 is now exercised on real silicon, across four kernels.** The
+  `memfd_secret` L4 path, the `MAP_FIXED`-into-a-reservation construction, the
+  guard-page fault, the `/proc/self/mem` isolation proof, and the arm64 wipe
+  assembly all pass on aarch64 — the one claim this log previously could not
+  back with evidence.
+- **`secretmem` availability is a kernel-config property, not just a
+  version — and it can regress between releases of the same distro family.**
+  Debian 12 (6.1) and Rocky 9 (5.14) are ≥ 5.14 yet ship **without**
+  `CONFIG_SECRETMEM`. More strikingly, **Oracle Linux 9's UEK (6.12) has it
+  live, while Oracle Linux 10's UEK (also 6.12) reports fallback** — same
+  vendor, same kernel version, one release apart, opposite result. Kernel
+  version alone never guarantees the L4 path; the library reports the truth
+  per allocation, every time.
+- **No cloud vendor's arm64 catalog currently offers a 7.x kernel** (checked
+  against Oracle's live image list, July 2026) — the arm64 rows top out at
+  6.17 for now. amd64 already has a 7.x row (Fedora 44, `secretmem` live);
+  the arm64 code paths are proven identical to the amd64 ones on 6.x, so this
+  is a coverage gap to close opportunistically, not an open risk.
 
 ## Reproducing a run
 
@@ -37,7 +68,7 @@ The suite compiles to one self-contained binary; the target machine needs no
 Go toolchain:
 
 ```sh
-GOOS=linux GOARCH=amd64 go test -c -o secmem.test .
+GOOS=linux GOARCH=amd64 go test -c -o secmem.test .   # or GOARCH=arm64
 ./secmem.test -test.count=1                       # full suite
 ./secmem.test -test.count=1 -test.v \
   -test.run 'TestGuardPages|TestCanary|TestMemfdIsolation|TestAllocMemfdSecret'
