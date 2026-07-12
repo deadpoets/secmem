@@ -1,9 +1,10 @@
-# golangci-lint configuration for secmem.
-#
-# Config lives in-repo; CI wiring is a later step. The set is curated, not
-# maximal — trust is inversely proportional to surface, tooling included. Run
-# with `make lint` (which also runs standalone staticcheck and, via `make
-# vuln`, govulncheck).
+# golangci-lint configuration for secmem — applied to BOTH modules in this
+# repo (golangci-lint finds this file by searching upward from the analyzed
+# directory, so runs inside secmem-crypto/ use it too; that includes the
+# _test.go exclusions below, accepted deliberately for the crypto module's
+# tests as well). CI runs it per module via golangci-lint-action; locally,
+# `make lint` loops over both modules. The set is curated, not maximal —
+# trust is inversely proportional to surface, tooling included.
 version: "2"
 
 linters:
