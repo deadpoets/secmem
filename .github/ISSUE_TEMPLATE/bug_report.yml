@@ -1,0 +1,47 @@
+name: Bug report
+description: Something doesn't behave as documented — an incorrect result, a wrong Capabilities/Probe report, a crash, a guarantee that isn't actually held.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Found a security issue rather than a functional bug? Use [private reporting](https://github.com/deadpoets/secmem/security) instead — see [SECURITY.md](../../SECURITY.md).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What you expected vs. what actually happened.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Minimal reproduction
+      description: A small `go run`-able snippet, or a failing test. Minimal beats complete.
+      render: go
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: secmem version / commit
+    validations:
+      required: true
+
+  - type: input
+    id: platform
+    attributes:
+      label: OS / arch / kernel version
+      description: "e.g. linux/amd64, kernel 6.8.0 — this matters, secmem's behavior is platform- and kernel-dependent (see the guarantee matrix in README.md)."
+    validations:
+      required: true
+
+  - type: textarea
+    id: capabilities
+    attributes:
+      label: Capabilities.String() / Probe() output
+      description: If relevant, paste what secmem itself reports about the environment.
+      render: text

@@ -113,6 +113,14 @@ package overview, then [`THREAT-MODEL.md`](THREAT-MODEL.md) for the limits,
 [`ENVIRONMENTS.md`](ENVIRONMENTS.md) for behavior under root / non-root /
 containers, and [`KERNELS.md`](KERNELS.md) for the hardware the suite has run on.
 
+## Contributing
+
+Bug fixes, hardening, and speedups-without-regression are welcome — see
+[CONTRIBUTING.md](CONTRIBUTING.md) for the workflow (every PR, including the
+maintainer's, goes through review and CI). Found a vulnerability? See
+[SECURITY.md](SECURITY.md) — please don't file it as a public issue.
+Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
+
 ## License
 
 Apache-2.0. See [LICENSE](LICENSE).

@@ -1,0 +1,32 @@
+name: Feature request
+description: Propose new functionality, a new platform code path, or an API change.
+labels: [enhancement]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        For anything beyond a small change, a short design discussion here saves a rewritten PR later — see [CONTRIBUTING.md](../../CONTRIBUTING.md#before-you-write-code).
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: What problem does this solve
+      description: The gap or friction you hit, not just the feature you want.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed approach
+      description: API sketch, or the mechanism you're picturing (e.g. a new platform's secure-memory primitive).
+    validations:
+      required: false
+
+  - type: textarea
+    id: guarantee
+    attributes:
+      label: What guarantee would this add or change
+      description: secmem's guarantees are stated per platform and each one is backed by a test (see README.md's honesty-first section). If this changes the guarantee matrix, say how.
+    validations:
+      required: false
