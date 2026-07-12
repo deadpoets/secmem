@@ -30,8 +30,19 @@ mark the stability commitment.
   frozen permanently.
 - `WipeScalar` — hardened wipe for `edwards25519.Scalar` values, whose
   unexported fields `SecureWipe` cannot reach.
-- Three fuzz targets (differential sign-vs-stdlib, HKDF, Argon2 cost
-  params) and sign-path benchmarks with allocation reporting.
+- `OpenInto` / `SealInto` — AEAD decryption directly into a `SecureBuffer`
+  (and encryption from one), so an AEAD plaintext never lands on the heap
+  as an intermediate. A tampered ciphertext leaves the buffer zeroed; the
+  in-place decrypt is measured at zero allocations.
+- `Key32` — X25519 Diffie-Hellman with the private scalar in a
+  `SecureBuffer`; `PublicKey`/`SharedSecret` (returned hardened, low-order
+  points rejected)/`WithScalar`/`Equal`. Verified against RFC 7748 vectors.
+- `MLKEM768Key` — post-quantum ML-KEM-768 (FIPS 203) decapsulation-key
+  custody: 64-byte seed in a `SecureBuffer`, expanded per operation;
+  `EncapsulationKeyBytes`/`Decapsulate`/`WithSeed`.
+- Fuzz targets (sign-vs-stdlib, HKDF, Argon2 params, AEAD round-trip,
+  X25519-vs-stdlib) and benchmarks with allocation reporting across the
+  sign, AEAD, DH, and KEM paths.
 
 ### Added
 
