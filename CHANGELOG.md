@@ -39,7 +39,9 @@ mark the stability commitment.
   points rejected)/`WithScalar`/`Equal`. Verified against RFC 7748 vectors.
 - `MLKEM768Key` — post-quantum ML-KEM-768 (FIPS 203) decapsulation-key
   custody: 64-byte seed in a `SecureBuffer`, expanded per operation;
-  `EncapsulationKeyBytes`/`Decapsulate`/`WithSeed`.
+  `EncapsulationKeyBytes`/`Decapsulate`/`WithSeed`. `EncapsulateInto`
+  hardens the sender side too, delivering the encapsulating peer's shared
+  secret into a `SecureBuffer` instead of the plain heap.
 - Fuzz targets (sign-vs-stdlib, HKDF, Argon2 params, AEAD round-trip,
   X25519-vs-stdlib) and benchmarks with allocation reporting across the
   sign, AEAD, DH, and KEM paths.

@@ -101,8 +101,10 @@ func NewMLKEM768Key(seedBuf *secmem.SecureBuffer) (*MLKEM768Key, error) {
 }
 
 // EncapsulationKeyBytes returns the 1184-byte public ML-KEM-768
-// encapsulation key, which a peer uses to produce ciphertexts. It is not
-// secret. Returns an error on a destroyed or sealed key.
+// encapsulation key, which a peer uses to produce ciphertexts (see
+// [EncapsulateInto]). It is not secret. It is recomputed from the seed on
+// each call, so it returns an error on a destroyed or sealed key; capture
+// it while the key is live if you need it later.
 func (k *MLKEM768Key) EncapsulationKeyBytes() ([]byte, error) {
 	if k == nil || k.seedBuf == nil {
 		return nil, fmt.Errorf("secmemcrypto: encapsulation key: %w", secmem.ErrDestroyed)
@@ -132,8 +134,11 @@ func (k *MLKEM768Key) EncapsulationKeyBytes() ([]byte, error) {
 // or if this key is destroyed or sealed. The expansion and decapsulation
 // run inside [secmem.ScrubErr].
 func (k *MLKEM768Key) Decapsulate(ciphertext []byte) (*secmem.SecureBuffer, error) {
-	if k == nil || k.seedBuf == nil {
+	if k == nil || k.seedBuf == nil || k.seedBuf.IsDestroyed() {
 		return nil, fmt.Errorf("secmemcrypto: decapsulate: %w", secmem.ErrDestroyed)
+	}
+	if k.seedBuf.IsSealed() {
+		return nil, fmt.Errorf("secmemcrypto: decapsulate: %w", secmem.ErrSealed)
 	}
 	out, err := secmem.NewEmptyBuffer(mlkem.SharedKeySize)
 	if err != nil {
@@ -162,6 +167,46 @@ func (k *MLKEM768Key) Decapsulate(ciphertext []byte) (*secmem.SecureBuffer, erro
 		return nil, fmt.Errorf("secmemcrypto: decapsulate: %w", err)
 	}
 	return out, nil
+}
+
+// EncapsulateInto is the sender-side mirror of [MLKEM768Key.Decapsulate]:
+// given a peer's 1184-byte encapsulation key (from their
+// [MLKEM768Key.EncapsulationKeyBytes]), it produces a ciphertext to send to
+// that peer and the freshly generated shared secret, returned in a new
+// SecureBuffer (the caller owns and must Destroy it). The ciphertext is
+// public; the shared secret is not.
+//
+// crypto/mlkem's Encapsulate returns the shared key as a plain heap []byte,
+// so EncapsulateInto copies it into protected memory and wipes the heap copy
+// inside [secmem.ScrubErr] — closing, on the sending side, the same heap
+// window Decapsulate closes on the receiving side. It does not require
+// (and has no access to) a decapsulation key, which is why it is a free
+// function rather than a method.
+func EncapsulateInto(encapsulationKey []byte) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
+	ek, err := mlkem.NewEncapsulationKey768(encapsulationKey)
+	if err != nil {
+		return nil, nil, fmt.Errorf("secmemcrypto: encapsulate: %w", err)
+	}
+	out, err := secmem.NewEmptyBuffer(mlkem.SharedKeySize)
+	if err != nil {
+		return nil, nil, fmt.Errorf("secmemcrypto: allocate shared key buffer: %w", err)
+	}
+	var ct []byte
+	err = secmem.ScrubErr(func() error {
+		shared, c := ek.Encapsulate()
+		ct = c
+		e := out.WithBytesErr(func(dst []byte) error {
+			copy(dst, shared)
+			return nil
+		})
+		secmem.SecureWipe(shared)
+		return e
+	})
+	if err != nil {
+		_ = out.Destroy()
+		return nil, nil, fmt.Errorf("secmemcrypto: encapsulate: %w", err)
+	}
+	return ct, out, nil
 }
 
 // WithSeed borrows the 64-byte seed for the duration of fn — the deliberate

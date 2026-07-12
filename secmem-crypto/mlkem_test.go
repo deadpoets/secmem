@@ -30,24 +30,38 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 		t.Fatalf("encapsulation key size = %d, want %d", len(ekBytes), mlkem.EncapsulationKeySize768)
 	}
 
-	ek, err := mlkem.NewEncapsulationKey768(ekBytes)
+	// Sender side: EncapsulateInto keeps the sender's shared secret hardened.
+	ct, senderShared, err := EncapsulateInto(ekBytes)
 	if err != nil {
-		t.Fatalf("NewEncapsulationKey768: %v", err)
+		t.Fatalf("EncapsulateInto: %v", err)
 	}
-	peerShared, ct := ek.Encapsulate()
+	defer senderShared.Destroy()
 
+	// Receiver side: Decapsulate must recover the identical shared secret.
 	got, err := k.Decapsulate(ct)
 	if err != nil {
 		t.Fatalf("Decapsulate: %v", err)
 	}
 	defer got.Destroy()
-	if err := got.WithBytesErr(func(sk []byte) error {
-		if !bytes.Equal(sk, peerShared) {
-			t.Errorf("shared key mismatch\n  got:  %x\n  want: %x", sk, peerShared)
+
+	if err := got.WithBytesErr(func(recv []byte) error {
+		eq, err := senderShared.ConstantTimeEqual(recv)
+		if err != nil {
+			return err
+		}
+		if !eq {
+			t.Error("sender and receiver ML-KEM shared secrets disagree")
 		}
 		return nil
 	}); err != nil {
 		t.Fatalf("WithBytesErr: %v", err)
+	}
+}
+
+func TestEncapsulateInto_BadKey(t *testing.T) {
+	t.Parallel()
+	if _, _, err := EncapsulateInto(make([]byte, 10)); err == nil {
+		t.Error("expected error for a malformed encapsulation key")
 	}
 }
 

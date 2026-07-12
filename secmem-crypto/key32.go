@@ -80,7 +80,9 @@ func NewKey32(scalarBuf *secmem.SecureBuffer) (*Key32, error) {
 }
 
 // PublicKey returns the X25519 public key (scalar × basepoint). The public
-// key is not secret. Returns an error on a destroyed or sealed key.
+// key is not secret. It is recomputed from the scalar on each call, so —
+// unlike a cached [Signer.Public] — it returns an error on a destroyed or
+// sealed key; capture it while the key is live if you need it later.
 func (k *Key32) PublicKey() ([32]byte, error) {
 	if k == nil || k.scalarBuf == nil {
 		return [32]byte{}, fmt.Errorf("secmemcrypto: public key: %w", secmem.ErrDestroyed)
@@ -108,8 +110,11 @@ func (k *Key32) PublicKey() ([32]byte, error) {
 // secret, which must never be used as key material — or if this key is
 // destroyed or sealed.
 func (k *Key32) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error) {
-	if k == nil || k.scalarBuf == nil {
+	if k == nil || k.scalarBuf == nil || k.scalarBuf.IsDestroyed() {
 		return nil, fmt.Errorf("secmemcrypto: shared secret: %w", secmem.ErrDestroyed)
+	}
+	if k.scalarBuf.IsSealed() {
+		return nil, fmt.Errorf("secmemcrypto: shared secret: %w", secmem.ErrSealed)
 	}
 	out, err := secmem.NewEmptyBuffer(curve25519.PointSize)
 	if err != nil {
@@ -150,13 +155,17 @@ func (k *Key32) WithScalar(fn func(scalar []byte) error) error {
 }
 
 // Equal reports, in constant time, whether k and other hold the same
-// scalar. Returns false if either key is destroyed.
+// scalar. Returns false if either key is nil, destroyed, or sealed.
 func (k *Key32) Equal(other *Key32) bool {
 	if k == nil || other == nil || k.scalarBuf == nil || other.scalarBuf == nil {
 		return false
 	}
 	if k.scalarBuf == other.scalarBuf {
-		return true // same backing buffer — avoids a re-entrant read lock
+		// Same backing buffer — equal by identity, which also avoids a
+		// re-entrant read lock. A destroyed or sealed buffer is not "equal",
+		// matching the distinct-key path below (where those states surface as
+		// ErrDestroyed/ErrSealed and yield false).
+		return !k.scalarBuf.IsDestroyed() && !k.scalarBuf.IsSealed()
 	}
 	var equal bool
 	err := k.scalarBuf.WithBytesErr(func(a []byte) error {
