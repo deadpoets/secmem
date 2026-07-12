@@ -10,6 +10,29 @@ mark the stability commitment.
 
 ## [Unreleased]
 
+> This repo now holds two independently versioned Go modules; entries below
+> are tagged by module. Untagged entries belong to the core `secmem` module.
+
+### Added (secmem-crypto — new module, not yet tagged)
+
+- `Signer` — a `crypto.Signer`/`crypto.MessageSigner` whose Ed25519 seed
+  lives in a `SecureBuffer` for its entire lifetime, with in-place RFC 8032
+  signing that bypasses `crypto/ed25519`'s FIPS cache (which panics on
+  mmap'd memory). Pure Ed25519 only; Ed25519ph and Ed25519ctx requests are
+  refused rather than silently mis-signed. `WithSeed` provides the
+  deliberate, documented egress point for generate-then-persist flows.
+- `HKDFInto` / `HKDFSHA256Into` — RFC 5869 HKDF deriving directly into a
+  `SecureBuffer`, with the full salt/info parameter surface (verified
+  against RFC 5869 test cases 1–3) and hash agility.
+- `Argon2IDKeyInto` / `Argon2DeriveInto` — Argon2id deriving directly into a
+  `SecureBuffer`; explicit cost parameters are validated (error, never
+  panic), and the defaults follow RFC 9106 §4's second recommended option,
+  frozen permanently.
+- `WipeScalar` — hardened wipe for `edwards25519.Scalar` values, whose
+  unexported fields `SecureWipe` cannot reach.
+- Three fuzz targets (differential sign-vs-stdlib, HKDF, Argon2 cost
+  params) and sign-path benchmarks with allocation reporting.
+
 ### Added
 
 - `SecureBuffer` — off-heap, page-locked secret storage with borrowing-closure
