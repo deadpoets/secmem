@@ -12,6 +12,7 @@ package secmem
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -31,11 +32,41 @@ func TestMlockFailure_ReturnsErrorNotPanic(t *testing.T) {
 	}
 }
 
+// dropCapIPCLock removes CAP_IPC_LOCK from the calling thread's effective,
+// permitted, and inheritable sets. Without this, a process holding the
+// capability — every root process, including the "root" inside a default
+// container — bypasses RLIMIT_MEMLOCK entirely, so the zero budget below would
+// be silently ignored and this negative test would assert nothing. Dropping it
+// makes the fail-closed contract genuinely testable under root, which is the
+// most common real deployment (root containers, rootless userns "root").
+//
+// Capabilities are per-thread and Go schedules goroutines across threads, so
+// the caller MUST runtime.LockOSThread() first and perform the mlock attempts
+// on the same locked thread; otherwise the allocation may run on a sibling
+// thread that still holds the capability.
+func dropCapIPCLock() error {
+	hdr := unix.CapUserHeader{Version: unix.LINUX_CAPABILITY_VERSION_3, Pid: 0} // 0 = self
+	var data [2]unix.CapUserData
+	if err := unix.Capget(&hdr, &data[0]); err != nil {
+		return err
+	}
+	const word, bit = unix.CAP_IPC_LOCK / 32, unix.CAP_IPC_LOCK % 32 // 14 → word 0, bit 14
+	mask := ^(uint32(1) << bit)
+	data[word].Effective &= mask
+	data[word].Permitted &= mask
+	data[word].Inheritable &= mask
+	return unix.Capset(&hdr, &data[0])
+}
+
 //nolint:gochecknoinits // deterministic child dispatch for the rlimit-poisoning test.
 func init() {
 	if os.Getenv("SECMEM_MLOCK_CHILD") != "1" {
 		return
 	}
+
+	// The capability drop and every mlock attempt below must run on one OS
+	// thread (capabilities are per-thread; see dropCapIPCLock).
+	runtime.LockOSThread()
 
 	// Pin the locked-memory budget to zero, hard and soft: no page can be
 	// mlock'd (and secretmem, which also counts against this limit, is
@@ -43,6 +74,15 @@ func init() {
 	if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{Cur: 0, Max: 0}); err != nil {
 		os.Stderr.WriteString("setrlimit(RLIMIT_MEMLOCK,0): " + err.Error() + "\n")
 		os.Exit(1)
+	}
+
+	// Drop CAP_IPC_LOCK so the zero budget is actually enforced for this
+	// process. If it cannot be dropped (capset refused), we cannot force mlock
+	// to fail here, so the assertion would be meaningless — report and pass
+	// rather than assert something the kernel will not enforce.
+	if err := dropCapIPCLock(); err != nil {
+		os.Stderr.WriteString("mlock-failure test inconclusive: cannot drop CAP_IPC_LOCK: " + err.Error() + "\n")
+		os.Exit(0)
 	}
 
 	// A panic here fails the child (non-zero exit) and the parent reports it.
