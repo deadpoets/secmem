@@ -7,9 +7,13 @@ updates:
     schedule:
       interval: "weekly"
 
-  # golang.org/x/sys is the only dependency; still worth automated bumps
-  # given secmem's syscall-level surface.
+  # Two Go modules: the core (x/sys only) and secmem-crypto (x/crypto,
+  # edwards25519 — the dependency class that actually receives security
+  # releases). Dependabot's gomod ecosystem does not recurse into nested
+  # modules, so each needs its own directory entry.
   - package-ecosystem: "gomod"
-    directory: "/"
+    directories:
+      - "/"
+      - "/secmem-crypto"
     schedule:
       interval: "weekly"

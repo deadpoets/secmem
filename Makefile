@@ -1,9 +1,13 @@
 # secmem — developer tasks. Everything here uses the standard Go toolchain;
 # the extra analyzers (golangci-lint, staticcheck, govulncheck) are optional
 # and only required by the `lint` and `vuln` targets.
+#
+# Two Go modules live in this repo (the core at the root, secmem-crypto/).
+# Go's ./... never crosses module boundaries — even under a go.work — so
+# every module-scoped target loops over MODULES to match what CI enforces.
 
 GO      ?= go
-PKGS    ?= ./...
+MODULES ?= . secmem-crypto
 COVER   ?= coverage.txt
 
 .PHONY: all
@@ -11,41 +15,37 @@ all: fmt vet test
 
 .PHONY: test
 test:
-	$(GO) test -race $(PKGS)
+	@for m in $(MODULES); do (cd $$m && $(GO) test -race ./...) || exit 1; done
 
 .PHONY: fmt
 fmt:
-	$(GO) fmt $(PKGS)
+	@for m in $(MODULES); do (cd $$m && $(GO) fmt ./...) || exit 1; done
 	gofmt -s -l .
 
 .PHONY: vet
 vet:
-	$(GO) vet $(PKGS)
+	@for m in $(MODULES); do (cd $$m && $(GO) vet ./...) || exit 1; done
 
 .PHONY: lint
 lint:
-	golangci-lint run
-	staticcheck $(PKGS)
+	@for m in $(MODULES); do (cd $$m && golangci-lint run && staticcheck ./...) || exit 1; done
 
 .PHONY: vuln
 vuln:
-	govulncheck $(PKGS)
+	@for m in $(MODULES); do (cd $$m && govulncheck ./...) || exit 1; done
 
 .PHONY: fuzz
 fuzz:
-	$(GO) test -run '^$$' -fuzz . -fuzztime 30s $(PKGS)
+	@for m in $(MODULES); do (cd $$m && $(GO) test -run '^$$' -fuzz . -fuzztime 30s ./...) || exit 1; done
 
 .PHONY: cover
 cover:
-	$(GO) test -race -coverprofile=$(COVER) $(PKGS)
-	$(GO) tool cover -func=$(COVER)
+	@for m in $(MODULES); do (cd $$m && $(GO) test -race -coverprofile=$(COVER) ./... && $(GO) tool cover -func=$(COVER)) || exit 1; done
 
 .PHONY: tidy
 tidy:
-	$(GO) mod tidy
-	$(GO) mod verify
+	@for m in $(MODULES); do (cd $$m && $(GO) mod tidy && $(GO) mod verify) || exit 1; done
 
 .PHONY: clean
 clean:
-	$(GO) clean
-	rm -f $(COVER) coverage.html
+	@for m in $(MODULES); do (cd $$m && $(GO) clean && rm -f $(COVER) coverage.html) || exit 1; done
