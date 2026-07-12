@@ -1,0 +1,15 @@
+version: 2
+updates:
+  # Keeps the SHA-pinned actions in ci.yml current — Dependabot understands
+  # the "@<sha> # vN" comment convention and updates both together.
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+
+  # golang.org/x/sys is the only dependency; still worth automated bumps
+  # given secmem's syscall-level surface.
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
