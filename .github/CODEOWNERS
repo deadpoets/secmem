@@ -1,0 +1,5 @@
+# Every change needs a review from the maintainer before merge — this file
+# is what makes that a GitHub-enforced rule (see branch protection) rather
+# than a convention that erodes over time.
+
+* @deadpoets
