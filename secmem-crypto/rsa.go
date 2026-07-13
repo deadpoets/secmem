@@ -283,8 +283,10 @@ func wipeRSAPrivateKey(key *rsa.PrivateKey) {
 	wipeBigInt(key.Precomputed.Dp)
 	wipeBigInt(key.Precomputed.Dq)
 	wipeBigInt(key.Precomputed.Qinv)
-	//nolint:staticcheck // SA1019: CRTValues is deprecated but Precompute
-	// still fills it in — deprecated secrets need wiping too.
+	// CRTValues is deprecated but Precompute still fills it in for
+	// multi-prime keys — deprecated secrets still need wiping.
+	//nolint:staticcheck // SA1019: see above
+	//lint:ignore SA1019 wiping the deprecated CRTValues secrets is the point
 	crt := key.Precomputed.CRTValues
 	for i := range crt {
 		wipeBigInt(crt[i].Exp)

@@ -359,8 +359,8 @@ func TestECDSASigner_PublicAndEqual(t *testing.T) {
 	}
 
 	// Mutating the returned copy must not corrupt the signer's copy.
-	//nolint:staticcheck // SA1019: mutating the deprecated raw field is the
-	// point — proving the returned key is a defensive copy.
+	//nolint:staticcheck // SA1019: see above
+	//lint:ignore SA1019 mutating the deprecated raw field is the point — proving the returned key is a defensive copy
 	pub.X.SetInt64(42)
 	if !s.Equal(s.Public()) {
 		t.Error("mutating a returned public key corrupted the cached one")

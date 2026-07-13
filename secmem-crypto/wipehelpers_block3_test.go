@@ -54,7 +54,9 @@ func TestWipeECDSAPrivateKey(t *testing.T) {
 		t.Fatalf("ParseRawPrivateKey: %v", err)
 	}
 
-	limbs := priv.D.Bits() //nolint:staticcheck // SA1019: capturing the raw limbs is the point
+	//nolint:staticcheck // SA1019: capturing the raw limbs to verify the wipe reached them is the point
+	//lint:ignore SA1019 capturing the raw limbs to verify the wipe reached them is the point
+	limbs := priv.D.Bits()
 	if len(limbs) == 0 {
 		t.Fatal("parsed key has no D limbs")
 	}
@@ -105,9 +107,11 @@ func TestWipeRSAPrivateKey_CRTValues(t *testing.T) {
 	t.Parallel()
 	mk := func() *big.Int { return new(big.Int).SetBytes([]byte{0xAA, 0xBB, 0xCC, 0xDD}) }
 	key := &rsa.PrivateKey{}
-	//nolint:staticcheck // SA1019: constructing deprecated CRTValues is the point
+	//nolint:staticcheck // SA1019: constructing deprecated CRTValues is the point — testing the multi-prime wipe path
+	//lint:ignore SA1019 constructing deprecated CRTValues is the point — testing the multi-prime wipe path
 	key.Precomputed.CRTValues = []rsa.CRTValue{{Exp: mk(), Coeff: mk(), R: mk()}}
 	//nolint:staticcheck // SA1019: as above
+	//lint:ignore SA1019 as above
 	crt := key.Precomputed.CRTValues
 	exp, coeff, r := crt[0].Exp.Bits(), crt[0].Coeff.Bits(), crt[0].R.Bits()
 

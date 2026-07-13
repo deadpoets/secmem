@@ -319,9 +319,11 @@ func wipeECDSAPrivateKey(priv *ecdsa.PrivateKey) {
 	if priv == nil {
 		return
 	}
-	//nolint:staticcheck // SA1019: reaching the deprecated raw D field is
-	// deliberate — zeroing the transient's secret limbs is this helper's job,
-	// and no non-deprecated API exposes them.
+	// Reaching the deprecated raw D field is deliberate: zeroing the
+	// transient's secret limbs is this helper's job, and no non-deprecated
+	// API exposes them.
+	//nolint:staticcheck // SA1019: see above
+	//lint:ignore SA1019 zeroing the deprecated raw D field is the point; no non-deprecated API exposes it
 	wipeBigInt(priv.D)
 	runtime.KeepAlive(priv)
 }
