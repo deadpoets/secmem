@@ -14,7 +14,10 @@ import (
 	"github.com/deadpoets/secmem"
 )
 
-// ErrBadScalarLength is returned when an X25519 scalar is not exactly 32 bytes.
+// ErrBadScalarLength is returned when a raw private scalar does not have
+// the exact length its algorithm requires: 32 bytes for X25519 ([Key32]),
+// or the curve's fixed encoding size for ECDSA ([ECDSASigner] — 28/32/48/66
+// bytes for P-224/P-256/P-384/P-521).
 var ErrBadScalarLength = errors.New("secmemcrypto: bad scalar length")
 
 // Key32 is an X25519 (Curve25519) Diffie-Hellman private key whose 32-byte

@@ -4,8 +4,11 @@ import (
 	"crypto"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
 	"crypto/ed25519"
+	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/sha256"
 	"fmt"
 	"io"
 
@@ -135,4 +138,43 @@ func ExampleKey32() {
 	})
 	fmt.Println(agree)
 	// Output: true
+}
+
+// An ECDSASigner drops into any crypto.Signer consumer with the P-256
+// scalar held off-heap between operations — see the type's honesty caveat
+// for what happens during one. Unlike Ed25519, ECDSA signs a digest.
+func ExampleECDSASigner() {
+	signer, err := secmemcrypto.GenerateECDSASigner(elliptic.P256())
+	if err != nil {
+		panic(err)
+	}
+	defer signer.Destroy()
+
+	digest := sha256.Sum256([]byte("sign me"))
+	sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
+	if err != nil {
+		panic(err)
+	}
+
+	pub := signer.Public().(*ecdsa.PublicKey)
+	fmt.Println(ecdsa.VerifyASN1(pub, digest[:], sig))
+	// Output: true
+}
+
+// AsSSH adapts any of this package's signers (or any crypto.Signer) for
+// golang.org/x/crypto/ssh. For RSA keys it also makes the legacy ssh-rsa
+// (SHA-1) algorithm unreachable.
+func ExampleAsSSH() {
+	signer, err := secmemcrypto.GenerateEd25519Signer()
+	if err != nil {
+		panic(err)
+	}
+	defer signer.Destroy()
+
+	sshSigner, err := secmemcrypto.AsSSH(signer)
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(sshSigner.PublicKey().Type())
+	// Output: ssh-ed25519
 }
