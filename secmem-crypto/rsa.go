@@ -272,7 +272,11 @@ func parseRSAPrivateKey(der []byte, pkcs8 bool) (*rsa.PrivateKey, error) {
 // The public N/E are left intact (callers may have copied the embedded
 // PublicKey, which shares N). The unexported FIPS-form key inside
 // Precomputed is not reachable; see the RSASigner type comment.
-func wipeRSAPrivateKey(key *rsa.PrivateKey) {
+//
+// Like [wipeECDSAPrivateKey] it is a package var so a test can wrap it to
+// prove Sign's deferred wipe fires on the live transient; production always
+// runs the value defined here.
+var wipeRSAPrivateKey = func(key *rsa.PrivateKey) {
 	if key == nil {
 		return
 	}

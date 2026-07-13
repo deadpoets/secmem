@@ -315,7 +315,13 @@ func wipeBigInt(x *big.Int) {
 // wipeECDSAPrivateKey zeroes the secret limbs of a transiently materialized
 // *ecdsa.PrivateKey. The public X/Y are left intact (callers may have
 // copied the embedded PublicKey, which shares them).
-func wipeECDSAPrivateKey(priv *ecdsa.PrivateKey) {
+//
+// It is a package var, not a plain func, solely so a test can wrap it to
+// prove the deferred wipe in Sign actually fires on the live transient (see
+// livewipe_test.go); production always runs the value defined here. A
+// swapped value is an in-process concern, which the threat model already
+// excludes.
+var wipeECDSAPrivateKey = func(priv *ecdsa.PrivateKey) {
 	if priv == nil {
 		return
 	}
