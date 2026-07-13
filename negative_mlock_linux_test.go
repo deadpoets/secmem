@@ -1,9 +1,9 @@
 //go:build linux
 
-// The headline failure-mode contrast with memguard (issue #119: mlock failure
-// panics). Here a constructor faced with an impossible lock budget must return
-// an error and leave the process running. RLIMIT_MEMLOCK is lowered to zero,
-// which poisons every later allocation, so the assertion runs in a re-exec'd
+// A constructor faced with an impossible lock budget must return an error
+// and leave the process running, never panic — a fail-closed guarantee as
+// load-bearing as any feature. RLIMIT_MEMLOCK is lowered to zero, which
+// poisons every later allocation, so the assertion runs in a re-exec'd
 // child that lowers the limit, tries to allocate, checks for a clean error,
 // and exits.
 
@@ -102,6 +102,6 @@ func init() {
 	}
 
 	// Reaching here means both returned errors and the process is still
-	// alive — the exact contract memguard #119 violates.
+	// alive — the fail-closed contract this test exists to enforce.
 	os.Exit(0)
 }

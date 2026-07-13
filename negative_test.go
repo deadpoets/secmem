@@ -10,9 +10,9 @@ import (
 
 // The negative suite proves the library's failure-mode promises, which are as
 // load-bearing as its features: constructors return errors and NEVER panic
-// (the memguard #119 contrast), every method is safe on a nil receiver and
-// after Destroy/Seal, and no adversarial input can make a redacting method
-// leak. A security library that panics on a bad allocation or leaks on a bad
+// on a bad allocation, every method is safe on a nil receiver and after
+// Destroy/Seal, and no adversarial input can make a redacting method leak.
+// A security library that panics on a bad allocation or leaks on a bad
 // input is worse than none.
 
 // mustNotPanic runs fn and turns a panic into a test failure with a label,
