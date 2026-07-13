@@ -45,6 +45,25 @@ mark the stability commitment.
 - Fuzz targets (sign-vs-stdlib, HKDF, Argon2 params, AEAD round-trip,
   X25519-vs-stdlib) and benchmarks with allocation reporting across the
   sign, AEAD, DH, and KEM paths.
+- `ECDSASigner` — a `crypto.Signer` for P-224/P-256/P-384/P-521 with the raw
+  scalar in a `SecureBuffer` between operations. ECDSA is deliberately NOT
+  reimplemented (per-signature nonce arithmetic is where implementations
+  leak keys); each Sign transiently materializes a stdlib key via
+  `ecdsa.ParseRawPrivateKey`, signs, and zeroes the transient's limbs, with
+  the residue that can't be reached documented honestly. Deterministic
+  RFC 6979 mode (nil `random`) verified against the RFC's test vectors and
+  differentially fuzzed byte-identical against stdlib; generation uses
+  candidate testing so the scalar is born inside the `SecureBuffer`.
+- `RSASigner` — a `crypto.Signer` with the RSA key held as PKCS#1 or PKCS#8
+  DER (auto-detected) in a `SecureBuffer`, transiently parsed per operation
+  under the same wipe discipline, PKCS#1 v1.5 and PSS via stdlib.
+  Signing-only by design (no `crypto.Decrypter`); the per-operation heap
+  exposure of the full key is documented rather than downplayed.
+- `AsSSH` — adapts any `crypto.Signer` to `golang.org/x/crypto/ssh`. For RSA
+  keys the returned signer makes legacy `ssh-rsa` (SHA-1) unreachable on
+  every path — negotiation offers only `rsa-sha2-512`/`rsa-sha2-256`,
+  explicit requests for `ssh-rsa` error, and plain `Sign` (which x/crypto's
+  own restricted signer still routes to SHA-1) is overridden to rsa-sha2-512.
 
 ### Added
 
