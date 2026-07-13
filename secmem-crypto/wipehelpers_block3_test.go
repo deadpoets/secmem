@@ -10,7 +10,7 @@ import (
 
 // These tests pin the zeroing the block-3 honesty caveats claim ("zeroes
 // the transient's D limbs", "zeroes every exported big.Int limb") — the
-// block-1 WipeScalar standard applied to the big.Int wipe helpers. The
+// block-1 WipeEd25519Scalar standard applied to the big.Int wipe helpers. The
 // limb slices are captured via Bits() BEFORE the wipe: a future refactor
 // to x.SetInt64(0)/x.Set(zero) would abandon the old backing array unwiped
 // (the exact trap wipeBigInt's comment warns about) and these captured

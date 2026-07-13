@@ -11,18 +11,18 @@ import (
 	"github.com/deadpoets/secmem"
 )
 
-// TestKey32_SealedBuffer verifies every Key32 borrow path surfaces a clean
+// TestX25519Key_SealedBuffer verifies every X25519Key borrow path surfaces a clean
 // errors.Is(ErrSealed) while the backing buffer is sealed, and recovers
-// after Unseal — the block-1 sealed-regression standard, applied to Key32.
-func TestKey32_SealedBuffer(t *testing.T) {
+// after Unseal — the block-1 sealed-regression standard, applied to X25519Key.
+func TestX25519Key_SealedBuffer(t *testing.T) {
 	t.Parallel()
 	buf, err := secmem.NewBuffer(bytes.Repeat([]byte{0x42}, curve25519.ScalarSize))
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	k, err := NewKey32(buf) // k owns buf; buf ref retained only to seal it
+	k, err := NewX25519Key(buf) // k owns buf; buf ref retained only to seal it
 	if err != nil {
-		t.Fatalf("NewKey32: %v", err)
+		t.Fatalf("NewX25519Key: %v", err)
 	}
 	defer k.Destroy()
 
@@ -43,8 +43,8 @@ func TestKey32_SealedBuffer(t *testing.T) {
 	if err := k.WithScalar(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrSealed) {
 		t.Errorf("sealed WithScalar: error = %v, want ErrSealed", err)
 	}
-	if k.Equal(k) {
-		t.Error("Equal on a sealed key returned true, want false")
+	if k.ConstantTimeEqual(k) {
+		t.Error("ConstantTimeEqual on a sealed key returned true, want false")
 	}
 
 	if err := buf.Unseal(); err != nil {
@@ -53,8 +53,8 @@ func TestKey32_SealedBuffer(t *testing.T) {
 	if _, err := k.PublicKey(); err != nil {
 		t.Errorf("PublicKey after Unseal failed: %v", err)
 	}
-	if !k.Equal(k) {
-		t.Error("Equal on a live key (self) returned false, want true")
+	if !k.ConstantTimeEqual(k) {
+		t.Error("ConstantTimeEqual on a live key (self) returned false, want true")
 	}
 }
 
@@ -76,9 +76,9 @@ func TestMLKEM768_SealedBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("EncapsulationKeyBytes: %v", err)
 	}
-	ct, ss, err := EncapsulateInto(ekBytes) // a valid ciphertext to try decapsulating
+	ct, ss, err := Encapsulate(ekBytes) // a valid ciphertext to try decapsulating
 	if err != nil {
-		t.Fatalf("EncapsulateInto: %v", err)
+		t.Fatalf("Encapsulate: %v", err)
 	}
 	ss.Destroy()
 
@@ -142,7 +142,7 @@ func TestOpenInto_SealedOutputBuffer(t *testing.T) {
 	}
 }
 
-func TestSealInto_SealedPlaintextBuffer(t *testing.T) {
+func TestSealFrom_SealedPlaintextBuffer(t *testing.T) {
 	t.Parallel()
 	gcm := newGCM(t)
 	nonce := make([]byte, gcm.NonceSize())
@@ -155,7 +155,7 @@ func TestSealInto_SealedPlaintextBuffer(t *testing.T) {
 	if err := pt.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if _, err := SealInto(nil, gcm, nonce, pt, nil); !errors.Is(err, secmem.ErrSealed) {
-		t.Errorf("SealInto(sealed plaintext): error = %v, want ErrSealed", err)
+	if _, err := SealFrom(nil, gcm, nonce, pt, nil); !errors.Is(err, secmem.ErrSealed) {
+		t.Errorf("SealFrom(sealed plaintext): error = %v, want ErrSealed", err)
 	}
 }

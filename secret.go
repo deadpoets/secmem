@@ -67,15 +67,17 @@ func (s Secret) WithBytes(fn func([]byte)) error {
 	return s.buf.WithBytes(fn)
 }
 
-// Equal reports whether s and other hold the same bytes, in constant time
-// with respect to the contents. Differing lengths return false immediately —
-// the length itself is not concealed. Two Secrets sharing one backing store
-// (value copies of each other) are equal without comparing bytes.
+// ConstantTimeEqual reports whether s and other hold the same bytes, in
+// constant time with respect to the contents — the same name and guarantee
+// as [SecureBuffer.ConstantTimeEqual]. Differing lengths return false
+// immediately — the length itself is not concealed. Two Secrets sharing one
+// backing store (value copies of each other) are equal without comparing
+// bytes.
 //
 // A zero-value or destroyed Secret is equal to nothing, including another
 // zero-value Secret: there are no bytes to compare, and false is the
 // conservative answer.
-func (s Secret) Equal(other Secret) bool {
+func (s Secret) ConstantTimeEqual(other Secret) bool {
 	if s.buf == nil || other.buf == nil {
 		return false
 	}

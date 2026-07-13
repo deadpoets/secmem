@@ -23,6 +23,6 @@ func setCLFLUSHOPTFlag(v byte)
 //go:noescape
 func secureWipe(ptr unsafe.Pointer, length uintptr)
 
-// archWipeGuaranteed: the amd64 wipe is assembly with a cache-line flush
+// archWipeFlushed: the amd64 wipe is assembly with a cache-line flush
 // (LFENCE → REP STOSB → SFENCE → CLFLUSH[OPT] → SFENCE+LFENCE).
-const archWipeGuaranteed = true
+const archWipeFlushed = true

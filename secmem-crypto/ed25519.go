@@ -1,5 +1,5 @@
 // Package secmemcrypto adapts secmem's hardened memory primitives to the
-// standard library's crypto interfaces — a [Signer] satisfying crypto.Signer
+// standard library's crypto interfaces — an [Ed25519Signer] satisfying crypto.Signer
 // with its key material living in a [secmem.SecureBuffer], never a plain
 // heap-backed key.
 package secmemcrypto
@@ -15,7 +15,7 @@ import (
 	"github.com/deadpoets/secmem"
 )
 
-// Signer is a crypto.Signer whose Ed25519 seed lives in a [secmem.SecureBuffer]
+// Ed25519Signer is a crypto.Signer whose Ed25519 seed lives in a [secmem.SecureBuffer]
 // for its entire lifetime — it is read only inside a borrowing closure during
 // Sign, never copied to a plain heap-backed key.
 //
@@ -25,18 +25,18 @@ import (
 // Concurrent Sign calls are safe: the underlying buffer takes a read lock
 // per borrow. Sealing the underlying buffer (via a retained *SecureBuffer
 // reference) makes Sign return an error wrapping [secmem.ErrSealed] until
-// Unseal; sealing is a caller-side lifecycle tool, not something Signer
+// Unseal; sealing is a caller-side lifecycle tool, not something Ed25519Signer
 // does on its own.
-type Signer struct {
+type Ed25519Signer struct {
 	seedBuf *secmem.SecureBuffer
 	pubKey  ed25519.PublicKey
 }
 
 // NewEd25519Signer wraps an existing 32-byte Ed25519 seed already held in a
-// SecureBuffer. On success, the Signer owns seedBuf — call [Signer.Destroy]
+// SecureBuffer. On success, the Ed25519Signer owns seedBuf — call [Ed25519Signer.Destroy]
 // to release it, not seedBuf.Destroy directly. On failure, ownership is not
 // transferred; the caller is still responsible for seedBuf.
-func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Signer, error) {
+func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
 	if seedBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -59,7 +59,7 @@ func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Signer, error) {
 		return nil, fmt.Errorf("secmemcrypto: derive public key: %w", err)
 	}
 
-	return &Signer{seedBuf: seedBuf, pubKey: pub}, nil
+	return &Ed25519Signer{seedBuf: seedBuf, pubKey: pub}, nil
 }
 
 // GenerateEd25519Signer generates a fresh Ed25519 seed directly into a new
@@ -69,8 +69,8 @@ func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Signer, error) {
 // that replaces rand.Reader with a buffering reader routes seed bytes
 // through that reader's own memory, outside this library's control.
 //
-// To persist the generated key, use [Signer.WithSeed].
-func GenerateEd25519Signer() (*Signer, error) {
+// To persist the generated key, use [Ed25519Signer.WithSeed].
+func GenerateEd25519Signer() (*Ed25519Signer, error) {
 	seedBuf, err := secmem.NewEmptyBuffer(ed25519.SeedSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate seed buffer: %w", err)
@@ -94,9 +94,9 @@ func GenerateEd25519Signer() (*Signer, error) {
 
 // Public implements crypto.Signer. It returns a fresh copy on every call —
 // matching crypto/ed25519's own behavior — so a caller mutating the
-// returned slice cannot corrupt the Signer's cached key. Returns nil on a
+// returned slice cannot corrupt the Ed25519Signer's cached key. Returns nil on a
 // nil receiver.
-func (s *Signer) Public() crypto.PublicKey {
+func (s *Ed25519Signer) Public() crypto.PublicKey {
 	if s == nil || s.pubKey == nil {
 		return nil
 	}
@@ -120,7 +120,7 @@ func (s *Signer) Public() crypto.PublicKey {
 // digest is the message to sign, not a pre-hashed digest — Ed25519 signs
 // the message directly (PureEdDSA); the crypto.Signer parameter name is
 // stdlib convention, not a hint that pre-hashing is expected here.
-func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
+func (s *Ed25519Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byte, error) {
 	if s == nil || s.seedBuf == nil {
 		return nil, fmt.Errorf("secmemcrypto: sign: %w", secmem.ErrDestroyed)
 	}
@@ -146,11 +146,11 @@ func (s *Signer) Sign(_ io.Reader, digest []byte, opts crypto.SignerOpts) ([]byt
 }
 
 // SignMessage implements [crypto.MessageSigner]. For pure Ed25519 the
-// message-signing and Signer contracts coincide (the "digest" IS the
-// message), so this delegates to [Signer.Sign] unchanged; stdlib callers
+// message-signing and Ed25519Signer contracts coincide (the "digest" IS the
+// message), so this delegates to [Ed25519Signer.Sign] unchanged; stdlib callers
 // (crypto/x509, crypto/tls) interface-upgrade to MessageSigner when
 // available and get identical signatures either way.
-func (s *Signer) SignMessage(rand io.Reader, msg []byte, opts crypto.SignerOpts) ([]byte, error) {
+func (s *Ed25519Signer) SignMessage(rand io.Reader, msg []byte, opts crypto.SignerOpts) ([]byte, error) {
 	return s.Sign(rand, msg, opts)
 }
 
@@ -161,7 +161,7 @@ func (s *Signer) SignMessage(rand io.Reader, msg []byte, opts crypto.SignerOpts)
 // becomes the caller's responsibility to place somewhere equally guarded
 // and to wipe. Returns an error wrapping [secmem.ErrDestroyed] or
 // [secmem.ErrSealed] when the seed is no longer accessible.
-func (s *Signer) WithSeed(fn func(seed []byte) error) error {
+func (s *Ed25519Signer) WithSeed(fn func(seed []byte) error) error {
 	if s == nil || s.seedBuf == nil {
 		return fmt.Errorf("secmemcrypto: with seed: %w", secmem.ErrDestroyed)
 	}
@@ -169,11 +169,11 @@ func (s *Signer) WithSeed(fn func(seed []byte) error) error {
 }
 
 // Equal reports whether s's public key equals x. Pass a public key
-// (typically other.Public()), not another *Signer: like all stdlib key
+// (typically other.Public()), not another *Ed25519Signer: like all stdlib key
 // types, the comparison type-asserts x to [ed25519.PublicKey] and any
-// other type — including *Signer itself — compares false without error.
+// other type — including *Ed25519Signer itself — compares false without error.
 // Returns false on a nil receiver.
-func (s *Signer) Equal(x crypto.PublicKey) bool {
+func (s *Ed25519Signer) Equal(x crypto.PublicKey) bool {
 	if s == nil || s.pubKey == nil {
 		return false
 	}
@@ -184,7 +184,7 @@ func (s *Signer) Equal(x crypto.PublicKey) bool {
 // idempotent and nil-receiver safe. Further calls to Sign or WithSeed
 // return an error wrapping [secmem.ErrDestroyed]; Public and Equal remain
 // safe to call, since the cached public key is not secret.
-func (s *Signer) Destroy() error {
+func (s *Ed25519Signer) Destroy() error {
 	if s == nil {
 		return nil
 	}

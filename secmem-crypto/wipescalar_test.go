@@ -6,7 +6,7 @@ import (
 	"filippo.io/edwards25519"
 )
 
-func TestWipeScalar_ZeroesValue(t *testing.T) {
+func TestWipeEd25519Scalar_ZeroesValue(t *testing.T) {
 	t.Parallel()
 	nonZero := make([]byte, 64)
 	for i := range nonZero {
@@ -18,16 +18,16 @@ func TestWipeScalar_ZeroesValue(t *testing.T) {
 	}
 	zeroScalar := edwards25519.NewScalar()
 	if s.Equal(zeroScalar) == 1 {
-		t.Fatal("scalar is already zero before WipeScalar")
+		t.Fatal("scalar is already zero before WipeEd25519Scalar")
 	}
 
-	WipeScalar(s)
+	WipeEd25519Scalar(s)
 	if s.Equal(zeroScalar) != 1 {
-		t.Error("WipeScalar did not zero the scalar")
+		t.Error("WipeEd25519Scalar did not zero the scalar")
 	}
 }
 
-func TestWipeScalar_NilSafe(t *testing.T) {
+func TestWipeEd25519Scalar_NilSafe(t *testing.T) {
 	t.Parallel()
-	WipeScalar(nil) // must not panic
+	WipeEd25519Scalar(nil) // must not panic
 }

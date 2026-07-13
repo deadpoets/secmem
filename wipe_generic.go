@@ -39,6 +39,6 @@ func cpuid(_, _ uint32) (uint32, uint32, uint32, uint32) { return 0, 0, 0, 0 }
 // setCLFLUSHOPTFlag is a no-op on non-amd64.
 func setCLFLUSHOPTFlag(_ byte) {}
 
-// archWipeGuaranteed: the portable wipe is a constant-time store loop with no
+// archWipeFlushed: the portable wipe is a constant-time store loop with no
 // cache-line flush — the zeros are written but lines may linger in cache.
-const archWipeGuaranteed = false
+const archWipeFlushed = false

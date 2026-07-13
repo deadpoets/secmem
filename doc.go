@@ -92,7 +92,7 @@
 //	someuser soft memlock 262144
 //	someuser hard memlock 262144
 //
-// or programmatically with SetMemlockLimit at startup. Raising the soft limit up
+// or programmatically with EnsureMemlockLimit at startup. Raising the soft limit up
 // to the hard limit needs no privilege; raising the hard limit needs
 // CAP_SYS_RESOURCE. Over-budget allocations return an error — they never panic.
 //

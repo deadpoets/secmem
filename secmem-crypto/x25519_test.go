@@ -10,23 +10,23 @@ import (
 	"github.com/deadpoets/secmem"
 )
 
-// key32FromHex builds a Key32 whose scalar is the given hex bytes.
-func key32FromHex(t *testing.T, hexScalar string) *Key32 {
+// x25519KeyFromHex builds a X25519Key whose scalar is the given hex bytes.
+func x25519KeyFromHex(t *testing.T, hexScalar string) *X25519Key {
 	t.Helper()
 	buf, err := secmem.NewBuffer(mustDecodeHex(t, hexScalar))
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	k, err := NewKey32(buf)
+	k, err := NewX25519Key(buf)
 	if err != nil {
-		t.Fatalf("NewKey32: %v", err)
+		t.Fatalf("NewX25519Key: %v", err)
 	}
 	return k
 }
 
-// TestKey32_RFC7748PublicKey checks PublicKey against RFC 7748 §6.1's
+// TestX25519Key_RFC7748PublicKey checks PublicKey against RFC 7748 §6.1's
 // Alice/Bob key pairs — a spec vector, not a self-consistency check.
-func TestKey32_RFC7748PublicKey(t *testing.T) {
+func TestX25519Key_RFC7748PublicKey(t *testing.T) {
 	t.Parallel()
 	cases := []struct{ name, priv, pub string }{
 		{"Alice", "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a", "8520f0098930a754748b7ddcb43ef75a0dbf3a0d26381af4eba4a98eaa9b4e6a"},
@@ -35,7 +35,7 @@ func TestKey32_RFC7748PublicKey(t *testing.T) {
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			t.Parallel()
-			k := key32FromHex(t, c.priv)
+			k := x25519KeyFromHex(t, c.priv)
 			defer k.Destroy()
 			pub, err := k.PublicKey()
 			if err != nil {
@@ -49,13 +49,13 @@ func TestKey32_RFC7748PublicKey(t *testing.T) {
 	}
 }
 
-// TestKey32_RFC7748SharedSecret checks the full DH agreement against RFC
+// TestX25519Key_RFC7748SharedSecret checks the full DH agreement against RFC
 // 7748 §6.1's expected shared secret K, both directions.
-func TestKey32_RFC7748SharedSecret(t *testing.T) {
+func TestX25519Key_RFC7748SharedSecret(t *testing.T) {
 	t.Parallel()
-	alice := key32FromHex(t, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
+	alice := x25519KeyFromHex(t, "77076d0a7318a57d3c16c17251b26645df4c2f87ebc0992ab177fba51db92c2a")
 	defer alice.Destroy()
-	bob := key32FromHex(t, "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
+	bob := x25519KeyFromHex(t, "5dab087e624a8a4b79e17f8b83800ee66f3bb1292618b6fd1c2f8b27ff88e0eb")
 	defer bob.Destroy()
 	wantK := mustDecodeHex(t, "4a5d9d5ba4ce2de1728e3bf480350f25e07e21c947d19e3376f09b3c1e161742")
 
@@ -64,7 +64,7 @@ func TestKey32_RFC7748SharedSecret(t *testing.T) {
 
 	for _, tc := range []struct {
 		name string
-		self *Key32
+		self *X25519Key
 		peer [32]byte
 	}{
 		{"alice·bobPub", alice, bobPub},
@@ -91,16 +91,16 @@ func TestKey32_RFC7748SharedSecret(t *testing.T) {
 	}
 }
 
-func TestKey32_GenerateAndAgree(t *testing.T) {
+func TestX25519Key_GenerateAndAgree(t *testing.T) {
 	t.Parallel()
-	a, err := GenerateKey32()
+	a, err := GenerateX25519Key()
 	if err != nil {
-		t.Fatalf("GenerateKey32: %v", err)
+		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer a.Destroy()
-	b, err := GenerateKey32()
+	b, err := GenerateX25519Key()
 	if err != nil {
-		t.Fatalf("GenerateKey32: %v", err)
+		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer b.Destroy()
 
@@ -124,16 +124,16 @@ func TestKey32_GenerateAndAgree(t *testing.T) {
 	if !bytes.Equal(kaBytes, kbBytes) {
 		t.Error("independently derived shared secrets disagree")
 	}
-	if a.Equal(b) {
+	if a.ConstantTimeEqual(b) {
 		t.Error("two independently generated keys compared equal")
 	}
 }
 
-func TestKey32_SharedSecret_LowOrderPointRejected(t *testing.T) {
+func TestX25519Key_SharedSecret_LowOrderPointRejected(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateKey32()
+	k, err := GenerateX25519Key()
 	if err != nil {
-		t.Fatalf("GenerateKey32: %v", err)
+		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer k.Destroy()
 
@@ -145,9 +145,9 @@ func TestKey32_SharedSecret_LowOrderPointRejected(t *testing.T) {
 	}
 }
 
-func TestNewKey32_BadInputs(t *testing.T) {
+func TestNewX25519Key_BadInputs(t *testing.T) {
 	t.Parallel()
-	if _, err := NewKey32(nil); err == nil {
+	if _, err := NewX25519Key(nil); err == nil {
 		t.Error("expected error for nil buffer")
 	}
 
@@ -156,7 +156,7 @@ func TestNewKey32_BadInputs(t *testing.T) {
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer short.Destroy()
-	_, err = NewKey32(short)
+	_, err = NewX25519Key(short)
 	if !errors.Is(err, ErrBadScalarLength) {
 		t.Errorf("wrong-length scalar: error = %v, want wrap of ErrBadScalarLength", err)
 	}
@@ -166,16 +166,16 @@ func TestNewKey32_BadInputs(t *testing.T) {
 
 	destroyed, _ := secmem.NewEmptyBuffer(curve25519.ScalarSize)
 	_ = destroyed.Destroy()
-	if _, err := NewKey32(destroyed); !errors.Is(err, secmem.ErrDestroyed) {
+	if _, err := NewX25519Key(destroyed); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 }
 
-func TestKey32_WithScalar_Persist(t *testing.T) {
+func TestX25519Key_WithScalar_Persist(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateKey32()
+	k, err := GenerateX25519Key()
 	if err != nil {
-		t.Fatalf("GenerateKey32: %v", err)
+		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer k.Destroy()
 
@@ -188,19 +188,19 @@ func TestKey32_WithScalar_Persist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	restored, err := NewKey32(buf)
+	restored, err := NewX25519Key(buf)
 	if err != nil {
-		t.Fatalf("NewKey32: %v", err)
+		t.Fatalf("NewX25519Key: %v", err)
 	}
 	defer restored.Destroy()
-	if !restored.Equal(k) {
+	if !restored.ConstantTimeEqual(k) {
 		t.Error("key restored from WithScalar-persisted bytes is not equal")
 	}
 }
 
-func TestKey32_NilAndDestroyed(t *testing.T) {
+func TestX25519Key_NilAndDestroyed(t *testing.T) {
 	t.Parallel()
-	var k *Key32
+	var k *X25519Key
 	if _, err := k.PublicKey(); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("nil.PublicKey error = %v", err)
 	}
@@ -210,16 +210,16 @@ func TestKey32_NilAndDestroyed(t *testing.T) {
 	if err := k.WithScalar(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("nil.WithScalar error = %v", err)
 	}
-	if k.Equal(nil) {
-		t.Error("nil.Equal(nil) = true")
+	if k.ConstantTimeEqual(nil) {
+		t.Error("nil.ConstantTimeEqual(nil) = true")
 	}
 	if err := k.Destroy(); err != nil {
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
-	live, err := GenerateKey32()
+	live, err := GenerateX25519Key()
 	if err != nil {
-		t.Fatalf("GenerateKey32: %v", err)
+		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	_ = live.Destroy()
 	if _, err := live.PublicKey(); err == nil {

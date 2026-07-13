@@ -67,13 +67,13 @@ func DisableCoreDumps() error {
 	return disableCoreDumps()
 }
 
-// SetMemlockLimit raises the locked-memory budget to at least bytes,
+// EnsureMemlockLimit raises the locked-memory budget to at least bytes,
 // returning the value actually achieved.
 //
 // Each SecureBuffer locks a page-rounded minimum (typically 4 KiB), and the
 // default RLIMIT_MEMLOCK on Linux is 64 KiB — roughly a dozen buffers before
 // NewBuffer starts returning mlock errors. A server holding one buffer per
-// live secret WILL hit this; call SetMemlockLimit once at startup, before the
+// live secret WILL hit this; call EnsureMemlockLimit once at startup, before the
 // first allocation.
 //
 // Honesty notes: raising the soft limit up to the hard limit needs no
@@ -82,6 +82,6 @@ func DisableCoreDumps() error {
 // hard limit allows and returns that value together with a non-nil error —
 // it never silently under-delivers. On Windows the equivalent budget is the
 // process minimum working-set size, adjusted via SetProcessWorkingSetSizeEx.
-func SetMemlockLimit(bytes uint64) (achieved uint64, err error) {
-	return setMemlockLimit(bytes)
+func EnsureMemlockLimit(bytes uint64) (achieved uint64, err error) {
+	return ensureMemlockLimit(bytes)
 }

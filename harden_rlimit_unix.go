@@ -20,13 +20,13 @@ func disableCoreDumps() error {
 	return nil
 }
 
-// setMemlockLimit raises RLIMIT_MEMLOCK's soft limit to bytes, raising the
+// ensureMemlockLimit raises RLIMIT_MEMLOCK's soft limit to bytes, raising the
 // hard limit too when privilege allows. Returns the soft limit actually in
 // force; err is non-nil whenever that is below the request.
-func setMemlockLimit(bytes uint64) (uint64, error) {
+func ensureMemlockLimit(bytes uint64) (uint64, error) {
 	var rl unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_MEMLOCK, &rl); err != nil {
-		return 0, fmt.Errorf("secmem.SetMemlockLimit: getrlimit: %w", err)
+		return 0, fmt.Errorf("secmem.EnsureMemlockLimit: getrlimit: %w", err)
 	}
 
 	// Already sufficient — never LOWER an existing budget.
@@ -37,7 +37,7 @@ func setMemlockLimit(bytes uint64) (uint64, error) {
 	// Within the hard limit: raising the soft limit needs no privilege.
 	if bytes <= rl.Max {
 		if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{Cur: bytes, Max: rl.Max}); err != nil {
-			return rl.Cur, fmt.Errorf("secmem.SetMemlockLimit: setrlimit(soft=%d): %w", bytes, err)
+			return rl.Cur, fmt.Errorf("secmem.EnsureMemlockLimit: setrlimit(soft=%d): %w", bytes, err)
 		}
 		return bytes, nil
 	}
@@ -49,9 +49,9 @@ func setMemlockLimit(bytes uint64) (uint64, error) {
 
 	// Unprivileged: deliver as much as the hard limit allows and say so.
 	if err := unix.Setrlimit(unix.RLIMIT_MEMLOCK, &unix.Rlimit{Cur: rl.Max, Max: rl.Max}); err != nil {
-		return rl.Cur, fmt.Errorf("secmem.SetMemlockLimit: setrlimit(soft=hard=%d): %w", rl.Max, err)
+		return rl.Cur, fmt.Errorf("secmem.EnsureMemlockLimit: setrlimit(soft=hard=%d): %w", rl.Max, err)
 	}
 	return rl.Max, fmt.Errorf(
-		"secmem.SetMemlockLimit: requested %d bytes but the hard limit is %d and raising it needs CAP_SYS_RESOURCE; achieved %d",
+		"secmem.EnsureMemlockLimit: requested %d bytes but the hard limit is %d and raising it needs CAP_SYS_RESOURCE; achieved %d",
 		bytes, rl.Max, rl.Max)
 }

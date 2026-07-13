@@ -9,17 +9,24 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
 	"fmt"
 	"io"
+	"math/big"
+	"time"
+
+	"golang.org/x/crypto/ssh"
 
 	secmemcrypto "github.com/deadpoets/secmem/secmem-crypto"
 
 	"github.com/deadpoets/secmem"
 )
 
-// A Signer drops into any crypto.Signer consumer (TLS, x509, SSH, JWT/JOSE),
-// with the Ed25519 seed kept in locked, off-heap memory for its lifetime.
-func ExampleSigner() {
+// An Ed25519Signer drops into any crypto.Signer consumer (TLS, x509, SSH,
+// JWT/JOSE), with the seed kept in locked, off-heap memory for its lifetime.
+func ExampleEd25519Signer() {
 	signer, err := secmemcrypto.GenerateEd25519Signer()
 	if err != nil {
 		panic(err)
@@ -40,7 +47,7 @@ func ExampleSigner() {
 // GenerateEd25519Signer traps the seed in protected memory. To persist a
 // generated key (write it to a keyring, seal it to disk), read it out
 // through WithSeed — the one deliberate egress point.
-func ExampleSigner_WithSeed() {
+func ExampleEd25519Signer_WithSeed() {
 	signer, err := secmemcrypto.GenerateEd25519Signer()
 	if err != nil {
 		panic(err)
@@ -104,15 +111,15 @@ func ExampleOpenInto() {
 	// Output: recovered 15 bytes
 }
 
-// Key32 does X25519 Diffie-Hellman with the private scalar held off-heap;
+// X25519Key does X25519 Diffie-Hellman with the private scalar held off-heap;
 // the agreed shared secret is returned in a fresh SecureBuffer.
-func ExampleKey32() {
-	alice, err := secmemcrypto.GenerateKey32()
+func ExampleX25519Key() {
+	alice, err := secmemcrypto.GenerateX25519Key()
 	if err != nil {
 		panic(err)
 	}
 	defer alice.Destroy()
-	bob, err := secmemcrypto.GenerateKey32()
+	bob, err := secmemcrypto.GenerateX25519Key()
 	if err != nil {
 		panic(err)
 	}
@@ -177,4 +184,64 @@ func ExampleAsSSH() {
 	}
 	fmt.Println(sshSigner.PublicKey().Type())
 	// Output: ssh-ed25519
+}
+
+// Because ECDSASigner satisfies crypto.Signer, it plugs directly into
+// crypto/x509 certificate generation and crypto/tls.Certificate — the
+// private scalar never exists as a plain heap []byte for the life of a TLS
+// listener built on it.
+func ExampleECDSASigner_tlsCertificate() {
+	signer, err := secmemcrypto.GenerateECDSASigner(elliptic.P256())
+	if err != nil {
+		panic(err)
+	}
+	defer signer.Destroy()
+
+	template := &x509.Certificate{
+		SerialNumber: big.NewInt(1),
+		Subject:      pkix.Name{CommonName: "example.invalid"},
+		NotBefore:    time.Now(),
+		NotAfter:     time.Now().Add(24 * time.Hour),
+		KeyUsage:     x509.KeyUsageDigitalSignature,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, template, template, signer.Public(), signer)
+	if err != nil {
+		panic(err)
+	}
+
+	// Exactly what tls.Config.Certificates expects — signer stays behind
+	// the crypto.Signer interface for every handshake the listener serves.
+	cert := tls.Certificate{
+		Certificate: [][]byte{der},
+		PrivateKey:  signer,
+	}
+
+	parsed, err := x509.ParseCertificate(cert.Certificate[0])
+	if err != nil {
+		panic(err)
+	}
+	fmt.Println(parsed.Subject.CommonName)
+	// Output: example.invalid
+}
+
+// AsSSH's target usage: an SSH server's host key. AddHostKey is the line a
+// server adds at startup; the host key's private data stays behind the
+// signer for as long as the server runs.
+func ExampleAsSSH_hostKey() {
+	signer, err := secmemcrypto.GenerateEd25519Signer()
+	if err != nil {
+		panic(err)
+	}
+	defer signer.Destroy()
+
+	sshSigner, err := secmemcrypto.AsSSH(signer)
+	if err != nil {
+		panic(err)
+	}
+
+	config := &ssh.ServerConfig{NoClientAuth: true} // demo only
+	config.AddHostKey(sshSigner)
+
+	fmt.Println(ssh.FingerprintSHA256(sshSigner.PublicKey()) != "")
+	// Output: true
 }

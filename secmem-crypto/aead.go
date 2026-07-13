@@ -76,7 +76,7 @@ func OpenInto(out *secmem.SecureBuffer, aead cipher.AEAD, nonce, ciphertext, add
 	return nil
 }
 
-// SealInto encrypts and authenticates the plaintext held in the SecureBuffer
+// SealFrom encrypts and authenticates the plaintext held in the SecureBuffer
 // with aead, appending the sealed ciphertext to dst and returning the
 // extended slice — the mirror of [OpenInto] for a secret that lives in
 // protected memory and must be encrypted without first being copied out to
@@ -85,7 +85,7 @@ func OpenInto(out *secmem.SecureBuffer, aead cipher.AEAD, nonce, ciphertext, add
 //
 // The plaintext is read inside [secmem.ScrubErr]; pass dst as nil (or a
 // slice with spare capacity) exactly as you would to cipher.AEAD.Seal.
-func SealInto(dst []byte, aead cipher.AEAD, nonce []byte, plaintext *secmem.SecureBuffer, additionalData []byte) ([]byte, error) {
+func SealFrom(dst []byte, aead cipher.AEAD, nonce []byte, plaintext *secmem.SecureBuffer, additionalData []byte) ([]byte, error) {
 	if aead == nil {
 		return nil, errors.New("secmemcrypto: seal: nil aead")
 	}

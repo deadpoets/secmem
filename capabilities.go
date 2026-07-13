@@ -51,11 +51,11 @@ type Capabilities struct {
 	// inherit the mapping.
 	NoFork bool
 
-	// GuaranteedWipe reports the destroy-time wipe is architecture assembly
+	// FlushedWipe reports the destroy-time wipe is architecture assembly
 	// with a cache-line flush (amd64 CLFLUSH/CLFLUSHOPT, arm64 DC CIVAC).
 	// When false the wipe is a constant-time store loop only — the zeros are
 	// written, but lines may linger in cache.
-	GuaranteedWipe bool
+	FlushedWipe bool
 
 	// RegisterScrub reports runtime/secret erasure is active
 	// (GOEXPERIMENT=runtimesecret on a supported platform): [Scrub] erases
@@ -91,17 +91,17 @@ type allocInfo struct {
 // facts plus the process-wide facts (build identity, wipe class, scrub layer).
 func capsFromAlloc(info allocInfo) Capabilities {
 	return Capabilities{
-		GOOS:           runtime.GOOS,
-		GOARCH:         runtime.GOARCH,
-		OffHeap:        info.offHeap,
-		Mlocked:        info.mlocked,
-		MemfdSecret:    info.memfdSecret,
-		NoDump:         info.noDump,
-		NoFork:         info.noFork,
-		GuaranteedWipe: archWipeGuaranteed,
-		RegisterScrub:  RuntimeSecretActive(),
-		GuardPages:     info.guardPages,
-		Insecure:       info.insecure,
+		GOOS:          runtime.GOOS,
+		GOARCH:        runtime.GOARCH,
+		OffHeap:       info.offHeap,
+		Mlocked:       info.mlocked,
+		MemfdSecret:   info.memfdSecret,
+		NoDump:        info.noDump,
+		NoFork:        info.noFork,
+		FlushedWipe:   archWipeFlushed,
+		RegisterScrub: RuntimeSecretActive(),
+		GuardPages:    info.guardPages,
+		Insecure:      info.insecure,
 	}
 }
 
@@ -150,7 +150,7 @@ func (c Capabilities) Warnings() []string {
 	if !c.NoFork {
 		w = append(w, "mapping is inherited by forked children (no MADV_DONTFORK)")
 	}
-	if !c.GuaranteedWipe {
+	if !c.FlushedWipe {
 		w = append(w, "wipe is a constant-time store only — no cache-line flush on this architecture")
 	}
 	if !c.RegisterScrub {
@@ -179,7 +179,7 @@ func (c Capabilities) String() string {
 	flag("memfd_secret", c.MemfdSecret)
 	flag("no-dump", c.NoDump)
 	flag("no-fork", c.NoFork)
-	flag("wipe+flush", c.GuaranteedWipe)
+	flag("wipe+flush", c.FlushedWipe)
 	flag("register-scrub", c.RegisterScrub)
 	flag("guard-pages", c.GuardPages)
 

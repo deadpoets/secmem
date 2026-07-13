@@ -49,9 +49,10 @@ func Argon2DeriveInto(password, salt []byte, out *secmem.SecureBuffer) error {
 
 // Argon2IDKeyInto derives out.Len() bytes from password and salt using
 // Argon2id with explicit cost parameters, writing the result directly into
-// out. time and threads must be at least 1 (returned as errors, never
-// panics); a too-small memory value is raised to the algorithm's minimum
-// by golang.org/x/crypto/argon2 itself.
+// out. memory is in KiB (see [Argon2Memory]'s doc for the default). time and
+// threads must be at least 1 (returned as errors, never panics); a
+// too-small memory value is raised to the algorithm's minimum by
+// golang.org/x/crypto/argon2 itself.
 //
 // Interoperability: the output equals Argon2id with an empty secret-key
 // (K) and empty associated-data (X) — the parameter profile shared by the

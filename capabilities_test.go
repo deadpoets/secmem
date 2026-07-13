@@ -66,7 +66,7 @@ func TestBufferCapabilities_MatchesAllocation(t *testing.T) {
 		t.Errorf("buffer backing (offheap=%v mlock=%v insecure=%v) diverges from probe (offheap=%v mlock=%v insecure=%v)",
 			c.OffHeap, c.Mlocked, c.Insecure, p.OffHeap, p.Mlocked, p.Insecure)
 	}
-	if c.GuaranteedWipe != p.GuaranteedWipe || c.RegisterScrub != p.RegisterScrub {
+	if c.FlushedWipe != p.FlushedWipe || c.RegisterScrub != p.RegisterScrub {
 		t.Error("process-wide fields differ between buffer report and probe")
 	}
 }
@@ -160,7 +160,7 @@ func TestCapabilities_Warnings(t *testing.T) {
 		GOOS: "linux", GOARCH: "amd64",
 		OffHeap: true, Mlocked: true, MemfdSecret: true,
 		NoDump: true, NoFork: true,
-		GuaranteedWipe: true, RegisterScrub: true, GuardPages: true,
+		FlushedWipe: true, RegisterScrub: true, GuardPages: true,
 	}
 	if w := full.Warnings(); len(w) != 0 {
 		t.Errorf("fully protected Capabilities still warned: %q", w)

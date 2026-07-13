@@ -41,13 +41,13 @@ func BenchmarkOpenInto(b *testing.B) {
 	}
 }
 
-func BenchmarkKey32SharedSecret(b *testing.B) {
-	a, err := GenerateKey32()
+func BenchmarkX25519KeySharedSecret(b *testing.B) {
+	a, err := GenerateX25519Key()
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer a.Destroy()
-	peer, err := GenerateKey32()
+	peer, err := GenerateX25519Key()
 	if err != nil {
 		b.Fatal(err)
 	}
