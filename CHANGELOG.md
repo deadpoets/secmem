@@ -70,6 +70,11 @@ mark the stability commitment.
   `x509.Certificate` and assembling a `tls.Certificate` — what
   `tls.Config.Certificates` expects) and `ExampleAsSSH_hostKey` (wiring an
   adapted signer into `ssh.ServerConfig.AddHostKey`).
+- ML-KEM-768 conformance known-answer test (accumulated FIPS 203 digest,
+  upgrading it from round-trip-only), a published AES-256-GCM vector threaded
+  through `SealFrom`/`OpenInto`, a `testing.AllocsPerRun` gate enforcing
+  `OpenInto`'s zero-heap-escape, and a proof that `Sign` wipes its live
+  transient key (not just the wipe helpers in isolation).
 
 ### Added
 
@@ -110,5 +115,13 @@ mark the stability commitment.
 - `ENVIRONMENTS.md` — how secmem behaves across root / non-root / rootless and
   constrained `RLIMIT_MEMLOCK`, and why `memfd_secret` availability is a kernel
   `CONFIG_SECRETMEM` property rather than a version guarantee.
+- `TESTING.md` — the verification companion to the guarantee matrix: every
+  security claim mapped to the test that proves it, or the stated reason it
+  cannot be (the fused wipe+munmap, the structural constant-time argument).
+- CI now runs the `GOEXPERIMENT=runtimesecret` variant (so the
+  register/stack/heap erasure integration tests actually execute) and executes
+  the suite on 32-bit x86 rather than only compiling it; a
+  `testing.AllocsPerRun` gate enforces no-heap-escape on the borrow/copy/
+  compare paths.
 
 [Unreleased]: https://github.com/deadpoets/secmem/commits/main
