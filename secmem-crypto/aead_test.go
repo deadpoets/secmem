@@ -145,7 +145,7 @@ func TestOpenInto_BadInputs(t *testing.T) {
 	}
 }
 
-func TestSealInto_RoundTripWithOpenInto(t *testing.T) {
+func TestSealFrom_RoundTripWithOpenInto(t *testing.T) {
 	t.Parallel()
 	gcm := newGCM(t)
 	nonce := make([]byte, gcm.NonceSize())
@@ -161,15 +161,15 @@ func TestSealInto_RoundTripWithOpenInto(t *testing.T) {
 	}
 	defer pt.Destroy()
 
-	ct, err := SealInto(nil, gcm, nonce, pt, aad)
+	ct, err := SealFrom(nil, gcm, nonce, pt, aad)
 	if err != nil {
-		t.Fatalf("SealInto: %v", err)
+		t.Fatalf("SealFrom: %v", err)
 	}
 
 	// Decrypt it back with the standard library to prove interoperability.
 	got, err := gcm.Open(nil, nonce, ct, aad)
 	if err != nil {
-		t.Fatalf("stdlib Open of SealInto output: %v", err)
+		t.Fatalf("stdlib Open of SealFrom output: %v", err)
 	}
 	if !bytes.Equal(got, secret) {
 		t.Errorf("round trip mismatch\n  got:  %q\n  want: %q", got, secret)
@@ -186,7 +186,7 @@ func TestSealInto_RoundTripWithOpenInto(t *testing.T) {
 	}
 	if err := out.WithBytesErr(func(b []byte) error {
 		if !bytes.Equal(b, secret) {
-			t.Error("OpenInto of SealInto output did not recover the secret")
+			t.Error("OpenInto of SealFrom output did not recover the secret")
 		}
 		return nil
 	}); err != nil {
@@ -194,7 +194,7 @@ func TestSealInto_RoundTripWithOpenInto(t *testing.T) {
 	}
 }
 
-func TestSealInto_BadInputs(t *testing.T) {
+func TestSealFrom_BadInputs(t *testing.T) {
 	t.Parallel()
 	gcm := newGCM(t)
 	pt, err := secmem.NewBuffer([]byte("secret"))
@@ -204,19 +204,19 @@ func TestSealInto_BadInputs(t *testing.T) {
 	defer pt.Destroy()
 	goodNonce := make([]byte, gcm.NonceSize())
 
-	if _, err := SealInto(nil, nil, goodNonce, pt, nil); err == nil {
+	if _, err := SealFrom(nil, nil, goodNonce, pt, nil); err == nil {
 		t.Error("expected error for nil aead")
 	}
-	if _, err := SealInto(nil, gcm, goodNonce, nil, nil); err == nil {
+	if _, err := SealFrom(nil, gcm, goodNonce, nil, nil); err == nil {
 		t.Error("expected error for nil plaintext buffer")
 	}
-	if _, err := SealInto(nil, gcm, make([]byte, gcm.NonceSize()+1), pt, nil); err == nil {
+	if _, err := SealFrom(nil, gcm, make([]byte, gcm.NonceSize()+1), pt, nil); err == nil {
 		t.Error("expected error for wrong nonce size (must not panic)")
 	}
 
 	destroyed, _ := secmem.NewBuffer([]byte("x"))
 	_ = destroyed.Destroy()
-	if _, err := SealInto(nil, gcm, goodNonce, destroyed, nil); !errors.Is(err, secmem.ErrDestroyed) {
+	if _, err := SealFrom(nil, gcm, goodNonce, destroyed, nil); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("destroyed plaintext: error = %v, want wrap of ErrDestroyed", err)
 	}
 }

@@ -15,8 +15,8 @@ import (
 
 // Compile-time interface conformance — the whole point of the type.
 var (
-	_ crypto.Signer        = (*Signer)(nil)
-	_ crypto.MessageSigner = (*Signer)(nil)
+	_ crypto.Signer        = (*Ed25519Signer)(nil)
+	_ crypto.MessageSigner = (*Ed25519Signer)(nil)
 )
 
 func TestNewEd25519Signer_RoundTrip(t *testing.T) {
@@ -46,7 +46,7 @@ func TestNewEd25519Signer_RoundTrip(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 	if !ed25519.Verify(pub, msg, sig) {
-		t.Error("stdlib Verify rejected Signer's signature")
+		t.Error("stdlib Verify rejected Ed25519Signer's signature")
 	}
 	if want := ed25519.Sign(priv, msg); !bytes.Equal(sig, want) {
 		t.Errorf("signature differs from stdlib\n  ours:   %x\n  stdlib: %x", sig, want)
@@ -72,7 +72,7 @@ func TestGenerateEd25519Signer(t *testing.T) {
 		t.Fatalf("Sign: %v", err)
 	}
 	if !ed25519.Verify(pub, msg, sig) {
-		t.Error("stdlib Verify rejected a freshly generated Signer's signature")
+		t.Error("stdlib Verify rejected a freshly generated Ed25519Signer's signature")
 	}
 }
 
@@ -168,7 +168,7 @@ func TestNewEd25519Signer_SealedBuffer_OwnershipNotTransferred(t *testing.T) {
 	}
 }
 
-func TestSigner_Sign_AfterDestroy(t *testing.T) {
+func TestEd25519Signer_Sign_AfterDestroy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -187,7 +187,7 @@ func TestSigner_Sign_AfterDestroy(t *testing.T) {
 	}
 }
 
-func TestSigner_DoubleDestroy_Idempotent(t *testing.T) {
+func TestEd25519Signer_DoubleDestroy_Idempotent(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -201,7 +201,7 @@ func TestSigner_DoubleDestroy_Idempotent(t *testing.T) {
 	}
 }
 
-func TestSigner_Public_And_Equal_SurviveDestroy(t *testing.T) {
+func TestEd25519Signer_Public_And_Equal_SurviveDestroy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -219,7 +219,7 @@ func TestSigner_Public_And_Equal_SurviveDestroy(t *testing.T) {
 	}
 }
 
-func TestSigner_Public_ReturnsDefensiveCopy(t *testing.T) {
+func TestEd25519Signer_Public_ReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -230,20 +230,20 @@ func TestSigner_Public_ReturnsDefensiveCopy(t *testing.T) {
 	original := signer.Public().(ed25519.PublicKey)
 	keep := append(ed25519.PublicKey(nil), original...)
 
-	// Mutating the returned slice must not corrupt the Signer's cached key —
+	// Mutating the returned slice must not corrupt the Ed25519Signer's cached key —
 	// stdlib ed25519.PrivateKey.Public() copies for the same reason.
 	original[0] ^= 0xFF
 
 	again := signer.Public().(ed25519.PublicKey)
 	if !bytes.Equal(again, keep) {
-		t.Error("mutating Public()'s returned slice corrupted the Signer's cached public key")
+		t.Error("mutating Public()'s returned slice corrupted the Ed25519Signer's cached public key")
 	}
 	if !signer.Equal(keep) {
 		t.Error("Equal against the true public key failed after a caller mutated a returned copy")
 	}
 }
 
-func TestSigner_Sign_RejectsEd25519ph(t *testing.T) {
+func TestEd25519Signer_Sign_RejectsEd25519ph(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -261,7 +261,7 @@ func TestSigner_Sign_RejectsEd25519ph(t *testing.T) {
 	}
 }
 
-func TestSigner_Sign_RejectsEd25519ctx(t *testing.T) {
+func TestEd25519Signer_Sign_RejectsEd25519ctx(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -278,7 +278,7 @@ func TestSigner_Sign_RejectsEd25519ctx(t *testing.T) {
 	}
 }
 
-func TestSigner_Sign_AcceptsPureEd25519Options(t *testing.T) {
+func TestEd25519Signer_Sign_AcceptsPureEd25519Options(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -303,7 +303,7 @@ func TestSigner_Sign_AcceptsPureEd25519Options(t *testing.T) {
 	}
 }
 
-func TestSigner_SignMessage_MatchesSign(t *testing.T) {
+func TestEd25519Signer_SignMessage_MatchesSign(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -325,7 +325,7 @@ func TestSigner_SignMessage_MatchesSign(t *testing.T) {
 	}
 }
 
-func TestSigner_Sign_SealedSeed_ErrorsAndRecovers(t *testing.T) {
+func TestEd25519Signer_Sign_SealedSeed_ErrorsAndRecovers(t *testing.T) {
 	t.Parallel()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
@@ -362,7 +362,7 @@ func TestSigner_Sign_SealedSeed_ErrorsAndRecovers(t *testing.T) {
 	}
 }
 
-func TestSigner_WithSeed_RoundTrip(t *testing.T) {
+func TestEd25519Signer_WithSeed_RoundTrip(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -395,7 +395,7 @@ func TestSigner_WithSeed_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestSigner_WithSeed_AfterDestroy(t *testing.T) {
+func TestEd25519Signer_WithSeed_AfterDestroy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -412,7 +412,7 @@ func TestSigner_WithSeed_AfterDestroy(t *testing.T) {
 	}
 }
 
-func TestSigner_Equal_DifferentKeys(t *testing.T) {
+func TestEd25519Signer_Equal_DifferentKeys(t *testing.T) {
 	t.Parallel()
 	a, err := GenerateEd25519Signer()
 	if err != nil {
@@ -429,10 +429,10 @@ func TestSigner_Equal_DifferentKeys(t *testing.T) {
 	}
 }
 
-// TestSigner_Equal_SignerArgumentComparesFalse pins the documented behavior:
-// Equal wants a public key, and any other type — including a *Signer with
+// TestEd25519Signer_Equal_NonKeyTypeComparesFalse pins the documented behavior:
+// Equal wants a public key, and any other type — including an *Ed25519Signer with
 // the IDENTICAL key — compares false without error (stdlib Equal convention).
-func TestSigner_Equal_SignerArgumentComparesFalse(t *testing.T) {
+func TestEd25519Signer_Equal_NonKeyTypeComparesFalse(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -441,18 +441,18 @@ func TestSigner_Equal_SignerArgumentComparesFalse(t *testing.T) {
 	defer signer.Destroy()
 
 	if signer.Equal(signer) {
-		t.Error("Equal(*Signer) returned true — the documented contract is public keys only")
+		t.Error("Equal(*Ed25519Signer) returned true — the documented contract is public keys only")
 	}
 	if !signer.Equal(signer.Public()) {
 		t.Error("Equal(signer.Public()) returned false for the signer's own key")
 	}
 }
 
-// TestSigner_NilReceiver_NeverPanics holds the adapter to the core module's
+// TestEd25519Signer_NilReceiver_NeverPanics holds the adapter to the core module's
 // bar: every method is safe on a nil receiver — errors, not panics.
-func TestSigner_NilReceiver_NeverPanics(t *testing.T) {
+func TestEd25519Signer_NilReceiver_NeverPanics(t *testing.T) {
 	t.Parallel()
-	var s *Signer
+	var s *Ed25519Signer
 
 	if got := s.Public(); got != nil {
 		t.Errorf("nil.Public() = %v, want nil", got)
@@ -474,10 +474,10 @@ func TestSigner_NilReceiver_NeverPanics(t *testing.T) {
 	}
 }
 
-// TestSigner_ZeroValue_NeverPanics pins the same guarantee for var s Signer.
-func TestSigner_ZeroValue_NeverPanics(t *testing.T) {
+// TestEd25519Signer_ZeroValue_NeverPanics pins the same guarantee for var s Ed25519Signer.
+func TestEd25519Signer_ZeroValue_NeverPanics(t *testing.T) {
 	t.Parallel()
-	var s Signer
+	var s Ed25519Signer
 
 	if got := s.Public(); got != nil {
 		t.Errorf("zero.Public() = %v, want nil", got)
@@ -496,10 +496,10 @@ func TestSigner_ZeroValue_NeverPanics(t *testing.T) {
 	}
 }
 
-// TestSigner_ConcurrentSign exercises the production access pattern:
+// TestEd25519Signer_ConcurrentSign exercises the production access pattern:
 // crypto/tls drives crypto.Signer from concurrent handshake goroutines.
 // Run under -race (the suite always is, per the Makefile/CI).
-func TestSigner_ConcurrentSign(t *testing.T) {
+func TestEd25519Signer_ConcurrentSign(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
@@ -538,10 +538,10 @@ func TestSigner_ConcurrentSign(t *testing.T) {
 	}
 }
 
-// TestSigner_SignDuringDestroy races Sign against Destroy: every Sign must
+// TestEd25519Signer_SignDuringDestroy races Sign against Destroy: every Sign must
 // return either a verifiable signature or a clean error — never a panic,
 // never a corrupt signature.
-func TestSigner_SignDuringDestroy(t *testing.T) {
+func TestEd25519Signer_SignDuringDestroy(t *testing.T) {
 	t.Parallel()
 	for round := range 5 {
 		signer, err := GenerateEd25519Signer()

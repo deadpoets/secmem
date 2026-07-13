@@ -32,6 +32,6 @@ func secureWipeSlice(b []byte) {
 	secureWipe(unsafe.Pointer(&b[0]), uintptr(len(b)))
 }
 
-// archWipeGuaranteed: the arm64 wipe is assembly with cache eviction
+// archWipeFlushed: the arm64 wipe is assembly with cache eviction
 // (DMB ISHST → zero → DMB ISH → DC CIVAC → DSB ISH + ISB).
-const archWipeGuaranteed = true
+const archWipeFlushed = true

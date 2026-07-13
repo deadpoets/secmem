@@ -28,7 +28,7 @@ var errCandidateRejected = errors.New("candidate rejected")
 // P-384, P-521) whose private scalar lives in a [secmem.SecureBuffer]
 // between operations.
 //
-// Honesty caveat — transient materialization: unlike [Signer] (Ed25519),
+// Honesty caveat — transient materialization: unlike [Ed25519Signer],
 // ECDSASigner does not sign inside hardened memory. crypto/ecdsa exposes no
 // API that borrows key bytes in place, and this library will not
 // reimplement ECDSA: per-signature nonce arithmetic is exactly where a

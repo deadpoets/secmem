@@ -16,7 +16,7 @@ import (
 //
 // For Ed25519 and ECDSA keys this is [ssh.NewSignerFromSigner] unchanged —
 // each of those key types has exactly one SSH signature algorithm, so there
-// is nothing to negotiate, and [Signer] and [ECDSASigner] already work with
+// is nothing to negotiate, and [Ed25519Signer] and [ECDSASigner] already work with
 // x/crypto/ssh directly.
 //
 // RSA is why this function exists. The SSH algorithm family for an RSA key

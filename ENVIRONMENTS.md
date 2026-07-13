@@ -61,7 +61,7 @@ in force" — which `Probe` answers.
   measured non-root behavior above (a rootless container is exactly "unprivileged
   process with a constrained memlock budget"), though it has not yet been run
   inside a container runtime end-to-end. Remedies: raise the limit
-  (`--ulimit memlock=…`), call `SetMemlockLimit` early, or accept the loud
+  (`--ulimit memlock=…`), call `EnsureMemlockLimit` early, or accept the loud
   failure as the signal it is.
 
 - **Seccomp**: `memfd_secret(2)` is an ordinary syscall that default Docker and

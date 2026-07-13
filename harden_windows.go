@@ -92,11 +92,11 @@ func disableCoreDumps() error {
 // semantics rather than pinning).
 const quotaLimitsSoft = 0x2 | 0x8 // HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE
 
-// setMemlockLimit raises the minimum working-set size so at least bytes of
+// ensureMemlockLimit raises the minimum working-set size so at least bytes of
 // VirtualLock'd memory fit (the lockable ceiling on Windows is the minimum
 // working-set size minus a small kernel overhead; 8 pages of headroom are
 // added to cover it).
-func setMemlockLimit(bytes uint64) (uint64, error) {
+func ensureMemlockLimit(bytes uint64) (uint64, error) {
 	h := windows.CurrentProcess()
 	page := uintptr(os.Getpagesize())
 	overhead := 8 * page
@@ -116,7 +116,7 @@ func setMemlockLimit(bytes uint64) (uint64, error) {
 	}
 
 	if err := windows.SetProcessWorkingSetSizeEx(h, newMin, newMax, quotaLimitsSoft); err != nil {
-		return uint64(curMin), fmt.Errorf("secmem.SetMemlockLimit: SetProcessWorkingSetSizeEx(min=%d): %w", newMin, err)
+		return uint64(curMin), fmt.Errorf("secmem.EnsureMemlockLimit: SetProcessWorkingSetSizeEx(min=%d): %w", newMin, err)
 	}
 	return bytes, nil
 }

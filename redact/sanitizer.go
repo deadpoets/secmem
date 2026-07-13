@@ -267,7 +267,7 @@ var (
 //	rules := append(redact.DefaultRules(), redact.CommonProviderRules()...)
 //	s := redact.NewSanitizer(rules, redact.WithAllowlist(redact.DefaultAllowlist()))
 //
-// The set is intentionally small and vendor-neutral; it is not a
+// The set is intentionally limited to a few ubiquitous formats; it is not a
 // comprehensive secret scanner and makes no attempt to be one.
 func CommonProviderRules() []Rule {
 	return []Rule{

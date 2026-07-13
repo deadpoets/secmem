@@ -80,6 +80,36 @@ are.
   exposure, and a one-time warning is logged. Use it only when you have
   accepted the risk.
 
+## Post-quantum posture
+
+The `secmem-crypto` module ships `MLKEM768Key`, at-rest custody for an
+ML-KEM-768 (FIPS 203) decapsulation secret. Be precise about what that is
+and is not.
+
+- **It is memory hardening applied to a post-quantum key, not a
+  post-quantum protocol.** `MLKEM768Key` keeps the 64-byte KEM seed off the
+  GC heap for its lifetime and expands it per operation; it does not perform
+  key agreement, negotiate parameters, or make a surrounding protocol
+  quantum-resistant on its own. The expanded decapsulation key transiently
+  touches the heap during each operation — `crypto/mlkem` exposes no in-place
+  path — so the seed is hardened at rest and the expansion is not. The type's
+  godoc states this inline.
+
+- **The urgent PQ threat is a transport concern secmem does not own.**
+  "Harvest now, decrypt later" — recording ciphertext today to break with a
+  future quantum computer — is defeated at the key-exchange layer, and Go's
+  `crypto/tls` has defaulted to the `X25519MLKEM768` hybrid there (as its top
+  preference) since Go 1.24. secmem-crypto hardens where a long-lived KEM
+  secret *lives*; it is not a substitute for a post-quantum handshake.
+
+- **Post-quantum signatures (ML-DSA / FIPS 204) are deferred, deliberately.**
+  The Go standard library does not yet ship `crypto/mldsa` (as of Go 1.26),
+  and secmem-crypto will not vendor a third-party PQ implementation — the
+  same discipline that governs the rest of the module: work around the
+  standard library only where it is broken for off-heap keys, never merely to
+  add an algorithm. A hardened ML-DSA signer follows if and when the standard
+  library ships the primitive.
+
 ## Composition
 
 secmem is a byte/secret container with a hardened lifecycle; it is not a

@@ -6,15 +6,15 @@ import (
 	"testing"
 )
 
-// TestSetMemlockLimit_NeverLowers verifies the idempotent, never-shrink
+// TestEnsureMemlockLimit_NeverLowers verifies the idempotent, never-shrink
 // contract: asking for less than the current budget returns the current
 // value and does not reduce it. Safe to run in-process — it only ever raises.
-func TestSetMemlockLimit_NeverLowers(t *testing.T) {
+func TestEnsureMemlockLimit_NeverLowers(t *testing.T) {
 	switch runtime.GOOS {
 	case "linux", "darwin", "windows":
 	default:
-		if _, err := SetMemlockLimit(1 << 20); !errors.Is(err, errors.ErrUnsupported) {
-			t.Errorf("stub SetMemlockLimit err = %v, want ErrUnsupported", err)
+		if _, err := EnsureMemlockLimit(1 << 20); !errors.Is(err, errors.ErrUnsupported) {
+			t.Errorf("stub EnsureMemlockLimit err = %v, want ErrUnsupported", err)
 		}
 		return
 	}
@@ -22,18 +22,18 @@ func TestSetMemlockLimit_NeverLowers(t *testing.T) {
 	// Raise to a modest budget (256 KiB) — above the 64 KiB Linux default,
 	// within any reasonable hard limit, so this needs no privilege.
 	const want = 256 * 1024
-	got, err := SetMemlockLimit(want)
+	got, err := EnsureMemlockLimit(want)
 	if err != nil {
-		t.Logf("SetMemlockLimit(%d) = %d, %v (hard limit or working-set cap reached; not a failure of contract)", want, got, err)
+		t.Logf("EnsureMemlockLimit(%d) = %d, %v (hard limit or working-set cap reached; not a failure of contract)", want, got, err)
 	}
 
 	// Now ask for far less — must not lower what we just achieved.
-	after, err := SetMemlockLimit(4096)
+	after, err := EnsureMemlockLimit(4096)
 	if err != nil {
-		t.Fatalf("SetMemlockLimit(4096): %v", err)
+		t.Fatalf("EnsureMemlockLimit(4096): %v", err)
 	}
 	if after < got {
-		t.Errorf("SetMemlockLimit lowered the budget: was %d, now %d", got, after)
+		t.Errorf("EnsureMemlockLimit lowered the budget: was %d, now %d", got, after)
 	}
 }
 

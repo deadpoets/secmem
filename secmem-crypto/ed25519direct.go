@@ -36,7 +36,9 @@ import (
 	"github.com/deadpoets/secmem"
 )
 
-// ErrBadSeedLength is returned when a seed is not exactly 32 bytes.
+// ErrBadSeedLength is returned when a raw seed does not have the exact
+// length its algorithm requires: 32 bytes for Ed25519 ([Ed25519Signer]), or
+// 64 bytes for ML-KEM-768 ([MLKEM768Key] — see [crypto/mlkem.SeedSize]).
 var ErrBadSeedLength = errors.New("secmemcrypto: bad seed length")
 
 // signEd25519Direct signs message using the 32-byte Ed25519 seed, following
@@ -80,7 +82,7 @@ func signEd25519Direct(seed, message []byte) ([]byte, error) {
 	secmem.SecureWipe(nonceDigest[:])
 	if err != nil {
 		secmem.SecureWipe(h[:])
-		WipeScalar(s)
+		WipeEd25519Scalar(s)
 		return nil, fmt.Errorf("nonce: %w", err)
 	}
 
@@ -102,8 +104,8 @@ func signEd25519Direct(seed, message []byte) ([]byte, error) {
 	secmem.SecureWipe(challengeDigest[:])
 	if err != nil {
 		secmem.SecureWipe(h[:])
-		WipeScalar(s)
-		WipeScalar(r)
+		WipeEd25519Scalar(s)
+		WipeEd25519Scalar(r)
 		return nil, fmt.Errorf("challenge: %w", err)
 	}
 
@@ -117,9 +119,9 @@ func signEd25519Direct(seed, message []byte) ([]byte, error) {
 
 	// Wipe all secret intermediates. Points (A, R) and S are public.
 	secmem.SecureWipe(h[:])
-	WipeScalar(s)
-	WipeScalar(r)
-	WipeScalar(k)
+	WipeEd25519Scalar(s)
+	WipeEd25519Scalar(r)
+	WipeEd25519Scalar(k)
 
 	return sig, nil
 }
@@ -149,7 +151,7 @@ func deriveEd25519PublicKey(seed []byte) (ed25519.PublicKey, error) {
 	copy(pub, A.Bytes())
 
 	secmem.SecureWipe(h[:])
-	WipeScalar(s)
+	WipeEd25519Scalar(s)
 
 	return ed25519.PublicKey(pub), nil
 }

@@ -30,10 +30,10 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 		t.Fatalf("encapsulation key size = %d, want %d", len(ekBytes), mlkem.EncapsulationKeySize768)
 	}
 
-	// Sender side: EncapsulateInto keeps the sender's shared secret hardened.
-	ct, senderShared, err := EncapsulateInto(ekBytes)
+	// Sender side: Encapsulate keeps the sender's shared secret hardened.
+	ct, senderShared, err := Encapsulate(ekBytes)
 	if err != nil {
-		t.Fatalf("EncapsulateInto: %v", err)
+		t.Fatalf("Encapsulate: %v", err)
 	}
 	defer senderShared.Destroy()
 
@@ -58,9 +58,9 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 	}
 }
 
-func TestEncapsulateInto_BadKey(t *testing.T) {
+func TestEncapsulate_BadKey(t *testing.T) {
 	t.Parallel()
-	if _, _, err := EncapsulateInto(make([]byte, 10)); err == nil {
+	if _, _, err := Encapsulate(make([]byte, 10)); err == nil {
 		t.Error("expected error for a malformed encapsulation key")
 	}
 }
@@ -167,8 +167,8 @@ func TestNewMLKEM768Key_BadInputs(t *testing.T) {
 	}
 	defer short.Destroy()
 	_, err = NewMLKEM768Key(short)
-	if !errors.Is(err, ErrBadSeedSize) {
-		t.Errorf("wrong-size seed: error = %v, want wrap of ErrBadSeedSize", err)
+	if !errors.Is(err, ErrBadSeedLength) {
+		t.Errorf("wrong-size seed: error = %v, want wrap of ErrBadSeedLength", err)
 	}
 	if short.IsDestroyed() {
 		t.Error("ownership transferred on failure")

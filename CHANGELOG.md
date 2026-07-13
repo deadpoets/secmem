@@ -15,7 +15,7 @@ mark the stability commitment.
 
 ### Added (secmem-crypto — new module, not yet tagged)
 
-- `Signer` — a `crypto.Signer`/`crypto.MessageSigner` whose Ed25519 seed
+- `Ed25519Signer` — a `crypto.Signer`/`crypto.MessageSigner` whose Ed25519 seed
   lives in a `SecureBuffer` for its entire lifetime, with in-place RFC 8032
   signing that bypasses `crypto/ed25519`'s FIPS cache (which panics on
   mmap'd memory). Pure Ed25519 only; Ed25519ph and Ed25519ctx requests are
@@ -28,18 +28,19 @@ mark the stability commitment.
   `SecureBuffer`; explicit cost parameters are validated (error, never
   panic), and the defaults follow RFC 9106 §4's second recommended option,
   frozen permanently.
-- `WipeScalar` — hardened wipe for `edwards25519.Scalar` values, whose
-  unexported fields `SecureWipe` cannot reach.
-- `OpenInto` / `SealInto` — AEAD decryption directly into a `SecureBuffer`
-  (and encryption from one), so an AEAD plaintext never lands on the heap
-  as an intermediate. A tampered ciphertext leaves the buffer zeroed; the
-  in-place decrypt is measured at zero allocations.
-- `Key32` — X25519 Diffie-Hellman with the private scalar in a
+- `WipeEd25519Scalar` — hardened wipe for `edwards25519.Scalar` values,
+  whose unexported fields `SecureWipe` cannot reach.
+- `OpenInto` / `SealFrom` — AEAD decryption directly into a `SecureBuffer`,
+  and encryption straight from one, so an AEAD plaintext never lands on the
+  heap as an intermediate. A tampered ciphertext leaves the buffer zeroed;
+  the in-place decrypt is measured at zero allocations.
+- `X25519Key` — X25519 Diffie-Hellman with the private scalar in a
   `SecureBuffer`; `PublicKey`/`SharedSecret` (returned hardened, low-order
-  points rejected)/`WithScalar`/`Equal`. Verified against RFC 7748 vectors.
+  points rejected)/`WithScalar`/`ConstantTimeEqual`. Verified against
+  RFC 7748 vectors.
 - `MLKEM768Key` — post-quantum ML-KEM-768 (FIPS 203) decapsulation-key
   custody: 64-byte seed in a `SecureBuffer`, expanded per operation;
-  `EncapsulationKeyBytes`/`Decapsulate`/`WithSeed`. `EncapsulateInto`
+  `EncapsulationKeyBytes`/`Decapsulate`/`WithSeed`. `Encapsulate`
   hardens the sender side too, delivering the encapsulating peer's shared
   secret into a `SecureBuffer` instead of the plain heap.
 - Fuzz targets (sign-vs-stdlib, HKDF, Argon2 params, AEAD round-trip,
@@ -64,6 +65,11 @@ mark the stability commitment.
   every path — negotiation offers only `rsa-sha2-512`/`rsa-sha2-256`,
   explicit requests for `ssh-rsa` error, and plain `Sign` (which x/crypto's
   own restricted signer still routes to SHA-1) is overridden to rsa-sha2-512.
+- Runnable examples showing the two most common adoption points for a
+  `crypto.Signer`: `ExampleECDSASigner_tlsCertificate` (self-signing an
+  `x509.Certificate` and assembling a `tls.Certificate` — what
+  `tls.Config.Certificates` expects) and `ExampleAsSSH_hostKey` (wiring an
+  adapted signer into `ssh.ServerConfig.AddHostKey`).
 
 ### Added
 
@@ -89,7 +95,7 @@ mark the stability commitment.
   passed.
 - Process-hardening helpers: `HardenProcess` (dumpable=0 and no-new-privs on
   Linux; Arbitrary Code Guard and strict handle checks on Windows),
-  `DisableCoreDumps`, and `SetMemlockLimit`.
+  `DisableCoreDumps`, and `EnsureMemlockLimit`.
 - Platform dump/copy hardening applied by the allocator: `MADV_DONTDUMP` /
   `MADV_DONTFORK` / `MADV_NOHUGEPAGE` / `MADV_UNMERGEABLE` on Linux; WER dump
   exclusion and a kernel-keyed sealed-state cipher (`CryptProtectMemory`) on

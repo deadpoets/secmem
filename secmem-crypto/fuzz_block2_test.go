@@ -13,7 +13,7 @@ import (
 	"github.com/deadpoets/secmem"
 )
 
-// FuzzOpenInto_RoundTrip asserts that anything SealInto/gcm.Seal produces,
+// FuzzOpenInto_RoundTrip asserts that anything SealFrom/gcm.Seal produces,
 // OpenInto recovers exactly — and that OpenInto never panics on arbitrary
 // (nonce, ciphertext, aad, buffer-size) inputs.
 func FuzzOpenInto_RoundTrip(f *testing.F) {
@@ -59,10 +59,10 @@ func FuzzOpenInto_RoundTrip(f *testing.F) {
 	})
 }
 
-// FuzzKey32_PublicKeyMatchesStdlib differentially fuzzes Key32.PublicKey
+// FuzzX25519Key_PublicKeyMatchesStdlib differentially fuzzes X25519Key.PublicKey
 // against a direct curve25519 base-point multiplication for arbitrary
 // 32-byte scalars.
-func FuzzKey32_PublicKeyMatchesStdlib(f *testing.F) {
+func FuzzX25519Key_PublicKeyMatchesStdlib(f *testing.F) {
 	f.Add(bytes.Repeat([]byte{0x01}, 32))
 	f.Add(make([]byte, 32))
 	f.Fuzz(func(t *testing.T, scalar []byte) {
@@ -73,9 +73,9 @@ func FuzzKey32_PublicKeyMatchesStdlib(f *testing.F) {
 		if err != nil {
 			t.Skip()
 		}
-		k, err := NewKey32(buf)
+		k, err := NewX25519Key(buf)
 		if err != nil {
-			t.Fatalf("NewKey32: %v", err)
+			t.Fatalf("NewX25519Key: %v", err)
 		}
 		defer k.Destroy()
 

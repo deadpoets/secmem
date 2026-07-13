@@ -179,23 +179,23 @@ func TestSecret_Equal(t *testing.T) {
 	}
 	defer func() { _ = short.Destroy() }()
 
-	if !a.Equal(b) {
+	if !a.ConstantTimeEqual(b) {
 		t.Error("Equal(same contents, distinct backings) = false, want true")
 	}
-	if !a.Equal(a) {
+	if !a.ConstantTimeEqual(a) {
 		t.Error("Equal(self) = false, want true")
 	}
 	copyOfA := a // value copy shares the backing store
-	if !a.Equal(copyOfA) {
+	if !a.ConstantTimeEqual(copyOfA) {
 		t.Error("Equal(shared backing copy) = false, want true")
 	}
-	if a.Equal(other) {
+	if a.ConstantTimeEqual(other) {
 		t.Error("Equal(different contents) = true, want false")
 	}
-	if a.Equal(short) {
+	if a.ConstantTimeEqual(short) {
 		t.Error("Equal(different lengths) = true, want false")
 	}
-	if a.Equal(Secret{}) || (Secret{}).Equal(a) || (Secret{}).Equal(Secret{}) {
+	if a.ConstantTimeEqual(Secret{}) || (Secret{}).ConstantTimeEqual(a) || (Secret{}).ConstantTimeEqual(Secret{}) {
 		t.Error("zero-value Secret compared equal to something")
 	}
 }
@@ -211,7 +211,7 @@ func TestSecret_Equal_Destroyed(t *testing.T) {
 	if err := a.Destroy(); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
-	if a.Equal(b) || b.Equal(a) || a.Equal(a) {
+	if a.ConstantTimeEqual(b) || b.ConstantTimeEqual(a) || a.ConstantTimeEqual(a) {
 		t.Error("destroyed Secret compared equal to something")
 	}
 }
