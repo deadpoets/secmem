@@ -22,27 +22,31 @@ func katHex(t *testing.T, s string) []byte {
 	return b
 }
 
-// TestMLKEM768_AccumulatedKAT is a conformance known-answer test for the
-// wrapper's seed→encapsulation-key and decapsulation paths against the
-// FIPS 203 standard, not merely self-consistency.
+// TestMLKEM768_AccumulatedKAT pins the wrapper's seed→encapsulation-key and
+// decapsulation paths to the standard library's own FIPS 203 answers, rather
+// than to mere encapsulate/decapsulate self-consistency.
 //
-// It reproduces the standard library's ML-KEM accumulation methodology
-// (crypto/mlkem's TestAccumulated): a SHAKE128 stream drives 100 deterministic
-// keygen / encapsulate / decapsulate rounds, and every produced value — the
-// encapsulation key, the ciphertext, the encapsulated shared key, and the
-// implicit-rejection key — is folded into a second SHAKE128 whose digest is
-// compared to a pinned, NIST-anchored value. The full set of individual
-// vectors is ~150 MB; the accumulated digest is how the reference and the
-// standard library both check them compactly.
+// It reproduces crypto/mlkem's accumulation methodology (its TestAccumulated):
+// a SHAKE128 stream drives 100 deterministic keygen / encapsulate /
+// decapsulate rounds, and every produced value — the encapsulation key, the
+// ciphertext, the encapsulated shared key, and the implicit-rejection key —
+// is folded into a second SHAKE128. The pinned digest is crypto/mlkem's own
+// regression value for that run (its testing.Short n=100 value), computed by
+// the Go team over a pseudo-random stream — it is NOT a NIST-published ACVP
+// vector. Matching it therefore proves byte-for-byte agreement with
+// crypto/mlkem's ML-KEM-768 implementation, which is itself validated against
+// NIST's vectors; that is conformance to the reference implementation, not an
+// independent known-answer.
 //
-// The keygen and both decapsulation halves run through THIS package's
-// [MLKEM768Key] (seed custody in a SecureBuffer), so matching the pinned
-// digest proves the wrapper produces byte-for-byte the answers the standard
-// mandates — upgrading ML-KEM conformance from "inherited silently from
-// crypto/mlkem" to "checked here." The digest is the value crypto/mlkem
-// validates ML-KEM-768 against at n=100 (its testing.Short vector); the
-// encapsulation half uses crypto/mlkem/mlkemtest's derandomized
-// Encaps_internal (test-only) so the run is reproducible.
+// The value that makes this worth having: the keygen and both decapsulation
+// halves run through THIS package's [MLKEM768Key] (seed custody in a
+// SecureBuffer), so a plumbing regression in the wrapper — wrong seed
+// handling, truncation, byte order — would break the digest. It upgrades the
+// wrapper's ML-KEM correctness from "inherited silently from crypto/mlkem" to
+// "checked against it." Encapsulation is inherently the public-key holder's
+// job and has no wrapper method; that half uses crypto/mlkem/mlkemtest's
+// derandomized Encaps_internal (test-only) purely to make the run
+// reproducible.
 func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 	const n = 100
 	const expected = "1114b1b6699ed191734fa339376afa7e285c9e6acf6ff0177d346696ce564415"

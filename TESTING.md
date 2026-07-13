@@ -54,10 +54,10 @@ that is said outright rather than dressed up.
 | X25519 matches RFC 7748 | §6.1 vectors both directions, differential fuzz vs `curve25519`, low-order-point rejection | `x25519_test.go`, `fuzz_block2_test.go` |
 | HKDF matches RFC 5869 | Test cases 1–3 (SHA-256), differential vs `x/crypto/hkdf`, hash agility | `kdf_test.go` |
 | Argon2id is the standard parameter profile | The `x/crypto/argon2` reference KAT (see note below re: RFC 9106) | `kdf_test.go` |
-| **ML-KEM-768 conforms to FIPS 203** | Accumulated known-answer test: 100 deterministic keygen/encap/decap rounds through `MLKEM768Key`, folded into a SHAKE128 digest compared to the NIST-anchored value `crypto/mlkem` validates against | `kat_test.go` |
+| **ML-KEM-768 keygen and decap agree with the standard library's FIPS 203 implementation** | Accumulated known-answer test: 100 deterministic rounds — keygen and both decapsulations through `MLKEM768Key`, encapsulation via the stdlib derandomized test helper — folded into a SHAKE128 digest matched byte-for-byte to `crypto/mlkem`'s own accumulated value. Conformance to the reference implementation (itself NIST-validated), not an independent NIST vector; a wrapper plumbing regression breaks the digest | `kat_test.go` |
 | The AEAD wrapper preserves the cipher contract | A published AES-256-GCM vector threaded through `SealFrom` and `OpenInto` byte-for-byte | `kat_test.go`, `aead_test.go` |
 | `OpenInto` lands plaintext in the buffer with no heap intermediate | `testing.AllocsPerRun` gate asserts 0 allocs | `alloc_test.go` |
-| Sign wipes the transient key it materializes | The wipe var is wrapped to alias the live transient's limb arrays during `Sign`; they are asserted zero afterward, and a `fired` guard fails if the deferred wipe is ever dropped | `livewipe_test.go`, `wipehelpers_block3_test.go` |
+| Sign wipes the exported limbs of the transient key it materializes | The wipe var is wrapped to alias the live transient's `big.Int` limbs during `Sign`; they are asserted zero afterward, and a `fired` guard fails if the deferred wipe is ever dropped. The stdlib FIPS-form copy and modular-arithmetic scratch are unreachable — see the note below | `livewipe_test.go`, `wipehelpers_block3_test.go` |
 | Every borrow path is safe when sealed/destroyed/nil | Each type's borrow methods return `ErrSealed`/`ErrDestroyed` and recover after `Unseal` | `sealed_block2_test.go`, `sealed_block3_test.go` |
 | Concurrent Sign is safe | 8×25 concurrent signs and Sign-vs-Destroy races under `-race` | `ed25519_test.go`, `ecdsa_test.go`, `rsa_test.go` |
 | Legacy `ssh-rsa` (SHA-1) is unreachable | Every signing path of an `AsSSH` RSA signer is asserted to offer/use only rsa-sha2 | `ssh_test.go` |
@@ -93,11 +93,19 @@ stand-in rather than measured directly.
   exhausting RAM to force swapping; the `lo` flag in `/proc/self/smaps` is the
   kernel's own record that the pages are locked, which is the check
   `madvise_linux_test.go` makes.
+- **The transient signing key is wiped only where it is reachable.** `Sign`
+  zeroes the exported `big.Int` limbs of the ECDSA/RSA key it materializes
+  (proven in `livewipe_test.go`), but the standard library also builds an
+  internal FIPS-form copy and modular-arithmetic scratch that no exported API
+  exposes; those are erased on `GOEXPERIMENT=runtimesecret` builds and
+  otherwise reclaimed by the GC, not explicitly zeroed. This is the documented
+  cost of not reimplementing ECDSA/RSA, stated in the signer type docs.
 - **secmem is not a FIPS 140-validated module.** The crypto known-answer tests
-  anchor to the same RFC / NIST-derived vectors a validation would use
-  (RFC 8032/6979/7748/5869, the FIPS 203 accumulated digest), and the
-  zeroization discipline mirrors the FIPS "zeroization of CSPs" requirement,
-  but no CMVP validation has been performed and none is claimed.
+  anchor to the published RFC vectors a validation would use
+  (RFC 8032/6979/7748/5869) and, for ML-KEM-768, to byte-for-byte agreement
+  with the standard library's FIPS 203 implementation; the zeroization
+  discipline mirrors the FIPS "zeroization of CSPs" requirement. No CMVP
+  validation has been performed and none is claimed.
 - **Argon2id is pinned to the reference-implementation KAT, not RFC 9106's
   headline vector.** That vector sets a secret key and associated data which
   `golang.org/x/crypto/argon2` does not expose, so it cannot be reproduced

@@ -70,11 +70,12 @@ mark the stability commitment.
   `x509.Certificate` and assembling a `tls.Certificate` — what
   `tls.Config.Certificates` expects) and `ExampleAsSSH_hostKey` (wiring an
   adapted signer into `ssh.ServerConfig.AddHostKey`).
-- ML-KEM-768 conformance known-answer test (accumulated FIPS 203 digest,
-  upgrading it from round-trip-only), a published AES-256-GCM vector threaded
-  through `SealFrom`/`OpenInto`, a `testing.AllocsPerRun` gate enforcing
-  `OpenInto`'s zero-heap-escape, and a proof that `Sign` wipes its live
-  transient key (not just the wipe helpers in isolation).
+- ML-KEM-768 accumulated known-answer test pinning the wrapper's keygen and
+  decapsulation byte-for-byte to the standard library's FIPS 203
+  implementation (upgrading it from round-trip-only), a published AES-256-GCM
+  vector threaded through `SealFrom`/`OpenInto`, a `testing.AllocsPerRun` gate
+  enforcing `OpenInto`'s zero-heap-escape, and a proof that `Sign` wipes its
+  live transient key (not just the wipe helpers in isolation).
 
 ### Added
 
