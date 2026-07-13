@@ -43,6 +43,51 @@ jobs:
       - run: go test -race ./...
         working-directory: secmem-crypto
 
+  # Exercise the GOEXPERIMENT=runtimesecret build. The register/stack/heap
+  # erasure layer's integration tests are build-tag-gated to this experiment;
+  # without this job they never run in automation. linux/amd64 and linux/arm64
+  # only — the experiment's supported platforms.
+  test-runtimesecret:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOEXPERIMENT: runtimesecret
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - run: go test -race ./...
+      - run: go test -race ./...
+        working-directory: secmem-crypto
+
+  # Execute (not just compile) the suite on 32-bit x86. The wipe helpers
+  # manipulate big.Word limbs, whose width differs on 386, so 386 must be RUN,
+  # not merely built. 386 binaries execute natively on the amd64 runner via the
+  # kernel's IA-32 emulation; CGO is off, so no 32-bit libc is needed. The race
+  # detector requires 64-bit, so this job runs without -race.
+  test-386-linux:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: test (core)
+        env:
+          GOARCH: "386"
+          CGO_ENABLED: "0"
+        run: go test ./...
+      - name: test (secmem-crypto)
+        working-directory: secmem-crypto
+        env:
+          GOARCH: "386"
+          CGO_ENABLED: "0"
+        run: go test ./...
+
   cross-compile:
     runs-on: ubuntu-latest
     strategy:
@@ -51,8 +96,6 @@ jobs:
         include:
           - goos: linux
             goarch: arm64
-          - goos: linux
-            goarch: "386" # 32-bit tripwire — the README matrix claims 32-bit linux
           - goos: darwin
             goarch: arm64
           - goos: darwin
