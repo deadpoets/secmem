@@ -69,15 +69,17 @@ func signEd25519Direct(seed, message []byte) ([]byte, error) {
 	A := (&edwards25519.Point{}).ScalarBaseMult(s)
 
 	// Step 4: r = SHA-512(h[32:64] || message) — nonce scalar. nonceDigest is
-	// SECRET (derived from the private prefix h[32:64]); summing into a
-	// stack array and wiping avoids leaking it on the GC heap, which
-	// mh.Sum(nil) would do. Leaking two nonce pre-images for the same key
-	// recovers the private scalar.
-	mh := sha512.New()
-	mh.Write(h[32:])
-	mh.Write(message)
-	var nonceDigest [64]byte
-	mh.Sum(nonceDigest[:0])
+	// SECRET (derived from the private prefix h[32:64]). Hash a single scratch
+	// buffer with sha512.Sum512 (whose digest is a stack local) rather than a
+	// streaming sha512.New() hasher: the streaming hasher is a heap allocation
+	// that retains the written prefix in its unexported block buffer, which no
+	// wipe here can reach. The scratch is wiped immediately after. Leaking two
+	// nonce pre-images for the same key recovers the private scalar.
+	nonceInput := make([]byte, 32+len(message))
+	copy(nonceInput, h[32:])
+	copy(nonceInput[32:], message)
+	nonceDigest := sha512.Sum512(nonceInput)
+	secmem.SecureWipe(nonceInput)
 	r, err := edwards25519.NewScalar().SetUniformBytes(nonceDigest[:])
 	secmem.SecureWipe(nonceDigest[:])
 	if err != nil {
