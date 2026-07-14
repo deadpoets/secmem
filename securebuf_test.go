@@ -393,7 +393,7 @@ func TestJanitorRelease_DestroyRace(t *testing.T) {
 			done <- buf.Destroy()
 		}()
 
-		// Competing release path (simulates cleanup/signal race).
+		// Competing release path (simulates cleanup/emergency-wipe race).
 		if relErr := emergencyJanitor.release(buf.janitorKey, false); relErr != nil {
 			t.Fatalf("janitor release: %v", relErr)
 		}

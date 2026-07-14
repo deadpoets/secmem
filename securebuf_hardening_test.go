@@ -23,14 +23,14 @@ func TestSignalWipe_NoUseAfterMunmap(t *testing.T) {
 	}
 	defer func() { _ = buf.Destroy() }()
 
-	// Reproduce the signal path for just this buffer: take it out of the
-	// registry (as wipeAll does) and wipe WITHOUT unmapping.
+	// Reproduce the emergency-wipe path for just this buffer: take it out of the
+	// registry (as wipeInPlace does) and wipe WITHOUT unmapping.
 	region, ok := emergencyJanitor.take(buf.janitorKey)
 	if !ok {
 		t.Fatal("buffer not registered with the emergency janitor")
 	}
 	if err := wipeAndFree(region, false, false); err != nil {
-		t.Fatalf("signal-path wipe: %v", err)
+		t.Fatalf("emergency-wipe: %v", err)
 	}
 
 	// The region is wiped but still mapped: access must NOT fault (a fault would
@@ -43,10 +43,10 @@ func TestSignalWipe_NoUseAfterMunmap(t *testing.T) {
 			}
 		}
 	}); err != nil {
-		t.Fatalf("access after signal wipe returned %v (must read the wiped-but-mapped region)", err)
+		t.Fatalf("access after emergency wipe returned %v (must read the wiped-but-mapped region)", err)
 	}
 	if sawNonZero {
-		t.Fatal("secret was not fully wiped by the signal path")
+		t.Fatal("secret was not fully wiped by the emergency-wipe path")
 	}
 }
 
