@@ -50,8 +50,11 @@
 //     confidentiality control: it does nothing against a privileged reader of
 //     process memory.
 //
-//   - Emergency wipe. Live buffers are registered so that a fatal signal wipes
-//     them before the process exits.
+//   - Emergency wipe (opt-in). Live buffers are registered so a single
+//     WipeAllSecrets call zeroes every one at once. secmem installs no signal
+//     handler itself: call WipeAllSecrets from your own shutdown or panic
+//     handler, or opt into InstallTerminationWipe to wipe on termination
+//     signals.
 //
 // # Lifecycle
 //

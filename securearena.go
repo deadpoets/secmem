@@ -183,7 +183,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 
 	// Arm the canary strips (one after each slot) and the page-rounding tail.
 	// These are also the janitor's verification zones, checked before the
-	// slab is wiped on Destroy or signal shutdown.
+	// slab is wiped on Destroy or emergency wipe.
 	zones := make([][2]int, 0, count+1)
 	for i := 0; i < count; i++ {
 		zones = append(zones, [2]int{i*stride + slotSize, (i + 1) * stride})
@@ -272,7 +272,7 @@ func (a *SecureArena) Destroy() error {
 	a.cleanup.Stop()
 
 	// Take exclusive ownership from janitor registry and wipe/free exactly once.
-	// If cleanup/signal already released the slab, do not touch raw again.
+	// If the cleanup or emergency-wipe path already released it, do not touch raw.
 	err := emergencyJanitor.release(a.janitorKey, true)
 	a.region = secRegion{}
 

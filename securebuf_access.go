@@ -5,7 +5,7 @@
 // methods (ExposeString, WriteTo, ReadFrom) are the deliberate exception: they
 // snapshot the contents under the lock and release it before returning or
 // streaming the copy, so a slow reader/writer cannot block Destroy, including
-// the signal-wipe path.
+// the emergency-wipe path.
 //
 // Locking protocol:
 //
@@ -247,7 +247,7 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 // heap slice under the read lock, releases the lock, then writes the copy to w.
 //
 // This decouples Destroy from any I/O latency: a stalled network peer or slow
-// pipe no longer prevents Destroy (including the signal wipe path) from
+// pipe no longer prevents Destroy (including the emergency-wipe path) from
 // proceeding. The temporary copy is wiped via secureWipeSlice after the write.
 //
 // NOTE: For network or pipe targets, wrap w with a write deadline before
@@ -282,7 +282,7 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 // a temporary heap slice first, then copied into secure memory under the lock.
 //
 // This prevents a stalled network peer or slow pipe from blocking Destroy
-// (including the signal wipe path). The temporary slice is wiped via
+// (including the emergency-wipe path). The temporary slice is wiped via
 // secureWipeSlice after the copy regardless of outcome.
 func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	if s == nil {
