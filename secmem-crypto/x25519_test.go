@@ -119,8 +119,8 @@ func TestX25519Key_GenerateAndAgree(t *testing.T) {
 	defer sb.Destroy()
 
 	var kaBytes, kbBytes []byte
-	_ = sa.WithBytesErr(func(p []byte) error { kaBytes = append([]byte(nil), p...); return nil })
-	_ = sb.WithBytesErr(func(p []byte) error { kbBytes = append([]byte(nil), p...); return nil })
+	_ = sa.WithBytesErr(func(p []byte) error { kaBytes = append([]byte(nil), p...); return nil }) //nolint:secmem-lint // test extracts the shared secret to compare the two derivations
+	_ = sb.WithBytesErr(func(p []byte) error { kbBytes = append([]byte(nil), p...); return nil }) //nolint:secmem-lint // test extracts the shared secret to compare the two derivations
 	if !bytes.Equal(kaBytes, kbBytes) {
 		t.Error("independently derived shared secrets disagree")
 	}
@@ -180,7 +180,10 @@ func TestX25519Key_WithScalar_Persist(t *testing.T) {
 	defer k.Destroy()
 
 	persisted := make([]byte, curve25519.ScalarSize)
-	if err := k.WithScalar(func(s []byte) error { copy(persisted, s); return nil }); err != nil {
+	if err := k.WithScalar(func(s []byte) error {
+		copy(persisted, s) //nolint:secmem-lint // test persists the scalar to verify reload
+		return nil
+	}); err != nil {
 		t.Fatalf("WithScalar: %v", err)
 	}
 

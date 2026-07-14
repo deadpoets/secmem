@@ -81,7 +81,10 @@ func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 	}
 
 	persisted := make([]byte, mlkem.SeedSize)
-	if err := k.WithSeed(func(s []byte) error { copy(persisted, s); return nil }); err != nil {
+	if err := k.WithSeed(func(s []byte) error {
+		copy(persisted, s) //nolint:secmem-lint // test persists the seed to verify reload
+		return nil
+	}); err != nil {
 		t.Fatalf("WithSeed: %v", err)
 	}
 	buf, err := secmem.NewBuffer(persisted)

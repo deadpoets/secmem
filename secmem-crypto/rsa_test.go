@@ -46,7 +46,7 @@ func cloneRSADER(tb testing.TB) *secmem.SecureBuffer {
 	var buf *secmem.SecureBuffer
 	if err := s.WithDER(func(der []byte) error {
 		cp := make([]byte, len(der))
-		copy(cp, der)
+		copy(cp, der) //nolint:secmem-lint // reload: NewBuffer below consumes and wipes cp
 		var berr error
 		buf, berr = secmem.NewBuffer(cp) // NewBuffer wipes cp
 		return berr

@@ -56,7 +56,7 @@ func TestSealCipher_ContentsAreCiphertextWhileSealed(t *testing.T) {
 		t.Fatalf("Unseal: %v", err)
 	}
 	if err := buf.WithBytes(func(b []byte) {
-		if string(b) != sealPlaintext {
+		if !bytes.Equal(b, []byte(sealPlaintext)) {
 			t.Errorf("after unseal: %q, want %q — decryption did not restore the secret", b, sealPlaintext)
 		}
 	}); err != nil {

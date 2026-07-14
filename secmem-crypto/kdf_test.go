@@ -18,7 +18,7 @@ func readBuf(t *testing.T, b *secmem.SecureBuffer) []byte {
 	t.Helper()
 	var out []byte
 	if err := b.WithBytesErr(func(p []byte) error {
-		out = append([]byte(nil), p...)
+		out = append([]byte(nil), p...) //nolint:secmem-lint // test helper reads contents out for comparison
 		return nil
 	}); err != nil {
 		t.Fatalf("WithBytesErr: %v", err)

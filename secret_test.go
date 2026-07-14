@@ -51,7 +51,7 @@ func TestNewSecret_CopiesAndWipesInput(t *testing.T) {
 		}
 	}
 	if err := s.WithBytes(func(b []byte) {
-		if string(b) != secretPlaintext {
+		if !bytes.Equal(b, []byte(secretPlaintext)) {
 			t.Errorf("contents = %q, want %q", b, secretPlaintext)
 		}
 	}); err != nil {
