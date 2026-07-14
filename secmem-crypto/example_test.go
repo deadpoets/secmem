@@ -58,7 +58,7 @@ func ExampleEd25519Signer_WithSeed() {
 	// caller is now responsible for protecting and wiping).
 	stored := make([]byte, ed25519.SeedSize)
 	if err := signer.WithSeed(func(seed []byte) error {
-		copy(stored, seed)
+		copy(stored, seed) //nolint:secmem-lint // deliberate egress (see comment above)
 		return nil
 	}); err != nil {
 		panic(err)

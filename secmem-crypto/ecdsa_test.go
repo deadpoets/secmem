@@ -389,7 +389,7 @@ func TestECDSASigner_WithScalarRoundTrip(t *testing.T) {
 
 	persisted := make([]byte, scalarSize(elliptic.P384()))
 	if err := s.WithScalar(func(scalar []byte) error {
-		copy(persisted, scalar)
+		copy(persisted, scalar) //nolint:secmem-lint // test persists the scalar to verify reload
 		return nil
 	}); err != nil {
 		t.Fatalf("WithScalar: %v", err)

@@ -79,7 +79,7 @@ func FuzzHKDFInto(f *testing.F) {
 			t.Fatalf("direct hkdf read: %v", err)
 		}
 		var got []byte
-		_ = out.WithBytesErr(func(p []byte) error { got = append([]byte(nil), p...); return nil })
+		_ = out.WithBytesErr(func(p []byte) error { got = append([]byte(nil), p...); return nil }) //nolint:secmem-lint // fuzz reads contents out to diff against the reference derivation
 		if !bytes.Equal(got, want) {
 			t.Error("HKDFSHA256Into differs from direct x/crypto/hkdf derivation")
 		}

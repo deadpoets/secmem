@@ -374,7 +374,7 @@ func TestEd25519Signer_WithSeed_RoundTrip(t *testing.T) {
 	// persisted copy — the generate-then-store flow WithSeed exists for.
 	persisted := make([]byte, ed25519.SeedSize)
 	if err := signer.WithSeed(func(seed []byte) error {
-		copy(persisted, seed)
+		copy(persisted, seed) //nolint:secmem-lint // test persists the seed to verify reload
 		return nil
 	}); err != nil {
 		t.Fatalf("WithSeed: %v", err)
