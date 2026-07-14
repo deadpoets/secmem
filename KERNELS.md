@@ -63,7 +63,7 @@ The cloud rows were executed on real, disposable hardware provisioned per-run
   the arm64 code paths are proven identical to the amd64 ones on 6.x, so this
   is a coverage gap to close opportunistically, not an open risk.
 
-## Out-of-process extraction (2026-07-13, kernel 7.0.0-azure)
+## Out-of-process extraction (amd64 kernel 7.0.0-azure · arm64 kernel 6.17.0-oracle)
 
 Beyond the in-process suite, that row carried an external-attacker battery. The
 unprivileged half is now a committed regression test — `extraction_linux_test.go`
@@ -89,6 +89,16 @@ pages are removed from the kernel's direct map, not merely permission-gated.
 This bounds the claim precisely — it covers passive memory reads via
 `/proc/<pid>/mem` and core dumps, the paths an attacker or a shipped crash dump
 would actually take.
+
+The same battery was then confirmed on **arm64** (Oracle Cloud Ampere A1.Flex,
+kernel `6.17.0-1011-oracle`, `secretmem` live): the committed extraction test
+passes plain and under `-race`, and the unprivileged / root-`CAP_SYS_PTRACE` /
+`gcore` attacks all hold identically — `/secretmem` raises `EIO` and the secret
+is recovered zero times across ~74 MiB, on aarch64's weaker memory model as on
+amd64. The full suite (`-race`, `runtimesecret`, `-asan`), the concurrency
+stress harness (borrow-vs-Destroy, double-free, arena ABA under `-race` and
+`-asan`), and the crypto module all pass there too, exercising the arm64 wipe
+assembly (`DC CIVAC`).
 
 ## Reproducing a run
 
