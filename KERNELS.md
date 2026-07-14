@@ -39,6 +39,7 @@ VM (never cross-compiled-and-assumed). Columns:
 | 2026-07-11 | 5.10.0-43-amd64 | amd64 | Hetzner Cloud cx23, Debian 11 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
 | 2026-07-11 | 7.1.3 (mainline, `CONFIG_SECRETMEM=y`) | amd64 | WSL2 custom kernel, Ubuntu 26.04 on Windows 11 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
 | 2026-07-11 | 6.18.26.1-microsoft-standard-WSL2 | amd64 | WSL2 Ubuntu 26.04 on Windows 11 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+| 2026-07-13 | 7.0.0-1009-azure | amd64 | Local Hyper-V VM (Ubuntu 26.04 LTS) on Windows 11, Intel Core Ultra 7 265KF | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
 
 The cloud rows were executed on real, disposable hardware provisioned per-run
 (the arm64 rows on Ampere Altra), then torn down. Three things they establish:
@@ -61,6 +62,43 @@ The cloud rows were executed on real, disposable hardware provisioned per-run
   6.17 for now. amd64 already has a 7.x row (Fedora 44, `secretmem` live);
   the arm64 code paths are proven identical to the amd64 ones on 6.x, so this
   is a coverage gap to close opportunistically, not an open risk.
+
+## Out-of-process extraction (amd64 kernel 7.0.0-azure · arm64 kernel 6.17.0-oracle)
+
+Beyond the in-process suite, that row carried an external-attacker battery. The
+unprivileged half is now a committed regression test — `extraction_linux_test.go`
+launches a victim subprocess and, as its parent, scans the whole address space
+via both `/proc/<pid>/mem` and `process_vm_readv(2)` — so it runs in CI on every
+push; the root and core-dump variants below were run by hand on this kernel. A
+separate attacker process scanned a victim's entire readable address space via
+`/proc/<pid>/mem` — first unprivileged (as the victim's parent, permitted under
+`ptrace_scope=1`), then as **root with `CAP_SYS_PTRACE`** — and a full `gcore`
+core dump was taken and searched. The
+victim held one 32-byte marker resident only in a `SecureBuffer` (the
+`memfd_secret` region, which appears in `/proc/<pid>/maps` as `/secretmem`) and
+an identically-shaped control marker on the ordinary Go heap; both markers were
+computed at runtime, never written as literals, so neither sits in the binary's
+read-only data.
+
+In all three attempts the `/secretmem` region raised `EIO` on read and the
+secret marker was recovered **zero** times — across ~74 MiB of readable memory,
+and absent from the 77 MiB core — while the heap control marker was recovered
+every time. The privilege level made no difference: reading the region fails
+for root exactly as it does for an unprivileged parent, because `memfd_secret`
+pages are removed from the kernel's direct map, not merely permission-gated.
+This bounds the claim precisely — it covers passive memory reads via
+`/proc/<pid>/mem` and core dumps, the paths an attacker or a shipped crash dump
+would actually take.
+
+The same battery was then confirmed on **arm64** (Oracle Cloud Ampere A1.Flex,
+kernel `6.17.0-1011-oracle`, `secretmem` live): the committed extraction test
+passes plain and under `-race`, and the unprivileged / root-`CAP_SYS_PTRACE` /
+`gcore` attacks all hold identically — `/secretmem` raises `EIO` and the secret
+is recovered zero times across ~74 MiB, on aarch64's weaker memory model as on
+amd64. The full suite (`-race`, `runtimesecret`, `-asan`), the concurrency
+stress harness (borrow-vs-Destroy, double-free, arena ABA under `-race` and
+`-asan`), and the crypto module all pass there too, exercising the arm64 wipe
+assembly (`DC CIVAC`).
 
 ## Reproducing a run
 

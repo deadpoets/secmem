@@ -4,6 +4,7 @@ package secmemcrypto
 
 import (
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/rand"
@@ -13,7 +14,9 @@ import (
 	"fmt"
 	"io"
 	"math/big"
+	"reflect"
 	"runtime"
+	"unsafe"
 
 	"github.com/deadpoets/secmem"
 )
@@ -262,9 +265,30 @@ func parseRSAPrivateKey(der []byte, pkcs8 bool) (*rsa.PrivateKey, error) {
 	case ed25519.PrivateKey:
 		secmem.SecureWipe(k)
 		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
+	case *ecdh.PrivateKey:
+		wipeECDHPrivateKey(k)
+		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
 	default:
 		return nil, fmt.Errorf("secmemcrypto: PKCS#8 DER holds a %T, not an RSA key", keyAny)
 	}
+}
+
+// wipeECDHPrivateKey best-effort zeroes the scalar inside a parsed
+// *ecdh.PrivateKey. crypto/ecdh exposes no in-place zeroization and Bytes()
+// returns a copy, so the parsed key's own scalar is reachable only through its
+// unexported field — the same hardened-wipe approach the package uses for
+// edwards25519 scalars. Name-based and defensive: a no-op if that field's shape
+// ever changes, so it can never panic.
+func wipeECDHPrivateKey(k *ecdh.PrivateKey) {
+	if k == nil {
+		return
+	}
+	f := reflect.ValueOf(k).Elem().FieldByName("privateKey")
+	if !f.IsValid() || f.Kind() != reflect.Slice || f.Type().Elem().Kind() != reflect.Uint8 {
+		return
+	}
+	//nolint:gosec // G103: audited — zeroing the parsed key's own addressable scalar field in place; no foreign memory is dereferenced.
+	secmem.SecureWipe(reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Bytes())
 }
 
 // wipeRSAPrivateKey zeroes the secret limbs of a transiently materialized
