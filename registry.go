@@ -32,8 +32,10 @@ type janitorRegion struct {
 	sealCipher *atomic.Bool
 }
 
-// janitor tracks live secret mappings and wipes them on process termination via
-// SIGTERM/SIGINT/SIGQUIT.
+// janitor tracks live secret mappings so they can be wiped in place: on
+// Destroy/Release, on GC cleanup, or all at once via WipeAllSecrets (which an
+// opt-in InstallTerminationWipe handler — or the application's own signal
+// handler — calls on termination). It installs no signal handler itself.
 type janitor struct {
 	mu      sync.Mutex
 	regions map[uintptr]janitorRegion
@@ -119,7 +121,7 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 
 	// Ciphertext (Windows sealed state) cannot be canary-verified — skip the
 	// check, never the wipe. The explicit Destroy path decrypts first, so
-	// this branch is only reached by the signal and GC-cleanup paths.
+	// this branch is only reached by the emergency-wipe and GC-cleanup paths.
 	var canaryErr error
 	if region.sealCipher == nil || !region.sealCipher.Load() {
 		for _, zone := range region.canaryZones {
@@ -133,7 +135,7 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	secureWipeSlice(region.region.inner)
 
 	if !unmap {
-		// Signal-shutdown path: secret is wiped; leave the region mapped so a
+		// Emergency-wipe path: secret is wiped; leave the region mapped so a
 		// late access reads zeros rather than faulting on freed memory.
 		return canaryErr
 	}
