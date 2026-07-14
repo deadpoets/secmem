@@ -74,8 +74,8 @@ type SecureBuffer struct {
 	sealed bool
 
 	// sealCipher is true while the contents are seal-cipher ciphertext
-	// (Windows: CryptProtectMemory under Seal). Atomic because the janitor's
-	// signal path reads it without holding mu. Shared with janitorRegion.
+	// (Windows: CryptProtectMemory under Seal). Atomic because it is read on
+	// the janitor's wipe paths on another goroutine. Shared with janitorRegion.
 	sealCipher *atomic.Bool
 
 	// backing records which protections this allocation actually received.
@@ -262,7 +262,7 @@ func (s *SecureBuffer) Destroy() error {
 	}
 
 	// Take exclusive ownership from janitor registry and wipe/free exactly once.
-	// If the entry is already gone (cleanup/signal path won the race), treat as
+	// If the entry is already gone (cleanup or emergency-wipe path won), treat as
 	// successfully destroyed and skip touching raw to avoid use-after-free.
 	err := emergencyJanitor.release(s.janitorKey, true)
 
@@ -409,7 +409,7 @@ func (s *SecureBuffer) Seal() error {
 		return nil // idempotent
 	}
 	// Encrypt BEFORE dropping write access. The flag is set immediately so
-	// the janitor's signal path never canary-checks ciphertext.
+	// the janitor's emergency-wipe path never canary-checks ciphertext.
 	applied, err := sealEncrypt(s.region)
 	if err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
