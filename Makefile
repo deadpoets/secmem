@@ -2,13 +2,15 @@
 # the extra analyzers (golangci-lint, staticcheck, govulncheck) are optional
 # and only required by the `lint` and `vuln` targets.
 #
-# Two Go modules live in this repo (the core at the root, secmem-crypto/).
-# Go's ./... never crosses module boundaries — even under a go.work — so
-# every module-scoped target loops over MODULES to match what CI enforces.
+# Three Go modules live in this repo (core at the root, secmem-crypto/, and the
+# secmem-lint analyzer). Go's ./... never crosses module boundaries — even under
+# a go.work — so every module-scoped target loops over MODULES to match what CI
+# enforces. `dogfood` builds the analyzer and runs it over the two library modules.
 
-GO      ?= go
-MODULES ?= . secmem-crypto
-COVER   ?= coverage.txt
+GO           ?= go
+MODULES      ?= . secmem-crypto secmem-lint
+FUZZ_MODULES ?= . secmem-crypto
+COVER        ?= coverage.txt
 
 .PHONY: all
 all: fmt vet test
@@ -30,13 +32,21 @@ vet:
 lint:
 	@for m in $(MODULES); do (cd $$m && golangci-lint run && staticcheck ./...) || exit 1; done
 
+# dogfood builds the secmem-lint analyzer and runs it (via go vet -vettool) over
+# the two library modules — the same check CI's secmem-lint job enforces.
+.PHONY: dogfood
+dogfood:
+	@tool=$$(mktemp); trap 'rm -f "$$tool"' EXIT; \
+	(cd secmem-lint && $(GO) build -o "$$tool" ./cmd/secmem-lint) && \
+	for m in . secmem-crypto; do (cd $$m && $(GO) vet -vettool="$$tool" ./...) || exit 1; done
+
 .PHONY: vuln
 vuln:
 	@for m in $(MODULES); do (cd $$m && govulncheck ./...) || exit 1; done
 
 .PHONY: fuzz
 fuzz:
-	@for m in $(MODULES); do (cd $$m && $(GO) test -run '^$$' -fuzz . -fuzztime 30s ./...) || exit 1; done
+	@for m in $(FUZZ_MODULES); do (cd $$m && $(GO) test -run '^$$' -fuzz . -fuzztime 30s ./...) || exit 1; done
 
 .PHONY: cover
 cover:
