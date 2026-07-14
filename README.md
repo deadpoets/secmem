@@ -110,6 +110,7 @@ detailed in the godoc and the threat model.
 Full API docs, runnable examples, and per-symbol guarantees are on
 [pkg.go.dev](https://pkg.go.dev/github.com/deadpoets/secmem). Start with the
 package overview, then [`THREAT-MODEL.md`](THREAT-MODEL.md) for the limits,
+[`TESTING.md`](TESTING.md) for how each claim is proven (or why it can't be),
 [`ENVIRONMENTS.md`](ENVIRONMENTS.md) for behavior under root / non-root /
 containers, [`KERNELS.md`](KERNELS.md) for the Linux kernels the suite has run
 on, and [`WINDOWS.md`](WINDOWS.md) for Windows editions/builds.
