@@ -1,8 +1,10 @@
 name: CI
 
-# Two Go modules live in this repo: the core (repo root) and secmem-crypto/.
-# Go's ./... pattern does not cross module boundaries, so every job runs its
-# steps once per module — job names stay stable for branch protection.
+# Three Go modules live in this repo: the core (repo root), secmem-crypto/, and
+# the secmem-lint analyzer. Go's ./... pattern does not cross module boundaries,
+# so the library jobs run their steps once per library module — job names stay
+# stable for branch protection. secmem-lint has its own job, which also dogfoods
+# the analyzer over the two library modules.
 
 on:
   push:
@@ -108,6 +110,28 @@ jobs:
       - run: go test -run TestNoHeapEscape ./...
         working-directory: secmem-crypto
 
+  # secmem-lint: the borrowing-closure analyzer (its own module, x/tools only).
+  # Runs its analysistest suite, then dogfoods it — the library must pass its own
+  # analyzer, with the intentional egresses carrying //nolint:secmem-lint.
+  secmem-lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: test analyzer
+        working-directory: secmem-lint
+        run: go test ./...
+      - name: build vettool
+        working-directory: secmem-lint
+        run: go build -o "$RUNNER_TEMP/secmem-lint" ./cmd/secmem-lint
+      - name: dogfood core
+        run: go vet -vettool="$RUNNER_TEMP/secmem-lint" ./...
+      - name: dogfood secmem-crypto
+        working-directory: secmem-crypto
+        run: go vet -vettool="$RUNNER_TEMP/secmem-lint" ./...
+
   cross-compile:
     runs-on: ubuntu-latest
     strategy:
@@ -170,6 +194,17 @@ jobs:
           install-go: false
           working-directory: secmem-crypto
           cache-key: secmem-crypto
+      - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.12.2
+          working-directory: secmem-lint
+      - name: staticcheck (secmem-lint)
+        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
+        with:
+          version: latest
+          install-go: false
+          working-directory: secmem-lint
+          cache-key: secmem-lint
 
   vuln:
     runs-on: ubuntu-latest
@@ -182,6 +217,8 @@ jobs:
       - run: govulncheck ./...
       - run: govulncheck ./...
         working-directory: secmem-crypto
+      - run: govulncheck ./...
+        working-directory: secmem-lint
 
   secret-scan:
     runs-on: ubuntu-latest
