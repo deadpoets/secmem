@@ -22,6 +22,15 @@
 //   - a secmem access method called on the SAME buffer inside its own closure
 //     (the accessors take the buffer lock and are not reentrant — they deadlock).
 //
+// # Strict mode
+//
+// The -strict flag (off by default) enables two higher-noise, heuristic checks:
+//
+//   - a locally constructed SecureBuffer / signer / key that is never Destroyed
+//     and never handed off (returned or passed on) — add a defer Destroy().
+//   - a secret-named identifier (password, token, apiKey, …) held in a plain
+//     string rather than a *secmem.SecureBuffer.
+//
 // # Suppression
 //
 // Any finding can be suppressed with a //nolint:secmem-lint comment on the

@@ -45,6 +45,10 @@ func run(pass *analysis.Pass) (any, error) {
 		checkCallbackEscapes(pass, acc, sup)
 		checkReentrancy(pass, acc, sup)
 	})
+	if strict {
+		checkSecretNamedStrings(pass, insp, sup)
+		checkMissingDestroy(pass, insp, sup)
+	}
 	return nil, nil //nolint:nilnil // go/analysis Run returns (nil result, nil error) when it has no Result to publish.
 }
 
