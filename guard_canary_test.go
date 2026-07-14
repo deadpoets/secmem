@@ -40,6 +40,15 @@ func probeWrite(addr uintptr, v byte) {
 	*(*byte)(unsafe.Pointer(addr)) = v //nolint:govet // unsafeptr: intentional canary corruption
 }
 
+// corruptCanary flips the byte at addr so it can no longer match the canary
+// pattern, whatever that random process-global byte happens to be. Writing a
+// fixed value (e.g. 0x00) would silently no-op on the ~1/256 of runs where the
+// pattern byte already equals it — a rare flake these overflow proofs must not
+// have.
+func corruptCanary(addr uintptr) {
+	probeWrite(addr, probeRead(addr)^0xFF)
+}
+
 // faults reports whether fn causes a hardware memory fault. SetPanicOnFault
 // converts the fault into a recoverable runtime panic for this goroutine.
 func faults(fn func()) (faulted bool) {
@@ -130,7 +139,7 @@ func TestCanary_DetectsOverflowOnDestroy(t *testing.T) {
 	// The overflow: one byte immediately past the buffer's usable bytes.
 	// cap(data) is the slack boundary; the write lands in canary territory.
 	base := uintptr(unsafe.Pointer(&buf.region.inner[0]))
-	probeWrite(base+uintptr(cap(buf.data)), 0x00)
+	corruptCanary(base + uintptr(cap(buf.data)))
 
 	err = buf.Destroy()
 	if !errors.Is(err, ErrCanaryViolation) {
@@ -183,7 +192,7 @@ func TestArena_ReleaseDetectsSlotOverflow(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("WithBytes: %v", err)
 	}
-	probeWrite(slotBase+32, 0x00)
+	corruptCanary(slotBase + 32)
 
 	if err := slot.Release(); !errors.Is(err, ErrCanaryViolation) {
 		t.Fatalf("Release after slot overflow = %v, want ErrCanaryViolation", err)
@@ -227,7 +236,7 @@ func TestArena_OverflowStaysOutOfNextSlot(t *testing.T) {
 	var s0base uintptr
 	_ = s0.WithBytes(func(b []byte) { s0base = uintptr(unsafe.Pointer(&b[0])) })
 	for i := 0; i < 4; i++ {
-		probeWrite(s0base+32+uintptr(i), 0xFF)
+		corruptCanary(s0base + 32 + uintptr(i))
 	}
 
 	// Slot 1's secret is untouched: the strip absorbed the overflow.
@@ -261,7 +270,7 @@ func TestArena_DestroyDetectsTailViolation(t *testing.T) {
 		t.Skip("no tail slack on this configuration")
 	}
 	base := uintptr(unsafe.Pointer(&a.region.inner[0]))
-	probeWrite(base+uintptr(tailOff), 0x00)
+	corruptCanary(base + uintptr(tailOff))
 
 	if err := a.Destroy(); !errors.Is(err, ErrCanaryViolation) {
 		t.Fatalf("Destroy after tail corruption = %v, want ErrCanaryViolation", err)
