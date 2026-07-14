@@ -489,6 +489,11 @@ func (s *SecureBuffer) Truncate(n int) error {
 	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrDestroyed)
 	}
+	if s.sealed {
+		// The region is PROT_NONE while sealed; wiping the freed tail would
+		// fault. Match the other mutating methods (ReadOnly/ReadWrite/CopyIn).
+		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrSealed)
+	}
 	if n < 0 || n > len(s.data) {
 		return fmt.Errorf("secmem.SecureBuffer.Truncate: n=%d out of range [0, %d]", n, len(s.data))
 	}

@@ -3,11 +3,8 @@ package secmem
 import (
 	"errors"
 	"log/slog"
-	"os"
-	"os/signal"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"unsafe"
 )
 
@@ -50,7 +47,11 @@ func init() { //nolint:gochecknoinits // Emergency janitor must be initialized b
 	emergencyJanitor = &janitor{
 		regions: make(map[uintptr]janitorRegion),
 	}
-	emergencyJanitor.install()
+	// No signal handler is installed here: touching process-global signal state
+	// as a side effect of import is the application's decision, not the
+	// library's. Opt in with InstallTerminationWipe, or call WipeAllSecrets from
+	// your own handler. Only the per-object runtime.AddCleanup fallback and this
+	// registry are wired up by default.
 }
 
 // regionKey returns a stable per-mapping key: the base address of the outer
@@ -82,18 +83,29 @@ func (j *janitor) take(key uintptr) (janitorRegion, bool) {
 	return region, ok
 }
 
-// wipeAndFree wipes and releases one mapping. When lockHeld is false, it
-// first acquires the region's exclusive lock to block in-flight callbacks.
+// wipeAndFree wipes one mapping and, when unmap is true, releases it. When
+// lockHeld is false, it first acquires the region's exclusive lock to block
+// in-flight callbacks.
 //
 // Order is deliberate and load-bearing:
 //  1. mprotect RW — a sealed/read-only region must be writable to wipe, and
 //     readable to verify canaries.
 //  2. verify canary zones — BEFORE the wipe destroys the evidence.
-//  3. wipe + madvise + unmap — unconditionally: a canary violation reports a
-//     bug, it never leaves secret memory mapped.
+//  3. wipe — unconditionally: a canary violation reports a bug, it never
+//     leaves secret memory mapped.
+//  4. madvise + unmap — only when unmap is true.
+//
+// unmap is false ONLY on the emergency-wipe path (see WipeAllSecrets): there the
+// process is exiting imminently and the kernel reclaims every mapping on exit,
+// so the region is wiped but left MAPPED. Unmapping it while application
+// goroutines are still running in the shutdown window would turn any late
+// access into a use-after-munmap SIGSEGV; a wiped-but-mapped region instead
+// reads as zeros. The explicit Destroy path (wrapper nil'd under the lock) and
+// the GC-cleanup path (wrapper unreachable) have no such live accessor and pass
+// unmap=true to fully release.
 //
 // A canary violation and a free failure are both returned (joined).
-func wipeAndFree(region janitorRegion, lockHeld bool) error {
+func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	if !lockHeld {
 		region.mu.lock()
 		defer region.mu.unlock()
@@ -119,6 +131,13 @@ func wipeAndFree(region janitorRegion, lockHeld bool) error {
 	}
 
 	secureWipeSlice(region.region.inner)
+
+	if !unmap {
+		// Signal-shutdown path: secret is wiped; leave the region mapped so a
+		// late access reads zeros rather than faulting on freed memory.
+		return canaryErr
+	}
+
 	madviseBeforeFree(region.region)
 	return errors.Join(canaryErr, freeSecretMem(region.region))
 }
@@ -130,58 +149,66 @@ func (j *janitor) release(key uintptr, lockHeld bool) error {
 	if !ok {
 		return nil
 	}
-	return wipeAndFree(region, lockHeld)
+	return wipeAndFree(region, lockHeld, true)
 }
 
-// wipeAll wipes all remaining regions. Called on termination signals.
-func (j *janitor) wipeAll() {
+// wipeInPlace wipes the region for key exactly once WITHOUT unmapping it (via
+// take, so it never races Destroy into a double-free). Used by WipeAllSecrets:
+// the process is expected to be terminating, so the mapping is reclaimed on
+// exit; unmapping here would risk a use-after-munmap fault against a goroutine
+// still holding the buffer (see wipeAndFree).
+func (j *janitor) wipeInPlace(key uintptr) error {
+	region, ok := j.take(key)
+	if !ok {
+		return nil
+	}
+	return wipeAndFree(region, false, false)
+}
+
+// wipeAllInPlace wipes every currently-registered secret in place, exactly once
+// each, and returns any canary/wipe errors joined.
+func (j *janitor) wipeAllInPlace() error {
 	j.mu.Lock()
-	regions := make([]janitorRegion, 0, len(j.regions))
-	for key, region := range j.regions {
-		regions = append(regions, region)
-		delete(j.regions, key)
+	keys := make([]uintptr, 0, len(j.regions))
+	for key := range j.regions {
+		keys = append(keys, key)
 	}
 	j.mu.Unlock()
 
-	for _, region := range regions {
-		if err := wipeAndFree(region, false); err != nil {
-			slog.Error("secmem: emergencyJanitor wipe failed during signal shutdown",
-				slog.Any("error", err),
-			)
+	var errs error
+	for _, key := range keys {
+		if err := j.wipeInPlace(key); err != nil {
+			errs = errors.Join(errs, err)
 		}
 	}
+	return errs
 }
 
-// install registers a signal handler that wipes all secrets on SIGTERM/SIGINT/SIGQUIT.
-// After wiping, the signal is re-raised with default handling so the process exits
-// with the expected status code.
+// WipeAllSecrets immediately wipes the contents of every live [SecureBuffer] and
+// [SecureArena] registered in this process, then returns. It is an emergency /
+// pre-termination wipe you can call from your OWN shutdown or panic-recovery
+// handler:
 //
-// Signal handling during wipe: signals are ignored for the duration of wipeAll()
-// so that a second termination signal arriving while the wipe is in progress does
-// not kill the process before the wipe completes (INF-2 fix).
-func (j *janitor) install() {
-	ch := make(chan os.Signal, 1)
-	signal.Notify(ch, syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-
-	go func() {
-		sig, ok := <-ch
-		if !ok {
-			return
-		}
-
-		// Block further termination signals while wipeAll runs so a second
-		// signal does not kill the process before the wipe completes.
-		signal.Ignore(syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-
-		// Wipe all live secrets before the process dies.
-		j.wipeAll()
-
-		// Re-raise the signal with default handling so exit code and core dump
-		// behavior matches what the caller would expect.
-		signal.Reset(syscall.SIGTERM, syscall.SIGINT, syscall.SIGQUIT)
-		proc, err := os.FindProcess(os.Getpid())
-		if err == nil {
-			_ = proc.Signal(sig)
-		}
-	}()
+//	sig := make(chan os.Signal, 1)
+//	signal.Notify(sig, syscall.SIGTERM, os.Interrupt)
+//	go func() { <-sig; _ = secmem.WipeAllSecrets(); os.Exit(0) }()
+//
+// Semantics:
+//
+//   - Regions are wiped in place but NOT unmapped: the process is assumed to be
+//     terminating and the kernel reclaims the mappings on exit. Unmapping while
+//     another goroutine might still hold a buffer would risk a use-after-munmap
+//     fault, so a read of an already-wiped buffer returns zeroed bytes, never a
+//     fault.
+//   - After this call every affected buffer is dead — its secret is gone. If
+//     the process keeps running, the wiped mappings linger until exit rather
+//     than being freed; this is a one-way emergency wipe, not a reusable clear.
+//   - Safe to call concurrently with Destroy and from multiple goroutines; each
+//     region is wiped exactly once.
+//
+// secmem installs NO signal handler on its own. For automatic wiping on
+// termination signals, call [InstallTerminationWipe] once at startup, or wire
+// WipeAllSecrets into your own handler as above.
+func WipeAllSecrets() error {
+	return emergencyJanitor.wipeAllInPlace()
 }

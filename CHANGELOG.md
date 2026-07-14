@@ -81,8 +81,13 @@ mark the stability commitment.
 
 - `SecureBuffer` — off-heap, page-locked secret storage with borrowing-closure
   access (`WithBytes`/`WithBytesErr`), copy-out/in, sealing, read-only
-  protection, deterministic wipe on `Destroy`, and an emergency signal-wipe
-  registry.
+  protection, and deterministic wipe on `Destroy`.
+- `WipeAllSecrets` and `InstallTerminationWipe` — opt-in emergency wiping. The
+  library installs **no** signal handler by default (importing it never touches
+  process-global signal state); a consumer either calls `WipeAllSecrets` from
+  its own shutdown handler or opts into `InstallTerminationWipe`, a cooperative
+  termination-signal handler that deregisters only its own channel and never
+  resets or ignores other handlers.
 - `SecureArena` — a single locked slab of fixed-size slots for many small,
   short-lived secrets at O(1) OS overhead, with ABA-guarded acquire/release.
 - `Secret` — a leak-safe value type that renders as `[REDACTED]` through

@@ -270,8 +270,10 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 	copy(tmp, s.data)
 	s.mu.rUnlock()
 
+	// Deferred so the heap copy is wiped on every outcome — including a
+	// panicking io.Writer, which would otherwise unwind past an inline wipe.
+	defer secureWipeSlice(tmp)
 	n, err := w.Write(tmp)
-	secureWipeSlice(tmp) // wipe the heap copy regardless of write outcome
 	return int64(n), err
 }
 
@@ -299,15 +301,16 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	size := len(s.data)
 	s.mu.rUnlock()
 
-	// Read into a temporary heap buffer without holding any lock.
+	// Read into a temporary heap buffer without holding any lock. Deferred wipe
+	// so the copy is erased on every outcome — including a panicking io.Reader.
 	tmp := make([]byte, size)
+	defer secureWipeSlice(tmp)
 	n, err := io.ReadFull(r, tmp)
 	if errors.Is(err, io.ErrUnexpectedEOF) {
 		// Reader had fewer bytes than buffer — partial fill is acceptable.
 		err = nil
 	}
 	if err != nil {
-		secureWipeSlice(tmp)
 		return int64(n), err
 	}
 
@@ -315,17 +318,14 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	s.mu.lock()
 	if s.data == nil {
 		s.mu.unlock()
-		secureWipeSlice(tmp)
 		return 0, ErrDestroyed
 	}
 	if s.sealed {
 		s.mu.unlock()
-		secureWipeSlice(tmp)
 		return 0, ErrSealed
 	}
 	copy(s.data, tmp[:n])
 	s.mu.unlock()
-	secureWipeSlice(tmp)
 	return int64(n), nil
 }
 

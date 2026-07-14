@@ -13,6 +13,7 @@ package secmem
 import (
 	"fmt"
 	"log/slog"
+	"math"
 	"runtime"
 	"sync"
 )
@@ -43,6 +44,12 @@ func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, er
 	// Page-round for API consistency — heap allocations don't need it but
 	// the inner/data split contract (canary slack) must be maintained.
 	pageSize := 4096
+	// Guard the page-rounding against int overflow, matching the Linux/Darwin/
+	// Windows allocators; without this a near-MaxInt size wraps negative and
+	// make() panics instead of returning a clean error.
+	if size > math.MaxInt-3*pageSize {
+		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: size %d too large", size)
+	}
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
 	r := make([]byte, roundedSize)
 	return secRegion{outer: r, inner: r}, r[:size:size], allocInfo{insecure: true}, nil
