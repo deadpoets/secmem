@@ -130,4 +130,16 @@ mark the stability commitment.
   `testing.AllocsPerRun` gate enforces no-heap-escape on the borrow/copy/
   compare paths.
 
+### Fixed
+
+- `SecureBuffer`, `SecureArena`, and `ArenaSlot` now redact themselves under
+  every formatting and logging path (`fmt`'s `%v`/`%+v`/`%s`/`%x`, `Println`,
+  error-wrapping, `log/slog`) — matching `Secret`'s existing behavior. Without
+  this, `fmt`'s default struct printer reflected into the guarded region and
+  crashed the process with an unrecoverable hardware fault rather than
+  printing anything; the crash, not a plaintext leak, was the actual failure
+  mode on every path tested. Found in a pre-release audit; regression tests
+  cover all three types, both the pointer and (where a value copy is not
+  itself a `go vet` copylocks violation) a dereferenced value.
+
 [Unreleased]: https://github.com/deadpoets/secmem/commits/main
