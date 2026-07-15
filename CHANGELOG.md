@@ -24,6 +24,12 @@ mark the stability commitment.
 - `HKDFInto` / `HKDFSHA256Into` — RFC 5869 HKDF deriving directly into a
   `SecureBuffer`, with the full salt/info parameter surface (verified
   against RFC 5869 test cases 1–3) and hash agility.
+- `HMACInto` / `HMACSHA256Into` — a raw keyed-HMAC PRF deriving directly into
+  a `SecureBuffer`, for domain-separated subkey derivation from an
+  already-uniform secret. Distinct from `HKDFInto`: HKDF's Extract step also
+  computes an HMAC, but with `secret` and the key argument swapped for its
+  own purpose, so the two are not interchangeable — verified against a
+  published RFC 4231 test vector and hash-agile beyond SHA-256.
 - `Argon2IDKeyInto` / `Argon2DeriveInto` — Argon2id deriving directly into a
   `SecureBuffer`; explicit cost parameters are validated (error, never
   panic), and the defaults follow RFC 9106 §4's second recommended option,
