@@ -82,6 +82,13 @@ type slotMeta struct {
 // Destroy is idempotent and goroutine-safe.  After Destroy, all subsequent
 // Acquire calls return [ErrArenaDestroyed].
 type SecureArena struct {
+	// arenaRedactor is embedded (not a value receiver on SecureArena itself —
+	// alloc below is a value sync.Mutex that go vet's copylocks would flag on
+	// any value-receiver method declared directly on SecureArena) so its
+	// String/GoString/Format/LogValue methods promote into both SecureArena's
+	// and *SecureArena's method sets. See redact.go.
+	arenaRedactor
+
 	// mu: rLock is held by all WithBytes/WithBytesErr callbacks; exclusive lock
 	// is held only by Destroy.  Uses bufferRWLock (not sync.RWMutex) so all
 	// blocking states are durably blocked under testing/synctest.
