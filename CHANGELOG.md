@@ -27,7 +27,10 @@ mark the stability commitment.
 - `GenerateDicewarePassphrase` — a diceware-style passphrase drawn from the
   EFF long wordlist (7776 words, CC BY 3.0 — see `secmem-crypto/NOTICE`)
   via `crypto/rand`, assembled directly inside the returned `SecureBuffer`'s
-  own memory with no intermediate heap string at any point.
+  own memory with no intermediate heap string at any point. Word selection
+  and assembly run inside a `ScrubErr`-guarded region, since which words are
+  chosen and in what order is the passphrase, even though each word's text
+  is public.
 - `Argon2IDKeyInto` / `Argon2DeriveInto` — Argon2id deriving directly into a
   `SecureBuffer`; explicit cost parameters are validated (error, never
   panic), and the defaults follow RFC 9106 §4's second recommended option,

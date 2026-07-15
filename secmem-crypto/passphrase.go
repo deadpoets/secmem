@@ -53,14 +53,15 @@ func effWords() []string {
 // SecureBuffer the caller owns and must Destroy. n must be >= 1; the EFF's
 // own guidance suggests at least 6 words (~77 bits) for anything long-lived.
 //
-// The chosen words themselves are not secret — the wordlist is public — so
-// selecting them holds only word references (into the embedded list's own
-// backing memory, not separately allocated secret bytes) on the ordinary
-// heap for the duration of this call. What the words spell out together,
-// the actual passphrase, is assembled directly inside the returned buffer's
-// borrowing closure and never exists as a combined heap string or []byte at
-// any point — there is no [strings.Join] here precisely because its result
-// would be an immutable Go string this package could never wipe.
+// Individual words are public wordlist content, but which ones get chosen,
+// and in what order, is exactly the passphrase. So selection and assembly
+// both run inside one [secmem.ScrubErr]-guarded region: the []string of
+// selected words and the *big.Int draw indices are erased as call-stack
+// residue on runtimesecret builds, the same discipline [HMACInto] and
+// [Ed25519Signer.MarshalOpenSSHPrivateKey] apply to their own heap transits.
+// There is no [strings.Join] even internally — the joined result is
+// assembled directly inside the returned buffer's own borrowing closure and
+// never exists as a separate combined heap string or []byte anywhere.
 func GenerateDicewarePassphrase(n int) (*secmem.SecureBuffer, error) {
 	if n < 1 {
 		return nil, fmt.Errorf("secmemcrypto: generate diceware passphrase: n must be >= 1, got %d", n)
@@ -68,37 +69,45 @@ func GenerateDicewarePassphrase(n int) (*secmem.SecureBuffer, error) {
 	list := effWords()
 	listLen := big.NewInt(int64(len(list)))
 
-	chosen := make([]string, n)
-	total := 0
-	for i := range chosen {
-		idx, err := rand.Int(rand.Reader, listLen)
-		if err != nil {
-			return nil, fmt.Errorf("secmemcrypto: generate diceware passphrase: %w", err)
-		}
-		chosen[i] = list[idx.Int64()]
-		total += len(chosen[i])
-		if i > 0 {
-			total++ // separating space
-		}
-	}
-
-	out, err := secmem.NewEmptyBuffer(total)
-	if err != nil {
-		return nil, fmt.Errorf("secmemcrypto: allocate passphrase buffer: %w", err)
-	}
-	if err := out.WithBytesErr(func(dst []byte) error {
-		pos := 0
-		for i, w := range chosen {
-			if i > 0 {
-				dst[pos] = ' '
-				pos++
+	var out *secmem.SecureBuffer
+	err := secmem.ScrubErr(func() error {
+		chosen := make([]string, n)
+		total := 0
+		for i := range chosen {
+			idx, err := rand.Int(rand.Reader, listLen)
+			if err != nil {
+				return fmt.Errorf("secmemcrypto: generate diceware passphrase: %w", err)
 			}
-			pos += copy(dst[pos:], w)
+			chosen[i] = list[idx.Int64()]
+			total += len(chosen[i])
+			if i > 0 {
+				total++ // separating space
+			}
 		}
+
+		buf, err := secmem.NewEmptyBuffer(total)
+		if err != nil {
+			return fmt.Errorf("secmemcrypto: allocate passphrase buffer: %w", err)
+		}
+		if err := buf.WithBytesErr(func(dst []byte) error {
+			pos := 0
+			for i, w := range chosen {
+				if i > 0 {
+					dst[pos] = ' '
+					pos++
+				}
+				pos += copy(dst[pos:], w)
+			}
+			return nil
+		}); err != nil {
+			_ = buf.Destroy()
+			return fmt.Errorf("secmemcrypto: generate diceware passphrase: %w", err)
+		}
+		out = buf
 		return nil
-	}); err != nil {
-		_ = out.Destroy()
-		return nil, fmt.Errorf("secmemcrypto: generate diceware passphrase: %w", err)
+	})
+	if err != nil {
+		return nil, err
 	}
 	return out, nil
 }
