@@ -24,6 +24,10 @@ mark the stability commitment.
 - `HKDFInto` / `HKDFSHA256Into` — RFC 5869 HKDF deriving directly into a
   `SecureBuffer`, with the full salt/info parameter surface (verified
   against RFC 5869 test cases 1–3) and hash agility.
+- `GenerateDicewarePassphrase` — a diceware-style passphrase drawn from the
+  EFF long wordlist (7776 words, CC BY 3.0 — see `secmem-crypto/NOTICE`)
+  via `crypto/rand`, assembled directly inside the returned `SecureBuffer`'s
+  own memory with no intermediate heap string at any point.
 - `Argon2IDKeyInto` / `Argon2DeriveInto` — Argon2id deriving directly into a
   `SecureBuffer`; explicit cost parameters are validated (error, never
   panic), and the defaults follow RFC 9106 §4's second recommended option,
