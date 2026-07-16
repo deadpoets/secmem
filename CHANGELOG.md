@@ -90,6 +90,10 @@ mark the stability commitment.
   enforcing `OpenInto`'s zero-heap-escape, and a proof that `Sign` wipes its
   live transient key (not just the wipe helpers in isolation).
 
+## [0.1.0] - 2026-07-16
+
+First tagged release of the core `secmem` module.
+
 ### Added
 
 - `SecureBuffer` — off-heap, page-locked secret storage with borrowing-closure
@@ -155,4 +159,5 @@ mark the stability commitment.
   cover all three types, both the pointer and (where a value copy is not
   itself a `go vet` copylocks violation) a dereferenced value.
 
-[Unreleased]: https://github.com/deadpoets/secmem/commits/main
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/deadpoets/secmem/releases/tag/v0.1.0
