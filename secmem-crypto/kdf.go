@@ -9,6 +9,7 @@
 package secmemcrypto
 
 import (
+	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
 	"fmt"
@@ -106,6 +107,68 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 		return fmt.Errorf("secmemcrypto: argon2 derive: %w", err)
 	}
 	return nil
+}
+
+// HMACInto computes HMAC(h, key=secret, message=info) into out — a
+// single-block keyed PRF, the primitive for domain-separated subkey
+// derivation from an already-uniform master key (e.g. "derive the
+// checkpoint-signing subkey" or "derive the audit-log subkey" from one root
+// secret).
+//
+// This is NOT [HKDFInto], and the two are not interchangeable. HKDF's
+// Extract step is itself HMAC, but with the arguments swapped for its own
+// purpose: HKDFSHA256Into(secret, nil, info, out) computes
+// HMAC-SHA256(zeros, secret) — secret as HKDF's *message*, an all-zero
+// value as the key — not HMAC-SHA256(secret, info). The two calls look
+// similar and silently derive completely different bytes from the same
+// inputs; use HMACInto when you need a raw keyed PRF and HKDFInto when you
+// need RFC 5869's full Extract-then-Expand construction.
+//
+// out.Len() must equal h().Size() exactly (32 for SHA-256) — a raw HMAC's
+// output length is fixed by the hash, unlike HKDF's variable-length Expand.
+//
+// Heap caveat: crypto/hmac.New allocates its inner/outer hash state from
+// secret (verified: 5 allocations, entirely construction — writing the
+// digest into out via Sum(dst[:0]) adds none beyond those). That state
+// lives in unexported heap fields this package cannot reach to wipe
+// directly — the same disclosure [HKDFInto] makes for its own reader state.
+// The call is wrapped in [secmem.ScrubErr], which erases it once
+// unreachable on GOEXPERIMENT=runtimesecret builds; elsewhere it is
+// reclaimed by the GC but not explicitly zeroed.
+func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer) error {
+	if h == nil {
+		return errors.New("secmemcrypto: nil hash function")
+	}
+	if out == nil {
+		return errors.New("secmemcrypto: nil output buffer")
+	}
+	if out.IsDestroyed() {
+		return fmt.Errorf("secmemcrypto: hmac derive: %w", secmem.ErrDestroyed)
+	}
+	want := h().Size()
+	if size := out.Len(); size != want {
+		return fmt.Errorf("secmemcrypto: hmac derive: output buffer is %d bytes, want exactly %d (the hash's fixed size)", size, want)
+	}
+
+	err := secmem.ScrubErr(func() error {
+		mac := hmac.New(h, secret)
+		mac.Write(info)
+		return out.WithBytesErr(func(dst []byte) error {
+			mac.Sum(dst[:0])
+			return nil
+		})
+	})
+	if err != nil {
+		return fmt.Errorf("secmemcrypto: hmac derive: %w", err)
+	}
+	return nil
+}
+
+// HMACSHA256Into is [HMACInto] over SHA-256 — the common case, with the
+// hash named in the symbol so a future variant is a new function, not a
+// changed default.
+func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer) error {
+	return HMACInto(sha256.New, secret, info, out)
 }
 
 // HKDFInto derives out.Len() bytes from secret using HKDF (RFC 5869) over
