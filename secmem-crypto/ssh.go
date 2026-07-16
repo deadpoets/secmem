@@ -1,15 +1,20 @@
 // ssh.go provides AsSSH, adapting this package's signers (or any
 // crypto.Signer) to golang.org/x/crypto/ssh with legacy ssh-rsa (SHA-1)
-// unreachable.
+// unreachable, and Ed25519Signer.MarshalOpenSSHPrivateKey, the matching
+// egress path for persisting a generated key as an OpenSSH private-key file.
 package secmemcrypto
 
 import (
 	"crypto"
+	"crypto/ed25519"
+	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/deadpoets/secmem"
 )
 
 // AsSSH adapts a crypto.Signer into an [ssh.Signer].
@@ -66,4 +71,72 @@ type rsaSHA2Signer struct {
 
 func (s rsaSHA2Signer) Sign(rand io.Reader, data []byte) (*ssh.Signature, error) {
 	return s.SignWithAlgorithm(rand, data, s.Algorithms()[0])
+}
+
+// MarshalOpenSSHPrivateKey renders s as an unencrypted OpenSSH private-key
+// PEM file (the "-----BEGIN OPENSSH PRIVATE KEY-----" format ssh-keygen and
+// authorized_keys tooling expect) and returns it in a fresh SecureBuffer —
+// the caller owns it and must call Destroy. This is the egress point for
+// persisting a generated key: writing it to disk, registering it with a
+// cloud provider's SSH-key API, or handing it to another process. AsSSH
+// covers the complementary case — signing over a live connection without
+// ever exporting key material at all; use that when you don't actually need
+// a portable file.
+//
+// The size of the output depends on comment's length, so — unlike this
+// package's *Into functions — this allocates internally rather than asking
+// the caller to pre-size a destination; the caller does not need to compute
+// anything.
+//
+// A fingerprint does not require this method: it is computed over the
+// public key alone, which is not secret — ssh.FingerprintSHA256(pub) on
+// the AsSSH-adapted signer's PublicKey() needs nothing from here.
+//
+// Returns an error wrapping [secmem.ErrDestroyed] or [secmem.ErrSealed]
+// when the seed is no longer accessible.
+func (s *Ed25519Signer) MarshalOpenSSHPrivateKey(comment string) (*secmem.SecureBuffer, error) {
+	if s == nil || s.seedBuf == nil {
+		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", secmem.ErrDestroyed)
+	}
+
+	var pemBytes []byte
+	err := secmem.ScrubErr(func() error {
+		return s.seedBuf.WithBytesErr(func(seed []byte) error {
+			// ed25519.NewKeyFromSeed's FIPS self-check panics on a mmap'd
+			// (off-heap) input — copy to an ordinary heap slice first. This
+			// copy, and every derived form below, is wiped before returning.
+			seedCopy := make([]byte, len(seed))
+			copy(seedCopy, seed) //nolint:secmem-lint // required: ed25519.NewKeyFromSeed panics on mmap'd input, wiped via defer above
+			defer secmem.SecureWipe(seedCopy)
+
+			priv := ed25519.NewKeyFromSeed(seedCopy)
+			defer secmem.SecureWipe(priv)
+
+			block, err := ssh.MarshalPrivateKey(priv, comment)
+			if err != nil {
+				return fmt.Errorf("marshal: %w", err)
+			}
+			defer secmem.SecureWipe(block.Bytes)
+
+			pemBytes = pem.EncodeToMemory(block)
+			return nil
+		})
+	})
+	if err != nil {
+		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", err)
+	}
+	defer secmem.SecureWipe(pemBytes)
+
+	out, err := secmem.NewEmptyBuffer(len(pemBytes))
+	if err != nil {
+		return nil, fmt.Errorf("secmemcrypto: allocate openssh private key buffer: %w", err)
+	}
+	if err := out.WithBytesErr(func(dst []byte) error {
+		copy(dst, pemBytes)
+		return nil
+	}); err != nil {
+		_ = out.Destroy()
+		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", err)
+	}
+	return out, nil
 }
