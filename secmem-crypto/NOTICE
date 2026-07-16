@@ -1,0 +1,15 @@
+This module embeds one third-party data file under a license other than
+this project's own Apache-2.0.
+
+eff_large_wordlist.txt
+-----------------------
+"EFF's New Wordlists for Random Passphrases" (the "EFF long wordlist"),
+copyright the Electronic Frontier Foundation, created by Joseph Bonneau.
+Source: https://www.eff.org/deeplinks/2016/07/new-wordlists-random-passphrases
+File:   https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt
+
+Licensed under the Creative Commons Attribution 3.0 Unported License
+(CC BY 3.0): https://creativecommons.org/licenses/by/3.0/us/
+
+The file is embedded byte-for-byte as distributed by the EFF, so it can be
+diffed against the source URL above to verify it is unmodified.
