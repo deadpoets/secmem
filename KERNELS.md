@@ -35,6 +35,17 @@ Tags `v0.1.0` + `secmem-crypto/v0.1.0` (tree `06960fb`), exactly as shipped.
 | Date | Kernel | Arch | Environment | secretmem | Result |
 |---|---|---|---|---|---|
 | 2026-07-17 | 6.17.0-1011-oracle | arm64 | OCI Ampere A1.Flex, Ubuntu 24.04 | live | PASS · 3/3 |
+| 2026-07-17 | 7.0.0-1009-azure | amd64 | Local Hyper-V VM, Ubuntu 26.04, Intel Core Ultra 7 265KF | live | PASS · 3/3 |
+
+Both rows ran the full gauntlet — core and `secmem-crypto` under `-race`,
+`GOEXPERIMENT=runtimesecret`, the no-heap-escape gates, and `-asan`, plus the
+three proofs — against the released library code. One amd64-only, legacy-path
+stack-scrub test (`TestScrub_ScrubsShallowCallTree`) is excluded under `-asan`:
+the sanitizer's frame redzones move the raw-`uintptr`-observed local out of the
+fixed band the wipe assembly clears, so the read and the wipe stop aliasing —
+an instrumentation artifact, not a wipe failure (it passes on every non-asan
+build and under `-race`; the production `runtimesecret` path never compiles
+it). The wipe itself is unchanged from the tag.
 
 ## Pre-release validation (2026-07-11 → 07-13, summarized)
 
