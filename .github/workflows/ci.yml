@@ -5,6 +5,12 @@ name: CI
 # so the library jobs run their steps once per library module — job names stay
 # stable for branch protection. secmem-lint has its own job, which also dogfoods
 # the analyzer over the two library modules.
+#
+# secmem-crypto's go.mod requires the released secmem tag (no replace directive,
+# so the module is consumable outside this checkout). In-repo, every job creates
+# a go.work first: the workspace resolves secmem from the sibling directory, so
+# crypto is always built and tested against the core tree at this commit — and
+# no job needs credentials to fetch the private module.
 
 on:
   push:
@@ -30,6 +36,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
@@ -41,6 +48,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
@@ -62,6 +70,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
@@ -78,6 +87,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - name: test (core)
         env:
           GOARCH: "386"
@@ -106,6 +116,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - run: go test -run TestNoHeapEscape ./...
       - run: go test -run TestNoHeapEscape ./...
         working-directory: secmem-crypto
@@ -120,6 +131,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - name: test analyzer
         working-directory: secmem-lint
         run: go test ./...
@@ -151,6 +163,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - name: build
         env:
           GOOS: ${{ matrix.goos }}
@@ -175,6 +188,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
@@ -213,6 +227,7 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - run: go work init . ./secmem-crypto ./secmem-lint
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
       - run: govulncheck ./...
