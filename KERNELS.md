@@ -2,103 +2,83 @@
 
 secmem's most security-critical code path — `memfd_secret` mapped `MAP_FIXED`
 into a pre-reserved `PROT_NONE` guard range — depends on kernel behavior that
-is not covered by any API stability promise beyond the syscall itself. This
-log records every kernel the full test suite has actually been **executed**
-on, so the guarantee matrix cites evidence, not assumption.
+no API stability promise covers beyond the syscall itself. This log records
+every kernel the suite has actually been **executed** on, so the guarantee
+matrix cites evidence, not assumption.
 
 ## What a row means
 
-A row is recorded only when the complete suite ran on real hardware or a real
-VM (never cross-compiled-and-assumed). Columns:
+A row is recorded only when the complete gauntlet ran on real hardware or a
+real VM (never cross-compiled-and-assumed), against the released library code:
+both library modules under `-race`, the `GOEXPERIMENT=runtimesecret` variant,
+the no-heap-escape gates, and `-asan`. **Proofs n/3** counts the executed
+security proofs beyond unit tests:
 
-- **secretmem** — whether `memfd_secret(2)` was live (`CONFIG_SECRETMEM=y`,
-  not blocked by lockdown), i.e. the L4 path itself was exercised, not the
-  mmap+mlock fallback. "fallback" rows still verify guards, canaries, and the
-  L3 path.
-- **Proofs** — the three executed security proofs, beyond unit tests:
-  - *guard-fault*: reading one byte past either edge of the secret area
-    hardware-faults ([guard_canary_test.go](guard_canary_test.go))
-  - *memfd-isolation*: after `MAP_FIXED` placement, reading the secret via
-    `/proc/self/mem` fails while a control read of ordinary heap succeeds
-    ([memfd_isolation_linux_test.go](memfd_isolation_linux_test.go))
-  - *canary*: an in-mapping overflow is detected on Destroy/Release
-    ([guard_canary_test.go](guard_canary_test.go))
+1. **guard-fault** — reading one byte past either edge of the secret area
+   hardware-faults ([guard_canary_test.go](guard_canary_test.go))
+2. **memfd-isolation** — after `MAP_FIXED` placement the secret is unreadable
+   via `/proc/self/mem` while a control read of ordinary heap succeeds
+   ([memfd_isolation_linux_test.go](memfd_isolation_linux_test.go)); only
+   countable where secretmem is live — on fallback kernels it skips loudly
+   and the row shows 2/3
+3. **canary** — an in-mapping overflow is detected on Destroy/Release
+   ([guard_canary_test.go](guard_canary_test.go))
 
-## Verified kernels
+**secretmem** = whether `memfd_secret(2)` was live (`CONFIG_SECRETMEM=y`, not
+blocked by lockdown) — i.e. the L4 path itself was exercised, not only the
+mmap+mlock (L3) fallback, whose guards and canaries every row verifies.
 
-| Date | Kernel | Arch | Environment | secretmem | Suite | Proofs |
-|---|---|---|---|---|---|---|
-| 2026-07-12 | 6.17.0-1011-oracle | **arm64** | Oracle Cloud Ampere A1.Flex, Ubuntu 24.04 — **real aarch64 silicon** | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-12 | 6.12.0-204.92.4.2.el9uek.aarch64 | **arm64** | Oracle Cloud Ampere A1.Flex, Oracle Linux 9 (UEK) | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-12 | 6.8.0-1049-oracle | **arm64** | Oracle Cloud Ampere A1.Flex, Ubuntu 22.04 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-12 | 6.12.0-204.92.4.2.el10uek.aarch64 | **arm64** | Oracle Cloud Ampere A1.Flex, Oracle Linux 10 (UEK) | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
-| 2026-07-11 | 7.0.8-200.fc44 | amd64 | Hetzner Cloud cx23, Fedora 44 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-11 | 6.8.0-117-generic | amd64 | Hetzner Cloud cx23, Ubuntu 24.04 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-11 | 6.1.0-47-amd64 | amd64 | Hetzner Cloud cx23, Debian 12 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
-| 2026-07-11 | 5.14.0-611.el9 | amd64 | Hetzner Cloud cx23, Rocky 9 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
-| 2026-07-11 | 5.10.0-43-amd64 | amd64 | Hetzner Cloud cx23, Debian 11 | fallback | PASS | guard-fault ✓ · memfd-isolation skip · canary ✓ |
-| 2026-07-11 | 7.1.3 (mainline, `CONFIG_SECRETMEM=y`) | amd64 | WSL2 custom kernel, Ubuntu 26.04 on Windows 11 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-11 | 6.18.26.1-microsoft-standard-WSL2 | amd64 | WSL2 Ubuntu 26.04 on Windows 11 | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
-| 2026-07-13 | 7.0.0-1009-azure | amd64 | Local Hyper-V VM (Ubuntu 26.04 LTS) on Windows 11, Intel Core Ultra 7 265KF | live | PASS | guard-fault ✓ · memfd-isolation ✓ · canary ✓ |
+## v0.1.0 — verified kernels
 
-The cloud rows were executed on real, disposable hardware provisioned per-run
-(the arm64 rows on Ampere Altra), then torn down. Three things they establish:
+Tags `v0.1.0` + `secmem-crypto/v0.1.0` (tree `06960fb`), exactly as shipped.
 
-- **arm64 is now exercised on real silicon, across four kernels.** The
-  `memfd_secret` L4 path, the `MAP_FIXED`-into-a-reservation construction, the
-  guard-page fault, the `/proc/self/mem` isolation proof, and the arm64 wipe
-  assembly all pass on aarch64 — the one claim this log previously could not
-  back with evidence.
-- **`secretmem` availability is a kernel-config property, not just a
-  version — and it can regress between releases of the same distro family.**
-  Debian 12 (6.1) and Rocky 9 (5.14) are ≥ 5.14 yet ship **without**
-  `CONFIG_SECRETMEM`. More strikingly, **Oracle Linux 9's UEK (6.12) has it
-  live, while Oracle Linux 10's UEK (also 6.12) reports fallback** — same
-  vendor, same kernel version, one release apart, opposite result. Kernel
-  version alone never guarantees the L4 path; the library reports the truth
-  per allocation, every time.
-- **No cloud vendor's arm64 catalog currently offers a 7.x kernel** (checked
-  against Oracle's live image list, July 2026) — the arm64 rows top out at
-  6.17 for now. amd64 already has a 7.x row (Fedora 44, `secretmem` live);
-  the arm64 code paths are proven identical to the amd64 ones on 6.x, so this
-  is a coverage gap to close opportunistically, not an open risk.
+| Date | Kernel | Arch | Environment | secretmem | Result |
+|---|---|---|---|---|---|
+| 2026-07-17 | 6.17.0-1011-oracle | arm64 | OCI Ampere A1.Flex, Ubuntu 24.04 | live | PASS · 3/3 |
+| 2026-07-17 | 7.0.0-1009-azure | amd64 | Local Hyper-V VM, Ubuntu 26.04, Intel Core Ultra 7 265KF | live | PASS · 3/3 |
 
-## Out-of-process extraction (amd64 kernel 7.0.0-azure · arm64 kernel 6.17.0-oracle)
+Both rows ran the full gauntlet — core and `secmem-crypto` under `-race`,
+`GOEXPERIMENT=runtimesecret`, the no-heap-escape gates, and `-asan`, plus the
+three proofs — against the released library code. One amd64-only, legacy-path
+stack-scrub test (`TestScrub_ScrubsShallowCallTree`) is excluded under `-asan`:
+the sanitizer's frame redzones move the raw-`uintptr`-observed local out of the
+fixed band the wipe assembly clears, so the read and the wipe stop aliasing —
+an instrumentation artifact, not a wipe failure (it passes on every non-asan
+build and under `-race`; the production `runtimesecret` path never compiles
+it). The wipe itself is unchanged from the tag.
 
-Beyond the in-process suite, that row carried an external-attacker battery. The
-unprivileged half is now a committed regression test — `extraction_linux_test.go`
-launches a victim subprocess and, as its parent, scans the whole address space
-via both `/proc/<pid>/mem` and `process_vm_readv(2)` — so it runs in CI on every
-push; the root and core-dump variants below were run by hand on this kernel. A
-separate attacker process scanned a victim's entire readable address space via
-`/proc/<pid>/mem` — first unprivileged (as the victim's parent, permitted under
-`ptrace_scope=1`), then as **root with `CAP_SYS_PTRACE`** — and a full `gcore`
-core dump was taken and searched. The
-victim held one 32-byte marker resident only in a `SecureBuffer` (the
-`memfd_secret` region, which appears in `/proc/<pid>/maps` as `/secretmem`) and
-an identically-shaped control marker on the ordinary Go heap; both markers were
-computed at runtime, never written as literals, so neither sits in the binary's
-read-only data.
+## Pre-release validation (2026-07-11 → 07-13, summarized)
 
-In all three attempts the `/secretmem` region raised `EIO` on read and the
-secret marker was recovered **zero** times — across ~74 MiB of readable memory,
-and absent from the 77 MiB core — while the heap control marker was recovered
-every time. The privilege level made no difference: reading the region fails
-for root exactly as it does for an unprivileged parent, because `memfd_secret`
-pages are removed from the kernel's direct map, not merely permission-gated.
-This bounds the claim precisely — it covers passive memory reads via
-`/proc/<pid>/mem` and core dumps, the paths an attacker or a shipped crash dump
-would actually take.
+Twelve rows — the full table is in this file's git history — covered amd64
+kernels 5.10 → 7.0.8 plus a custom 7.1.3 mainline build (Hetzner cx23 across
+Debian 11/12, Rocky 9, Ubuntu 24.04, Fedora 44; WSL2; a local Hyper-V VM) and
+arm64 6.8 → 6.17 on OCI Ampere A1.Flex (Ubuntu 22.04/24.04, Oracle Linux 9/10
+UEK). All PASS. The durable finding: **`secretmem` availability is a
+kernel-config property, not a version.** Debian 12 (6.1) and Rocky 9 (5.14)
+ship without `CONFIG_SECRETMEM`; Oracle Linux 9's UEK 6.12 has it live while
+OL10's same-version UEK reports fallback. Kernel version alone never
+guarantees the L4 path — the library reports the truth per allocation.
 
-The same battery was then confirmed on **arm64** (Oracle Cloud Ampere A1.Flex,
-kernel `6.17.0-1011-oracle`, `secretmem` live): the committed extraction test
-passes plain and under `-race`, and the unprivileged / root-`CAP_SYS_PTRACE` /
-`gcore` attacks all hold identically — `/secretmem` raises `EIO` and the secret
-is recovered zero times across ~74 MiB, on aarch64's weaker memory model as on
-amd64. The full suite (`-race`, `runtimesecret`, `-asan`), the concurrency
-stress harness (borrow-vs-Destroy, double-free, arena ABA under `-race` and
-`-asan`), and the crypto module all pass there too, exercising the arm64 wipe
-assembly (`DC CIVAC`).
+## Out-of-process extraction battery
+
+Executed pre-release on amd64 (kernel `7.0.0-1009-azure`) and arm64
+(`6.17.0-1011-oracle`, Ampere): a separate attacker process scanned a victim's
+entire readable address space via `/proc/<pid>/mem` — first unprivileged (as
+the victim's parent under `ptrace_scope=1`), then as **root with
+`CAP_SYS_PTRACE`** — and a full `gcore` core dump was searched. The victim
+held a 32-byte marker resident only in a `SecureBuffer` plus an
+identically-shaped control marker on the ordinary Go heap, both computed at
+runtime (never literals in the binary). In every attempt, on both
+architectures, the `/secretmem` region raised `EIO` and the secret was
+recovered **zero** times across ~74 MiB of readable memory (and was absent
+from the 77 MiB core), while the heap control marker was recovered every
+time. Root fared no better than unprivileged — `memfd_secret` pages are
+removed from the kernel's direct map, not permission-gated. This bounds the
+claim precisely: it covers passive memory reads via `/proc/<pid>/mem` and
+core dumps. The unprivileged half is the committed regression test
+([extraction_linux_test.go](extraction_linux_test.go), scanning via both
+`/proc/<pid>/mem` and `process_vm_readv(2)`) and executes inside every row
+above, including the v0.1.0 rows.
 
 ## Reproducing a run
 
@@ -107,7 +87,7 @@ Go toolchain:
 
 ```sh
 GOOS=linux GOARCH=amd64 go test -c -o secmem.test .   # or GOARCH=arm64
-./secmem.test -test.count=1                       # full suite
+./secmem.test -test.count=1                           # full suite
 ./secmem.test -test.count=1 -test.v \
   -test.run 'TestGuardPages|TestCanary|TestMemfdIsolation|TestAllocMemfdSecret'
 ```
