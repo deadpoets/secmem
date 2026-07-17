@@ -10,10 +10,16 @@ mark the stability commitment.
 
 ## [Unreleased]
 
-> This repo now holds two independently versioned Go modules; entries below
-> are tagged by module. Untagged entries belong to the core `secmem` module.
+> This repo holds two independently versioned Go modules; entries are tagged
+> by module. Untagged entries belong to the core `secmem` module.
 
-### Added (secmem-crypto — new module, not yet tagged)
+## [secmem-crypto/v0.1.0] - 2026-07-16
+
+First tagged release of the `secmem-crypto` module. Depends on `secmem`
+v0.1.0 — the in-repo `replace` development bridge is gone as of this
+release, so the module is consumable outside this checkout.
+
+### Added
 
 - `Ed25519Signer` — a `crypto.Signer`/`crypto.MessageSigner` whose Ed25519 seed
   lives in a `SecureBuffer` for its entire lifetime, with in-place RFC 8032
@@ -160,4 +166,5 @@ First tagged release of the core `secmem` module.
   itself a `go vet` copylocks violation) a dereferenced value.
 
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.1.0...HEAD
+[secmem-crypto/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.1.0
 [0.1.0]: https://github.com/deadpoets/secmem/releases/tag/v0.1.0

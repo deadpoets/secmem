@@ -5,6 +5,14 @@ name: CI
 # so the library jobs run their steps once per library module — job names stay
 # stable for branch protection. secmem-lint has its own job, which also dogfoods
 # the analyzer over the two library modules.
+#
+# secmem-crypto's go.mod requires the released secmem tag (no replace directive,
+# so the module is consumable outside this checkout). In-repo, every Go job runs
+# the local setup-workspace action first: it authenticates module fetches with
+# the job token — loading the module graph reads the required tag's go.mod from
+# this private repo, so CI also proves the tag is actually published — then
+# creates a go.work so crypto builds and tests against the sibling core tree at
+# this commit rather than the pinned release.
 
 on:
   push:
@@ -17,6 +25,9 @@ permissions:
 
 env:
   GO_VERSION: "1.26"
+  # Resolve this repo's own modules directly (authenticated git), never via the
+  # public proxy/sumdb — the private module path shouldn't leak to either.
+  GOPRIVATE: github.com/deadpoets/*
 
 jobs:
   test:
@@ -30,6 +41,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
@@ -41,6 +55,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
@@ -62,6 +79,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
@@ -78,6 +98,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - name: test (core)
         env:
           GOARCH: "386"
@@ -106,6 +129,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - run: go test -run TestNoHeapEscape ./...
       - run: go test -run TestNoHeapEscape ./...
         working-directory: secmem-crypto
@@ -120,6 +146,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - name: test analyzer
         working-directory: secmem-lint
         run: go test ./...
@@ -151,6 +180,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - name: build
         env:
           GOOS: ${{ matrix.goos }}
@@ -175,6 +207,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
@@ -213,6 +248,9 @@ jobs:
       - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
         with:
           go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+        with:
+          token: ${{ github.token }}
       - run: go install golang.org/x/vuln/cmd/govulncheck@latest
       - run: govulncheck ./...
       - run: govulncheck ./...
