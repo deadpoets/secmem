@@ -4,6 +4,13 @@ secmem is a security-focused library — vulnerability reports get priority
 handling, and the process is designed to keep a report private until a fix
 is ready.
 
+## Audit status
+
+secmem has **not** had an independent third-party security audit. What has
+been verified — per-claim tests, kernel-matrix runs, out-of-process
+extraction proofs — is documented in [TESTING.md](TESTING.md);
+self-verification is not an audit.
+
 ## Reporting a vulnerability
 
 **Do not open a public issue.** Use GitHub's private reporting instead:
