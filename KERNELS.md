@@ -37,12 +37,18 @@ run reflects exactly the shipped code.
 
 | Date | Kernel | Arch | Environment | secretmem | Result |
 |---|---|---|---|---|---|
-| 2026-07-17 | 6.17.0-1011-oracle | arm64 | OCI Ampere A1.Flex, Ubuntu 24.04 | live | PASS · 3/3 |
+| 2026-07-17 | 6.17.0-1011-oracle | arm64 | OCI Ampere A1.Flex (Neoverse N1, out-of-order), Ubuntu 24.04 | live | PASS · 3/3 |
+| 2026-07-17 | 6.18.35-rockchip64 | arm64 | Libre Computer Renegade, RK3328 4× Cortex-A53 (in-order), Armbian | live | PASS · 3/3 |
 | 2026-07-17 | 7.0.0-1009-azure | amd64 | Local Hyper-V VM, Ubuntu 26.04, Intel Core Ultra 7 265KF | live | PASS · 3/3 |
 
-Both rows ran the full gauntlet — core and `secmem-crypto` under `-race`,
+All three rows ran the full gauntlet — core and `secmem-crypto` under `-race`,
 `GOEXPERIMENT=runtimesecret`, the no-heap-escape gates, and `-asan`, plus the
-three proofs — against the released library code. One amd64-only, legacy-path
+three proofs — against the released library code. The two arm64 rows now span
+the microarchitecture range: an out-of-order server core (Ampere Neoverse N1)
+and an in-order mobile core (Cortex-A53), so the weak-memory-model `-race` /
+`-asan` paths and the arm64 `DC CIVAC` wipe are exercised both where the core
+reorders aggressively and where it issues in program order. One amd64-only,
+legacy-path
 stack-scrub test (`TestScrub_ScrubsShallowCallTree`) is excluded under `-asan`:
 the sanitizer's frame redzones move the raw-`uintptr`-observed local out of the
 fixed band the wipe assembly clears, so the read and the wipe stop aliasing —
