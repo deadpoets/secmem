@@ -36,7 +36,8 @@ type Capabilities struct {
 
 	// MemfdSecret reports kernel isolation: the pages are invisible to
 	// /proc/<pid>/mem, ptrace, and other readers of process memory.
-	// Linux amd64 with kernel 5.14+ only, and can fail per-allocation.
+	// Linux amd64/arm64 with kernel 5.14+ and CONFIG_SECRETMEM only, and can
+	// fail per-allocation.
 	MemfdSecret bool
 
 	// NoDump reports the allocation is excluded from crash dumps: on Linux,

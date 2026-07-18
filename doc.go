@@ -32,10 +32,11 @@
 //   - No swap. Pages are locked with mlock (VirtualLock on Windows) so they are
 //     not written to the swap device.
 //
-//   - Kernel isolation. On Linux amd64 (kernel 5.14+) pages are backed by
-//     memfd_secret, which hides them from /proc/<pid>/mem, ptrace, and other
-//     readers of process memory. Elsewhere this is unavailable and the mapping
-//     falls through to locked anonymous memory.
+//   - Kernel isolation. On 64-bit Linux (amd64/arm64, kernel 5.14+ with
+//     CONFIG_SECRETMEM) pages are backed by memfd_secret, which hides them from
+//     /proc/<pid>/mem, ptrace, and other readers of process memory. Elsewhere
+//     this is unavailable and the mapping falls through to locked anonymous
+//     memory.
 //
 //   - Excluded from core dumps. Where the OS allows it (MADV_DONTDUMP, and an
 //     opt-in process-wide dumpable=0), the pages are kept out of core dumps.

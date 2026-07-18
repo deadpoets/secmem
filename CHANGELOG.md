@@ -10,8 +10,20 @@ mark the stability commitment.
 
 ## [Unreleased]
 
-> This repo holds two independently versioned Go modules; entries are tagged
+> This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
+
+## [secmem-lint/v0.1.0] - 2026-07-14
+
+First tagged release of the `secmem-lint` module — a `go/analysis` analyzer
+(and `cmd/secmem-lint` vet tool) enforcing secmem's borrowing-closure
+discipline at compile time: the slice borrowed from `WithBytes`/`WithBytesErr`
+(and `WithScalar`/`WithSeed`/`WithDER` in `secmem-crypto`) must not escape the
+closure. Default checks cover `string()` conversion, append-spread, copy /
+channel / goroutine / assign-to-outer escape, and dangerous stdlib sinks;
+`-strict` adds the same-buffer-reentrancy (R1) and secret-in-plain-string (N1)
+checks. Its own module (`golang.org/x/tools` only), so it adds nothing to
+either library module's dependency graph.
 
 ## [secmem-crypto/v0.1.0] - 2026-07-16
 
@@ -166,5 +178,6 @@ First tagged release of the core `secmem` module.
   itself a `go vet` copylocks violation) a dereferenced value.
 
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.1.0...HEAD
+[secmem-lint/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.1.0
 [secmem-crypto/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.1.0
 [0.1.0]: https://github.com/deadpoets/secmem/releases/tag/v0.1.0
