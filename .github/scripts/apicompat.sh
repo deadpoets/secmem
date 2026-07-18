@@ -13,10 +13,6 @@ set -u
 dir="$1"
 prefix="$2"
 : "${GITHUB_STEP_SUMMARY:=/dev/null}"
-# This repo is private: resolve its modules direct (authenticated git), never
-# via the public proxy/sumdb. Set here so the script never depends on ambient
-# environment being right.
-export GOPRIVATE='github.com/deadpoets/*'
 
 pattern="${prefix}v*"
 base=$(git tag --list "$pattern" --sort=-v:refname | head -1)
