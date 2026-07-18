@@ -10,8 +10,9 @@ secmem reduces the window and the surface in which a secret is exposed in
 process memory:
 
 - It keeps secret bytes off the Go GC heap (so they are not scanned, moved, or
-  copied by the collector), locked out of swap, and — on Linux amd64 with
-  `memfd_secret` — hidden from other readers of process memory.
+  copied by the collector), locked out of swap, and — on 64-bit Linux
+  (amd64/arm64) with `memfd_secret` — hidden from other readers of process
+  memory.
 - It wipes them deterministically on `Destroy`, with an architecture-specific
   routine the compiler cannot elide.
 - It makes accidental exposure harder: `Secret` redacts itself through `fmt` /
@@ -30,10 +31,19 @@ are.
   SME/SEV) or a secure enclave — not a userspace library. secmem does **not**
   encrypt secrets at rest in RAM under a rotating key, and does not claim to.
 
-- **A privileged (root / kernel) adversary on platforms without
-  `memfd_secret`** — i.e. everywhere except Linux amd64 ≥ 5.14. `mlock` and
-  `VirtualLock` stop swapping; they do **not** stop a sufficiently privileged
-  process, a debugger, or a kernel from reading the pages.
+- **A privileged (root / kernel) adversary.** On platforms without
+  `memfd_secret` — i.e. everywhere except 64-bit Linux (amd64/arm64) ≥ 5.14
+  with `CONFIG_SECRETMEM` — `mlock` and `VirtualLock` stop swapping but do
+  **not** stop a sufficiently privileged process, a debugger, or the kernel
+  from reading the pages. Where `memfd_secret` *is* live it removes the pages
+  from the kernel's direct map and defeats the **passive** reads a privileged
+  attacker or a crash dump relies on — `/proc/<pid>/mem`, `ptrace`,
+  `process_vm_readv`, core dumps — which is exactly the bound the extraction
+  proofs in [KERNELS.md](KERNELS.md) establish. It does **not** stop an
+  adversary who can execute code in the kernel itself (a loaded module, a
+  lockdown-off kernel): ring-0 code can still walk the owning process's page
+  tables to the physical pages. The isolation is against readers of process
+  memory, not against a compromised kernel.
 
 - **Secrets you copy out of the borrowing closure.** The moment plaintext lands
   in a `string`, an escaping `[]byte`, or a value logged with `%v`, it is

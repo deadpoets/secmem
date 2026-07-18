@@ -13,7 +13,7 @@ import (
 // Applied in order:
 //  1. PR_SET_DUMPABLE=0 — disables /proc/self/core and ptrace attach
 //  2. PR_SET_NO_NEW_PRIVS=1 — prevents privilege escalation via setuid/capabilities
-//  3. seccomp BPF — reserved for post-MVP (policy generation required)
+//  3. seccomp BPF — reserved; not yet implemented (needs a per-binary policy)
 func hardenProcess() (HardenLevel, error) {
 	var level HardenLevel
 
@@ -29,9 +29,10 @@ func hardenProcess() (HardenLevel, error) {
 	}
 	level |= HardenNoNewPriv
 
-	// L1c: seccomp BPF filter — deferred to post-MVP.
-	// Requires policy generation via seccomp-profiler on the compiled binary.
-	// See docs/planning/reference/interface-contracts.md ADR-016.
+	// L1c: seccomp BPF filter — not yet implemented. A useful filter needs a
+	// syscall allowlist generated for the specific host binary, which a library
+	// cannot know for its caller; adding one here without that policy would only
+	// risk killing the process on a legitimate syscall.
 
 	return level, nil
 }

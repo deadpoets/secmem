@@ -15,7 +15,7 @@ const (
 	// HardenNoNewPriv indicates PR_SET_NO_NEW_PRIVS=1 was set — no privilege escalation.
 	HardenNoNewPriv
 
-	// HardenSeccomp indicates a seccomp BPF filter was loaded (reserved for post-MVP).
+	// HardenSeccomp indicates a seccomp BPF filter was loaded (reserved; not yet implemented).
 	HardenSeccomp
 
 	// HardenStrictHandles indicates Windows strict handle checking is in

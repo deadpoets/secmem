@@ -1,10 +1,10 @@
 name: setup-workspace
 description: >
-  Authenticate go module fetches against this private repo with the job token
-  (loading the module graph reads the required secmem tag's go.mod, so every
-  run also proves that tag is actually published), then create the go.work
-  that resolves the sibling modules in-repo — crypto builds and tests against
-  the core tree at this commit, not the pinned release.
+  Authenticate go module fetches with the job token so the module graph can
+  read the required secmem tag's go.mod (which also proves that tag is actually
+  published on every run), then create the go.work that resolves the sibling
+  modules in-repo — crypto builds and tests against the core tree at this
+  commit, not the pinned release.
 inputs:
   token:
     description: GitHub token used to read this repo's published module versions

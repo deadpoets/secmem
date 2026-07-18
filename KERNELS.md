@@ -30,7 +30,10 @@ mmap+mlock (L3) fallback, whose guards and canaries every row verifies.
 
 ## v0.1.0 — verified kernels
 
-Tags `v0.1.0` + `secmem-crypto/v0.1.0` (tree `06960fb`), exactly as shipped.
+Tags `v0.1.0` (commit `2faf99c`) and `secmem-crypto/v0.1.0` (commit `06960fb`);
+the core library tree is byte-identical at both commits — the intervening
+commits touch only CI, the changelog, and `secmem-crypto`'s `go.mod` — so the
+run reflects exactly the shipped code.
 
 | Date | Kernel | Arch | Environment | secretmem | Result |
 |---|---|---|---|---|---|
