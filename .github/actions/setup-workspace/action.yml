@@ -1,18 +1,11 @@
 name: setup-workspace
 description: >
-  Authenticate go module fetches with the job token so the module graph can
-  read the required secmem tag's go.mod (which also proves that tag is actually
-  published on every run), then create the go.work that resolves the sibling
-  modules in-repo — crypto builds and tests against the core tree at this
-  commit, not the pinned release.
-inputs:
-  token:
-    description: GitHub token used to read this repo's published module versions
-    required: true
+  Create the go.work that resolves the sibling modules in-repo, so secmem-crypto
+  builds and tests against the core tree at this commit rather than the pinned
+  release tag — a core change is exercised against its dependents before it is
+  tagged. The modules are public, so no authenticated fetch is needed.
 runs:
   using: composite
   steps:
-    - run: git config --global url."https://x-access-token:${{ inputs.token }}@github.com/".insteadOf "https://github.com/"
-      shell: bash
     - run: go work init . ./secmem-crypto ./secmem-lint
       shell: bash
