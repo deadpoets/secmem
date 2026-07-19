@@ -40,6 +40,14 @@ dogfood:
 	(cd secmem-lint && $(GO) build -o "$$tool" ./cmd/secmem-lint) && \
 	for m in . secmem-crypto; do (cd $$m && $(GO) vet -vettool="$$tool" ./...) || exit 1; done
 
+# examples/ is the illustrative module. It is deliberately NOT in MODULES: it pins
+# core + crypto via replace directives (so it builds outside the workspace, hence
+# GOWORK=off) and its ssh-agent example is unix-only, so it is not part of the
+# cross-platform loop above. Linux/macOS only.
+.PHONY: examples
+examples:
+	cd examples && GOWORK=off $(GO) vet ./... && GOWORK=off $(GO) test -race ./...
+
 .PHONY: vuln
 vuln:
 	@for m in $(MODULES); do (cd $$m && govulncheck ./...) || exit 1; done
