@@ -108,8 +108,11 @@ detailed in the godoc and the threat model.
 
 ## Documentation
 
-Full API docs, runnable examples, and per-symbol guarantees are on
-[pkg.go.dev](https://pkg.go.dev/github.com/deadpoets/secmem). Start with the
+Full API docs, per-symbol runnable `Example`s, and per-symbol guarantees are on
+[pkg.go.dev](https://pkg.go.dev/github.com/deadpoets/secmem). For end-to-end
+programs, [`examples/`](examples/) holds a password register/login flow and a
+working, hardened SSH agent — each composing the library under real I/O,
+concurrency, and shutdown. Start with the
 package overview, then [`THREAT-MODEL.md`](THREAT-MODEL.md) for the limits,
 [`TESTING.md`](TESTING.md) for how each claim is proven (or why it can't be),
 [`ENVIRONMENTS.md`](ENVIRONMENTS.md) for behavior under root / non-root /
