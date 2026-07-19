@@ -1,6 +1,7 @@
 # secmem
 
 [![Go Reference](https://pkg.go.dev/badge/github.com/deadpoets/secmem.svg)](https://pkg.go.dev/github.com/deadpoets/secmem)
+[![CI](https://github.com/deadpoets/secmem/actions/workflows/ci.yml/badge.svg)](https://github.com/deadpoets/secmem/actions/workflows/ci.yml)
 [![Go Report Card](https://goreportcard.com/badge/github.com/deadpoets/secmem)](https://goreportcard.com/report/github.com/deadpoets/secmem)
 
 Harden secrets in memory — keep private keys, tokens, and passwords off the Go
