@@ -4,6 +4,8 @@ import (
 	"bytes"
 	"errors"
 	"math"
+	"math/rand/v2"
+	"runtime"
 	"sync"
 	"testing"
 	"testing/synctest"
@@ -606,6 +608,176 @@ func TestArena_NilReadOnlyReadWrite(t *testing.T) {
 	}
 	if err := a.ReadWrite(); err == nil {
 		t.Error("nil ReadWrite: want non-nil error, got nil")
+	}
+}
+
+// TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting is the named
+// regression for the arena analog of the SecureBuffer read-only bug: Release
+// wipes the slot (a write), and before the fix that write hit the PROT_READ
+// slab set by ReadOnly() and crashed the process with SIGSEGV. Release now
+// returns ErrReadOnly instead — no fault, and the frozen slab is left intact.
+// ReadWrite lifts the restriction so the slot releases cleanly.
+func TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting(t *testing.T) {
+	t.Parallel()
+	a, err := NewArena(32, 2)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
+
+	slot, err := a.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := slot.WithBytes(func(b []byte) { b[0] = 0xAB }); err != nil {
+		t.Fatalf("WithBytes while writable: %v", err)
+	}
+
+	if err := a.ReadOnly(); err != nil {
+		t.Fatalf("ReadOnly: %v", err)
+	}
+
+	// Release must refuse rather than fault, and must NOT return the slot to
+	// the pool (it was not wiped).
+	if err := slot.Release(); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("Release while read-only = %v, want ErrReadOnly", err)
+	}
+	if !slot.IsLive() {
+		t.Error("slot returned to the pool despite a refused (un-wiped) Release")
+	}
+	if got := a.LiveCount(); got != 1 {
+		t.Errorf("LiveCount after refused Release = %d, want 1", got)
+	}
+	// A read still works while read-only (PROT_READ permits reads).
+	if err := slot.WithBytes(func(b []byte) {
+		if b[0] != 0xAB {
+			t.Errorf("slot contents = %#x, want 0xAB", b[0])
+		}
+	}); err != nil {
+		t.Errorf("WithBytes while read-only should succeed, got %v", err)
+	}
+
+	// ReadWrite lifts the restriction; the slot then releases cleanly.
+	if err := a.ReadWrite(); err != nil {
+		t.Fatalf("ReadWrite: %v", err)
+	}
+	if err := slot.Release(); err != nil {
+		t.Errorf("Release after ReadWrite = %v, want nil", err)
+	}
+	if got := a.LiveCount(); got != 0 {
+		t.Errorf("LiveCount after successful Release = %d, want 0", got)
+	}
+}
+
+// TestArena_DestroyWhileReadOnly confirms Destroy needs no ReadWrite first: its
+// wipe path makes the slab writable before zeroing, so destroying a read-only
+// arena with a live slot completes without faulting.
+func TestArena_DestroyWhileReadOnly(t *testing.T) {
+	t.Parallel()
+	a, err := NewArena(32, 2)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	if _, err := a.Acquire(); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := a.ReadOnly(); err != nil {
+		t.Fatalf("ReadOnly: %v", err)
+	}
+	if err := a.Destroy(); err != nil {
+		t.Fatalf("Destroy of a read-only arena: %v", err)
+	}
+	if !a.IsDestroyed() {
+		t.Error("arena not reported destroyed")
+	}
+}
+
+// TestArena_ConcurrentReadOnlyRelease races slot Release against ReadOnly/
+// ReadWrite on a shared arena — the concurrent form of the fault that
+// TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting covers sequentially.
+// A Release that lands during a read-only window must refuse (ErrReadOnly), not
+// fault on the slot wipe; workers retry through the window. Run under -race for
+// the data-race half: Release reads a.readOnly under rLock while ReadOnly sets
+// it under the exclusive lock. The invariant is simply "no fault, no race, no
+// panic" — a storm that returns from Wait has held it.
+func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
+	a, err := NewArena(16, 8)
+	if err != nil {
+		t.Skipf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
+
+	// Toggler: flip the whole slab read-only/read-write until told to stop, then
+	// leave it writable so the deferred Destroy wipes without contention.
+	stop := make(chan struct{})
+	togglerDone := make(chan struct{})
+	go func() {
+		defer close(togglerDone)
+		r := rand.New(rand.NewPCG(99, 0x9e3779b9))
+		for {
+			select {
+			case <-stop:
+				_ = a.ReadWrite()
+				return
+			default:
+			}
+			if r.IntN(2) == 0 {
+				_ = a.ReadOnly()
+			} else {
+				_ = a.ReadWrite()
+			}
+			runtime.Gosched()
+		}
+	}()
+
+	const (
+		workers = 6
+		iters   = 2000
+	)
+	var wg sync.WaitGroup
+	for w := range workers {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			r := rand.New(rand.NewPCG(uint64(w)+1, 0x2545F4914F6CDD1D))
+			for range iters {
+				slot, err := a.Acquire()
+				if err != nil { // ErrArenaFull while others hold slots — fine
+					runtime.Gosched()
+					continue
+				}
+				_ = slot.WithBytes(func(b []byte) {
+					if len(b) > 0 {
+						_ = b[0]
+					}
+				})
+				_ = r.IntN(2) // keep the RNG advancing between slots
+				// Release, retrying through read-only windows. If it never wins,
+				// the slot is reclaimed by Destroy — the point is that Release
+				// never faults, only refuses.
+				for range 100 {
+					if !errors.Is(slot.Release(), ErrReadOnly) {
+						break
+					}
+					runtime.Gosched()
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(stop)
+	<-togglerDone
+
+	// After the storm the arena is writable and still works.
+	if err := a.ReadWrite(); err != nil {
+		t.Fatalf("ReadWrite after stress: %v", err)
+	}
+	slot, err := a.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire after stress: %v", err)
+	}
+	if err := slot.Release(); err != nil {
+		t.Fatalf("Release after stress: %v", err)
 	}
 }
 

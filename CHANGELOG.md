@@ -13,6 +13,36 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Fixed
+
+- **Read-only buffers and arenas no longer fault the process on a mutating
+  call.** `ReadOnly()` sets the region to `PROT_READ`, but the mutating methods
+  did not check for it, so a `SecureBuffer.CopyIn`, `SetByteAt`, `Truncate`, or
+  `ReadFrom` — or an `ArenaSlot.Release`, which wipes the slot — issued after
+  `ReadOnly()` wrote to the read-only page and crashed the process with SIGSEGV.
+  They now return the new `ErrReadOnly` at the API boundary instead, honoring
+  the "misuse returns an error, never crashes" contract. `Release` refuses
+  without wiping — the slot stays acquired, and `ReadWrite` then `Release`, or
+  `Destroy`, completes the wipe. Surfaced by the new lifecycle fuzzers.
+- **Read-only state now survives a `Seal`/`Unseal` cycle on every platform.**
+  The Windows seal cipher (`CryptProtectMemory`) encrypts in place, so `Seal()`
+  on a read-only `SecureBuffer` failed there while succeeding on Linux. `Seal`
+  now lifts the read-only protection for the encrypt and `Unseal` restores it,
+  so a read-only buffer sealed for dormancy is still read-only when it wakes —
+  the physical page protection always matches the flag.
+
+### Added
+
+- `ErrReadOnly` — the sentinel returned by the mutating methods and
+  `ArenaSlot.Release` when the buffer or arena is in the read-only
+  (`PROT_READ`) state. Call `ReadWrite` before mutating.
+- `FuzzBufferLifecycle` and `FuzzArenaLifecycle` — state-machine fuzzers that
+  drive a buffer or arena through arbitrary operation sequences against a
+  model, asserting that misuse always returns the right sentinel and never
+  panics or faults. They found the read-only faults fixed above.
+- `DESIGN.md` — why the layered protections are arranged as they are — and
+  `PITFALLS.md` — the common secure-memory mistakes and their correct forms.
+
 ## [secmem-lint/v0.1.0] - 2026-07-14
 
 First tagged release of the `secmem-lint` module — a `go/analysis` analyzer

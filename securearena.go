@@ -104,6 +104,12 @@ type SecureArena struct {
 	// Destroy.
 	region secRegion
 
+	// readOnly is true while ReadOnly() has set the slab to PROT_READ.
+	// ArenaSlot.Release checks it and returns ErrReadOnly rather than faulting
+	// on the slot wipe (a write to the PROT_READ slab). Destroy is unaffected —
+	// its wipe path forces the slab writable first. Protected by mu.
+	readOnly bool
+
 	// slots is the metadata index.  Pointer-free leaf — GC scans the slice
 	// header but NOT the backing array.  len(slots) == count.
 	slots []slotMeta
@@ -366,11 +372,15 @@ func (a *SecureArena) SlotSize() int {
 
 // ReadOnly sets the entire slab to read-only (PROT_READ).
 // Affects ALL slots — sub-page mprotect is not possible.
-// Call ReadWrite before Destroy or before any slot Write.
+//
+// Call ReadWrite before releasing a slot: [ArenaSlot.Release] wipes the slot,
+// which is a write, so it returns [ErrReadOnly] while the slab is read-only
+// rather than faulting. [SecureArena.Destroy] needs no such call — its wipe
+// path makes the slab writable first.
 //
 // The exclusive lock is held to drain all in-flight WithBytes callbacks
 // before the mprotect, preventing a SIGSEGV from a concurrent write hitting
-// a PROT_READ page (SB-3 / arena equivalent fix).
+// a PROT_READ page.
 func (a *SecureArena) ReadOnly() error {
 	if a == nil {
 		return errors.New("secmem.SecureArena.ReadOnly: nil receiver")
@@ -383,6 +393,7 @@ func (a *SecureArena) ReadOnly() error {
 	if err := mprotectSecretMem(a.region, 1 /*PROT_READ*/); err != nil {
 		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", err)
 	}
+	a.readOnly = true
 	return nil
 }
 
@@ -402,6 +413,7 @@ func (a *SecureArena) ReadWrite() error {
 	if err := mprotectSecretMem(a.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", err)
 	}
+	a.readOnly = false
 	return nil
 }
 
@@ -472,6 +484,11 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 // this slot, Release returns [ErrCanaryViolation] — the wipe, the re-arming
 // of the strip, and the return of the slot to the pool all complete
 // regardless; the error is a bug report, not a refusal.
+//
+// If the arena is read-only ([SecureArena.ReadOnly]), Release returns
+// [ErrReadOnly] without wiping — the wipe is a write the PROT_READ slab would
+// fault on. The slot stays in use; call [SecureArena.ReadWrite] first, or let
+// [SecureArena.Destroy] wipe it (it makes the slab writable internally).
 func (s *ArenaSlot) Release() error {
 	if s == nil {
 		return nil
@@ -491,6 +508,18 @@ func (s *ArenaSlot) Release() error {
 	var violated bool
 	s.arena.mu.rLock()
 	if s.arena.region.inner != nil {
+		if s.arena.readOnly {
+			// The slab is PROT_READ; the canary re-arm and slot wipe below are
+			// writes that would fault the process. Refuse cleanly instead. The
+			// slot stays in use and un-wiped — still protected by the read-only
+			// page, and wiped when the caller ReadWrite()s and releases again,
+			// or on Destroy (which forces the slab writable). This honors the
+			// "ReadWrite before a slot write" contract on ReadOnly. Checked
+			// inside the live-region guard so a Release after Destroy (region
+			// already nil) stays an idempotent no-op, never ErrReadOnly.
+			s.arena.mu.rUnlock()
+			return fmt.Errorf("secmem.ArenaSlot.Release: %w", ErrReadOnly)
+		}
 		start := s.idx * s.arena.stride
 		end := start + s.arena.slotSize
 		strip := s.arena.region.inner[end : start+s.arena.stride]

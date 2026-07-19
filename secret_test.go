@@ -3,6 +3,7 @@ package secmem
 import (
 	"bytes"
 	"encoding"
+	"encoding/gob"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -136,6 +137,39 @@ func TestSecret_NeverLeaksThroughMarshalling(t *testing.T) {
 	if err != nil || string(txt) != redacted {
 		t.Errorf("MarshalText = %q, %v; want %q, nil", txt, err, redacted)
 	}
+}
+
+// TestSecret_GobEncodeDoesNotLeak closes the one serialization case the others
+// miss: gob. Unlike fmt/json/slog, Secret does not implement gob.GobEncoder, so
+// gob reflects over its fields. This proves reflection cannot reach the
+// plaintext — it is not held in a gob-reachable (exported) field — so an encode
+// of a Secret produces no bytes containing the plaintext, whether encoded
+// directly, by pointer, or nested in a surrounding struct.
+//
+// The contract is "gob cannot serialize the secret material", satisfied here by
+// construction. gob also refuses a type with no exported fields outright; that
+// refusal is itself a safe outcome (nothing is emitted). Either way the
+// plaintext must never appear in the output. A future refactor that added an
+// exported field aliasing the secret would fail this test.
+func TestSecret_GobEncodeDoesNotLeak(t *testing.T) {
+	t.Parallel()
+	s := mustSecret(t)
+	defer func() { _ = s.Destroy() }()
+
+	assertNoPlaintext := func(name string, encode func(*gob.Encoder) error) {
+		var buf bytes.Buffer
+		// An encode error (e.g. "type has no exported fields") is acceptable: it
+		// means nothing was serialized. A success must be plaintext-free.
+		if err := encode(gob.NewEncoder(&buf)); err == nil && bytes.Contains(buf.Bytes(), []byte(secretPlaintext)) {
+			t.Errorf("%s: gob output contains the plaintext secret", name)
+		}
+	}
+
+	assertNoPlaintext("direct", func(e *gob.Encoder) error { return e.Encode(s) })
+	assertNoPlaintext("pointer", func(e *gob.Encoder) error { return e.Encode(&s) })
+	assertNoPlaintext("nested", func(e *gob.Encoder) error {
+		return e.Encode(struct{ Token Secret }{Token: s})
+	})
 }
 
 // TestSecret_NeverLeaksThroughSlog logs a Secret through a real slog logger

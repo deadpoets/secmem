@@ -10,6 +10,15 @@ var ErrDestroyed = errors.New("secmem: secure buffer has been destroyed")
 // the sealed (PROT_NONE) state. Call [SecureBuffer.Unseal] before accessing.
 var ErrSealed = errors.New("secmem: secure buffer is sealed")
 
+// ErrReadOnly is returned by the mutating methods (CopyIn, SetByteAt, Truncate,
+// ReadFrom) when the buffer is in the read-only (PROT_READ) state set by
+// [SecureBuffer.ReadOnly]. Call [SecureBuffer.ReadWrite] before mutating.
+//
+// The guard is a memory-safety boundary: a mutating method that wrote through
+// to the PROT_READ page would fault the process, so secmem refuses the write at
+// the API boundary instead — misuse returns an error, it never crashes.
+var ErrReadOnly = errors.New("secmem: secure buffer is read-only — call ReadWrite before mutating")
+
 // ErrArenaDestroyed is returned by SecureArena and ArenaSlot methods after the
 // arena has been destroyed via Destroy().
 var ErrArenaDestroyed = errors.New("secmem: secure arena has been destroyed")
