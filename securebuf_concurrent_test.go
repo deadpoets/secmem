@@ -1,11 +1,84 @@
 package secmem
 
 import (
+	"bytes"
 	"fmt"
 	"io"
+	"math/rand/v2"
+	"sync"
 	"testing"
 	"testing/synctest"
 )
+
+// TestConcurrentProtectionTransitions stresses the state machine the read-only
+// fault lived in: many goroutines issue random access and mutate calls while
+// others flip ReadOnly/ReadWrite/Seal/Unseal on the SAME buffer. The contract
+// under test is the one the fault violated — every call must return (success or
+// a sentinel), never fault the process. Run under -race (the CI test jobs do)
+// for the data-race half of the guarantee: the flag checks and the mprotect
+// must be consistent to every locked observer, and ReadFrom/WriteTo must re-
+// check protection after dropping the lock for their I/O.
+func TestConcurrentProtectionTransitions(t *testing.T) {
+	buf, err := NewEmptyBuffer(64)
+	if err != nil {
+		t.Skipf("NewEmptyBuffer: %v", err)
+	}
+	defer func() { _ = buf.Destroy() }()
+
+	const (
+		goroutines = 8
+		iters      = 3000
+	)
+	var wg sync.WaitGroup
+	for g := range goroutines {
+		wg.Add(1)
+		go func(g int) {
+			defer wg.Done()
+			r := rand.New(rand.NewPCG(uint64(g)+1, 0x9e3779b9))
+			src := []byte{1, 2, 3, 4}
+			dst := make([]byte, 4)
+			for range iters {
+				switch r.IntN(11) {
+				case 0:
+					_ = buf.ReadOnly()
+				case 1:
+					_ = buf.ReadWrite()
+				case 2:
+					_ = buf.Seal()
+				case 3:
+					_ = buf.Unseal()
+				case 4:
+					_, _ = buf.CopyIn(src, 0)
+				case 5:
+					_ = buf.SetByteAt(0, 0xAA)
+				case 6:
+					_, _ = buf.CopyOut(dst, 0)
+				case 7:
+					_, _ = buf.ByteAt(0)
+				case 8:
+					_, _ = buf.ReadFrom(bytes.NewReader(src))
+				case 9:
+					_, _ = buf.WriteTo(io.Discard)
+				case 10:
+					_ = buf.Len()
+					_ = buf.IsSealed()
+				}
+			}
+		}(g)
+	}
+	wg.Wait()
+
+	// The buffer must remain usable after the storm — no state was corrupted.
+	if err := buf.Unseal(); err != nil {
+		t.Fatalf("Unseal after stress: %v", err)
+	}
+	if err := buf.ReadWrite(); err != nil {
+		t.Fatalf("ReadWrite after stress: %v", err)
+	}
+	if _, err := buf.CopyIn([]byte{9}, 0); err != nil {
+		t.Fatalf("CopyIn after stress: %v", err)
+	}
+}
 
 // TestConcurrentAccess verifies that multiple goroutines may call WithBytesErr
 // simultaneously without data races or panics. Uses testing/synctest for
