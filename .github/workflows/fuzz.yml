@@ -1,0 +1,60 @@
+name: Nightly Fuzz
+
+# Active, coverage-guided fuzzing on a schedule. The seed corpus (f.Add seeds
+# plus the committed testdata/fuzz/<Target>/ inputs) runs in the normal CI test
+# jobs on every PR; THIS workflow hunts for NEW failing inputs over a longer
+# budget. Targets are discovered at run time (go test -list), so a new FuzzXxx
+# is picked up without editing this file.
+#
+# On a crash, Go writes the minimized failing input to testdata/fuzz/<Target>/
+# and prints it plus a `go test -run=<Target>/<hash>` reproduction line; the job
+# goes red. Commit that file to turn the crash into a permanent regression seed.
+#
+# Runs against the sibling core tree at this commit (setup-workspace), so a core
+# change is fuzzed against secmem-crypto before it is tagged — same as CI.
+
+on:
+  schedule:
+    - cron: "0 7 * * *" # 07:00 UTC nightly
+  workflow_dispatch:
+    inputs:
+      fuzztime:
+        description: "Per-target fuzz budget (Go duration, e.g. 3m, 30m)"
+        default: "3m"
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.26"
+
+jobs:
+  fuzz:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        module: [".", "secmem-crypto"]
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+      - uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+      - name: fuzz each target
+        working-directory: ${{ matrix.module }}
+        env:
+          FUZZTIME: ${{ github.event.inputs.fuzztime || '3m' }}
+        run: |
+          set -euo pipefail
+          mapfile -t targets < <(go test -list '^Fuzz' . | grep '^Fuzz' || true)
+          if [ ${#targets[@]} -eq 0 ]; then
+            echo "no fuzz targets in ${{ matrix.module }}"
+            exit 0
+          fi
+          echo "fuzzing ${#targets[@]} target(s) for $FUZZTIME each: ${targets[*]}"
+          for t in "${targets[@]}"; do
+            echo "::group::fuzz $t"
+            go test -run '^$' -fuzz "^${t}$" -fuzztime "$FUZZTIME" .
+            echo "::endgroup::"
+          done
