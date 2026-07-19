@@ -734,7 +734,15 @@ func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
 		workers = 6
 		iters   = 2000
 	)
-	var wg sync.WaitGroup
+	var (
+		wg sync.WaitGroup
+		mu sync.Mutex
+		// refused holds slots whose Release never won a writable window. They
+		// are still acquired (a refused Release does not free the slot), so the
+		// drain below owns them — leaking them here would make the arena's
+		// occupancy, and any assertion about it, scheduling-dependent.
+		refused []*ArenaSlot
+	)
 	for w := range workers {
 		wg.Add(1)
 		go func(w int) {
@@ -752,14 +760,21 @@ func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
 					}
 				})
 				_ = r.IntN(2) // keep the RNG advancing between slots
-				// Release, retrying through read-only windows. If it never wins,
-				// the slot is reclaimed by Destroy — the point is that Release
-				// never faults, only refuses.
+				// Release, retrying through read-only windows. Release never
+				// faults there — it refuses — so a slot that loses every retry
+				// is handed to the drain below rather than abandoned.
+				released := false
 				for range 100 {
 					if !errors.Is(slot.Release(), ErrReadOnly) {
+						released = true
 						break
 					}
 					runtime.Gosched()
+				}
+				if !released {
+					mu.Lock()
+					refused = append(refused, slot)
+					mu.Unlock()
 				}
 			}
 		}(w)
@@ -768,9 +783,20 @@ func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
 	close(stop)
 	<-togglerDone
 
-	// After the storm the arena is writable and still works.
+	// The slab is writable again, so every slot that was refused during a
+	// read-only window must now release cleanly: a refused Release is
+	// retryable, never a lost slot. Draining them makes the occupancy
+	// deterministic regardless of how the storm was scheduled.
 	if err := a.ReadWrite(); err != nil {
 		t.Fatalf("ReadWrite after stress: %v", err)
+	}
+	for _, s := range refused {
+		if err := s.Release(); err != nil {
+			t.Fatalf("Release of a slot refused during a read-only window: %v", err)
+		}
+	}
+	if got := a.LiveCount(); got != 0 {
+		t.Fatalf("LiveCount after draining = %d, want 0", got)
 	}
 	slot, err := a.Acquire()
 	if err != nil {
