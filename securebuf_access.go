@@ -168,6 +168,9 @@ func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 	if s.sealed {
 		return 0, ErrSealed
 	}
+	if s.readOnly {
+		return 0, ErrReadOnly
+	}
 	if dstOffset < 0 || dstOffset >= len(s.data) {
 		return 0, fmt.Errorf("secmem.SecureBuffer.CopyIn: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
 	}
@@ -214,6 +217,9 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	}
 	if s.sealed {
 		return ErrSealed
+	}
+	if s.readOnly {
+		return ErrReadOnly
 	}
 	if i < 0 || i >= len(s.data) {
 		return fmt.Errorf("secmem.SecureBuffer.SetByteAt: index %d out of range [0, %d)", i, len(s.data))
@@ -298,6 +304,13 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 		s.mu.rUnlock()
 		return 0, ErrSealed
 	}
+	if s.readOnly {
+		// Fail fast before reading from r: the copy below would fault on the
+		// PROT_READ page. Re-checked under the exclusive lock (a concurrent
+		// ReadOnly could land between here and the write).
+		s.mu.rUnlock()
+		return 0, ErrReadOnly
+	}
 	size := len(s.data)
 	s.mu.rUnlock()
 
@@ -323,6 +336,11 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	if s.sealed {
 		s.mu.unlock()
 		return 0, ErrSealed
+	}
+	if s.readOnly {
+		// Authoritative check: refuse rather than fault on the PROT_READ page.
+		s.mu.unlock()
+		return 0, ErrReadOnly
 	}
 	copy(s.data, tmp[:n])
 	s.mu.unlock()

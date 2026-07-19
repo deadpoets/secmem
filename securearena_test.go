@@ -609,6 +609,87 @@ func TestArena_NilReadOnlyReadWrite(t *testing.T) {
 	}
 }
 
+// TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting is the named
+// regression for the arena analog of the SecureBuffer read-only bug: Release
+// wipes the slot (a write), and before the fix that write hit the PROT_READ
+// slab set by ReadOnly() and crashed the process with SIGSEGV. Release now
+// returns ErrReadOnly instead — no fault, and the frozen slab is left intact.
+// ReadWrite lifts the restriction so the slot releases cleanly.
+func TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting(t *testing.T) {
+	t.Parallel()
+	a, err := NewArena(32, 2)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
+
+	slot, err := a.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := slot.WithBytes(func(b []byte) { b[0] = 0xAB }); err != nil {
+		t.Fatalf("WithBytes while writable: %v", err)
+	}
+
+	if err := a.ReadOnly(); err != nil {
+		t.Fatalf("ReadOnly: %v", err)
+	}
+
+	// Release must refuse rather than fault, and must NOT return the slot to
+	// the pool (it was not wiped).
+	if err := slot.Release(); !errors.Is(err, ErrReadOnly) {
+		t.Fatalf("Release while read-only = %v, want ErrReadOnly", err)
+	}
+	if !slot.IsLive() {
+		t.Error("slot returned to the pool despite a refused (un-wiped) Release")
+	}
+	if got := a.LiveCount(); got != 1 {
+		t.Errorf("LiveCount after refused Release = %d, want 1", got)
+	}
+	// A read still works while read-only (PROT_READ permits reads).
+	if err := slot.WithBytes(func(b []byte) {
+		if b[0] != 0xAB {
+			t.Errorf("slot contents = %#x, want 0xAB", b[0])
+		}
+	}); err != nil {
+		t.Errorf("WithBytes while read-only should succeed, got %v", err)
+	}
+
+	// ReadWrite lifts the restriction; the slot then releases cleanly.
+	if err := a.ReadWrite(); err != nil {
+		t.Fatalf("ReadWrite: %v", err)
+	}
+	if err := slot.Release(); err != nil {
+		t.Errorf("Release after ReadWrite = %v, want nil", err)
+	}
+	if got := a.LiveCount(); got != 0 {
+		t.Errorf("LiveCount after successful Release = %d, want 0", got)
+	}
+}
+
+// TestArena_DestroyWhileReadOnly confirms Destroy needs no ReadWrite first: its
+// wipe path makes the slab writable before zeroing, so destroying a read-only
+// arena with a live slot completes without faulting.
+func TestArena_DestroyWhileReadOnly(t *testing.T) {
+	t.Parallel()
+	a, err := NewArena(32, 2)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	if _, err := a.Acquire(); err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if err := a.ReadOnly(); err != nil {
+		t.Fatalf("ReadOnly: %v", err)
+	}
+	if err := a.Destroy(); err != nil {
+		t.Fatalf("Destroy of a read-only arena: %v", err)
+	}
+	if !a.IsDestroyed() {
+		t.Error("arena not reported destroyed")
+	}
+}
+
 // ---------------------------------------------------------------------------
 // ABA generation guard (finding CQ-P0-ABA)
 // ---------------------------------------------------------------------------

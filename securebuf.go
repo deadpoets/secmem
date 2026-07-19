@@ -73,6 +73,14 @@ type SecureBuffer struct {
 	// Protected by mu (same lock used for all state changes).
 	sealed bool
 
+	// readOnly is true when [SecureBuffer.ReadOnly] has set the region to
+	// PROT_READ. The mutating methods (CopyIn, SetByteAt, Truncate, ReadFrom)
+	// return ErrReadOnly while it is set — the API-boundary guard that turns a
+	// would-be PROT_READ write fault into a clean error. It also lets Seal lift
+	// and Unseal restore the protection so the physical page protection always
+	// matches the flag across a seal cycle. Protected by mu.
+	readOnly bool
+
 	// sealCipher is true while the contents are seal-cipher ciphertext
 	// (Windows: CryptProtectMemory under Seal). Atomic because it is read on
 	// the janitor's wipe paths on another goroutine. Shared with janitorRegion.
@@ -345,6 +353,7 @@ func (s *SecureBuffer) ReadOnly() error {
 	if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", err)
 	}
+	s.readOnly = true
 	return nil
 }
 
@@ -368,6 +377,7 @@ func (s *SecureBuffer) ReadWrite() error {
 	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", err)
 	}
+	s.readOnly = false
 	return nil
 }
 
@@ -393,7 +403,9 @@ func (s *SecureBuffer) ReadWrite() error {
 // PROT_NONE restriction (and decrypts) internally before wiping.
 //
 // Note: [ReadOnly] and [ReadWrite] return [ErrSealed] while sealed. To
-// transition from Sealed to ReadOnly, call Unseal then ReadOnly.
+// transition from Sealed to ReadOnly, call Unseal then ReadOnly. A buffer that
+// was read-only before Seal stays read-only after [SecureBuffer.Unseal] — the
+// protection is preserved across the seal cycle.
 //
 // Seal is idempotent: calling it on an already-sealed buffer is a no-op.
 func (s *SecureBuffer) Seal() error {
@@ -408,10 +420,22 @@ func (s *SecureBuffer) Seal() error {
 	if s.sealed {
 		return nil // idempotent
 	}
+	// The seal cipher encrypts in place (Windows: CryptProtectMemory), so the
+	// region must be writable during Seal. If the caller had set it read-only,
+	// lift the PROT_READ protection just for the encrypt: the region ends at
+	// PROT_NONE regardless, s.readOnly stays set, and Unseal re-applies
+	// PROT_READ. On non-Windows the cipher is a no-op, but the lift keeps the
+	// path uniform; the rollback paths below restore PROT_READ.
+	if s.readOnly {
+		if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+			return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
+		}
+	}
 	// Encrypt BEFORE dropping write access. The flag is set immediately so
 	// the janitor's emergency-wipe path never canary-checks ciphertext.
 	applied, err := sealEncrypt(s.region)
 	if err != nil {
+		s.reapplyReadOnly()
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 	}
 	if applied {
@@ -424,10 +448,22 @@ func (s *SecureBuffer) Seal() error {
 				s.sealCipher.Store(false)
 			}
 		}
+		s.reapplyReadOnly()
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 	}
 	s.sealed = true
 	return nil
+}
+
+// reapplyReadOnly re-applies PROT_READ when the buffer is flagged read-only.
+// Seal lifts that protection to run the in-place seal cipher; on a Seal
+// rollback path this restores it so the physical page protection stays in sync
+// with s.readOnly. Best-effort — the caller is already returning an error.
+// Caller holds s.mu and the region is live.
+func (s *SecureBuffer) reapplyReadOnly() {
+	if s.readOnly {
+		_ = mprotectSecretMem(s.region, 1 /*PROT_READ*/)
+	}
 }
 
 // Unseal lifts the PROT_NONE protection applied by [SecureBuffer.Seal],
@@ -461,6 +497,16 @@ func (s *SecureBuffer) Unseal() error {
 		}
 		s.sealCipher.Store(false)
 	}
+	// Unseal lifted the region to PROT_READ|PROT_WRITE to decrypt in place. If
+	// the caller had set the buffer read-only before sealing, re-apply
+	// PROT_READ so the physical protection matches s.readOnly — a post-Unseal
+	// mutator then refuses with ErrReadOnly instead of faulting. On failure the
+	// buffer stays sealed (fail closed) rather than exposing a writable region.
+	if s.readOnly {
+		if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
+			return fmt.Errorf("secmem.SecureBuffer.Unseal: restoring read-only: %w", err)
+		}
+	}
 	s.sealed = false
 	return nil
 }
@@ -491,8 +537,13 @@ func (s *SecureBuffer) Truncate(n int) error {
 	}
 	if s.sealed {
 		// The region is PROT_NONE while sealed; wiping the freed tail would
-		// fault. Match the other mutating methods (ReadOnly/ReadWrite/CopyIn).
+		// fault. Match the other mutating methods (CopyIn/SetByteAt/ReadFrom).
 		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrSealed)
+	}
+	if s.readOnly {
+		// The region is PROT_READ; wiping the freed tail would fault. Refuse
+		// at the API boundary instead of crashing.
+		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrReadOnly)
 	}
 	if n < 0 || n > len(s.data) {
 		return fmt.Errorf("secmem.SecureBuffer.Truncate: n=%d out of range [0, %d]", n, len(s.data))
