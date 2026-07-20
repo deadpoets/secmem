@@ -13,6 +13,13 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [0.2.0] - 2026-07-19
+
+A bug-fix release for the core `secmem` module, and the reason to upgrade
+promptly: v0.1.0 could **crash the process** on a documented API sequence.
+`ErrReadOnly` is the only API addition, so the change is backward compatible
+(confirmed by `gorelease`).
+
 ### Fixed
 
 - **Read-only buffers and arenas no longer fault the process on a mutating
@@ -207,7 +214,8 @@ First tagged release of the core `secmem` module.
   cover all three types, both the pointer and (where a value copy is not
   itself a `go vet` copylocks violation) a dereferenced value.
 
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/deadpoets/secmem/compare/v0.1.0...v0.2.0
 [secmem-lint/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.1.0
 [secmem-crypto/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.1.0
 [0.1.0]: https://github.com/deadpoets/secmem/releases/tag/v0.1.0

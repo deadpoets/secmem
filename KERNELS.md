@@ -28,6 +28,26 @@ security proofs beyond unit tests:
 blocked by lockdown) — i.e. the L4 path itself was exercised, not only the
 mmap+mlock (L3) fallback, whose guards and canaries every row verifies.
 
+## v0.2.0 — verified kernels
+
+Validated against `f7fdf4e`, the library tree v0.2.0 tags; the only later
+commits are docs-only (this file and the changelog), so the run reflects
+exactly the shipped code. Every row ran the full gauntlet — core,
+`secmem-crypto`, and `secmem-lint` under `-race`, `GOEXPERIMENT=runtimesecret`,
+the no-heap-escape gates, and `-asan` — plus the three counted proofs.
+
+| Date | Kernel | Arch | Environment | secretmem | Result |
+|---|---|---|---|---|---|
+| 2026-07-19 | 7.0.0-1009-azure | amd64 | Local Hyper-V VM, Ubuntu 26.04, Intel Core Ultra 7 265KF | live | PASS · 3/3 |
+| 2026-07-19 | 6.18.35-rockchip64 | arm64 | Libre Computer Renegade, RK3328 4× Cortex-A53 (in-order), Armbian | live | PASS · 3/3 |
+| 2026-07-19 | 6.17.0-1011-oracle | arm64 | OCI Ampere A1.Flex (Neoverse N1, out-of-order), Ubuntu 24.04 | live | PASS · 3/3 |
+
+The read-only fix this release centers on is exercised where it matters: the
+concurrent protection-transition stress races `ReadOnly`/`Seal` against
+mutators, and it passes under `-race` on the **in-order** Cortex-A53 as well as
+on amd64's stronger TSO ordering — the arm64 weak memory model being where a
+protection-state race would actually surface.
+
 ## v0.1.0 — verified kernels
 
 Tags `v0.1.0` (commit `2faf99c`) and `secmem-crypto/v0.1.0` (commit `06960fb`);
