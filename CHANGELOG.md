@@ -13,15 +13,20 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
-## [secmem-crypto/v0.1.1] - 2026-07-19
+## [secmem-crypto/v0.2.0] - 2026-07-19
 
-Dependency-only patch. `secmem-crypto` now requires `secmem` v0.2.0, so code
-that imports only this module picks up the read-only crash fix below —
-v0.1.0 of this module pins `secmem` v0.1.0 and would otherwise keep resolving
-the faulting core. No API or behavior change here: the only source additions
-since `secmem-crypto/v0.1.0` are the `FuzzSignerLifecycle` state-machine
-fuzzer and its seed corpus, both test-only (`gorelease` confirms the patch
-level).
+Dependency-only release. `secmem-crypto` now requires `secmem` v0.2.0, so code
+that imports only this module picks up the read-only crash fix below — v0.1.0
+of this module pins `secmem` v0.1.0 and would otherwise keep resolving the
+faulting core.
+
+No `secmem-crypto` source change: the only additions since
+`secmem-crypto/v0.1.0` are the `FuzzSignerLifecycle` state-machine fuzzer and
+its seed corpus, both test-only. It is a **minor** bump rather than a patch
+because this module's exported API hands back `*secmem.SecureBuffer` values,
+so raising its `secmem` floor to v0.2.0 raises the minimum for every consumer
+too — a dependency-graph change they should opt into deliberately
+(`gorelease` classifies it the same way).
 
 ## [0.2.0] - 2026-07-19
 
@@ -226,7 +231,7 @@ First tagged release of the core `secmem` module.
 
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.2.0...HEAD
 [0.2.0]: https://github.com/deadpoets/secmem/compare/v0.1.0...v0.2.0
-[secmem-crypto/v0.1.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.1.1
+[secmem-crypto/v0.2.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.2.0
 [secmem-lint/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.1.0
 [secmem-crypto/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.1.0
 [0.1.0]: https://github.com/deadpoets/secmem/releases/tag/v0.1.0
