@@ -1,9 +1,55 @@
 package secmem
 
 import (
+	"errors"
 	"sync"
 	"testing"
 )
+
+// TestArena_IsLiveRejectsStaleHandle pins IsLive to the handle rather than to
+// the slot index.
+//
+// A one-slot arena guarantees the re-Acquire reuses the same index, so the only
+// thing separating the two handles is the generation. Testing inUse alone made
+// the stale handle report live while WithBytes refused it as released — two
+// methods on the same handle disagreeing about whether it was usable.
+func TestArena_IsLiveRejectsStaleHandle(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	a, err := NewArena(32, 1)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
+
+	stale, err := a.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	if relErr := stale.Release(); relErr != nil {
+		t.Fatalf("Release: %v", relErr)
+	}
+	fresh, err := a.Acquire() // same index, new generation
+	if err != nil {
+		t.Fatalf("re-Acquire: %v", err)
+	}
+	defer func() { _ = fresh.Release() }()
+
+	if stale.Index() != fresh.Index() {
+		t.Fatalf("test premise broken: stale idx %d != fresh idx %d", stale.Index(), fresh.Index())
+	}
+	if stale.IsLive() {
+		t.Error("stale handle reports IsLive() = true after its slot was re-acquired by another owner")
+	}
+	if !fresh.IsLive() {
+		t.Error("fresh handle reports IsLive() = false")
+	}
+	// IsLive must agree with what the access path actually does.
+	if wErr := stale.WithBytes(func([]byte) {}); !errors.Is(wErr, ErrSlotReleased) {
+		t.Errorf("stale handle WithBytes = %v, want ErrSlotReleased — IsLive and WithBytes disagree", wErr)
+	}
+}
 
 // checkFreeList walks the intrusive free list and asserts every structural
 // invariant it is supposed to hold: it terminates, visits no slot twice, stays

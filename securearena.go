@@ -737,13 +737,21 @@ func (s *ArenaSlot) Index() int {
 	return int(s.idx)
 }
 
-// IsLive reports whether the slot is currently acquired (not yet released).
+// IsLive reports whether THIS HANDLE is still usable — its slot is acquired and
+// has not been released and handed out again since.
+//
+// The generation is part of the test, not just the in-use flag. Checking the
+// flag alone answers a different question — "is this index in use by anybody" —
+// so a stale handle whose slot had since been re-acquired by another caller
+// reported live, and was then refused by [ArenaSlot.WithBytes] with
+// [ErrSlotReleased] on the very next line. Every other method on the handle
+// validates the generation; this one now agrees with them.
 func (s *ArenaSlot) IsLive() bool {
 	if s == nil {
 		return false
 	}
 	s.arena.alloc.Lock()
-	live := s.arena.slots[s.idx].inUse == 1
+	live := s.arena.slots[s.idx].inUse == 1 && s.arena.slots[s.idx].generation == s.generation
 	s.arena.alloc.Unlock()
 	return live
 }
