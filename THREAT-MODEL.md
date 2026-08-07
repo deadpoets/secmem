@@ -45,6 +45,28 @@ are.
   tables to the physical pages. The isolation is against readers of process
   memory, not against a compromised kernel.
 
+- **Other bus masters on a unified-memory SoC.** `mlock` and `VirtualLock`
+  constrain the *CPU's* view: they keep pages off the swap device and resident.
+  They say nothing about the other engines on a UMA part — the integrated GPU,
+  NPU/DLA, ISP, DSP, video codec — which sit on the same physical DRAM with no
+  separate VRAM to be confined to. Whether such an engine can reach a locked
+  secret page is a property of the SoC's SMMU/IOMMU configuration and the
+  vendor's driver stack, not of anything secmem does or can check. This is the
+  normal case, not an exotic one: Tegra, Apple Silicon, Snapdragon, AMD APUs,
+  and essentially every ARM SBC are unified-memory designs.
+
+  `memfd_secret` is the only mechanism in the library that would narrow this,
+  and only partly — it removes pages from the kernel's *direct map*, which is a
+  CPU-side mapping, not a device-side one. Worse, the platforms where this
+  matters most are disproportionately the ones where `memfd_secret` is
+  unavailable: it requires the kernel to be able to split the linear map at
+  page granularity, which several vendor SoC kernels disable (measured on a
+  Jetson Orin Nano — see [KERNELS.md](KERNELS.md)). Read `Capabilities` and
+  assume nothing.
+
+  If your adversary model includes hostile or buggy code driving an on-die
+  accelerator, a userspace memory library is not the control you want.
+
 - **Secrets you copy out of the borrowing closure.** The moment plaintext lands
   in a `string`, an escaping `[]byte`, or a value logged with `%v`, it is
   outside secmem's control and subject to normal GC lifetime. Keep work inside

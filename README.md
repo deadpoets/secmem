@@ -68,7 +68,7 @@ subpackage provides a `slog.Handler` wrapper.
 provided · **LOUD** opt-in only. This table is the threat model's spine; see
 [THREAT-MODEL.md](THREAT-MODEL.md) for what none of it protects against.
 
-| Protection | linux/amd64·arm64 (≥5.14) | linux (older / 32-bit) | darwin | windows | other |
+| Protection | linux/amd64·arm64 (≥5.14, secretmem live †) | linux (older / 32-bit / secretmem inert) | darwin | windows | other |
 |---|---|---|---|---|---|
 | Off the Go heap | ✓ memfd_secret | ✓ mmap | ✓ mmap | ✓ VirtualAlloc | **LOUD** heap only |
 | No swap (locked) | ✓ | ✓ mlock | ✓ mlock | ✓ VirtualLock | ✗ |
@@ -87,9 +87,22 @@ The suite has been executed on real **linux/amd64 and linux/arm64** hardware,
 spanning kernels 5.10 through 7.x (see [`KERNELS.md`](KERNELS.md)). On arm64
 (Ampere Altra), the `memfd_secret` L4 path, the guard-page fault, the
 `/proc/self/mem` isolation proof, and the architecture-specific wipe assembly
-all pass. Whether `memfd_secret` is live depends on the kernel's
-`CONFIG_SECRETMEM`, not the version alone — where it is absent, secmem reports
-"fallback" and uses `mmap`+`mlock`, honestly, per allocation.
+all pass.
+
+† Whether `memfd_secret` is live is **not** decided by the kernel version, and
+not even by `CONFIG_SECRETMEM` alone. It needs the kernel to be able to split
+the linear map at page granularity; on arm64 that means `rodata=full` (or
+`DEBUG_PAGEALLOC`, or KFENCE). A measured counter-example: an NVIDIA Jetson
+Orin Nano on kernel 6.8.12 ships `CONFIG_SECRETMEM=y` and still returns
+`ENOSYS`, because `CONFIG_RODATA_FULL_DEFAULT_ENABLED` is off — see
+[`KERNELS.md`](KERNELS.md). Where it is inert, secmem reports "fallback" and
+uses `mmap`+`mlock`, honestly, per allocation. Read
+[`Capabilities`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Capabilities)
+at runtime; do not infer the tier from a config symbol or a `uname`.
+
+On a unified-memory SoC (Tegra, Apple Silicon, AMD APUs, most ARM SBCs) note
+also that locking a page constrains the CPU's view of it, not an on-die
+GPU/NPU sharing the same DRAM — see [`THREAT-MODEL.md`](THREAT-MODEL.md).
 
 Guard pages and the canary are a **memory-safety bug-catcher, not a
 confidentiality control** — they trap an accidental over/under-flow, and do

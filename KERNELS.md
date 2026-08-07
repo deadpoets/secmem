@@ -88,6 +88,87 @@ ship without `CONFIG_SECRETMEM`; Oracle Linux 9's UEK 6.12 has it live while
 OL10's same-version UEK reports fallback. Kernel version alone never
 guarantees the L4 path — the library reports the truth per allocation.
 
+## arm64: `CONFIG_SECRETMEM=y` is not enough — `can_set_direct_map()` gates it
+
+The pre-release finding above ("availability is a kernel-config property, not a
+version") has a sharper form on arm64, measured 2026-08-06 on an **NVIDIA
+Jetson Orin Nano (Tegra 234, Cortex-A78AE, kernel 6.8.12-1021-tegra)**:
+
+| Fact | Value |
+|---|---|
+| `CONFIG_SECRETMEM` | **`y`** |
+| `CONFIG_ARCH_HAS_SET_DIRECT_MAP` | `y` |
+| `CONFIG_RODATA_FULL_DEFAULT_ENABLED` | **not set** |
+| `CONFIG_DEBUG_PAGEALLOC` / `CONFIG_KFENCE` | not set |
+| `rodata=` on cmdline | absent |
+| `memfd_secret(2)` | **`ENOSYS`** |
+
+`memfd_secret` works by removing pages from the kernel's linear map, so it
+needs that map to be splittable at page granularity. On arm64
+`can_set_direct_map()` is true only when `rodata_full` is on, or
+`DEBUG_PAGEALLOC` is on, or KFENCE needs it. This kernel has none of the three,
+so secretmem disables itself at init and the syscall reports `ENOSYS` **even
+though `CONFIG_SECRETMEM=y`** — the config symbol everyone greps for is present
+and the feature is still inert.
+
+The practical consequences:
+
+- **Do not infer the L4 path from `CONFIG_SECRETMEM`, or from `uname -r`.**
+  6.8.12 is comfortably past 5.14 and the symbol is compiled in; the path is
+  still unavailable. Only the syscall's own answer settles it, which is what
+  `Probe()` and `SecureBuffer.Capabilities()` report.
+- **Vendor SoC kernels are the likely place to hit this.** Turning off
+  `rodata_full` buys larger block mappings in the linear map; a vendor tuning
+  for boot time and TLB pressure may well take that trade without considering
+  secretmem. Stock Armbian (6.18.35, RK3328) and Ubuntu 26.04 (7.0.0, amd64)
+  both had it live.
+- **It compounds with unified memory.** The SoCs most likely to ship such a
+  kernel are also the ones sharing DRAM with an iGPU/NPU — see the UMA bullet
+  in [THREAT-MODEL.md](THREAT-MODEL.md). The platform that most needs the
+  strongest tier is the one least likely to have it.
+
+## Cross-architecture run — 2026-08-06
+
+Three boxes, chosen so `RLIMIT_MEMLOCK` and architecture vary independently
+rather than together. Correctness only; no benchmark numbers were taken (see
+[TESTING.md](TESTING.md) for why they would not have been meaningful here).
+
+| Box | Arch · kernel | `RLIMIT_MEMLOCK` | secretmem | Suite | `-race` |
+|---|---|---|---|---|---|
+| Jetson Orin Nano (Tegra 234, Cortex-A78AE) | arm64 · 6.8.12-1021-tegra | 943 MiB | **fallback** (see above) | PASS | PASS |
+| Libre Renegade (RK3328, Cortex-A53) | arm64 · 6.18.35-rockchip64 | 8 MiB | live | PASS | not run (git server; kept idle) |
+| Hyper-V guest, Ubuntu 26.04 | amd64 · 7.0.0-1010-azure | 8 MiB | live | PASS | PASS |
+
+What the design isolates, stated as the comparison it came from:
+
+- **Same arch, 118× different limit** (Renegade vs Jetson): 2048 buffers vs
+  >3000 and still going. The buffer ceiling is not architectural.
+- **Same limit, different arch** (Renegade vs the amd64 guest): byte-identical
+  results — 2048 buffers, `ENOMEM`, full budget returned.
+- **Limit as a controlled variable within one box** (Jetson, lowered
+  in-process): 8 MiB → exactly 2048, 1 MiB → exactly 256, same hardware and
+  binary. Stronger than either cross-box pair, since nothing else moves.
+
+The ceiling is exactly `RLIMIT_MEMLOCK / pagesize`, with no other term, and it
+holds across both allocation tiers — the Jetson reaches it through mmap+mlock,
+the Renegade through memfd_secret. Behaviour at the ceiling was clean on all
+three: a real `ENOMEM` from `mlock`, no panic, `VmLck` rising by exactly one
+page per buffer (so no silent fallback to unlocked pages), nothing left
+half-locked by the failing allocation, and the entire budget returned to the
+baseline after `Destroy`.
+
+Kernel-recorded VMA flags were checked against `Capabilities` on all three
+rather than trusting that `madvise` returned 0: `lo` (VM_LOCKED), `dd`
+(VM_DONTDUMP) and `dc` (VM_DONTCOPY) were present and matched every claim, on
+both the memfd and the anonymous constructor. `MADV_DONTFORK` is confirmed to
+take effect on a **secretmem** VMA on 6.18.35/arm64 and 7.0.0/amd64.
+
+Cache geometry, which the wipe's 64-byte flush stride depends on: every data
+and unified cache level reported a 64-byte line on all three boxes
+(Cortex-A78AE, Cortex-A53, x86_64). That assumption is now asserted by
+[wipe_cacheline_linux_test.go](wipe_cacheline_linux_test.go) rather than
+carried silently.
+
 ## Out-of-process extraction battery
 
 Executed pre-release on amd64 (kernel `7.0.0-1009-azure`) and arm64

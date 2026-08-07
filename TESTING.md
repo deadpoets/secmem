@@ -112,3 +112,59 @@ stand-in rather than measured directly.
   `golang.org/x/crypto/argon2` does not expose, so it cannot be reproduced
   through this API; the pinned value is the parameter profile shared by the
   reference CLI and the mainstream bindings.
+
+## Benchmarks: what they are for, and how to report them
+
+secmem's benchmarks are not a performance claim and are not a comparison
+against other libraries. They exist for one purpose: **to show that the
+hardened path is cheap enough that nobody is tempted to route around it.** A
+secure-memory API that is slow in the hot path gets bypassed "just for this
+one case", and the bypass is the vulnerability. So the number that matters is
+never the absolute ns/op — it is the *cost of the guarantee* relative to the
+unhardened thing a caller would otherwise write.
+
+### The cost model the benchmarks are shaped around
+
+Three regimes, and they differ by orders of magnitude:
+
+| Regime | Bound by | Benchmarks |
+|---|---|---|
+| Allocation / teardown | syscalls — `mmap`, `mprotect`, `mlock`, 4× `madvise`, `munlock`, `munmap` | `BenchmarkNewBuffer`, `BenchmarkNewEmptyBuffer`, `BenchmarkNewDestroy`, `BenchmarkScope` |
+| Wipe | memory bandwidth, plus the cache-flush loop | `BenchmarkSecureWipeSlice`, `BenchmarkSecureWipe_4K`, `BenchmarkSecureWipe_64K` |
+| Borrow / access | one uncontended lock | `BenchmarkWithBytesErr`, `BenchmarkByteAt`, `BenchmarkCopyOut`, `BenchmarkBufferRWLock_*` |
+
+The design guidance falls straight out of that ordering: **allocate once,
+borrow often.** A caller who allocates per operation pays syscall cost per
+operation; that is what `SecureArena` exists to amortize
+(`BenchmarkArenaAcquireRelease`), and why its free list is O(1).
+
+`secmem-crypto`'s signer benchmarks are deliberately paired with a stdlib
+counterpart (`BenchmarkECDSASignerSignP256` next to
+`BenchmarkECDSAStdlibSignP256`, and the same for RSA) because the delta *is*
+the finding: it prices the per-signature re-parse that keeps the key off the
+heap between operations. Report the pair, never the hardened number alone.
+
+### Reporting rules
+
+1. **A number without its machine is noise.** Always record CPU, kernel, and —
+   critically — the CPU frequency governor and thermal state. `benchstat` over
+   `-count=10` or more, not a single run.
+2. **Never compare across machines.** Nothing in this repo's benchmark output
+   is meaningful as a cross-box comparison, and the boxes the correctness
+   suite runs on have deliberately different clock policies.
+3. **Pin the clocks, or say you did not.** On DVFS-aggressive parts an
+   unpinned run measures the governor, not the code.
+4. **State the memlock budget.** Allocation benchmarks that exceed
+   `RLIMIT_MEMLOCK` measure the failure path instead. `BenchmarkArenaAcquireRelease`
+   raises it via `EnsureMemlockLimit` and skips per size when refused, which is
+   the pattern to copy rather than a `b.Fatalf`.
+
+### Not yet collected
+
+**No arm64 benchmark numbers are recorded.** The arm64 hardware available for
+this work is a Jetson Orin Nano whose clocks must be pinned for any number to
+mean anything, and pinning them requires coordinating exclusive use of a box
+that is another project's measurement instrument. Correctness ran there and is
+recorded in [KERNELS.md](KERNELS.md); performance did not, and an unpinned
+figure is worse than no figure because it looks authoritative. This section is
+the placeholder, deliberately empty of numbers, until a pinned run happens.
