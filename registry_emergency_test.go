@@ -160,3 +160,94 @@ func TestTryLock_FailsWhileHeld(t *testing.T) {
 	}
 	l.unlock()
 }
+
+// TestWipeAllSecrets_ConcurrentDestroyStillReclaimsMapping pins the ordering
+// inside the blocking wipe pass. That pass must not remove a region from the
+// registry before it holds the region's lock: a Destroy already queued on that
+// same lock would reach janitor.release with the key in NEITHER map, report
+// success, and never unmap — and the retainWiped landing afterwards would
+// strand the mapping in the wiped set, which nothing collects. The result is a
+// permanently leaked (and still mlock'd) mapping, from the very API pair
+// WipeAllSecrets documents as safe to use concurrently.
+//
+// The interleaving is forced rather than raced: a parked reader keeps both
+// operations queued on the lock, and Destroy is queued FIRST so it wins the
+// wakeup and reaches release() while the wipe pass is mid-flight.
+func TestWipeAllSecrets_ConcurrentDestroyStillReclaimsMapping(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 4096))
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	key := buf.janitorKey
+
+	// Park a reader so the non-blocking first pass cannot take this region and
+	// has to defer it to the blocking pass.
+	inCallback := make(chan struct{})
+	releaseCallback := make(chan struct{})
+	borrowDone := make(chan struct{})
+	go func() {
+		defer close(borrowDone)
+		_ = buf.WithBytes(func([]byte) {
+			close(inCallback)
+			<-releaseCallback
+		})
+	}()
+	<-inCallback
+
+	// Queue Destroy on the exclusive lock first, so it is ahead of the wipe.
+	destroyDone := make(chan error, 1)
+	go func() { destroyDone <- buf.Destroy() }()
+	waitForWritersWaiting(t, buf.mu, 1)
+
+	// Now the emergency wipe: its blocking pass queues behind Destroy.
+	wipeDone := make(chan error, 1)
+	go func() { wipeDone <- WipeAllSecrets() }()
+	waitForWritersWaiting(t, buf.mu, 2)
+
+	close(releaseCallback)
+	<-borrowDone
+	if err := <-destroyDone; err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	if err := <-wipeDone; err != nil {
+		t.Fatalf("WipeAllSecrets: %v", err)
+	}
+
+	if !buf.IsDestroyed() {
+		t.Fatal("IsDestroyed() = false after Destroy")
+	}
+	emergencyJanitor.mu.Lock()
+	_, stranded := emergencyJanitor.wiped[key]
+	_, stillLive := emergencyJanitor.regions[key]
+	emergencyJanitor.mu.Unlock()
+	if stranded {
+		t.Errorf("region %#x left in janitor.wiped after an explicit Destroy — "+
+			"the mapping is never unmapped and the janitor holds it until process exit", key)
+	}
+	if stillLive {
+		t.Errorf("region %#x left in janitor.regions after an explicit Destroy", key)
+	}
+}
+
+// waitForWritersWaiting blocks until at least want writers are queued on l,
+// so a test can pin the ORDER two operations enter the lock rather than race
+// them and hope.
+func waitForWritersWaiting(t *testing.T, l *bufferRWLock, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		l.mu.Lock()
+		n := l.writersWaiting
+		l.mu.Unlock()
+		if n >= want {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for %d queued writers (got %d)", want, n)
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

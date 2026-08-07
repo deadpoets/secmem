@@ -215,12 +215,29 @@ func (j *janitor) release(key uintptr, lockHeld bool) error {
 // This blocks until the region's exclusive lock is free — i.e. until any
 // in-flight borrowing callback returns. Callers that must not stall behind a
 // slow borrow should try tryWipeInPlace first.
+//
+// The lock is taken BEFORE the region leaves the registry, and held across the
+// retainWiped that puts it back. Taking it first would open a window in which
+// the region is in neither map: a Destroy already queued on this same lock
+// would then find nothing to free, report success, and never unmap — and the
+// retainWiped landing afterwards would strand the mapping in the wiped set,
+// where nothing collects it. Same ordering as tryWipeInPlace, same reason.
 func (j *janitor) wipeInPlace(key uintptr) error {
+	peeked, ok := j.peek(key)
+	if !ok {
+		return nil
+	}
+	peeked.mu.lock()
+	defer peeked.mu.unlock()
+
+	// Re-take under our own exclusive lock: Destroy or the GC cleanup may have
+	// completed the whole teardown while we waited, in which case there is
+	// nothing left to wipe.
 	region, ok := j.take(key)
 	if !ok {
 		return nil
 	}
-	err := wipeAndFree(region, false, false)
+	err := wipeAndFree(region, true, false)
 	j.retainWiped(key, region)
 	return err
 }
