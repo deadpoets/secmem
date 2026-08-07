@@ -31,6 +31,15 @@ type janitorRegion struct {
 	// canary check while set — the wipe itself proceeds unconditionally.
 	// Shared with the owning SecureBuffer; nil for arenas (no Seal).
 	sealCipher *atomic.Bool
+
+	// wiped is set by the emergency path when the region has been wiped in
+	// place and left mapped. It is shared with the owning SecureBuffer or
+	// SecureArena, which is the whole point: the janitor deliberately holds no
+	// owner pointer, so this flag is the only channel by which the owner can
+	// learn its secret is gone and refuse to be reused. Reads still succeed
+	// (they return the zeros), which keeps the documented "a late access reads
+	// zeros rather than faulting" guarantee; every mutation returns ErrWiped.
+	wiped *atomic.Bool
 }
 
 // janitor tracks live secret mappings so they can be wiped in place: on
@@ -78,10 +87,16 @@ func regionKey(region secRegion) uintptr {
 // register records one live secret mapping and returns its janitor key.
 // canaryZones may be nil when the allocation has no armed slack; sealCipher
 // may be nil when the owner has no seal-cipher state (arenas).
-func (j *janitor) register(region secRegion, canaryZones [][2]int, mu *bufferRWLock, sealCipher *atomic.Bool) uintptr {
+func (j *janitor) register(region secRegion, canaryZones [][2]int, mu *bufferRWLock, sealCipher, wiped *atomic.Bool) uintptr {
 	key := regionKey(region)
 	j.mu.Lock()
-	j.regions[key] = janitorRegion{region: region, mu: mu, canaryZones: canaryZones, sealCipher: sealCipher}
+	j.regions[key] = janitorRegion{
+		region:      region,
+		mu:          mu,
+		canaryZones: canaryZones,
+		sealCipher:  sealCipher,
+		wiped:       wiped,
+	}
 	j.mu.Unlock()
 	return key
 }
@@ -234,6 +249,20 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	return errors.Join(canaryErr, freeSecretMem(region.region))
 }
 
+// markWiped tells the owning SecureBuffer/SecureArena that its secret is gone,
+// so every mutating entry point starts refusing with ErrWiped. Called only on
+// the emergency path, and only with the region's exclusive lock held, so it
+// cannot land while an accessor is mid-flight.
+//
+// The explicit Destroy and GC-cleanup paths do NOT call it: they unmap the
+// region and nil the owner's own state, which already makes the object refuse
+// with ErrDestroyed.
+func markWiped(region janitorRegion) {
+	if region.wiped != nil {
+		region.wiped.Store(true)
+	}
+}
+
 // release wipes and frees the region for key exactly once. Safe to race with
 // Destroy and AddCleanup: the first taker wins, others observe "already gone".
 //
@@ -285,6 +314,7 @@ func (j *janitor) wipeInPlace(key uintptr) error {
 		return nil
 	}
 	err := wipeAndFree(region, true, false)
+	markWiped(region)
 	j.retainWiped(key, region)
 	return err
 }
@@ -311,6 +341,7 @@ func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
 		return true, nil
 	}
 	err = wipeAndFree(region, true, false)
+	markWiped(region)
 	j.retainWiped(key, region)
 	return true, err
 }
@@ -380,12 +411,20 @@ func (j *janitor) wipeAllInPlace() error {
 //     the wrapper is unreachable) does complete the unmap — by then the caller
 //     has stated it is done with the buffer, so the mapping is reclaimed rather
 //     than held until exit.
-//   - After this call every affected buffer's secret is gone. Treat it as a
-//     one-way emergency wipe, not a reusable clear: the wrapper objects are NOT
-//     marked destroyed, so a process that keeps running (a panic-recovery
-//     handler, say) can still write to them. Anything written afterwards is a
-//     new live secret and is wiped by the NEXT WipeAllSecrets like any other —
-//     but it was never covered by this one.
+//
+//   - After this call every affected buffer is dead: its secret is gone and it
+//     cannot be reused. Reads still succeed and return zeros — the region is
+//     deliberately left mapped so a late access does not fault — but every
+//     mutating method returns [ErrWiped] (which wraps [ErrDestroyed]), and
+//     [SecureArena.Acquire] refuses. This is a one-way emergency wipe, not a
+//     reusable clear.
+//
+//     One gap, stated rather than papered over: an [ArenaSlot] acquired BEFORE
+//     the wipe still hands out a writable slice, because WithBytes returns one
+//     slice for reading and writing and reads have to keep working. A later
+//     WipeAllSecrets does catch anything written that way — the sweep covers
+//     regions already wiped once, precisely for this case.
+//
 //   - Safe to call concurrently with Destroy and from multiple goroutines; each
 //     region is wiped exactly once.
 //

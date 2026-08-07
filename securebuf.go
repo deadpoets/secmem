@@ -86,6 +86,14 @@ type SecureBuffer struct {
 	// the janitor's wipe paths on another goroutine. Shared with janitorRegion.
 	sealCipher *atomic.Bool
 
+	// wiped is set by WipeAllSecrets when this buffer's region was wiped in
+	// place and deliberately left mapped. Shared with janitorRegion, which is
+	// how the emergency path reaches a buffer it holds no pointer to. Reads
+	// still work and return the zeros; every mutator refuses with ErrWiped, so
+	// a process that keeps running after an emergency wipe cannot write a fresh
+	// secret into a region the wipe already reported as handled.
+	wiped *atomic.Bool
+
 	// backing records which protections this allocation actually received.
 	// Immutable after construction; read by Capabilities without the lock.
 	backing allocInfo
@@ -184,6 +192,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 		mu:         newBufferRWLock(),
 		backing:    backing,
 		sealCipher: new(atomic.Bool),
+		wiped:      new(atomic.Bool),
 	}
 
 	// The canary zone is the slack between the caller's size and the page
@@ -196,7 +205,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 
 	// Register with the emergency janitor first. The janitor stores raw mapping
 	// metadata (not *SecureBuffer), so this does not keep sb reachable for GC.
-	sb.janitorKey = emergencyJanitor.register(region, zones, sb.mu, sb.sealCipher)
+	sb.janitorKey = emergencyJanitor.register(region, zones, sb.mu, sb.sealCipher, sb.wiped)
 
 	// Safety-net cleanup: if the caller forgets Destroy(), this wipes and frees
 	// the mmap'd region when the *SecureBuffer is GC'd.
@@ -347,6 +356,9 @@ func (s *SecureBuffer) ReadOnly() error {
 	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrDestroyed)
 	}
+	if s.wiped.Load() {
+		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrWiped)
+	}
 	if s.sealed {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrSealed)
 	}
@@ -370,6 +382,9 @@ func (s *SecureBuffer) ReadWrite() error {
 	defer s.mu.unlock()
 	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrDestroyed)
+	}
+	if s.wiped.Load() {
+		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrWiped)
 	}
 	if s.sealed {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrSealed)
@@ -416,6 +431,9 @@ func (s *SecureBuffer) Seal() error {
 	defer s.mu.unlock()
 	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", ErrDestroyed)
+	}
+	if s.wiped.Load() {
+		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", ErrWiped)
 	}
 	if s.sealed {
 		return nil // idempotent
@@ -482,6 +500,9 @@ func (s *SecureBuffer) Unseal() error {
 	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", ErrDestroyed)
 	}
+	if s.wiped.Load() {
+		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", ErrWiped)
+	}
 	if !s.sealed {
 		return nil // idempotent
 	}
@@ -534,6 +555,9 @@ func (s *SecureBuffer) Truncate(n int) error {
 	defer s.mu.unlock()
 	if s.region.inner == nil {
 		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrDestroyed)
+	}
+	if s.wiped.Load() {
+		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrWiped)
 	}
 	if s.sealed {
 		// The region is PROT_NONE while sealed; wiping the freed tail would

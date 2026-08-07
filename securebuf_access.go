@@ -165,6 +165,9 @@ func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 	if s.data == nil {
 		return 0, ErrDestroyed
 	}
+	if s.wiped.Load() {
+		return 0, ErrWiped
+	}
 	if s.sealed {
 		return 0, ErrSealed
 	}
@@ -214,6 +217,9 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	defer s.mu.unlock()
 	if s.data == nil {
 		return ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return ErrWiped
 	}
 	if s.sealed {
 		return ErrSealed
@@ -300,6 +306,10 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 		s.mu.rUnlock()
 		return 0, ErrDestroyed
 	}
+	if s.wiped.Load() {
+		s.mu.rUnlock()
+		return 0, ErrWiped
+	}
 	if s.sealed {
 		s.mu.rUnlock()
 		return 0, ErrSealed
@@ -332,6 +342,10 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	if s.data == nil {
 		s.mu.unlock()
 		return 0, ErrDestroyed
+	}
+	if s.wiped.Load() {
+		s.mu.unlock()
+		return 0, ErrWiped
 	}
 	if s.sealed {
 		s.mu.unlock()

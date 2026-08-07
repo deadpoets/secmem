@@ -2,6 +2,7 @@ package secmem
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 	"time"
 )
@@ -252,15 +253,14 @@ func waitForWritersWaiting(t *testing.T, l *bufferRWLock, want int) {
 	}
 }
 
-// TestWipeAllSecrets_RewipesRegionsLeftMapped covers the second emergency wipe.
-// The first one deliberately leaves the region MAPPED and moves it to the wiped
-// set — but it does not mark the owner dead, so the buffer stays writable and a
-// process that keeps running (a panic-recovery handler is a documented call
-// site) can put a fresh secret in it. If the sweep only iterated janitor.regions
-// that secret would be registered nowhere: every later WipeAllSecrets would
-// report success while the plaintext sat untouched in locked memory, waiting for
-// a core dump.
-func TestWipeAllSecrets_RewipesRegionsLeftMapped(t *testing.T) {
+// TestWipeAllSecrets_MarksOwnerDead pins the deadness contract. The emergency
+// path wipes in place and deliberately leaves the region MAPPED so a late read
+// gets zeros instead of a fault — but that same decision used to leave the
+// buffer fully writable, so a process still running (a panic-recovery handler
+// is a documented call site) could put a FRESH secret into a region the wipe
+// had already reported as handled. Reads must keep working; every mutation must
+// now refuse.
+func TestWipeAllSecrets_MarksOwnerDead(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
 	}
@@ -271,31 +271,43 @@ func TestWipeAllSecrets_RewipesRegionsLeftMapped(t *testing.T) {
 	defer func() { _ = buf.Destroy() }()
 
 	if err := WipeAllSecrets(); err != nil {
-		t.Fatalf("first WipeAllSecrets: %v", err)
+		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
-	// The buffer is still usable — that is the documented post-wipe state.
-	later := bytes.Repeat([]byte{0xC3}, 40)
-	if _, err := buf.CopyIn(later, 0); err != nil {
-		t.Fatalf("CopyIn after the emergency wipe: %v", err)
-	}
-
-	if err := WipeAllSecrets(); err != nil {
-		t.Fatalf("second WipeAllSecrets: %v", err)
-	}
+	// Reads still work and see zeros — the documented no-fault guarantee.
 	if err := buf.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("a secret written after the first WipeAllSecrets survived the second one: %x", b)
+			t.Errorf("read after emergency wipe returned non-zero bytes: %x", b)
 		}
 	}); err != nil {
-		t.Fatalf("WithBytes after the second wipe: %v", err)
+		t.Errorf("WithBytes after emergency wipe = %v, want nil (reads must not fault or fail)", err)
+	}
+
+	// Every mutation refuses, and does so as both ErrWiped and ErrDestroyed so
+	// existing errors.Is(err, ErrDestroyed) callers keep working.
+	mutations := map[string]error{
+		"CopyIn":    errOf(func() error { _, e := buf.CopyIn([]byte{1}, 0); return e }),
+		"SetByteAt": buf.SetByteAt(0, 1),
+		"Truncate":  buf.Truncate(1),
+		"ReadFrom":  errOf(func() error { _, e := buf.ReadFrom(bytes.NewReader([]byte{1})); return e }),
+		"Seal":      buf.Seal(),
+		"Unseal":    buf.Unseal(),
+		"ReadOnly":  buf.ReadOnly(),
+		"ReadWrite": buf.ReadWrite(),
+	}
+	for name, err := range mutations {
+		if !errors.Is(err, ErrWiped) {
+			t.Errorf("%s after emergency wipe = %v, want ErrWiped", name, err)
+		}
+		if !errors.Is(err, ErrDestroyed) {
+			t.Errorf("%s error does not satisfy errors.Is(err, ErrDestroyed): %v", name, err)
+		}
 	}
 }
 
-// TestWipeAllSecrets_RewipesArenaSlotsWrittenAfterward is the arena half of
-// TestWipeAllSecrets_RewipesRegionsLeftMapped: Acquire keeps working after an
-// emergency wipe, so slots handed out afterwards must still be covered.
-func TestWipeAllSecrets_RewipesArenaSlotsWrittenAfterward(t *testing.T) {
+// TestWipeAllSecrets_ArenaRefusesAcquire is the arena half: Acquire would hand
+// out a slot to write a new secret into, so it refuses once the slab is wiped.
+func TestWipeAllSecrets_ArenaRefusesAcquire(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
 	}
@@ -306,23 +318,51 @@ func TestWipeAllSecrets_RewipesArenaSlotsWrittenAfterward(t *testing.T) {
 	defer func() { _ = a.Destroy() }()
 
 	if err := WipeAllSecrets(); err != nil {
-		t.Fatalf("first WipeAllSecrets: %v", err)
+		t.Fatalf("WipeAllSecrets: %v", err)
 	}
+	if _, err := a.Acquire(); !errors.Is(err, ErrWiped) {
+		t.Errorf("Acquire after emergency wipe = %v, want ErrWiped", err)
+	}
+}
+
+// TestWipeAllSecrets_RewipesSlotWrittenThroughLiveHandle covers the one path
+// deadness does NOT close, which is why the emergency sweep still visits the
+// already-wiped set.
+//
+// ArenaSlot.WithBytes hands out a single slice used for both reading and
+// writing; there is no way to permit the read and refuse the write, and reads
+// must keep working. So a caller holding a slot acquired BEFORE the wipe can
+// still write through it afterwards. Acquire refuses, which stops new slots,
+// but this handle is already out. The second wipe has to catch it — and it only
+// can because wipeAllInPlace sweeps janitor.wiped as well as janitor.regions.
+func TestWipeAllSecrets_RewipesSlotWrittenThroughLiveHandle(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	a, err := NewArena(32, 4)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
-		t.Fatalf("Acquire after the emergency wipe: %v", err)
+		t.Fatalf("Acquire: %v", err)
 	}
-	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
-		t.Fatalf("WithBytes after the emergency wipe: %v", err)
+	if err := WipeAllSecrets(); err != nil {
+		t.Fatalf("first WipeAllSecrets: %v", err)
 	}
 
+	// The handle predates the wipe, so it still writes.
+	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
+		t.Fatalf("WithBytes through a pre-wipe handle: %v", err)
+	}
 	if err := WipeAllSecrets(); err != nil {
 		t.Fatalf("second WipeAllSecrets: %v", err)
 	}
 	if err := slot.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("a slot written after the first WipeAllSecrets survived the second one: %x", b)
+			t.Errorf("bytes written through a live handle after the first wipe survived the second: %x", b)
 		}
 	}); err != nil {
 		t.Fatalf("WithBytes after the second wipe: %v", err)
@@ -330,15 +370,14 @@ func TestWipeAllSecrets_RewipesArenaSlotsWrittenAfterward(t *testing.T) {
 }
 
 // TestWipeAllSecrets_ClearsSealCipherFlag pins the seal-cipher bookkeeping. The
-// flag is shared with the owning SecureBuffer and says "these bytes are
-// CryptProtectMemory ciphertext". The emergency wipe replaces them with zeros,
-// so leaving it set would make the next Unseal decrypt wiped memory and hand
-// back the resulting pseudorandom garbage as if it were the secret — silently,
-// with a nil error, to a signer that would then sign under it.
+// flag is shared with the owning SecureBuffer and means "these bytes are
+// CryptProtectMemory ciphertext". The wipe replaces them with zeros, so leaving
+// it set would make Destroy's pre-decrypt step run CryptUnprotectMemory over
+// wiped memory. (Unseal is now refused outright, but Destroy still consults the
+// flag, so clearing it remains load-bearing.)
 //
-// The flag is only ever set on Windows (sealEncrypt is a no-op elsewhere), but
-// the postcondition asserted here — a wiped buffer reads as zeros through a
-// full seal cycle — has to hold on every platform.
+// The flag is only ever set on Windows — sealEncrypt is a no-op elsewhere — but
+// the postcondition holds on every platform.
 func TestWipeAllSecrets_ClearsSealCipherFlag(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
@@ -347,8 +386,6 @@ func TestWipeAllSecrets_ClearsSealCipherFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	defer func() { _ = buf.Destroy() }()
-
 	if err := buf.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
@@ -358,15 +395,11 @@ func TestWipeAllSecrets_ClearsSealCipherFlag(t *testing.T) {
 	if buf.sealCipher.Load() {
 		t.Error("sealCipher still set after the wipe replaced the ciphertext with zeros")
 	}
-
-	if err := buf.Unseal(); err != nil {
-		t.Fatalf("Unseal after the emergency wipe: %v", err)
-	}
-	if err := buf.WithBytes(func(b []byte) {
-		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("Unseal on a wiped buffer produced non-zero bytes and reported success: %x", b)
-		}
-	}); err != nil {
-		t.Fatalf("WithBytes after Unseal: %v", err)
+	if err := buf.Destroy(); err != nil {
+		t.Errorf("Destroy after an emergency-wiped seal cycle: %v", err)
 	}
 }
+
+// errOf adapts a (T, error) call to the error alone, so the mutation table above
+// reads uniformly.
+func errOf(fn func() error) error { return fn() }

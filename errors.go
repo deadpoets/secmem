@@ -1,10 +1,25 @@
 package secmem
 
-import "errors"
+import (
+	"errors"
+	"fmt"
+)
 
 // ErrDestroyed is returned by SecureBuffer methods after the buffer has been
 // destroyed. It is the canonical sentinel for the destroyed/wiped state.
 var ErrDestroyed = errors.New("secmem: secure buffer has been destroyed")
+
+// ErrWiped is returned by every mutating method after [WipeAllSecrets] has
+// emergency-wiped the object. The secret is gone and the object is dead: it is
+// deliberately NOT unmapped (a late read returns zeros rather than faulting),
+// but it must not be reused, because anything written afterwards would be a new
+// live secret that the emergency wipe already reported as handled.
+//
+// It wraps [ErrDestroyed], so existing errors.Is(err, ErrDestroyed) checks keep
+// working; test for ErrWiped only when you need to tell "the process
+// emergency-wiped this" apart from "the owner destroyed this".
+var ErrWiped = fmt.Errorf(
+	"secmem: buffer was emergency-wiped by WipeAllSecrets and cannot be reused: %w", ErrDestroyed)
 
 // ErrSealed is returned by SecureBuffer access methods when the buffer is in
 // the sealed (PROT_NONE) state. Call [SecureBuffer.Unseal] before accessing.

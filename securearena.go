@@ -55,6 +55,7 @@ import (
 	"math"
 	"runtime"
 	"sync"
+	"sync/atomic"
 )
 
 // slotMeta holds per-slot metadata.
@@ -174,6 +175,14 @@ type SecureArena struct {
 	// rejection of Acquire without acquiring mu.
 	destroyed bool
 
+	// wiped is set by WipeAllSecrets when the slab was wiped in place and
+	// deliberately left mapped. Shared with janitorRegion — the emergency path
+	// holds no *SecureArena, so this flag is how it reaches one. Acquire then
+	// refuses with ErrWiped: handing out a slot would put a fresh secret in a
+	// slab the emergency wipe already reported as handled. Existing slots stay
+	// readable (they hold zeros), preserving the no-fault guarantee.
+	wiped *atomic.Bool
+
 	// cleanup is the AddCleanup handle.  Stopped by Destroy.
 	cleanup runtime.Cleanup
 
@@ -256,6 +265,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 
 	a := &SecureArena{
 		mu:       newBufferRWLock(),
+		wiped:    new(atomic.Bool),
 		region:   region,
 		slots:    make([]slotMeta, count),
 		free:     free,
@@ -267,7 +277,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 
 	// Register the slab with emergency janitor using raw metadata only.
 	// Arenas have no Seal, hence no seal-cipher state.
-	a.janitorKey = emergencyJanitor.register(region, zones, a.mu, nil)
+	a.janitorKey = emergencyJanitor.register(region, zones, a.mu, nil, a.wiped)
 
 	// Safety-net cleanup: wipe and free the slab if Destroy was forgotten.
 	// Only the slab size is captured (not a reference to a) so that the
@@ -372,6 +382,9 @@ func (a *SecureArena) Acquire() (*ArenaSlot, error) {
 
 	if a.destroyed {
 		return nil, ErrArenaDestroyed
+	}
+	if a.wiped.Load() {
+		return nil, ErrWiped
 	}
 
 	n := len(a.free)
