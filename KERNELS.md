@@ -169,6 +169,24 @@ and unified cache level reported a 64-byte line on all three boxes
 [wipe_cacheline_linux_test.go](wipe_cacheline_linux_test.go) rather than
 carried silently.
 
+The same three boxes are where the `Scrub` window's two new layers were
+executed. Reported posture, verbatim from `Probe().String()`:
+
+| Box | `Capabilities` |
+|---|---|
+| Jetson Orin Nano · arm64 | `[off-heap mlock no-dump no-fork wipe+flush frame-scrub preempt-suppress guard-pages] missing:[memfd_secret register-scrub]` |
+| Libre Renegade · arm64 | `[off-heap mlock memfd_secret no-dump no-fork wipe+flush frame-scrub preempt-suppress guard-pages] missing:[register-scrub]` |
+| Hyper-V guest · amd64 | `[off-heap mlock memfd_secret no-dump no-fork wipe+flush frame-scrub preempt-suppress guard-pages] missing:[register-scrub]` |
+
+`frame-scrub` is new on arm64: the stack-frame wipe was real assembly on amd64
+and a **no-op stub** on arm64 until this run, so every arm64 build without
+`GOEXPERIMENT=runtimesecret` reserved no headroom and erased no residue while
+reporting a `Scrub`. Both arm64 rows above execute the new
+[scrubframe_arm64.s](scrubframe_arm64.s) and its dead-stack proof — on an
+in-order Cortex-A53 and an out-of-order Cortex-A78AE. `preempt-suppress` is the
+SIGURG/SIGPROF block, checked against the kernel's own `SigBlk` for the calling
+thread on all three.
+
 ## Out-of-process extraction battery
 
 Executed pre-release on amd64 (kernel `7.0.0-1009-azure`) and arm64

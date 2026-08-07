@@ -68,6 +68,11 @@ type Capabilities struct {
 	// this architecture (amd64, arm64) rather than the no-op stub. When false,
 	// Scrub reserves no headroom and erases no stack residue; only the
 	// runtime/secret path (see RegisterScrub) covers the stack at all.
+	//
+	// When RegisterScrub is also true the frame burn is not what runs —
+	// runtime/secret supersedes it and covers the stack more thoroughly — so
+	// read this as architecture support for the fallback path, not as a claim
+	// about which routine executed.
 	FrameScrub bool
 
 	// AsyncPreemptSuppressed reports that [Scrub] blocks Go's preemption signal

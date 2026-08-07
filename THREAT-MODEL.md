@@ -87,6 +87,97 @@ are.
   the collector observes them unreachable — best-effort timing, never a
   synchronous guarantee. Do not cite it as a compliance control.
 
+## Stack residue: what `Scrub` reaches, and what it does not
+
+A `SecureBuffer` governs where a secret *lives*. It says nothing about the
+copies a computation makes of it — register spills, round keys, scalar
+temporaries — which land on the goroutine stack. `Scrub` exists for that band.
+It is the part of the library most easily over-read, so its exact reach is set
+out here rather than left to the godoc.
+
+### Why the stack specifically
+
+Go's garbage collector is **non-moving for heap objects**: a `[]byte` on the
+heap keeps one address for its whole life, so there is no hidden second copy of
+it to hunt down. The goroutine *stack* is the exception — the runtime copies it
+at moments your code does not choose:
+
+- **Growth.** A goroutine starts on 8 KiB. When a call needs more, `morestack`
+  allocates a larger stack, copies the old one into it, and frees the old
+  segment. Whatever was on that segment stays there, unwiped, until the runtime
+  reuses the memory for something else.
+- **Shrinking.** While scanning a goroutine, the collector may move it to a
+  smaller stack (`shrinkstack`) — another copy, another abandoned segment.
+- **Asynchronous preemption.** The runtime sends the thread SIGURG, and the
+  handler, `runtime.asyncPreempt`, saves *all user registers* onto that
+  goroutine's stack before entering the scheduler. That is the entire register
+  file, general-purpose and vector, spilled at an instruction boundary nothing
+  chose. One landing mid-cipher-round writes live key material to the stack at
+  an offset nothing tracks.
+
+### What Scrub does about it
+
+On entry it calls a 32 KiB assembly frame wipe, and defers a second call to the
+same routine. The entry call is not redundant: it forces any stack growth to
+happen *before* `fn` writes a secret, so the deferred wipe is guaranteed to run
+on the stack the residue is actually on rather than on a fresh copy of it.
+Reported as `Capabilities.FrameScrub` — real assembly on amd64 and arm64, a
+no-op stub elsewhere.
+
+On Linux the window additionally blocks SIGURG and SIGPROF for its duration,
+under `runtime.LockOSThread` (a signal mask is a per-thread property, and an
+unpinned goroutine can migrate to a thread where the mask was never set). That
+removes the asynchronous register dump rather than trying to erase it after the
+fact. Reported as `Capabilities.AsyncPreemptSuppressed`.
+
+Blocking the preemption signal does **not** stall the collector: `suspendG` sets
+the cooperative request (`gp.preempt`, `gp.stackguard0 = stackPreempt`) *before*
+it signals, so any ordinary function call inside the window still yields. The
+one shape that would hang is an unbounded loop containing no function calls at
+all. Keep `fn` short and call-bearing, which the borrowing contract already asks
+of it.
+
+### What remains, and which parts are constraints rather than defects
+
+Bounded by design, and tunable in principle:
+
+- **A call tree deeper than the 32 KiB band** — the tail below it survives.
+- **A stack relocation triggered *inside* `fn`**, if `fn` exceeds the reserved
+  headroom; the deferred wipe then cleans the new stack, not the abandoned one.
+
+Constraints of the Go runtime, not defects in this library:
+
+- **A GC stack-shrink between `fn`'s return and the deferred wipe.**
+  `shrinkstack` is asynchronous, runtime-owned, and unreachable from Go; if it
+  frees `fn`'s segment first, the wipe runs on the copy. Only the
+  `runtime/secret` path (`Capabilities.RegisterScrub`, i.e.
+  `GOEXPERIMENT=runtimesecret`) closes this, because it has runtime cooperation.
+- **Cooperative preemption is unaffected.** A long window can still be
+  descheduled at a call boundary and have its stack scanned, and possibly
+  copied. Suppressing the signal removes the arbitrary-instruction register
+  dump, not every stack copy.
+- **The registers themselves at `Scrub`'s return.** A Go-level "clear the
+  registers" step cannot be trusted, because the ABI reloads registers around
+  the very call that would do the clearing. An unverifiable scrub is worse than
+  none, so the legacy path does not pretend to one; `runtime/secret` does it
+  properly, with the runtime's cooperation.
+
+Constraints of the OS:
+
+- **A synchronous fault inside the window.** A SIGSEGV or SIGBUS makes the
+  kernel write a full `ucontext` — the complete register set — to the signal
+  stack. This is identical in C and is not addressable from userspace.
+- **Windows cannot suppress preemption at all.** It does not deliver a signal;
+  it calls `SuspendThread` and rewrites the thread context with
+  `SetThreadContext`. Nothing in userspace masks that.
+
+A deliberate omission, stated as one rather than dressed up as a platform limit:
+
+- **Darwin has `pthread_sigmask`, but `golang.org/x/sys/unix` exposes no
+  binding for it.** Reaching past that to a raw syscall would assert a security
+  property on a platform this project has no execution coverage for. It stays
+  unsupported, and `Capabilities` reports it as unsupported.
+
 ## Platform-specific limits
 
 - **`MADV_DONTDUMP` / `MADV_DONTFORK` are best-effort on Linux.** A kernel that

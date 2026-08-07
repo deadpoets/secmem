@@ -45,6 +45,17 @@
 //   - Guaranteed wipe. On destroy the pages are overwritten by an
 //     architecture-specific assembly routine that the compiler cannot elide.
 //
+//   - Scrub windows. A SecureBuffer governs where a secret lives, not the copies
+//     a computation makes of it on the stack. Scrub burns the stack band its
+//     callback's call tree used, via architecture assembly (amd64, arm64), and
+//     on Linux additionally blocks Go's preemption signal for the duration so
+//     runtime.asyncPreempt cannot spill the entire register file onto that stack
+//     partway through. Under GOEXPERIMENT=runtimesecret on linux/amd64 and
+//     linux/arm64, runtime/secret supersedes the frame wipe and erases the
+//     registers, stack, and heap of the whole call tree. The residue no tier
+//     reaches — and which parts of it are constraints of the Go runtime or the
+//     OS rather than gaps — is enumerated in THREAT-MODEL.md.
+//
 //   - Overflow trap. Each mapping is bracketed by inaccessible guard pages and
 //     its slack is canary-filled, so an adjacent over- or under-flow traps or is
 //     caught on destroy. This is a memory-safety bug-catcher, not a

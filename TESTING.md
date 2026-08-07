@@ -40,7 +40,9 @@ that is said outright rather than dressed up.
 | The wipe is exact and not compiler-elided | Assembly (`REP STOSB` / `DC CIVAC`) is inherently un-elidable; the generic fallback uses `subtle.ConstantTimeSelect`; the readback tests above would fail if a store were dropped | `wipe_unaligned_test.go`, `wipe_arm64.s`/`wipe_amd64.s`, `wipe_generic.go` |
 | Guard pages trap a linear over/under-flow | Deliberately reads one byte past each edge under `SetPanicOnFault`, requires a fault; in-region bytes must not fault | `guard_canary_test.go` |
 | An in-mapping overflow too small to reach a guard is caught | Corrupts the canary slack, requires `ErrCanaryViolation` on Destroy/Release | `guard_canary_test.go`, `securearena_test.go` |
-| Registers/stack are scrubbed after a `Scrub` closure | Plants markers down the stack, runs `Scrub`, reads the abandoned frames back as zero | `scrub_amd64_test.go` (amd64); `runtimesecret` integration in `securebuf_scrub_test.go`, `secretdo_active_test.go` |
+| `Scrub` erases the stack residue of a shallow call tree | Plants markers down the stack, runs `Scrub`, reads the abandoned frames back through a raw `uintptr` and requires zero. Covers both architectures with real frame assembly — amd64 and arm64 | `scrub_frame_test.go` (`TestScrub_ScrubsShallowCallTree`); `runtimesecret` integration in `securebuf_scrub_test.go`, `secretdo_active_test.go` |
+| A `Scrub` window blocks the preemption signal, so `asyncPreempt` cannot spill the register file into it | Reads `SigBlk` for the **calling thread** from `/proc/thread-self/status` — the kernel's own record — inside the window, and requires SIGURG and SIGPROF set there and the mask exactly restored after. Asserts the goroutine did not migrate (`LockOSThread`), and that a nested window restores the outer mask rather than unblocking | `scrub_window_linux_test.go` |
+| Blocking that signal does not make a window unpreemptible | Eight concurrent windows against a deliberately GC-heavy workload must all complete; a window the collector could not suspend would hang rather than fail quietly | `scrub_window_linux_test.go` (`TestScrub_ConcurrentWindowsUnderGCPressure`) |
 | Constructors fail closed, never panic | Bad/overflow inputs on every constructor; `RLIMIT_MEMLOCK=0` with `CAP_IPC_LOCK` dropped; unsupported-platform stub | `negative_test.go`, `negative_mlock_linux_test.go`, `mlock_stub_test.go` |
 | Borrow/copy/compare paths do not allocate (no heap escape) | `testing.AllocsPerRun` gate asserts 0 allocs on `WithBytes`/`ByteAt`/`CopyOut`/`CopyIn`/`ConstantTimeEqual`/… | `alloc_test.go` |
 | A sealed buffer holds ciphertext at rest (Windows) | Peeks the raw mapping while sealed and asserts the plaintext is absent (and not all-zero) | `sealcipher_windows_test.go` |
@@ -82,6 +84,18 @@ stand-in rather than measured directly.
   structural — architecture assembly emits `CLFLUSH`/`CLFLUSHOPT` or
   `DC CIVAC` — and the field reports which path ran; there is no test that
   inspects cache state, because Go cannot.
+- **The stack residue `Scrub` cannot reach is argued, not measured.** The frame
+  wipe is proven to zero the band it reserves (above), and the preemption block
+  is proven against the kernel's own record of the mask. Three residue sources
+  remain unobservable from Go and are documented rather than tested: a GC
+  stack-shrink that frees `fn`'s segment before the deferred wipe runs
+  (`shrinkstack` is asynchronous and runtime-owned), the CPU registers at
+  `Scrub`'s return (the ABI reloads them around any call that would clear them,
+  so a Go-level register scrub cannot be verified to have reached anything), and
+  the `ucontext` the kernel writes to the signal stack on a synchronous fault.
+  The first is closed by `GOEXPERIMENT=runtimesecret`, which has runtime
+  cooperation; the other two are constraints of Go and of the OS. All three are
+  enumerated in the stack-residue section of [THREAT-MODEL.md](THREAT-MODEL.md).
 - **Constant-time comparison is structural, not timing-measured.**
   `ConstantTimeEqual` (buffer and `Secret`) delegates to
   `crypto/subtle.ConstantTimeCompare`; correctness of the boolean result is
