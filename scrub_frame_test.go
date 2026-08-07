@@ -1,4 +1,4 @@
-//go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && amd64 && !asan
+//go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && (amd64 || arm64) && !asan
 
 // Excluded under -asan on purpose. This proof observes dead stack through a raw
 // uintptr and asserts the wipe assembly zeroed it; AddressSanitizer instruments
@@ -20,8 +20,13 @@ import (
 	"unsafe"
 )
 
-// Regression guard for the legacy Scrub stack scrub on amd64, where
-// wipeScratchFrameFull is real assembly. It pins the reserve-then-wipe fix:
+// Regression guard for the legacy Scrub stack scrub on every architecture where
+// wipeScratchFrameFull is real assembly — amd64 (scrubframe_amd64.s) and arm64
+// (scrubframe_arm64.s). It was amd64-only while arm64 still had the no-op stub;
+// the arm64 implementation is the reason this now covers both, and the reason
+// it must: hand-written frame assembly that is never executed is a liability,
+// and the arm64 prologue stores its saved link register INSIDE the frame the
+// wipe clears, so an off-by-eight there is a crash rather than a silent miss. It pins the reserve-then-wipe fix:
 // Scrub must reach the residue a SHALLOW call tree leaves, with NO manual
 // stack pre-growth — the exact case a single deferred wipe silently missed,
 // because allocating the 32 KiB wipe frame relocated the stack out from under
