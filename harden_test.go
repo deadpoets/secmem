@@ -70,13 +70,20 @@ func TestAllocMemfdSecret_OrFallback(t *testing.T) {
 	const size = 64
 	pageSize := os.Getpagesize()
 	roundedSize := ((size + pageSize - 1) / pageSize) * pageSize
-	region, err := allocMemfdSecret(pageSize, roundedSize, roundedSize+2*pageSize)
+	region, noFork, err := allocMemfdSecret(pageSize, roundedSize, roundedSize+2*pageSize)
 	if err != nil {
 		// Not an error — just not supported on this kernel.
 		t.Logf("allocMemfdSecret unavailable on this kernel: %v (fallback to mmap)", err)
 		return
 	}
 	defer func() { _ = freeSecretMem(region) }()
+
+	// MADV_DONTFORK is reported, not assumed. A kernel that refuses it on a
+	// secretmem VMA is a real (and load-bearing) result: the mapping is
+	// MAP_SHARED, so a child would share the live secret pages.
+	if !noFork {
+		t.Logf("MADV_DONTFORK not in force on this memfd_secret mapping — forked children inherit it")
+	}
 
 	if len(region.inner) != roundedSize {
 		t.Errorf("len(inner) = %d, want %d", len(region.inner), roundedSize)

@@ -251,3 +251,122 @@ func waitForWritersWaiting(t *testing.T, l *bufferRWLock, want int) {
 		time.Sleep(time.Millisecond)
 	}
 }
+
+// TestWipeAllSecrets_RewipesRegionsLeftMapped covers the second emergency wipe.
+// The first one deliberately leaves the region MAPPED and moves it to the wiped
+// set — but it does not mark the owner dead, so the buffer stays writable and a
+// process that keeps running (a panic-recovery handler is a documented call
+// site) can put a fresh secret in it. If the sweep only iterated janitor.regions
+// that secret would be registered nowhere: every later WipeAllSecrets would
+// report success while the plaintext sat untouched in locked memory, waiting for
+// a core dump.
+func TestWipeAllSecrets_RewipesRegionsLeftMapped(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 40))
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer func() { _ = buf.Destroy() }()
+
+	if err := WipeAllSecrets(); err != nil {
+		t.Fatalf("first WipeAllSecrets: %v", err)
+	}
+
+	// The buffer is still usable — that is the documented post-wipe state.
+	later := bytes.Repeat([]byte{0xC3}, 40)
+	if _, err := buf.CopyIn(later, 0); err != nil {
+		t.Fatalf("CopyIn after the emergency wipe: %v", err)
+	}
+
+	if err := WipeAllSecrets(); err != nil {
+		t.Fatalf("second WipeAllSecrets: %v", err)
+	}
+	if err := buf.WithBytes(func(b []byte) {
+		if !bytes.Equal(b, make([]byte, len(b))) {
+			t.Errorf("a secret written after the first WipeAllSecrets survived the second one: %x", b)
+		}
+	}); err != nil {
+		t.Fatalf("WithBytes after the second wipe: %v", err)
+	}
+}
+
+// TestWipeAllSecrets_RewipesArenaSlotsWrittenAfterward is the arena half of
+// TestWipeAllSecrets_RewipesRegionsLeftMapped: Acquire keeps working after an
+// emergency wipe, so slots handed out afterwards must still be covered.
+func TestWipeAllSecrets_RewipesArenaSlotsWrittenAfterward(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	a, err := NewArena(32, 4)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
+
+	if err := WipeAllSecrets(); err != nil {
+		t.Fatalf("first WipeAllSecrets: %v", err)
+	}
+
+	slot, err := a.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire after the emergency wipe: %v", err)
+	}
+	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
+		t.Fatalf("WithBytes after the emergency wipe: %v", err)
+	}
+
+	if err := WipeAllSecrets(); err != nil {
+		t.Fatalf("second WipeAllSecrets: %v", err)
+	}
+	if err := slot.WithBytes(func(b []byte) {
+		if !bytes.Equal(b, make([]byte, len(b))) {
+			t.Errorf("a slot written after the first WipeAllSecrets survived the second one: %x", b)
+		}
+	}); err != nil {
+		t.Fatalf("WithBytes after the second wipe: %v", err)
+	}
+}
+
+// TestWipeAllSecrets_ClearsSealCipherFlag pins the seal-cipher bookkeeping. The
+// flag is shared with the owning SecureBuffer and says "these bytes are
+// CryptProtectMemory ciphertext". The emergency wipe replaces them with zeros,
+// so leaving it set would make the next Unseal decrypt wiped memory and hand
+// back the resulting pseudorandom garbage as if it were the secret — silently,
+// with a nil error, to a signer that would then sign under it.
+//
+// The flag is only ever set on Windows (sealEncrypt is a no-op elsewhere), but
+// the postcondition asserted here — a wiped buffer reads as zeros through a
+// full seal cycle — has to hold on every platform.
+func TestWipeAllSecrets_ClearsSealCipherFlag(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 40))
+	if err != nil {
+		t.Fatalf("NewBuffer: %v", err)
+	}
+	defer func() { _ = buf.Destroy() }()
+
+	if err := buf.Seal(); err != nil {
+		t.Fatalf("Seal: %v", err)
+	}
+	if err := WipeAllSecrets(); err != nil {
+		t.Fatalf("WipeAllSecrets: %v", err)
+	}
+	if buf.sealCipher.Load() {
+		t.Error("sealCipher still set after the wipe replaced the ciphertext with zeros")
+	}
+
+	if err := buf.Unseal(); err != nil {
+		t.Fatalf("Unseal after the emergency wipe: %v", err)
+	}
+	if err := buf.WithBytes(func(b []byte) {
+		if !bytes.Equal(b, make([]byte, len(b))) {
+			t.Errorf("Unseal on a wiped buffer produced non-zero bytes and reported success: %x", b)
+		}
+	}); err != nil {
+		t.Fatalf("WithBytes after Unseal: %v", err)
+	}
+}

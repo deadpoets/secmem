@@ -68,9 +68,24 @@ import (
 type slotMeta struct {
 	// inUse is uint32 (not bool) to allow future lock-free upgrade to atomic.Uint32;
 	// 1 = live (acquired), 0 = free; accessed under arena.alloc.
-	inUse      uint32
-	generation uint32   // incremented on every Acquire — ABA guard (CQ-P0-ABA fix)
-	_          [56]byte // pad to exactly 64 bytes (one cache line)
+	inUse uint32
+
+	// generation is incremented on every Acquire and is the ABA guard: a stale
+	// ArenaSlot handle whose generation no longer matches is refused by
+	// WithBytes* and Release.
+	//
+	// It is uint64, not uint32, because the guard has to outlive the counter.
+	// The free stack is LIFO, so a workload that acquires and releases one slot
+	// at a time increments the SAME slot's counter every cycle — at the ~320
+	// ns/op this arena benchmarks at, a 32-bit counter wraps in about 23
+	// minutes of churn, well inside the lifetime of the long-running server
+	// this type exists for. Past the wrap a stale handle matches again and can
+	// read, overwrite, or free a slot another owner is live in. 64 bits is not
+	// reachable. (The compiler inserts 4 bytes of padding after inUse to
+	// 8-align this field; the trailing pad below accounts for it.)
+	generation uint64
+
+	_ [48]byte // pad to exactly 64 bytes (one cache line)
 }
 
 // SecureArena is a single mmap'd slab providing N fixed-size secret slots.
@@ -176,7 +191,7 @@ type SecureArena struct {
 type ArenaSlot struct {
 	arena      *SecureArena
 	idx        int
-	generation uint32 // matches slots[idx].generation at Acquire time — ABA guard
+	generation uint64 // matches slots[idx].generation at Acquire time — ABA guard
 }
 
 // NewArena creates a SecureArena with count fixed-size slots, each of
@@ -288,7 +303,12 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 //  5. Munlock + Munmap.
 //  6. Nil raw — makes IsDestroyed() = true and Destroy idempotent.
 //
-// Destroy is idempotent and goroutine-safe.
+// Destroy is idempotent and goroutine-safe. A second concurrent Destroy blocks
+// on the exclusive lock rather than returning the moment it sees the destroyed
+// flag: "Destroy returned" has to mean "the slab is wiped" for every caller,
+// not only for the one that won the flag, or a concurrent caller could act on
+// "the secret is gone" while the first call is still mid-wipe. This matches
+// SecureBuffer.Destroy, which takes its exclusive lock before testing state.
 func (a *SecureArena) Destroy() error {
 	if a == nil {
 		return nil
@@ -296,19 +316,16 @@ func (a *SecureArena) Destroy() error {
 
 	// Mark destroyed so new Acquire calls fail fast without acquiring mu.
 	a.alloc.Lock()
-	if a.destroyed {
-		a.alloc.Unlock()
-		return nil // already destroyed — idempotent
-	}
 	a.destroyed = true
 	a.alloc.Unlock()
 
-	// Acquire exclusive lock — waits for all in-flight WithBytes callbacks.
+	// Acquire exclusive lock — waits for all in-flight WithBytes callbacks,
+	// and for any Destroy already running.
 	a.mu.lock()
 	defer a.mu.unlock()
 
 	if a.region.inner == nil {
-		return nil // idempotent double-check under exclusive lock
+		return nil // already destroyed — idempotent
 	}
 
 	a.cleanup.Stop()

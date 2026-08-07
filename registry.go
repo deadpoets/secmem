@@ -2,6 +2,7 @@ package secmem
 
 import (
 	"errors"
+	"fmt"
 	"log/slog"
 	"sync"
 	"sync/atomic"
@@ -96,13 +97,35 @@ func (j *janitor) take(key uintptr) (janitorRegion, bool) {
 	return region, ok
 }
 
-// peek returns one live region WITHOUT removing it, so a caller can inspect
-// its lock before committing to take it.
-func (j *janitor) peek(key uintptr) (janitorRegion, bool) {
+// peekAny returns one region WITHOUT removing it, so a caller can inspect its
+// lock before committing to take it. Both sets are searched: a region the
+// emergency path already wiped in place is still MAPPED and its owner is still
+// usable, so it can hold a secret written since — a later wipe must not skip
+// it just because the first one moved it.
+func (j *janitor) peekAny(key uintptr) (janitorRegion, bool) {
 	j.mu.Lock()
-	region, ok := j.regions[key]
-	j.mu.Unlock()
+	defer j.mu.Unlock()
+	if region, ok := j.regions[key]; ok {
+		return region, true
+	}
+	region, ok := j.wiped[key]
 	return region, ok
+}
+
+// takeAny removes and returns one region from whichever set holds it — the
+// take counterpart of peekAny.
+func (j *janitor) takeAny(key uintptr) (janitorRegion, bool) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if region, ok := j.regions[key]; ok {
+		delete(j.regions, key)
+		return region, true
+	}
+	if region, ok := j.wiped[key]; ok {
+		delete(j.wiped, key)
+		return region, true
+	}
+	return janitorRegion{}, false
 }
 
 // retainWiped records a region that was wiped in place and left mapped, so a
@@ -157,9 +180,25 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	}
 
 	if err := mprotectSecretMem(region.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
-		slog.Error("secmem: janitor mprotect failed — continuing cleanup",
+		// A sealed region is PROT_NONE and a read-only one is PROT_READ, so
+		// without write access the canary read below and the wipe after it
+		// both fault the process. "Continue cleanup" would mean continue into
+		// a SIGSEGV — inside a signal handler, on the emergency path, aborting
+		// the wipe of every region this pass had not reached yet. Give up on
+		// the wipe instead and go straight to the release: an unwiped region
+		// that is unmapped is bad, but a crash mid-emergency-wipe is worse.
+		slog.Error("secmem: janitor could not restore write access — releasing WITHOUT wiping",
 			slog.Any("error", err),
 		)
+		werr := fmt.Errorf("secmem: janitor: restoring write access failed, region released unwiped: %w", err)
+		if !unmap {
+			return werr
+		}
+		// MADV_DONTNEED needs no write access and, on a private anonymous
+		// mapping, drops the frames outright — a partial wipe by other means
+		// where the platform supports it.
+		madviseBeforeFree(region.region)
+		return errors.Join(werr, freeSecretMem(region.region))
 	}
 
 	// Ciphertext (Windows sealed state) cannot be canary-verified — skip the
@@ -176,6 +215,14 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	}
 
 	secureWipeSlice(region.region.inner)
+
+	// The region holds zeros now, not ciphertext. The flag is shared with the
+	// owning SecureBuffer, so leaving it set would let a later Unseal run
+	// CryptUnprotectMemory over wiped memory and hand the caller the resulting
+	// pseudorandom garbage as if it were the secret.
+	if region.sealCipher != nil {
+		region.sealCipher.Store(false)
+	}
 
 	if !unmap {
 		// Emergency-wipe path: secret is wiped; leave the region mapped so a
@@ -223,7 +270,7 @@ func (j *janitor) release(key uintptr, lockHeld bool) error {
 // retainWiped landing afterwards would strand the mapping in the wiped set,
 // where nothing collects it. Same ordering as tryWipeInPlace, same reason.
 func (j *janitor) wipeInPlace(key uintptr) error {
-	peeked, ok := j.peek(key)
+	peeked, ok := j.peekAny(key)
 	if !ok {
 		return nil
 	}
@@ -233,7 +280,7 @@ func (j *janitor) wipeInPlace(key uintptr) error {
 	// Re-take under our own exclusive lock: Destroy or the GC cleanup may have
 	// completed the whole teardown while we waited, in which case there is
 	// nothing left to wipe.
-	region, ok := j.take(key)
+	region, ok := j.takeAny(key)
 	if !ok {
 		return nil
 	}
@@ -248,9 +295,9 @@ func (j *janitor) wipeInPlace(key uintptr) error {
 // blocking path. An already-released region reports done (there is nothing left
 // to do), not a retry.
 func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
-	peeked, ok := j.peek(key)
+	peeked, ok := j.peekAny(key)
 	if !ok {
-		return true, nil // already wiped or released by another path
+		return true, nil // already released by another path
 	}
 	if !peeked.mu.tryLock() {
 		return false, nil // borrow in flight — leave it for the blocking pass
@@ -259,7 +306,7 @@ func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
 
 	// Re-take under our own exclusive lock so the wipe still happens exactly
 	// once even if Destroy or the GC cleanup won the race in between.
-	region, ok := j.take(key)
+	region, ok := j.takeAny(key)
 	if !ok {
 		return true, nil
 	}
@@ -277,10 +324,20 @@ func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
 // other secret in the process is already zeroed by the time the first pass
 // returns. A one-pass loop would let that one borrow hold the whole emergency
 // wipe hostage in registry-map order.
+//
+// The already-wiped set is swept too. Those regions are still mapped and their
+// owners are still usable, so anything written to one since the last wipe is a
+// live secret; skipping them would let a second WipeAllSecrets report success
+// over plaintext it never touched. Re-wiping a region that really is still
+// zeroed costs one memclr and reports nothing (retainWiped cleared its canary
+// zones, so there is no stale pattern to fail against).
 func (j *janitor) wipeAllInPlace() error {
 	j.mu.Lock()
-	keys := make([]uintptr, 0, len(j.regions))
+	keys := make([]uintptr, 0, len(j.regions)+len(j.wiped))
 	for key := range j.regions {
+		keys = append(keys, key)
+	}
+	for key := range j.wiped {
 		keys = append(keys, key)
 	}
 	j.mu.Unlock()
@@ -323,8 +380,12 @@ func (j *janitor) wipeAllInPlace() error {
 //     the wrapper is unreachable) does complete the unmap — by then the caller
 //     has stated it is done with the buffer, so the mapping is reclaimed rather
 //     than held until exit.
-//   - After this call every affected buffer is dead — its secret is gone. This
-//     is a one-way emergency wipe, not a reusable clear.
+//   - After this call every affected buffer's secret is gone. Treat it as a
+//     one-way emergency wipe, not a reusable clear: the wrapper objects are NOT
+//     marked destroyed, so a process that keeps running (a panic-recovery
+//     handler, say) can still write to them. Anything written afterwards is a
+//     new live secret and is wiped by the NEXT WipeAllSecrets like any other —
+//     but it was never covered by this one.
 //   - Safe to call concurrently with Destroy and from multiple goroutines; each
 //     region is wiped exactly once.
 //

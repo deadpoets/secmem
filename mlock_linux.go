@@ -93,15 +93,17 @@ func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, er
 
 	// L4: memfd_secret — pages are kernel-locked (never swapped) and invisible
 	// to core dumps by construction, so mlocked and noDump are inherently
-	// true. The MAP_SHARED mapping IS inherited across fork — noFork is
-	// honestly false. TODO(secmem): evaluate MADV_DONTFORK on the memfd
-	// mapping.
-	if r, e := allocMemfdSecret(pageSize, rounded, total); e == nil {
+	// true. noFork is whatever MADV_DONTFORK actually achieved on the memfd
+	// mapping, reported and never assumed: the mapping is MAP_SHARED, so
+	// without it a forked child does not merely inherit a copy-on-write
+	// snapshot, it shares the live secret pages.
+	if r, noFork, e := allocMemfdSecret(pageSize, rounded, total); e == nil {
 		return r, r.inner[:size:size], allocInfo{
 			offHeap:     true,
 			mlocked:     true,
 			memfdSecret: true,
 			noDump:      true,
+			noFork:      noFork,
 			guardPages:  true,
 		}, nil
 	}
@@ -161,31 +163,32 @@ func allocMapAnonGuarded(pageSize, rounded, total int) (secRegion, allocInfo, er
 // allocMemfdSecret attempts the L4 path: a memfd_secret file mapped MAP_FIXED
 // into the middle of a pre-reserved PROT_NONE range. Returns an error
 // (ENOSYS, EPERM, lockdown, disabled) if unavailable; the caller falls
-// through to L3.
-func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
+// through to L3. noFork reports whether MADV_DONTFORK took effect on the
+// mapping.
+func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bool, err error) {
 	// sysMemfdSecret (447) is the asm-generic syscall number, correct only on
 	// 64-bit architectures (amd64, arm64, riscv64). On 32-bit linux that
 	// number is a different syscall entirely, so do not attempt it — fall
 	// through to the mmap+mlock path. The check is a compile-time constant,
 	// so it costs nothing on 64-bit builds.
 	if unsafe.Sizeof(uintptr(0)) != 8 {
-		return secRegion{}, errors.New("memfd_secret: requires a 64-bit architecture")
+		return secRegion{}, false, errors.New("memfd_secret: requires a 64-bit architecture")
 	}
 	fd, _, errno := unix.Syscall(sysMemfdSecret, 0, 0, 0)
 	if errno != 0 {
-		return secRegion{}, errno // ENOSYS = kernel too old / not built; EPERM = lockdown
+		return secRegion{}, false, errno // ENOSYS = kernel too old / not built; EPERM = lockdown
 	}
 	intFD := int(fd)
 
 	if err := unix.Ftruncate(intFD, int64(rounded)); err != nil {
 		_ = unix.Close(intFD)
-		return secRegion{}, fmt.Errorf("ftruncate memfd_secret: %w", err)
+		return secRegion{}, false, fmt.Errorf("ftruncate memfd_secret: %w", err)
 	}
 
 	outer, inner, err := reserveGuarded(pageSize, rounded, total)
 	if err != nil {
 		_ = unix.Close(intFD)
-		return secRegion{}, err
+		return secRegion{}, false, err
 	}
 
 	// MAP_FIXED into the middle of OUR OWN reservation: an atomic replace of
@@ -200,7 +203,7 @@ func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
 	_ = unix.Close(intFD)
 	if err != nil {
 		_ = unix.Munmap(outer)
-		return secRegion{}, fmt.Errorf("mmap memfd_secret MAP_FIXED: %w", err)
+		return secRegion{}, false, fmt.Errorf("mmap memfd_secret MAP_FIXED: %w", err)
 	}
 	//nolint:gosec // G103: comparing the returned mapping address against our reservation; verification only.
 	if uintptr(mapped) != uintptr(unsafe.Pointer(&inner[0])) {
@@ -209,7 +212,7 @@ func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
 		// guards. Unmap everything and refuse.
 		_ = unix.MunmapPtr(mapped, uintptr(rounded))
 		_ = unix.Munmap(outer)
-		return secRegion{}, errors.New("mmap memfd_secret MAP_FIXED: kernel returned a different address")
+		return secRegion{}, false, errors.New("mmap memfd_secret MAP_FIXED: kernel returned a different address")
 	}
 
 	// Best-effort THP opt-out, as on the anon path. secretmem folios are not
@@ -217,7 +220,15 @@ func allocMemfdSecret(pageSize, rounded, total int) (secRegion, error) {
 	// removes the assumption. (KSM is anon-only — not applicable here.)
 	_ = unix.Madvise(inner, unix.MADV_NOHUGEPAGE)
 
-	return secRegion{outer: outer, inner: inner}, nil
+	// Deny fork inheritance. This mapping is MAP_SHARED, so a child would not
+	// get a copy-on-write snapshot but a live view of the secret pages —
+	// making the strongest allocation tier the one with the weakest fork
+	// posture without it. MADV_DONTFORK only sets VM_DONTCOPY on the VMA, so
+	// it applies to a secretmem mapping like any other; the outcome is
+	// reported rather than assumed, as on the anon path.
+	noFork = unix.Madvise(inner, unix.MADV_DONTFORK) == nil
+
+	return secRegion{outer: outer, inner: inner}, noFork, nil
 }
 
 // allocMapAnon allocates the guarded L3 layout only — no memfd_secret
