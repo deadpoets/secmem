@@ -148,11 +148,56 @@ Three regimes, and they differ by orders of magnitude:
 | Allocation / teardown | syscalls — `mmap`, `mprotect`, `mlock`, 4× `madvise`, `munlock`, `munmap` | `BenchmarkNewBuffer`, `BenchmarkNewEmptyBuffer`, `BenchmarkNewDestroy`, `BenchmarkScope` |
 | Wipe | memory bandwidth, plus the cache-flush loop | `BenchmarkSecureWipeSlice`, `BenchmarkSecureWipe_4K`, `BenchmarkSecureWipe_64K` |
 | Borrow / access | one uncontended lock | `BenchmarkWithBytesErr`, `BenchmarkByteAt`, `BenchmarkCopyOut`, `BenchmarkBufferRWLock_*` |
+| Contention | the shared lock — never the data | `BenchmarkArenaBorrowParallel`, `BenchmarkArenaChurnParallel`, `BenchmarkBufferRWLock_RLockUnlock_Parallel` (run with `-cpu 1,2,4,8,16`) |
 
 The design guidance falls straight out of that ordering: **allocate once,
 borrow often.** A caller who allocates per operation pays syscall cost per
 operation; that is what `SecureArena` exists to amortize
 (`BenchmarkArenaAcquireRelease`), and why its free list is O(1).
+
+### What the contention benchmarks found
+
+They exist because a premise had gone unmeasured for the life of the type.
+`slotMeta` carried 48 bytes per slot of cache-line padding "to avoid false
+sharing between concurrent slot operations", and a note about a future
+lock-free upgrade — while every arena benchmark was single-goroutine. Nothing
+had ever established that concurrent slot operations contend, or where.
+
+`BenchmarkArenaBorrowParallel` is the experiment that settles it: each goroutine
+holds its **own** slot for the whole run and only borrows it, so no two
+goroutines share a secret, a slot, or a free-list node. Perfect scaling is the
+null hypothesis, and any departure is attributable to the one thing that is
+shared.
+
+Measured on an Intel Core Ultra 7 265KF, Windows, `-count=10`, **clocks not
+pinned** (so treat the ratios as the finding and the absolute nanoseconds as
+indicative — see rule 3 below):
+
+- The borrow path does **not** scale. Per-operation cost rose roughly sixfold
+  from 1 to 16 cores, i.e. aggregate throughput *fell* as cores were added.
+- `BenchmarkArenaBorrowSerial` stayed flat across the same `-cpu` values,
+  confirming the cause is contention rather than core count or frequency.
+- `BenchmarkBufferRWLock_RLockUnlock_Parallel` reproduces the same curve on its
+  own and accounted for roughly **85%** of the contended borrow cost at 16
+  cores. The remainder is the arena's `alloc` mutex and the liveness check.
+
+Two conclusions worth keeping:
+
+1. The lock primitive dominates, and it is mutex-based **by design** — `sync.Cond`
+   is what makes every blocking state durably blocked under `testing/synctest`
+   (see `buflock.go`). This is a deliberate trade, not an oversight, and the
+   scaling cost of it is now a number rather than an assumption.
+2. A lock-free redesign of the slot metadata — the thing the cache-line padding
+   was reserved for — would have targeted the smaller ~15% and could not have
+   changed the shape of the curve. Cache-line padding targeted nothing at all:
+   every access to `slots[…]` is under `alloc`, so no two cores are ever in
+   there at once. The padding is gone; if anyone revisits the lock-free idea,
+   `BenchmarkBufferRWLock_RLockUnlock_Parallel` is the number to beat, not this
+   one.
+
+The actionable guidance falls out of it: **shard**. Separate arenas share no
+lock and do scale; one process-wide arena serializes every borrow in the
+process.
 
 `secmem-crypto`'s signer benchmarks are deliberately paired with a stdlib
 counterpart (`BenchmarkECDSASignerSignP256` next to

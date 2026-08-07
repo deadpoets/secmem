@@ -41,13 +41,37 @@
 //   - mu (bufferRWLock): rLock held during any WithBytes/WithBytesErr callback
 //     on any slot.  Exclusive lock held only by Destroy.  Ensures no callback
 //     races with munmap.
-//   - alloc (sync.Mutex): held briefly during Acquire and Release to update
-//     slot bookkeeping (inUse flag, destroyed flag).  Never held across a
-//     callback.
+//   - alloc (sync.Mutex): guards the slot bookkeeping — inUse, generation, the
+//     free list and the destroyed flag.  Taken by Acquire, Release, IsLive and
+//     LiveCount, and also by WithBytes/WithBytesErr for their liveness check.
+//     Never held across a callback.
 //
 // Each ArenaSlot should be owned by a single goroutine at a time.  Concurrent
 // access to the same slot is not prevented by internal locking — callers are
 // responsible for external synchronization if needed.
+//
+// # It is a memory optimization, not a throughput one
+//
+// The arena bounds the OS and GC cost of holding N secrets.  It does not make
+// concurrent access to them scale, and measurement says it degrades: goroutines
+// borrowing DISTINCT slots — sharing no secret, no slot and no free-list node —
+// still serialize.  A borrow takes the arena's alloc mutex for its liveness
+// check, then bufferRWLock, whose rLock takes a mutex of its own to increment a
+// reader count (see buflock.go for why it is built that way).  That is three
+// uncontended-mutex round trips per borrow, every one of them on state shared
+// by the entire arena.
+//
+// BenchmarkArenaBorrowParallel measures it against
+// BenchmarkBufferRWLock_RLockUnlock_Parallel across core counts.  On the one
+// box they have been run on, per-operation cost grew several-fold from one core
+// to sixteen and the lock primitive alone accounted for most of that — so the
+// alloc mutex is the smaller half, and the "future lock-free slot metadata"
+// this type's comments used to anticipate would have optimized the wrong one.
+// Numbers and machine are in TESTING.md; take your own before acting on them.
+//
+// Design around it rather than against it: shard, giving each group of
+// contending goroutines its own arena, instead of routing a whole process
+// through one.  Separate arenas share no lock and do scale.
 //
 // # Neighbor-Slot Isolation
 //
