@@ -83,34 +83,66 @@ func sigaddset(set *unix.Sigset_t, sig unix.Signal) error {
 	return nil
 }
 
-// suppressAsyncPreempt pins the goroutine to its thread and blocks the
-// register-dumping signals. It returns a restore function that unblocks them
-// and unpins, which the caller MUST defer — leaking a blocked SIGURG would stop
-// this thread being preemptible for the rest of its life.
+// preemptWindow carries the state needed to undo suppressAsyncPreempt.
 //
-// On any failure it restores whatever it managed to change and reports
-// ok=false; the caller then runs the window unhardened rather than not at all.
-func suppressAsyncPreempt() (restore func(), ok bool) {
+// It exists so that the caller can keep that state on its OWN stack. The
+// obvious API — returning a restore closure — costs two heap allocations per
+// call: the closure, and the saved signal mask it has to capture. Scrub wraps
+// the hot paths of a crypto library, so two allocations on every call is a real
+// cost, and allocating inside a window whose entire purpose is secret hygiene is
+// the wrong shape besides. Measured, not guessed: this was caught by
+// secmem-crypto's zero-allocation gate on OpenInto, which went from 0 to 2
+// allocs/op on Linux the moment the window was added, and `go build -gcflags=-m`
+// names both ("moved to heap: prev", "func literal escapes to heap").
+type preemptWindow struct {
+	// prev is the mask to restore. Passing &w.prev to pthread_sigmask does not
+	// force w to the heap — the block mask below already proves that, being
+	// passed the same way and staying on the stack.
+	prev unix.Sigset_t
+
+	// active records that the mask was actually changed, so restore on a failed
+	// or never-suppressed window is a no-op rather than an unbalanced
+	// UnlockOSThread.
+	active bool
+}
+
+// suppressAsyncPreempt pins the goroutine to its thread and blocks the
+// register-dumping signals, recording in w what restore must undo. The caller
+// MUST defer w.restore() — leaking a blocked SIGURG would stop this thread
+// being preemptible for the rest of its life.
+//
+// On any failure it undoes whatever it managed to change and reports false; the
+// caller then runs the window unhardened rather than not at all.
+func suppressAsyncPreempt(w *preemptWindow) bool {
 	runtime.LockOSThread()
 
-	var block, prev unix.Sigset_t
+	var block unix.Sigset_t
 	for _, sig := range preemptSignals {
 		if err := sigaddset(&block, sig); err != nil {
 			runtime.UnlockOSThread()
-			return func() {}, false
+			return false
 		}
 	}
-	if err := unix.PthreadSigmask(unix.SIG_BLOCK, &block, &prev); err != nil {
+	if err := unix.PthreadSigmask(unix.SIG_BLOCK, &block, &w.prev); err != nil {
 		runtime.UnlockOSThread()
-		return func() {}, false
+		return false
 	}
 
-	return func() {
-		// Restore the exact prior mask rather than unblocking unconditionally:
-		// the caller may itself have had these blocked for its own reasons.
-		_ = unix.PthreadSigmask(unix.SIG_SETMASK, &prev, nil)
-		runtime.UnlockOSThread()
-	}, true
+	w.active = true
+	return true
+}
+
+// restore puts the thread's signal mask back and unpins the goroutine. It is
+// idempotent and safe on a window that was never suppressed.
+func (w *preemptWindow) restore() {
+	if !w.active {
+		return
+	}
+	w.active = false
+	// Restore the exact prior mask rather than unblocking unconditionally: the
+	// caller may itself have had these blocked for its own reasons.
+	_ = unix.PthreadSigmask(unix.SIG_SETMASK, &w.prev, nil)
+	runtime.UnlockOSThread()
 }
 
 // asyncPreemptSuppressionSupported reports that this platform can suppress the

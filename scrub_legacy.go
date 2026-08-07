@@ -61,8 +61,9 @@ func Scrub(fn func()) {
 	// instruction, which no frame wipe can anticipate. Linux only; elsewhere
 	// this reports unsupported and the window runs with the frame scrub alone.
 	// Ordered before the reserve so no preemption can land between them.
-	restore, _ := suppressAsyncPreempt()
-	defer restore()
+	var window preemptWindow
+	suppressAsyncPreempt(&window)
+	defer window.restore()
 
 	wipeScratchFrameFull()       // reserve headroom + pre-clean, before secrets exist
 	defer wipeScratchFrameFull() // now guaranteed to wipe in place
@@ -79,8 +80,9 @@ func ScrubErr(fn func() error) (err error) {
 	if fn == nil {
 		return nil
 	}
-	restore, _ := suppressAsyncPreempt()
-	defer restore()
+	var window preemptWindow
+	suppressAsyncPreempt(&window)
+	defer window.restore()
 
 	wipeScratchFrameFull()
 	defer wipeScratchFrameFull()

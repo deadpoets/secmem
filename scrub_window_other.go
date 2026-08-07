@@ -15,12 +15,19 @@
 
 package secmem
 
-// suppressAsyncPreempt is a no-op reporting ok=false: Scrub still runs, still
+// preemptWindow is empty here; it exists so the callers in scrub_legacy.go and
+// scrub_runtimesecret.go compile unchanged across platforms. The Linux version
+// carries a saved signal mask — see scrub_window_unix.go for why that state is
+// a value the caller stacks rather than a closure it heap-allocates.
+type preemptWindow struct{}
+
+// suppressAsyncPreempt is a no-op reporting false: Scrub still runs, still
 // pre-grows the stack, and still burns its frame — it just cannot also close
 // the asynchronous register-dump window.
-func suppressAsyncPreempt() (restore func(), ok bool) {
-	return func() {}, false
-}
+func suppressAsyncPreempt(*preemptWindow) bool { return false }
+
+// restore is a no-op: nothing was suppressed.
+func (*preemptWindow) restore() {}
 
 // asyncPreemptSuppressionSupported reports that this platform cannot suppress
 // the register-dumping preemption signal.
