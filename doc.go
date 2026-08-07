@@ -89,11 +89,18 @@
 //
 // # RLIMIT_MEMLOCK budget
 //
-// Each SecureBuffer locks at least one page (4 KiB on amd64). The default
-// RLIMIT_MEMLOCK on many Linux systems is 64 KiB, which allows only about six to
-// ten concurrent buffers before allocation fails. A process that holds one
-// buffer per live secret should raise the limit once, before its first
-// allocation — either through the OS:
+// Each SecureBuffer locks at least one page, so the number of concurrent
+// buffers a process can hold is RLIMIT_MEMLOCK divided by the page size — no
+// other term. Read the limit rather than assuming one: `ulimit -l` reports it
+// in KiB, and it varies by two orders of magnitude across ordinary systems.
+// Measured on three Linux boxes, all with 4 KiB pages: two stock installs
+// (Ubuntu 26.04/amd64 and Armbian/arm64) had the systemd default of 8 MiB,
+// giving exactly 2048 buffers; a Jetson with a raised limit of 943 MiB gave
+// proportionally more. The historical 64 KiB kernel default, which allowed only
+// about a dozen buffers, is not what current systemd-based distributions set.
+//
+// A process that holds one buffer per live secret should raise the limit once,
+// before its first allocation — either through the OS:
 //
 //	# /etc/security/limits.d/secmem.conf
 //	someuser soft memlock 262144
