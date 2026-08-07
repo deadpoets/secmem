@@ -39,6 +39,16 @@ type janitorRegion struct {
 type janitor struct {
 	mu      sync.Mutex
 	regions map[uintptr]janitorRegion
+
+	// wiped holds regions that WipeAllSecrets wiped IN PLACE and deliberately
+	// left mapped (see wipeAndFree's unmap=false path). Their contents are
+	// already zero; the entry exists only so a later explicit Destroy — or the
+	// GC cleanup once the wrapper is unreachable — can reclaim the address
+	// space instead of leaking the mapping until process exit. Entries are
+	// stored with canaryZones and sealCipher cleared: the wipe already
+	// destroyed the canary pattern, so re-verifying it would report a spurious
+	// ErrCanaryViolation.
+	wiped map[uintptr]janitorRegion
 }
 
 // emergencyJanitor is the package-level crash registry.
@@ -48,6 +58,7 @@ var emergencyJanitor *janitor //nolint:gochecknoglobals // Crash-safety registry
 func init() { //nolint:gochecknoinits // Emergency janitor must be initialized before any secrets are created.
 	emergencyJanitor = &janitor{
 		regions: make(map[uintptr]janitorRegion),
+		wiped:   make(map[uintptr]janitorRegion),
 	}
 	// No signal handler is installed here: touching process-global signal state
 	// as a side effect of import is the application's decision, not the
@@ -80,6 +91,38 @@ func (j *janitor) take(key uintptr) (janitorRegion, bool) {
 	region, ok := j.regions[key]
 	if ok {
 		delete(j.regions, key)
+	}
+	j.mu.Unlock()
+	return region, ok
+}
+
+// peek returns one live region WITHOUT removing it, so a caller can inspect
+// its lock before committing to take it.
+func (j *janitor) peek(key uintptr) (janitorRegion, bool) {
+	j.mu.Lock()
+	region, ok := j.regions[key]
+	j.mu.Unlock()
+	return region, ok
+}
+
+// retainWiped records a region that was wiped in place and left mapped, so a
+// later release can still reclaim the address space. The canary zones and the
+// seal-cipher flag are cleared: the wipe destroyed the canary pattern, and
+// re-verifying zeroed slack would report a violation that never happened.
+func (j *janitor) retainWiped(key uintptr, region janitorRegion) {
+	region.canaryZones = nil
+	region.sealCipher = nil
+	j.mu.Lock()
+	j.wiped[key] = region
+	j.mu.Unlock()
+}
+
+// takeWiped removes and returns one wiped-but-still-mapped region.
+func (j *janitor) takeWiped(key uintptr) (janitorRegion, bool) {
+	j.mu.Lock()
+	region, ok := j.wiped[key]
+	if ok {
+		delete(j.wiped, key)
 	}
 	j.mu.Unlock()
 	return region, ok
@@ -146,8 +189,17 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 
 // release wipes and frees the region for key exactly once. Safe to race with
 // Destroy and AddCleanup: the first taker wins, others observe "already gone".
+//
+// A region that WipeAllSecrets already wiped in place is still holding its
+// mapping; release finds it in the wiped set and completes the unmap it
+// deliberately deferred. That is safe here and not there: release runs under
+// the region's exclusive lock (held by Destroy, or uncontended because the GC
+// cleanup proved the wrapper unreachable), so no accessor can be in flight.
 func (j *janitor) release(key uintptr, lockHeld bool) error {
-	region, ok := j.take(key)
+	if region, ok := j.take(key); ok {
+		return wipeAndFree(region, lockHeld, true)
+	}
+	region, ok := j.takeWiped(key)
 	if !ok {
 		return nil
 	}
@@ -155,20 +207,59 @@ func (j *janitor) release(key uintptr, lockHeld bool) error {
 }
 
 // wipeInPlace wipes the region for key exactly once WITHOUT unmapping it (via
-// take, so it never races Destroy into a double-free). Used by WipeAllSecrets:
-// the process is expected to be terminating, so the mapping is reclaimed on
-// exit; unmapping here would risk a use-after-munmap fault against a goroutine
-// still holding the buffer (see wipeAndFree).
+// take, so it never races Destroy into a double-free), then records it in the
+// wiped set so a later release can reclaim the mapping. Used by WipeAllSecrets:
+// unmapping there would risk a use-after-munmap fault against a goroutine still
+// holding the buffer (see wipeAndFree).
+//
+// This blocks until the region's exclusive lock is free — i.e. until any
+// in-flight borrowing callback returns. Callers that must not stall behind a
+// slow borrow should try tryWipeInPlace first.
 func (j *janitor) wipeInPlace(key uintptr) error {
 	region, ok := j.take(key)
 	if !ok {
 		return nil
 	}
-	return wipeAndFree(region, false, false)
+	err := wipeAndFree(region, false, false)
+	j.retainWiped(key, region)
+	return err
+}
+
+// tryWipeInPlace is wipeInPlace without the wait. done is false only when the
+// region is still registered but its lock is held — a borrowing callback is in
+// flight — in which case nothing was wiped and the caller should retry with the
+// blocking path. An already-released region reports done (there is nothing left
+// to do), not a retry.
+func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
+	peeked, ok := j.peek(key)
+	if !ok {
+		return true, nil // already wiped or released by another path
+	}
+	if !peeked.mu.tryLock() {
+		return false, nil // borrow in flight — leave it for the blocking pass
+	}
+	defer peeked.mu.unlock()
+
+	// Re-take under our own exclusive lock so the wipe still happens exactly
+	// once even if Destroy or the GC cleanup won the race in between.
+	region, ok := j.take(key)
+	if !ok {
+		return true, nil
+	}
+	err = wipeAndFree(region, true, false)
+	j.retainWiped(key, region)
+	return true, err
 }
 
 // wipeAllInPlace wipes every currently-registered secret in place, exactly once
 // each, and returns any canary/wipe errors joined.
+//
+// Two passes, deliberately. The first wipes every region whose lock is free at
+// that instant; the second blocks on whatever is left. A single goroutine parked
+// inside a long WithBytes callback therefore delays only ITS OWN buffer — every
+// other secret in the process is already zeroed by the time the first pass
+// returns. A one-pass loop would let that one borrow hold the whole emergency
+// wipe hostage in registry-map order.
 func (j *janitor) wipeAllInPlace() error {
 	j.mu.Lock()
 	keys := make([]uintptr, 0, len(j.regions))
@@ -178,7 +269,17 @@ func (j *janitor) wipeAllInPlace() error {
 	j.mu.Unlock()
 
 	var errs error
+	deferred := make([]uintptr, 0, len(keys))
 	for _, key := range keys {
+		done, err := j.tryWipeInPlace(key)
+		if err != nil {
+			errs = errors.Join(errs, err)
+		}
+		if !done {
+			deferred = append(deferred, key)
+		}
+	}
+	for _, key := range deferred {
 		if err := j.wipeInPlace(key); err != nil {
 			errs = errors.Join(errs, err)
 		}
@@ -201,12 +302,29 @@ func (j *janitor) wipeAllInPlace() error {
 //     terminating and the kernel reclaims the mappings on exit. Unmapping while
 //     another goroutine might still hold a buffer would risk a use-after-munmap
 //     fault, so a read of an already-wiped buffer returns zeroed bytes, never a
-//     fault.
-//   - After this call every affected buffer is dead — its secret is gone. If
-//     the process keeps running, the wiped mappings linger until exit rather
-//     than being freed; this is a one-way emergency wipe, not a reusable clear.
+//     fault. A later explicit [SecureBuffer.Destroy] (or the GC cleanup, once
+//     the wrapper is unreachable) does complete the unmap — by then the caller
+//     has stated it is done with the buffer, so the mapping is reclaimed rather
+//     than held until exit.
+//   - After this call every affected buffer is dead — its secret is gone. This
+//     is a one-way emergency wipe, not a reusable clear.
 //   - Safe to call concurrently with Destroy and from multiple goroutines; each
 //     region is wiped exactly once.
+//
+// # It can block
+//
+// Wiping a region takes that region's exclusive lock, so a buffer whose
+// borrowing callback ([SecureBuffer.WithBytes] and friends) is still running
+// cannot be wiped until the callback returns — and a callback that never
+// returns blocks this call forever. The alternative would be zeroing memory a
+// callback is actively reading, which is a data race and a likely crash.
+//
+// The cost is contained to the offending buffer, not the process: regions are
+// wiped in two passes, so every buffer NOT currently borrowed is already zeroed
+// by the time this call starts waiting on the ones that are. If your shutdown
+// path must be bounded, run WipeAllSecrets in its own goroutine and exit on a
+// timer — the first pass will have done its work regardless — and keep
+// borrowing callbacks short, which the borrowing contract asks for anyway.
 //
 // secmem installs NO signal handler on its own. For automatic wiping on
 // termination signals, call [InstallTerminationWipe] once at startup, or wire

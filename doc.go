@@ -55,7 +55,10 @@
 //     WipeAllSecrets call zeroes every one at once. secmem installs no signal
 //     handler itself: call WipeAllSecrets from your own shutdown or panic
 //     handler, or opt into InstallTerminationWipe to wipe on termination
-//     signals.
+//     signals. Wiping a buffer waits for any in-flight borrowing callback to
+//     return — zeroing memory a callback is reading would be a data race — so
+//     a callback that never returns blocks the call. Buffers that are NOT
+//     being borrowed are all wiped before that wait begins; see WipeAllSecrets.
 //
 // # Lifecycle
 //

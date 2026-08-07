@@ -114,6 +114,28 @@ type SecureArena struct {
 	// header but NOT the backing array.  len(slots) == count.
 	slots []slotMeta
 
+	// free is the LIFO stack of free slot indices — the reason Acquire and
+	// Release are O(1) rather than a scan over slots. Guarded by alloc.
+	//
+	// Invariant: an index appears in free at most once, and exactly when its
+	// slots[i].inUse == 0. Release enforces it by re-checking inUse and the
+	// generation under alloc before pushing, so a double Release of the same
+	// handle cannot hand the same slot to two live owners.
+	//
+	// Seeded in DESCENDING order so the first Acquires pop 0, 1, 2, … — the
+	// natural order a fresh arena used to hand out, preserved because it is
+	// the observable part. After any Release the order is
+	// most-recently-freed-first, which is deliberate: a just-released slot is
+	// the one most likely to still be cache-warm.
+	//
+	// Pointer-free like slots: a []int backing array is a GC leaf too, so the
+	// arena's O(1)-GC-overhead property is unchanged.
+	free []int
+
+	// live is the number of acquired slots — len(slots)-len(free), cached so
+	// LiveCount is O(1) instead of a scan. Guarded by alloc.
+	live int
+
 	// slotSize is the usable bytes per slot (caller-requested).
 	slotSize int
 
@@ -211,10 +233,17 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 		}
 	}
 
+	// Seed the free stack in descending order — see the field's doc comment.
+	free := make([]int, count)
+	for i := range free {
+		free[i] = count - 1 - i
+	}
+
 	a := &SecureArena{
 		mu:       newBufferRWLock(),
 		region:   region,
 		slots:    make([]slotMeta, count),
+		free:     free,
 		slotSize: slotSize,
 		stride:   stride,
 		count:    count,
@@ -328,14 +357,16 @@ func (a *SecureArena) Acquire() (*ArenaSlot, error) {
 		return nil, ErrArenaDestroyed
 	}
 
-	for i := range a.slots {
-		if a.slots[i].inUse == 0 {
-			a.slots[i].inUse = 1
-			a.slots[i].generation++
-			return &ArenaSlot{arena: a, idx: i, generation: a.slots[i].generation}, nil
-		}
+	n := len(a.free)
+	if n == 0 {
+		return nil, ErrArenaFull
 	}
-	return nil, ErrArenaFull
+	i := a.free[n-1]
+	a.free = a.free[:n-1]
+	a.slots[i].inUse = 1
+	a.slots[i].generation++
+	a.live++
+	return &ArenaSlot{arena: a, idx: i, generation: a.slots[i].generation}, nil
 }
 
 // LiveCount returns the number of currently acquired (live) slots.
@@ -345,13 +376,7 @@ func (a *SecureArena) LiveCount() int {
 	}
 	a.alloc.Lock()
 	defer a.alloc.Unlock()
-	n := 0
-	for i := range a.slots {
-		if a.slots[i].inUse == 1 {
-			n++
-		}
-	}
-	return n
+	return a.live
 }
 
 // Cap returns the total slot capacity of the arena.
@@ -536,8 +561,19 @@ func (s *ArenaSlot) Release() error {
 	s.arena.mu.rUnlock()
 
 	// NOW mark free — slot is only available for re-Acquire after wipe completes.
+	//
+	// The inUse/generation pair is re-checked under alloc before the index goes
+	// back on the free stack. The early check above is not enough: two
+	// goroutines calling Release on the SAME handle can both pass it, and
+	// pushing the index twice would put one slot on the free stack twice —
+	// handing the same secret bytes to two live owners. Setting inUse=0 twice
+	// was harmless under the old scan; pushing twice is not.
 	s.arena.alloc.Lock()
-	s.arena.slots[s.idx].inUse = 0
+	if s.arena.slots[s.idx].inUse == 1 && s.arena.slots[s.idx].generation == s.generation {
+		s.arena.slots[s.idx].inUse = 0
+		s.arena.live--
+		s.arena.free = append(s.arena.free, s.idx)
+	}
 	s.arena.alloc.Unlock()
 
 	if violated {

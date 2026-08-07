@@ -90,6 +90,23 @@ func (l *bufferRWLock) lock() {
 	l.mu.Unlock()
 }
 
+// tryLock attempts to acquire exclusive (writer) access without blocking. It
+// reports whether the lock was taken; on true the caller MUST call unlock.
+//
+// It fails rather than waits when a reader or writer holds the lock — and also
+// when another writer is merely WAITING, so a tryLock caller can never barge
+// ahead of a blocked Destroy. Used by the emergency-wipe path to wipe every
+// region it can take immediately before blocking on the ones still borrowed.
+func (l *bufferRWLock) tryLock() bool {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.writerActive || l.readers > 0 || l.writersWaiting > 0 {
+		return false
+	}
+	l.writerActive = true
+	return true
+}
+
 // unlock releases exclusive (writer) access. Clears writerActive and
 // broadcasts to wake blocked readers and/or writers.
 func (l *bufferRWLock) unlock() {
