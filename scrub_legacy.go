@@ -41,12 +41,29 @@ package secmem
 // fn shallow and keep secrets in a SecureBuffer so there is little residue to
 // miss.
 //
+// # Asynchronous preemption
+//
+// On Linux the window additionally blocks SIGURG for its duration, which stops
+// runtime.asyncPreempt spilling the whole register file onto the stack at an
+// arbitrary instruction — the one residue source a frame wipe cannot predict.
+// See scrub_window_unix.go for why that does not stall the collector, and for
+// the one shape of fn that would. Elsewhere it is unsupported and reported as
+// such by Capabilities.AsyncPreemptSuppressed.
+//
 // Panics propagate; the frame is still scrubbed during unwind via the deferred
 // wipe. Scrub(nil) is a no-op.
 func Scrub(fn func()) {
 	if fn == nil {
 		return
 	}
+	// Close the asynchronous register-dump window first: runtime.asyncPreempt
+	// spills the ENTIRE register file to this goroutine's stack at an arbitrary
+	// instruction, which no frame wipe can anticipate. Linux only; elsewhere
+	// this reports unsupported and the window runs with the frame scrub alone.
+	// Ordered before the reserve so no preemption can land between them.
+	restore, _ := suppressAsyncPreempt()
+	defer restore()
+
 	wipeScratchFrameFull()       // reserve headroom + pre-clean, before secrets exist
 	defer wipeScratchFrameFull() // now guaranteed to wipe in place
 	// TODO(secmem): a register/vector scrub here could cover residue the frame
@@ -62,6 +79,9 @@ func ScrubErr(fn func() error) (err error) {
 	if fn == nil {
 		return nil
 	}
+	restore, _ := suppressAsyncPreempt()
+	defer restore()
+
 	wipeScratchFrameFull()
 	defer wipeScratchFrameFull()
 	return fn()

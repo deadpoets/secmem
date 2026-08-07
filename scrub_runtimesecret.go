@@ -34,6 +34,13 @@ func Scrub(fn func()) {
 	if fn == nil {
 		return
 	}
+	// Even here, block the asynchronous register dump for the window:
+	// runtime/secret erases registers and heap on the way OUT, but an
+	// asyncPreempt landing mid-flight has already copied the live register file
+	// onto the stack at an arbitrary instruction. Suppressing it removes that
+	// copy rather than erasing after the fact.
+	restore, _ := suppressAsyncPreempt()
+	defer restore()
 	secret.Do(fn)
 }
 
@@ -44,6 +51,8 @@ func ScrubErr(fn func() error) error {
 	if fn == nil {
 		return nil
 	}
+	restore, _ := suppressAsyncPreempt()
+	defer restore()
 	var err error
 	secret.Do(func() { err = fn() })
 	return err

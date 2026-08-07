@@ -64,6 +64,22 @@ type Capabilities struct {
 	// When false, Scrub is a best-effort stack-frame wipe.
 	RegisterScrub bool
 
+	// FrameScrub reports that [Scrub]'s stack-frame burn is real assembly on
+	// this architecture (amd64, arm64) rather than the no-op stub. When false,
+	// Scrub reserves no headroom and erases no stack residue; only the
+	// runtime/secret path (see RegisterScrub) covers the stack at all.
+	FrameScrub bool
+
+	// AsyncPreemptSuppressed reports that [Scrub] blocks Go's preemption signal
+	// for the duration of its window, so runtime.asyncPreempt cannot spill the
+	// full register file onto the stack at an arbitrary instruction. Linux only:
+	// Windows preemption rewrites the thread context instead of signalling, and
+	// x/sys/unix exposes no PthreadSigmask on Darwin.
+	//
+	// It does NOT claim immunity from every stack copy — cooperative preemption
+	// at a call boundary is unaffected. See [Scrub].
+	AsyncPreemptSuppressed bool
+
 	// GuardPages reports PROT_NONE guard pages bracket the mapping so a
 	// linear over/under-flow traps (SIGSEGV / access violation) instead of
 	// silently touching adjacent memory. A memory-safety bug-catcher, not a
@@ -101,8 +117,12 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		NoFork:        info.noFork,
 		FlushedWipe:   archWipeFlushed,
 		RegisterScrub: RuntimeSecretActive(),
-		GuardPages:    info.guardPages,
-		Insecure:      info.insecure,
+
+		FrameScrub:             archFrameScrub,
+		AsyncPreemptSuppressed: asyncPreemptSuppressionSupported,
+
+		GuardPages: info.guardPages,
+		Insecure:   info.insecure,
 	}
 }
 
@@ -157,6 +177,12 @@ func (c Capabilities) Warnings() []string {
 	if !c.RegisterScrub {
 		w = append(w, "runtime/secret erasure inactive — Scrub is a best-effort stack-frame wipe")
 	}
+	if !c.FrameScrub && !c.RegisterScrub {
+		w = append(w, "no stack scrub on this architecture — Scrub does not erase stack residue at all")
+	}
+	if !c.AsyncPreemptSuppressed {
+		w = append(w, "async preemption not suppressed — the runtime may spill the register file to the stack inside a Scrub window")
+	}
 	if !c.GuardPages {
 		w = append(w, "no guard pages — buffer overflows are not trapped")
 	}
@@ -182,6 +208,8 @@ func (c Capabilities) String() string {
 	flag("no-fork", c.NoFork)
 	flag("wipe+flush", c.FlushedWipe)
 	flag("register-scrub", c.RegisterScrub)
+	flag("frame-scrub", c.FrameScrub)
+	flag("preempt-suppress", c.AsyncPreemptSuppressed)
 	flag("guard-pages", c.GuardPages)
 
 	var b strings.Builder
