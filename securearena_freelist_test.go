@@ -149,10 +149,31 @@ func BenchmarkArenaAcquireRelease(b *testing.B) {
 	if !platformHasSecureMemory {
 		b.Skip("no secure memory on this platform")
 	}
-	for _, count := range []int{8, 512, 4096} {
+	counts := []int{8, 512, 4096}
+
+	// The largest arena locks ~192 KiB, which exceeds BOTH default budgets this
+	// runs under: Linux's 64 KiB RLIMIT_MEMLOCK and Windows' default minimum
+	// working set (VirtualLock's ceiling). Raise it with the library's own
+	// remedy — the same call NewArena's doc tells consumers to make at startup.
+	// Safe in-process: EnsureMemlockLimit only ever raises (see
+	// TestEnsureMemlockLimit_NeverLowers). Headroom covers guard pages, page
+	// rounding, and anything else the binary already holds locked.
+	largest := uint64(counts[len(counts)-1]) * uint64(32+canaryLen)
+	if _, err := EnsureMemlockLimit(largest + 256*1024); err != nil {
+		b.Logf("EnsureMemlockLimit: %v (hard cap reached; arenas that do not fit are skipped)", err)
+	}
+
+	for _, count := range counts {
 		a, err := NewArena(32, count)
 		if err != nil {
-			b.Fatalf("NewArena(%d): %v", count, err)
+			// An unprivileged hard cap can still refuse the budget. That is an
+			// environment limit, not a benchmark failure — the repo treats a
+			// refused lock as a condition to report, never to fail on.
+			b.Run(itoa(count), func(b *testing.B) {
+				b.Skipf("cannot lock a %d-slot arena (%d KiB): %v",
+					count, count*(32+canaryLen)/1024, err)
+			})
+			continue
 		}
 		// Hold all but one slot so the old linear scan would walk the whole
 		// index on every Acquire — the case the free stack removes.
