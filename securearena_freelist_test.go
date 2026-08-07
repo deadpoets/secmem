@@ -5,6 +5,114 @@ import (
 	"testing"
 )
 
+// checkFreeList walks the intrusive free list and asserts every structural
+// invariant it is supposed to hold: it terminates, visits no slot twice, stays
+// in range, every slot on it is marked free, every slot NOT on it is in use,
+// and its length agrees with the cached live counter.
+//
+// Walking the list is worth doing directly rather than only inferring its shape
+// from Acquire's behaviour. The list lives inside slots[i].next now, so a bug
+// that corrupts a link is invisible from the outside until the arena either
+// leaks a slot or hands one out twice — and both of those are exactly what a
+// secret-holding pool must never do.
+func checkFreeList(t *testing.T, a *SecureArena) {
+	t.Helper()
+	a.alloc.Lock()
+	defer a.alloc.Unlock()
+
+	seen := make(map[int32]bool, a.count)
+	for i := a.freeHead; i != -1; i = a.slots[i].next {
+		if i < 0 || int(i) >= a.count {
+			t.Fatalf("free list holds out-of-range index %d (count=%d)", i, a.count)
+		}
+		if seen[i] {
+			t.Fatalf("free list revisits slot %d — the list has a cycle, so Acquire "+
+				"would hand this slot to an unbounded number of owners", i)
+		}
+		seen[i] = true
+		if a.slots[i].inUse != 0 {
+			t.Fatalf("slot %d is on the free list but marked inUse", i)
+		}
+	}
+	if want := a.count - len(seen); want != a.live {
+		t.Fatalf("live counter = %d but the free list implies %d live slots", a.live, want)
+	}
+	for i := int32(0); int(i) < a.count; i++ {
+		if seen[i] {
+			continue
+		}
+		if a.slots[i].inUse != 1 {
+			t.Fatalf("slot %d is neither on the free list nor in use — it is leaked", i)
+		}
+		if a.slots[i].next != -1 {
+			t.Fatalf("live slot %d still carries free-list link %d — a stale link on a live "+
+				"slot can splice it back onto the list while an owner holds it",
+				i, a.slots[i].next)
+		}
+	}
+}
+
+// TestArena_FreeListIntegrityAcrossChurn drives a deterministic acquire/release
+// pattern and re-validates the list structure after every operation. The
+// pattern deliberately interleaves partial drains with partial refills so the
+// list is exercised in every state: empty, full, and fragmented.
+func TestArena_FreeListIntegrityAcrossChurn(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	const count = 16
+	a, err := NewArena(24, count)
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = a.Destroy() }()
+
+	checkFreeList(t, a)
+
+	var held []*ArenaSlot
+	// A deliberately uneven pattern: grab more than we give back, then unwind.
+	for _, take := range []int{5, 3, 7, 1, 4} {
+		for i := 0; i < take; i++ {
+			s, acqErr := a.Acquire()
+			if acqErr != nil {
+				break // full is a legitimate outcome; the list must still be sane
+			}
+			held = append(held, s)
+			checkFreeList(t, a)
+		}
+		// Give back every other one, from the front, so the list fragments.
+		var keep []*ArenaSlot
+		for i, s := range held {
+			if i%2 == 0 {
+				if relErr := s.Release(); relErr != nil {
+					t.Fatalf("Release: %v", relErr)
+				}
+				checkFreeList(t, a)
+				continue
+			}
+			keep = append(keep, s)
+		}
+		held = keep
+	}
+
+	for _, s := range held {
+		if relErr := s.Release(); relErr != nil {
+			t.Fatalf("final Release: %v", relErr)
+		}
+		checkFreeList(t, a)
+	}
+	if a.LiveCount() != 0 {
+		t.Fatalf("LiveCount after releasing everything = %d, want 0", a.LiveCount())
+	}
+	// Every slot must be reachable again.
+	for i := 0; i < count; i++ {
+		if _, acqErr := a.Acquire(); acqErr != nil {
+			t.Fatalf("re-Acquire %d after full unwind: %v — the list lost a slot", i, acqErr)
+		}
+	}
+	checkFreeList(t, a)
+}
+
 // TestArena_FreeListNoDuplicateSlot is the invariant the free stack must hold:
 // an index is on it at most once, so no two live handles can ever address the
 // same slot. Concurrently double-Releasing one handle is the way to break it —
@@ -27,25 +135,48 @@ func TestArena_FreeListNoDuplicateSlot(t *testing.T) {
 		if acqErr != nil {
 			t.Fatalf("round %d: Acquire: %v", round, acqErr)
 		}
+		// All releasers are held at a barrier and let go at once. The bug needs
+		// two goroutines INSIDE Release at the same time; started one by one
+		// they tend to finish one by one, every releaser after the first fails
+		// the early liveness check, and whether the regression is caught comes
+		// down to scheduling luck. Measured, not assumed: with the guard in
+		// Release deleted, the barrier-less version of this test went GREEN on a
+		// single run and only failed once the run count was raised. With the
+		// barrier it fails on round 0, plain and under -race. A test for a race
+		// should not need to be run five times to see it.
 		var wg sync.WaitGroup
+		start := make(chan struct{})
 		for i := 0; i < 4; i++ {
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
+				<-start
 				_ = slot.Release()
 			}()
 		}
+		close(start)
 		wg.Wait()
 
 		// Exactly one slot came back: the arena must hold `count` slots total,
 		// no more (a duplicated index) and no fewer (a lost one).
+		//
+		// The drain is BOUNDED. The free list is intrusive, so a double push
+		// makes slots[i].next point back into the list and Acquire would keep
+		// handing out slots forever, never returning ErrArenaFull. An unbounded
+		// loop here would hang the suite instead of reporting the regression —
+		// and a test that hangs on the exact bug it exists to catch is worse
+		// than no test.
 		var live []*ArenaSlot
-		for {
+		for len(live) <= count {
 			s, e := a.Acquire()
 			if e != nil {
 				break
 			}
 			live = append(live, s)
+		}
+		if len(live) > count {
+			t.Fatalf("round %d: arena kept handing out slots past its capacity of %d — "+
+				"the free list has a cycle (an index was pushed twice)", round, count)
 		}
 		if len(live) != count {
 			t.Fatalf("round %d: arena handed out %d slots, want %d "+
@@ -64,6 +195,7 @@ func TestArena_FreeListNoDuplicateSlot(t *testing.T) {
 				t.Fatalf("round %d: Release: %v", round, relErr)
 			}
 		}
+		checkFreeList(t, a)
 	}
 }
 

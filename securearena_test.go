@@ -539,19 +539,58 @@ func TestArena_DestroyRacesRelease(t *testing.T) {
 // GC leaf-struct property (documentation test)
 // ---------------------------------------------------------------------------
 
-// arenaSlotSize returns the size of slotMeta in bytes.
-// Used to verify the cache-line padding in tests.
+// arenaSlotSize returns the size of slotMeta in bytes — the arena's entire
+// per-slot Go-heap cost, since the free list is intrusive and the canary zones
+// are a descriptor.
 func arenaSlotSize() uintptr {
 	return unsafe.Sizeof(slotMeta{})
 }
 
-// TestArena_SlotStructSize verifies that slotMeta is exactly 64 bytes —
-// one cache line — confirming the pointer-free leaf and padding invariants.
+// TestArena_SlotStructSize pins slotMeta at 16 bytes with no wasted padding.
+//
+// This used to pin 64 — one cache line — against false sharing "between
+// concurrent slot operations". There are none: every access to every field runs
+// under arena.alloc, so the padding cost 48 bytes per slot of GC-visible heap
+// to protect a race that cannot occur. What replaced it is the invariant below,
+// which is the property that actually matters.
 func TestArena_SlotStructSize(t *testing.T) {
 	t.Parallel()
-	const want = 64
+	const want = 16
 	if got := int(arenaSlotSize()); got != want {
-		t.Errorf("slotMeta size = %d bytes, want %d (one cache line)", got, want)
+		t.Errorf("slotMeta size = %d bytes, want %d", got, want)
+	}
+	// No tail padding: the fields must exactly fill the struct, or something
+	// was added without being accounted for.
+	sum := unsafe.Sizeof(uint64(0)) + unsafe.Sizeof(int32(0)) + unsafe.Sizeof(uint32(0))
+	if arenaSlotSize() != sum {
+		t.Errorf("slotMeta has %d bytes of padding — fields sum to %d, struct is %d",
+			arenaSlotSize()-sum, sum, arenaSlotSize())
+	}
+}
+
+// TestArena_HeapMetadataStaysUnderLockedSlab pins the ordering guarantee that
+// NewArena's allocation order depends on.
+//
+// NewArena requests the locked slab FIRST because that allocation fails by
+// returning an error, while the Go-heap slot index that follows can only fail
+// by runtime.throw — unrecoverable, no deferred wipe, no WipeAllSecrets. For
+// that ordering to be worth anything, the allocation that can kill the process
+// must be the smaller of the two for EVERY legal arena shape, including the
+// tightest: a one-byte slot, where the locked cost per slot is only
+// 1+canaryLen.
+//
+// If someone widens slotMeta past canaryLen+1 bytes, the small-slot case
+// silently inverts — the fatal allocation becomes the larger one — and this
+// test is what catches it.
+func TestArena_HeapMetadataStaysUnderLockedSlab(t *testing.T) {
+	t.Parallel()
+	heapPerSlot := int(arenaSlotSize())
+	lockedPerSlot := 1 + canaryLen // the tightest legal arena: slotSize == 1
+	if heapPerSlot >= lockedPerSlot {
+		t.Errorf("per-slot heap metadata is %d bytes but the smallest legal slot locks only %d — "+
+			"the unrecoverable allocation is no longer smaller than the recoverable one, "+
+			"so NewArena's slab-first ordering stops protecting the process",
+			heapPerSlot, lockedPerSlot)
 	}
 }
 

@@ -79,6 +79,17 @@ func DisableCoreDumps() error {
 // secret can hit whichever ceiling applies; call EnsureMemlockLimit once at
 // startup, before the first allocation.
 //
+// # It disarms an implicit guard
+//
+// A bounded RLIMIT_MEMLOCK is also, incidentally, the thing that stops an
+// oversized [NewArena] from killing the process. NewArena requests its locked
+// slab before its Go-heap slot index precisely because the slab fails by
+// returning an error while a refused heap allocation is runtime.throw — so a
+// small locked budget turns an implausible count into a clean error. Raising
+// the budget raises that ceiling with it, and raising it to unlimited removes
+// it. If you call this and then size arenas (or buffers) from something outside
+// your control — a config file, a peer's request — bound the count yourself.
+//
 // Honesty notes: raising the soft limit up to the hard limit needs no
 // privilege; raising the hard limit needs CAP_SYS_RESOURCE (or root). When
 // the request cannot be met the function raises the soft limit as far as the

@@ -82,6 +82,22 @@ are.
   (swap, dumps, adjacent overflows, stray logs), not against in-process code
   execution.
 
+- **An oversized allocation can kill the process — availability, not
+  confidentiality.** Go has no recoverable out-of-memory. When the OS refuses a
+  heap allocation the runtime calls `throw`: no deferred function runs, nothing
+  `recover`s it, and `WipeAllSecrets` is never reached. A library cannot make
+  `make()` return an error, so the only lever is not attempting the allocation.
+  secmem's containers therefore request their **locked** memory first — that one
+  fails by returning an error — and keep their Go-heap bookkeeping strictly
+  smaller than it, so a request too large for the machine is refused cleanly
+  instead of fatally. That guard is proportional to `RLIMIT_MEMLOCK`: raise the
+  limit to unlimited, as many container images do, and a large enough
+  `NewArena` count can still reach the fatal path. Nothing is disclosed when it
+  does — the pages were locked, excluded from dumps, and Go does not write a
+  core by default — so this is a denial-of-service bound on sizes taken from an
+  untrusted source, not a leak. Bound them yourself, and see
+  `EnsureMemlockLimit`, which raises the ceiling this guard rests on.
+
 - **GC timing of `runtime/secret` heap erasure.** When `Scrub` runs under
   `GOEXPERIMENT=runtimesecret`, heap allocations made inside it are erased once
   the collector observes them unreachable — best-effort timing, never a

@@ -18,12 +18,15 @@ type janitorRegion struct {
 	region secRegion
 	mu     *bufferRWLock
 
-	// canaryZones are [start,end) offsets into region.inner that were filled
-	// with the canary pattern at allocation time (a buffer's tail slack; an
-	// arena's inter-slot strips and tail). wipeAndFree verifies them — after
+	// canary describes the [start,end) offsets into region.inner that were
+	// filled with the canary pattern at allocation time (a buffer's tail slack;
+	// an arena's inter-slot strips and tail). wipeAndFree verifies them — after
 	// restoring RW protection, before the wipe destroys the evidence — and
 	// reports ErrCanaryViolation without ever skipping the teardown.
-	canaryZones [][2]int
+	//
+	// A descriptor, not a materialized slice: an arena's zones are one per slot
+	// and holding them cost 16 bytes of Go heap per slot. See canaryLayout.
+	canary canaryLayout
 
 	// sealCipher, when non-nil and true, records that the region's contents
 	// are currently CryptProtectMemory ciphertext (Windows sealed state).
@@ -55,7 +58,7 @@ type janitor struct {
 	// already zero; the entry exists only so a later explicit Destroy — or the
 	// GC cleanup once the wrapper is unreachable — can reclaim the address
 	// space instead of leaking the mapping until process exit. Entries are
-	// stored with canaryZones and sealCipher cleared: the wipe already
+	// stored with the canary layout and sealCipher cleared: the wipe already
 	// destroyed the canary pattern, so re-verifying it would report a spurious
 	// ErrCanaryViolation.
 	wiped map[uintptr]janitorRegion
@@ -85,17 +88,17 @@ func regionKey(region secRegion) uintptr {
 }
 
 // register records one live secret mapping and returns its janitor key.
-// canaryZones may be nil when the allocation has no armed slack; sealCipher
-// may be nil when the owner has no seal-cipher state (arenas).
-func (j *janitor) register(region secRegion, canaryZones [][2]int, mu *bufferRWLock, sealCipher, wiped *atomic.Bool) uintptr {
+// canary may be the zero layout when the allocation has no armed slack;
+// sealCipher may be nil when the owner has no seal-cipher state (arenas).
+func (j *janitor) register(region secRegion, canary canaryLayout, mu *bufferRWLock, sealCipher, wiped *atomic.Bool) uintptr {
 	key := regionKey(region)
 	j.mu.Lock()
 	j.regions[key] = janitorRegion{
-		region:      region,
-		mu:          mu,
-		canaryZones: canaryZones,
-		sealCipher:  sealCipher,
-		wiped:       wiped,
+		region:     region,
+		mu:         mu,
+		canary:     canary,
+		sealCipher: sealCipher,
+		wiped:      wiped,
 	}
 	j.mu.Unlock()
 	return key
@@ -148,7 +151,7 @@ func (j *janitor) takeAny(key uintptr) (janitorRegion, bool) {
 // seal-cipher flag are cleared: the wipe destroyed the canary pattern, and
 // re-verifying zeroed slack would report a violation that never happened.
 func (j *janitor) retainWiped(key uintptr, region janitorRegion) {
-	region.canaryZones = nil
+	region.canary = canaryLayout{}
 	region.sealCipher = nil
 	j.mu.Lock()
 	j.wiped[key] = region
@@ -221,11 +224,8 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	// this branch is only reached by the emergency-wipe and GC-cleanup paths.
 	var canaryErr error
 	if region.sealCipher == nil || !region.sealCipher.Load() {
-		for _, zone := range region.canaryZones {
-			if !canaryIntact(region.region.inner[zone[0]:zone[1]]) {
-				canaryErr = ErrCanaryViolation
-				break
-			}
+		if !region.canary.intact(region.region.inner) {
+			canaryErr = ErrCanaryViolation
 		}
 	}
 

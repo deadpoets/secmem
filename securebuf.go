@@ -198,14 +198,11 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 	// The canary zone is the slack between the caller's size and the page
 	// boundary. cap(data) is clamped to the original size and survives
 	// Truncate re-slices, so the zone stays correct for the buffer's lifetime.
-	var zones [][2]int
-	if cap(data) < len(region.inner) {
-		zones = [][2]int{{cap(data), len(region.inner)}}
-	}
+	canary := bufferCanary(cap(data), len(region.inner))
 
 	// Register with the emergency janitor first. The janitor stores raw mapping
 	// metadata (not *SecureBuffer), so this does not keep sb reachable for GC.
-	sb.janitorKey = emergencyJanitor.register(region, zones, sb.mu, sb.sealCipher, sb.wiped)
+	sb.janitorKey = emergencyJanitor.register(region, canary, sb.mu, sb.sealCipher, sb.wiped)
 
 	// Safety-net cleanup: if the caller forgets Destroy(), this wipes and frees
 	// the mmap'd region when the *SecureBuffer is GC'd.
