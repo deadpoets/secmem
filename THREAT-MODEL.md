@@ -90,8 +90,12 @@ are.
   secmem's containers therefore request their **locked** memory first — that one
   fails by returning an error — and keep their Go-heap bookkeeping strictly
   smaller than it, so a request too large for the machine is refused cleanly
-  instead of fatally. That guard is proportional to `RLIMIT_MEMLOCK`: raise the
-  limit to unlimited, as many container images do, and a large enough
+  instead of fatally. The residue is bounded rather than eliminated: a count is
+  fatal only in the band where the slab fits and the bookkeeping does not, which
+  is `1 + heap/locked` wide in count — under a factor of two for every arena
+  shape, because the per-slot heap cost is held below the per-slot locked cost.
+  Reaching that band needs an unbounded `RLIMIT_MEMLOCK`: raise the limit to
+  unlimited, as many container images do, and a large enough
   `NewArena` count can still reach the fatal path. Nothing is disclosed when it
   does — the pages were locked, excluded from dumps, and Go does not write a
   core by default — so this is a denial-of-service bound on sizes taken from an

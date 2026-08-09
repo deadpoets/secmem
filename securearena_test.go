@@ -579,9 +579,15 @@ func TestArena_SlotStructSize(t *testing.T) {
 // tightest: a one-byte slot, where the locked cost per slot is only
 // 1+canaryLen.
 //
-// If someone widens slotMeta past canaryLen+1 bytes, the small-slot case
-// silently inverts — the fatal allocation becomes the larger one — and this
-// test is what catches it.
+// What the strict inequality actually buys is a bound. A count is fatal only in
+// the band where the slab fits but the index does not, and that band is
+// 1 + heap/locked wide in count regardless of how much memory the machine has.
+// Keeping heap below locked holds it under 2x for every arena shape; at the old
+// 88 bytes per slot it reached 6.2x for one-byte slots.
+//
+// So if someone widens slotMeta past canaryLen+1 bytes, the small-slot case
+// silently inverts — the fatal allocation becomes the larger one, and the band
+// grows without limit — and this test is what catches it.
 func TestArena_HeapMetadataStaysUnderLockedSlab(t *testing.T) {
 	t.Parallel()
 	heapPerSlot := int(arenaSlotSize())

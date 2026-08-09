@@ -313,10 +313,24 @@ type ArenaSlot struct {
 // per-slot locked cost (16 < slotSize+16 for every legal slotSize) so this
 // ordering holds for every shape of arena, not just large-slot ones.
 //
-// That guard weakens as the locked budget rises: an arena with a memlock budget
-// of a third of RAM can lock its slab successfully and then die on the heap
-// index. If you raise RLIMIT_MEMLOCK to unlimited — which many container
-// configurations do by default — bound count yourself. See [EnsureMemlockLimit].
+// The guard is not absolute, and it is worth knowing exactly how far it goes.
+// A count can still be fatal if the slab fits and the index does not, which for
+// usable memory M is the band
+//
+//	M/(locked+heap)  <  count  <=  M/locked
+//
+// whose width does not depend on M at all: it is 1 + heap/locked. Because heap
+// (16) is held below locked (slotSize+16, so at least 17), that ratio is always
+// under 2 — the band of counts that can kill the process is now narrower than a
+// factor of two, for every arena shape. It was up to 6.2x wide when the index
+// cost 88 bytes per slot. That bound, not the byte count, is what
+// TestArena_HeapMetadataStaysUnderLockedSlab is really pinning.
+//
+// Reaching the band at all takes an unbounded locked budget: on a default
+// RLIMIT_MEMLOCK the slab is refused long before memory is at risk. If you raise
+// the limit to unlimited — which many container configurations do by default —
+// and size arenas from something you do not control, bound count yourself. See
+// [EnsureMemlockLimit].
 func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	if slotSize <= 0 {
 		return nil, fmt.Errorf("secmem.NewArena: slotSize must be > 0, got %d", slotSize)
