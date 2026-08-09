@@ -147,8 +147,8 @@ Three regimes, and they differ by orders of magnitude:
 |---|---|---|
 | Allocation / teardown | syscalls — `mmap`, `mprotect`, `mlock`, 4× `madvise`, `munlock`, `munmap` | `BenchmarkNewBuffer`, `BenchmarkNewEmptyBuffer`, `BenchmarkNewDestroy`, `BenchmarkScope` |
 | Wipe | memory bandwidth, plus the cache-flush loop | `BenchmarkSecureWipeSlice`, `BenchmarkSecureWipe_4K`, `BenchmarkSecureWipe_64K` |
-| Borrow / access | one uncontended lock | `BenchmarkWithBytesErr`, `BenchmarkByteAt`, `BenchmarkCopyOut`, `BenchmarkBufferRWLock_*` |
-| Contention | the shared lock — never the data | `BenchmarkArenaBorrowParallel`, `BenchmarkArenaChurnParallel`, `BenchmarkBufferRWLock_RLockUnlock_Parallel` (run with `-cpu 1,2,4,8,16`) |
+| Borrow / access | a handful of atomic operations | `BenchmarkWithBytesErr`, `BenchmarkByteAt`, `BenchmarkCopyOut`, `BenchmarkBufferRWLock_*` |
+| Contention | one shared cache line — never a lock, never the data | `BenchmarkArenaBorrowParallel`, `BenchmarkArenaChurnParallel`, `BenchmarkBufferRWLock_RLockUnlock_Parallel` (run with `-cpu 1,2,4,8,16`) |
 
 The design guidance falls straight out of that ordering: **allocate once,
 borrow often.** A caller who allocates per operation pays syscall cost per
@@ -183,21 +183,49 @@ indicative — see rule 3 below):
 
 Two conclusions worth keeping:
 
-1. The lock primitive dominates, and it is mutex-based **by design** — `sync.Cond`
+1. The lock primitive dominated, and it was mutex-based **by design** — `sync.Cond`
    is what makes every blocking state durably blocked under `testing/synctest`
-   (see `buflock.go`). This is a deliberate trade, not an oversight, and the
-   scaling cost of it is now a number rather than an assumption.
-2. A lock-free redesign of the slot metadata — the thing the cache-line padding
-   was reserved for — would have targeted the smaller ~15% and could not have
-   changed the shape of the curve. Cache-line padding targeted nothing at all:
-   every access to `slots[…]` is under `alloc`, so no two cores are ever in
-   there at once. The padding is gone; if anyone revisits the lock-free idea,
-   `BenchmarkBufferRWLock_RLockUnlock_Parallel` is the number to beat, not this
-   one.
+   (see `buflock.go`). The measurement did not overturn that trade; it showed
+   the trade was drawn in the wrong place. Blocking must go through `sync.Cond`
+   for synctest to observe it — but a fast path that *succeeds* never blocks,
+   so nothing requires the mutex on the success path. That distinction is what
+   the fix exploits.
+2. Cache-line padding on the slot metadata targeted nothing at all — every
+   *write* to `slots[…]` is serialized under `alloc`, so write-write ping-pong
+   cannot occur — and a lock-free redesign of that metadata alone would have
+   targeted the smaller ~15%.
 
-The actionable guidance falls out of it: **shard**. Separate arenas share no
-lock and do scale; one process-wide arena serializes every borrow in the
-process.
+### What fixing it changed, measured
+
+Both hot-path mutexes are gone. `bufferRWLock`'s read side became one atomic
+`Add` in each direction, biased negative while a writer is active or waiting so
+a single `Add` both tests for writers and enrolls the reader; everything that
+blocks still blocks in `cond.Wait`, so the four synctest tests pass unchanged
+and writer preference, `tryLock`'s refusal contract, and the drain-before-`munmap`
+guarantee are intact (`buflock.go` carries the full missed-wakeup argument, and
+`TestBufferRWLock_ExclusionStress` hammers it on real threads). The arena's
+liveness check stopped taking `alloc` by folding liveness into the generation's
+parity — even = free, odd = live — so one atomic load answers released,
+recycled, and live at once, with the ABA guard tightened rather than weakened.
+
+Same box, same method, before → after:
+
+- Uncontended borrow: 30.4 → 12.6 ns. Contended at 16 cores: 180.9 → 47.8 ns.
+- The **shape** is the real result: per-op cost used to grow monotonically with
+  cores (29.7 / 49.8 / 89.9 / 171.7 / 180.9 ns across 1/2/4/8/16); it now steps
+  once at 2 cores and holds flat (11.6 / 42.6 / 43.6 / 50.3 / 47.8 ns). The
+  step is the cache-line transfer on the shared reader count — the physics of
+  any centralized counter, roughly 4× the uncontended cost here — not lock
+  convoying, which is what the monotonic growth was.
+- The lock primitive alone: 22.5 → 11.8 ns uncontended; 152.9 → 31.4 ns
+  contended at 16.
+- Churn (`Acquire`+`Release`) moved 444 → 399 ns at 16 cores and remains
+  serialized on `alloc` **by design** — lifecycle mutates the free list. That is
+  the pattern "allocate once, borrow often" already steers away from.
+
+The guidance softens but stands: for true linear scaling, **shard**. Separate
+arenas share no counter and no metadata lines. What sharding buys now is escape
+from one bouncing cache line rather than from a serializing mutex.
 
 `secmem-crypto`'s signer benchmarks are deliberately paired with a stdlib
 counterpart (`BenchmarkECDSASignerSignP256` next to
