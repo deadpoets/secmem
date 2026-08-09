@@ -41,37 +41,37 @@
 //   - mu (bufferRWLock): rLock held during any WithBytes/WithBytesErr callback
 //     on any slot.  Exclusive lock held only by Destroy.  Ensures no callback
 //     races with munmap.
-//   - alloc (sync.Mutex): guards the slot bookkeeping — inUse, generation, the
-//     free list and the destroyed flag.  Taken by Acquire, Release, IsLive and
-//     LiveCount, and also by WithBytes/WithBytesErr for their liveness check.
+//   - alloc (sync.Mutex): serializes slot lifecycle — the free list, the live
+//     counter, and every WRITE to a slot's generation.  Taken by Acquire,
+//     Release and LiveCount only.  The borrow path and IsLive do NOT take it:
+//     liveness is one atomic load of the parity-encoded generation, which is
+//     what lets borrows of distinct slots scale instead of serializing.
 //     Never held across a callback.
 //
 // Each ArenaSlot should be owned by a single goroutine at a time.  Concurrent
 // access to the same slot is not prevented by internal locking — callers are
 // responsible for external synchronization if needed.
 //
-// # It is a memory optimization, not a throughput one
+// # Concurrent borrow cost, measured
 //
-// The arena bounds the OS and GC cost of holding N secrets.  It does not make
-// concurrent access to them scale, and measurement says it degrades: goroutines
-// borrowing DISTINCT slots — sharing no secret, no slot and no free-list node —
-// still serialize.  A borrow takes the arena's alloc mutex for its liveness
-// check, then bufferRWLock, whose rLock takes a mutex of its own to increment a
-// reader count (see buflock.go for why it is built that way).  That is three
-// uncontended-mutex round trips per borrow, every one of them on state shared
-// by the entire arena.
+// A borrow is now lock-free until the region lock: one atomic load of the
+// slot's parity-encoded generation (the liveness check), then bufferRWLock's
+// atomic-Add read path (see buflock.go). The first version of this path took
+// TWO mutexes — the arena's alloc for the liveness check and the lock's own for
+// its reader count — and measurement showed goroutines borrowing DISTINCT slots
+// serializing on them: per-op cost grew ~6x from one core to sixteen, with
+// aggregate throughput falling as cores were added. Both mutexes are gone from
+// the path and the curve now steps once (shared-cache-line transfer on the
+// reader count, roughly 4x the uncontended cost on the measured box) and stays
+// flat from 2 through 16 cores. Numbers, machine, and history in TESTING.md;
+// take your own before acting on them.
 //
-// BenchmarkArenaBorrowParallel measures it against
-// BenchmarkBufferRWLock_RLockUnlock_Parallel across core counts.  On the one
-// box they have been run on, per-operation cost grew several-fold from one core
-// to sixteen and the lock primitive alone accounted for most of that — so the
-// alloc mutex is the smaller half, and the "future lock-free slot metadata"
-// this type's comments used to anticipate would have optimized the wrong one.
-// Numbers and machine are in TESTING.md; take your own before acting on them.
-//
-// Design around it rather than against it: shard, giving each group of
-// contending goroutines its own arena, instead of routing a whole process
-// through one.  Separate arenas share no lock and do scale.
+// What remains shared per borrow is one cache line's worth of atomics — the
+// physics of any centralized reader count. If a workload needs true linear
+// scaling, shard: separate arenas share no lock, no counter, and no metadata
+// lines, and each shard keeps every guarantee. Acquire/Release (slot lifecycle)
+// still serialize on the alloc mutex by design — churn is the pattern the
+// "allocate once, borrow often" guidance already steers away from.
 //
 // # Neighbor-Slot Isolation
 //
@@ -101,52 +101,58 @@ import (
 // # Why there is no cache-line padding
 //
 // This struct used to be padded to 64 bytes to give each slot its own cache
-// line, against false sharing "between concurrent slot operations". There are
-// none: every read and every write of every field below happens with
-// arena.alloc held (Acquire, Release, WithBytesErr's liveness check, IsLive).
-// A mutex that serializes all of them leaves no two cores touching adjacent
-// entries, so the padding protected nothing that could happen — it was
-// forward-looking, for a lock-free upgrade that has not been written.
-//
-// It was not free: 48 bytes per slot of ordinary, swappable, GC-visible Go
-// heap, which for a 32-byte slot was more than the secret itself. Since the
-// arena exists precisely to make per-secret overhead small, paying a 4x
-// metadata multiplier for a hypothetical future rewrite is the wrong trade.
-// If that rewrite lands, padding comes back with it — measured against the
-// implementation that needs it, not guessed at years early. Note also that the
+// line, against false sharing "between concurrent slot operations". What
+// concurrency there is does not produce the write-write ping-pong that padding
+// exists to stop: every WRITE to a slot's metadata happens under arena.alloc
+// (Acquire and Release), serialized process-wide, so no two cores ever write
+// adjacent entries at once. The borrow path READS generation atomically without
+// the lock — that is what makes borrowing scale — and concurrent reads of a
+// shared line cost nothing. The residual effect is that a lifecycle write to
+// one slot invalidates the line for readers of its three neighbours (four
+// 16-byte entries per 64-byte line): one extra cache miss per neighbour
+// acquire/release, bounded by the alloc serialization. Padding would erase that
+// at 4x the memory — 48 bytes per slot of swappable, GC-visible heap, more than
+// a 32-byte secret itself — which is the wrong trade for a type whose purpose
+// is small per-secret overhead. If a measured workload ever proves otherwise,
+// padding comes back with the measurement attached. Note also that the
 // intrusive free list below is the canonical shape for a lock-free Treiber
 // stack, whose contention is on the head rather than on these entries.
 type slotMeta struct {
-	// generation is incremented on every Acquire and is the ABA guard: a stale
-	// ArenaSlot handle whose generation no longer matches is refused by
-	// WithBytes* and Release.
+	// generation is the slot's state word and the ABA guard in one: it counts
+	// acquisitions AND encodes liveness in its low bit. Even = free, odd =
+	// live. Acquire increments it even→odd and hands the odd value to the
+	// ArenaSlot; Release increments it odd→even. A handle is therefore valid
+	// exactly while the slot's generation still equals the handle's — released
+	// (now even) and recycled (a different odd) both mismatch — so the borrow
+	// path's whole liveness check is ONE atomic load and compare, with no lock.
 	//
-	// It is uint64, not uint32, because the guard has to outlive the counter.
-	// The free list is LIFO, so a workload that acquires and releases one slot
-	// at a time increments the SAME slot's counter every cycle — at the ~320
-	// ns/op this arena benchmarks at, a 32-bit counter wraps in about 23
-	// minutes of churn, well inside the lifetime of the long-running server
-	// this type exists for. Past the wrap a stale handle matches again and can
-	// read, overwrite, or free a slot another owner is live in. 64 bits is not
-	// reachable.
-	generation uint64
+	// atomic.Uint64 rather than a plain uint64 for two reasons. The borrow path
+	// and IsLive read it outside arena.alloc while Acquire/Release write it
+	// under alloc, which without atomics is a data race. And on 32-bit
+	// platforms (the executed GOARCH=386 leg) a 64-bit atomic requires 8-byte
+	// alignment that a plain uint64 field at the mercy of slice-element layout
+	// cannot guarantee — atomic.Uint64 carries the align64 marker that makes
+	// the compiler enforce it.
+	//
+	// 64 bits, not 32, because the guard has to outlive the counter. The free
+	// list is LIFO, so churn on one slot increments the SAME counter twice per
+	// acquire/release cycle; a 32-bit counter would wrap in minutes on a busy
+	// server, after which a stale handle matches again and can read, overwrite,
+	// or free a slot another owner is live in. 64 bits is not reachable.
+	generation atomic.Uint64
 
 	// next is the intrusive free-list link: the index of the next free slot, or
-	// -1 to terminate. Meaningful only while inUse == 0; Acquire sets it to -1
-	// on the way out so a live slot never carries a stale link.
+	// -1 to terminate. Meaningful only while the slot is free (even
+	// generation); Acquire sets it to -1 on the way out so a live slot never
+	// carries a stale link. Only ever accessed under arena.alloc.
 	//
-	// int32 rather than int because it costs nothing here — 8-aligning
-	// generation leaves exactly 8 bytes for next and inUse together — and
-	// because holding the link inside slotMeta is what let the separate
-	// free []int stack be deleted. That stack was another 8 bytes per slot for
-	// information this field already implies. The int32 width is why NewArena
-	// rejects count > math.MaxInt32 explicitly rather than overflowing quietly.
+	// int32 because holding the link inside slotMeta is what let the separate
+	// free []int stack be deleted, and its width is why NewArena rejects
+	// count > math.MaxInt32 explicitly rather than overflowing quietly.
+	// The struct is 12 bytes of fields in a 16-byte layout — the 4 trailing pad
+	// bytes are the floor set by generation's 8-byte alignment, still at the
+	// 16-byte pin and still under the 17 locked bytes of the smallest slot.
 	next int32
-
-	// inUse is uint32 (not bool) to allow a future lock-free upgrade to
-	// atomic.Uint32; 1 = live (acquired), 0 = free; accessed under arena.alloc.
-	// It occupies padding that 8-aligning generation would have wasted anyway.
-	inUse uint32
 }
 
 // SecureArena is a single mmap'd slab providing N fixed-size secret slots.
@@ -170,8 +176,9 @@ type SecureArena struct {
 	// blocking states are durably blocked under testing/synctest.
 	mu *bufferRWLock
 
-	// alloc guards the destroyed flag and slots[i].inUse bookkeeping.
-	// Never held across a callback or across mu.lock.
+	// alloc serializes slot lifecycle: the free list, the live counter, and
+	// every write to a slot's generation. Never held across a callback or
+	// across mu.lock.
 	alloc sync.Mutex
 
 	// region is the guarded slab: inner (wipe/lock/protect target, canary
@@ -197,9 +204,9 @@ type SecureArena struct {
 	// Release O(1) rather than a scan over slots. Guarded by alloc.
 	//
 	// Invariant: a slot is reachable from freeHead at most once, and exactly
-	// when its slots[i].inUse == 0. Release enforces it by re-checking inUse
-	// and the generation under alloc before pushing, so a double Release of the
-	// same handle cannot hand the same slot to two live owners.
+	// when its generation is EVEN (see slotMeta.generation). Release enforces
+	// it by re-checking the generation under alloc before pushing, so a double
+	// Release of the same handle cannot hand the same slot to two live owners.
 	//
 	// That re-check is load-bearing in a way it was not when the free list was
 	// a slice: pushing an index twice onto a slice produced a duplicate entry,
@@ -242,9 +249,12 @@ type SecureArena struct {
 	// Immutable after construction; read by Capabilities without any lock.
 	backing allocInfo
 
-	// destroyed mirrors region.inner == nil under alloc, allowing early
-	// rejection of Acquire without acquiring mu.
-	destroyed bool
+	// destroyed is set by Destroy BEFORE it takes the exclusive lock, so
+	// Acquire and the borrow path can fail fast with ErrArenaDestroyed instead
+	// of queueing behind a Destroy that is draining callbacks. Atomic because
+	// the borrow path reads it without any lock; the authoritative gate is
+	// still region.inner == nil under mu.
+	destroyed atomic.Bool
 
 	// wiped is set by WipeAllSecrets when the slab was wiped in place and
 	// deliberately left mapped. Shared with janitorRegion — the emergency path
@@ -431,7 +441,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 // Destroy wipes the entire slab and releases the mmap'd region.
 //
 // Steps:
-//  1. Mark arena destroyed under alloc (blocks new Acquire).
+//  1. Mark arena destroyed (atomic; new Acquire and borrows fail fast).
 //  2. Acquire exclusive mu lock (waits for all in-flight callbacks to return).
 //  3. Wipe full raw region (REP STOSB + CLFLUSH on amd64).
 //  4. Madvise DONTNEED.
@@ -449,10 +459,9 @@ func (a *SecureArena) Destroy() error {
 		return nil
 	}
 
-	// Mark destroyed so new Acquire calls fail fast without acquiring mu.
-	a.alloc.Lock()
-	a.destroyed = true
-	a.alloc.Unlock()
+	// Mark destroyed so new Acquire and WithBytes calls fail fast without
+	// blocking behind the exclusive lock this Destroy is about to take.
+	a.destroyed.Store(true)
 
 	// Acquire exclusive lock — waits for all in-flight WithBytes callbacks,
 	// and for any Destroy already running.
@@ -483,10 +492,7 @@ func (a *SecureArena) IsDestroyed() bool {
 	if a == nil {
 		return true
 	}
-	a.alloc.Lock()
-	d := a.destroyed
-	a.alloc.Unlock()
-	return d
+	return a.destroyed.Load()
 }
 
 // ---------------------------------------------------------------------------
@@ -505,7 +511,7 @@ func (a *SecureArena) Acquire() (*ArenaSlot, error) {
 	a.alloc.Lock()
 	defer a.alloc.Unlock()
 
-	if a.destroyed {
+	if a.destroyed.Load() {
 		return nil, ErrArenaDestroyed
 	}
 	if a.wiped.Load() {
@@ -518,13 +524,14 @@ func (a *SecureArena) Acquire() (*ArenaSlot, error) {
 	}
 	a.freeHead = a.slots[i].next
 	// Clear the link on the way out: a live slot must not carry a stale index.
-	// It costs one store and makes "reachable from freeHead" and "inUse == 0"
-	// checkable against each other rather than merely believed.
+	// It costs one store and makes "reachable from freeHead" and "generation is
+	// even" checkable against each other rather than merely believed.
 	a.slots[i].next = -1
-	a.slots[i].inUse = 1
-	a.slots[i].generation++
+	// even -> odd: the slot is live, and the odd value IS the handle's proof of
+	// ownership. See slotMeta.generation for the parity contract.
+	gen := a.slots[i].generation.Add(1)
 	a.live++
-	return &ArenaSlot{arena: a, idx: i, generation: a.slots[i].generation}, nil
+	return &ArenaSlot{arena: a, idx: i, generation: gen}, nil
 }
 
 // LiveCount returns the number of currently acquired (live) slots.
@@ -628,17 +635,21 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 		return ErrSlotReleased
 	}
 
-	// Check liveness under alloc — fast path before acquiring the arena RLock.
-	s.arena.alloc.Lock()
-	if s.arena.destroyed {
-		s.arena.alloc.Unlock()
+	// Liveness check — two atomic loads, NO lock. This used to take arena.alloc,
+	// which made every borrow in the arena serialize on one mutex even when the
+	// goroutines shared no slot; measured, that mutex was the residual wall
+	// after the rw-lock fast path landed (see TESTING.md). The parity-encoded
+	// generation makes the lock unnecessary: one load answers both "released?"
+	// (now even, mismatch) and "recycled?" (different odd, mismatch), which is
+	// exactly what the inUse+generation pair answered under the mutex. The
+	// check is advisory either way — the authoritative destroy gate is the
+	// region-nil test under rLock below, and always was.
+	if s.arena.destroyed.Load() {
 		return ErrArenaDestroyed
 	}
-	if s.arena.slots[s.idx].inUse == 0 || s.arena.slots[s.idx].generation != s.generation {
-		s.arena.alloc.Unlock()
+	if s.arena.slots[s.idx].generation.Load() != s.generation {
 		return ErrSlotReleased
 	}
-	s.arena.alloc.Unlock()
 
 	// Hold arena RLock for the callback — blocks Destroy from unmapping.
 	s.arena.mu.rLock()
@@ -677,17 +688,17 @@ func (s *ArenaSlot) Release() error {
 		return nil
 	}
 
-	// Early idempotent check under alloc — no-op if already free or stale handle.
-	s.arena.alloc.Lock()
-	if s.arena.slots[s.idx].inUse == 0 || s.arena.slots[s.idx].generation != s.generation {
-		s.arena.alloc.Unlock()
+	// Early idempotent check — no-op if already free or stale handle. One
+	// atomic load: a released slot's generation is even (mismatch) and a
+	// recycled one's is a different odd (mismatch).
+	if s.arena.slots[s.idx].generation.Load() != s.generation {
 		return nil
 	}
-	s.arena.alloc.Unlock()
 
 	// Verify + wipe FIRST — under rLock to prevent Destroy from unmapping
-	// mid-wipe. The slot is still marked inUse=1, so no other goroutine can
-	// Acquire the same index until we mark it free below.
+	// mid-wipe. The slot's generation is still the handle's odd value, so it is
+	// not on the free list and no other goroutine can Acquire the same index
+	// until the commit below flips it even.
 	var violated bool
 	s.arena.mu.rLock()
 	if s.arena.region.inner != nil {
@@ -720,17 +731,17 @@ func (s *ArenaSlot) Release() error {
 
 	// NOW mark free — slot is only available for re-Acquire after wipe completes.
 	//
-	// The inUse/generation pair is re-checked under alloc before the slot goes
-	// back on the free list. The early check above is not enough: two goroutines
-	// calling Release on the SAME handle can both pass it, and pushing twice
-	// would put one slot on the list twice — handing the same secret bytes to
-	// two live owners. Setting inUse=0 twice was harmless under the original
-	// linear scan; pushing twice is not, and on the intrusive list it is worse
-	// still: slots[i].next would point at i, and every future Acquire would hand
-	// out that one slot forever. This re-check is the only thing preventing it.
+	// The generation is re-checked under alloc before the slot goes back on the
+	// free list. The early check above is not enough: two goroutines calling
+	// Release on the SAME handle can both pass it, and pushing twice would put
+	// one slot on the list twice — handing the same secret bytes to two live
+	// owners. On the intrusive list it is worse still: slots[i].next would point
+	// at i, and every future Acquire would hand out that one slot forever. The
+	// first committer's odd->even increment is what makes the second's re-check
+	// fail; this re-check is the only thing preventing the cycle.
 	s.arena.alloc.Lock()
-	if s.arena.slots[s.idx].inUse == 1 && s.arena.slots[s.idx].generation == s.generation {
-		s.arena.slots[s.idx].inUse = 0
+	if s.arena.slots[s.idx].generation.Load() == s.generation {
+		s.arena.slots[s.idx].generation.Add(1) // odd -> even: handle dead from here
 		s.arena.live--
 		s.arena.slots[s.idx].next = s.arena.freeHead
 		s.arena.freeHead = s.idx
@@ -754,18 +765,16 @@ func (s *ArenaSlot) Index() int {
 // IsLive reports whether THIS HANDLE is still usable — its slot is acquired and
 // has not been released and handed out again since.
 //
-// The generation is part of the test, not just the in-use flag. Checking the
-// flag alone answers a different question — "is this index in use by anybody" —
-// so a stale handle whose slot had since been re-acquired by another caller
-// reported live, and was then refused by [ArenaSlot.WithBytes] with
-// [ErrSlotReleased] on the very next line. Every other method on the handle
-// validates the generation; this one now agrees with them.
+// The generation carries the whole answer: an earlier version tested an in-use
+// flag alone, which answers a different question — "is this index in use by
+// anybody" — so a stale handle whose slot had since been re-acquired by another
+// caller reported live, and was then refused by [ArenaSlot.WithBytes] with
+// [ErrSlotReleased] on the very next line. The parity-encoded generation makes
+// the correct answer one atomic load: released flips it even, recycling makes
+// it a different odd, and either way it no longer equals the handle's.
 func (s *ArenaSlot) IsLive() bool {
 	if s == nil {
 		return false
 	}
-	s.arena.alloc.Lock()
-	live := s.arena.slots[s.idx].inUse == 1 && s.arena.slots[s.idx].generation == s.generation
-	s.arena.alloc.Unlock()
-	return live
+	return s.arena.slots[s.idx].generation.Load() == s.generation
 }

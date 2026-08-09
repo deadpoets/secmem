@@ -546,25 +546,26 @@ func arenaSlotSize() uintptr {
 	return unsafe.Sizeof(slotMeta{})
 }
 
-// TestArena_SlotStructSize pins slotMeta at 16 bytes with no wasted padding.
+// TestArena_SlotStructSize pins slotMeta at 16 bytes.
 //
 // This used to pin 64 — one cache line — against false sharing "between
-// concurrent slot operations". There are none: every access to every field runs
-// under arena.alloc, so the padding cost 48 bytes per slot of GC-visible heap
-// to protect a race that cannot occur. What replaced it is the invariant below,
-// which is the property that actually matters.
+// concurrent slot operations"; metadata writes are serialized under arena.alloc
+// so that ping-pong cannot occur, and the padding cost 48 bytes per slot of
+// GC-visible heap. The 16-byte layout is 12 bytes of fields plus 4 bytes of
+// tail padding — the floor set by the atomic generation's 8-byte alignment
+// (which the GOARCH=386 leg requires) — asserted exactly so a field added
+// without accounting moves a number a test watches. The invariant test below
+// is the property the size ultimately serves.
 func TestArena_SlotStructSize(t *testing.T) {
 	t.Parallel()
 	const want = 16
 	if got := int(arenaSlotSize()); got != want {
 		t.Errorf("slotMeta size = %d bytes, want %d", got, want)
 	}
-	// No tail padding: the fields must exactly fill the struct, or something
-	// was added without being accounted for.
-	sum := unsafe.Sizeof(uint64(0)) + unsafe.Sizeof(int32(0)) + unsafe.Sizeof(uint32(0))
-	if arenaSlotSize() != sum {
-		t.Errorf("slotMeta has %d bytes of padding — fields sum to %d, struct is %d",
-			arenaSlotSize()-sum, sum, arenaSlotSize())
+	const fields = 8 + 4 // generation (atomic.Uint64) + next (int32)
+	if pad := int(arenaSlotSize()) - fields; pad != 4 {
+		t.Errorf("slotMeta padding = %d bytes, want exactly 4 (fields %d in a %d-byte struct)",
+			pad, fields, arenaSlotSize())
 	}
 }
 
@@ -859,7 +860,8 @@ func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
 // TestArenaSlot_GenerationGuard verifies that a stale ArenaSlot handle
 // (retained after Release + re-Acquire) cannot access the re-acquired slot's
 // data. Without generation tracking, WithBytesErr would incorrectly succeed on
-// the old handle because inUse == 1 (re-acquired by new owner).
+// the old handle because the slot is genuinely live — just for a NEW owner;
+// the generation mismatch (a different odd value) is what refuses it.
 func TestArenaSlot_GenerationGuard(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 1) // single slot — ensures same index is re-used

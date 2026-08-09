@@ -76,8 +76,8 @@ func checkFreeList(t *testing.T, a *SecureArena) {
 				"would hand this slot to an unbounded number of owners", i)
 		}
 		seen[i] = true
-		if a.slots[i].inUse != 0 {
-			t.Fatalf("slot %d is on the free list but marked inUse", i)
+		if a.slots[i].generation.Load()%2 != 0 {
+			t.Fatalf("slot %d is on the free list but its generation is odd (live)", i)
 		}
 	}
 	if want := a.count - len(seen); want != a.live {
@@ -87,8 +87,8 @@ func checkFreeList(t *testing.T, a *SecureArena) {
 		if seen[i] {
 			continue
 		}
-		if a.slots[i].inUse != 1 {
-			t.Fatalf("slot %d is neither on the free list nor in use — it is leaked", i)
+		if a.slots[i].generation.Load()%2 != 1 {
+			t.Fatalf("slot %d is neither on the free list nor live (even generation) — it is leaked", i)
 		}
 		if a.slots[i].next != -1 {
 			t.Fatalf("live slot %d still carries free-list link %d — a stale link on a live "+
