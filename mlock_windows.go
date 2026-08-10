@@ -55,7 +55,12 @@ var (
 // werExcludeFromDumps registers the secret area for exclusion from WER
 // dumps. Returns whether the exclusion is in force (HRESULT S_OK == 0).
 func werExcludeFromDumps(inner []byte) bool {
-	if len(inner) == 0 || len(inner) > int(^uint32(0)) {
+	// The WER API takes a DWORD size, so refuse anything that does not fit in
+	// a uint32. Compare in uint64: int(^uint32(0)) does not compile on 32-bit
+	// Windows (the constant overflows int), and widening len is the only form
+	// that is correct on both word sizes — on 386 the bound is simply
+	// unreachable, which is the right answer there.
+	if len(inner) == 0 || uint64(len(inner)) > uint64(math.MaxUint32) {
 		return false
 	}
 	//nolint:gosec // G103: registering the secret area's address with WER; OS memory, audited.

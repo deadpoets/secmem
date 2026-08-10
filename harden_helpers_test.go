@@ -19,12 +19,23 @@ func TestEnsureMemlockLimit_NeverLowers(t *testing.T) {
 		return
 	}
 
-	// Raise to a modest budget (256 KiB) — above the 64 KiB Linux default,
-	// within any reasonable hard limit, so this needs no privilege.
-	const want = 256 * 1024
+	// Ask for a budget derived from the limit actually in force, not a magic
+	// number. A fixed 256 KiB request used to be "above the 64 KiB Linux
+	// default", but current systemd distributions default RLIMIT_MEMLOCK to
+	// 8 MiB (measured: Ubuntu 26.04/amd64 and Armbian/arm64 both 8 MiB), which
+	// silently turned this into a test of the already-sufficient branch on
+	// every modern box. Probe the live limit so the log says which branch ran.
+	want := uint64(256 * 1024)
+	if cur, err := EnsureMemlockLimit(0); err == nil && cur > 0 {
+		t.Logf("RLIMIT_MEMLOCK in force: %d bytes", cur)
+		if cur >= want {
+			t.Logf("already >= %d — exercising the never-lower path, not the raise path", want)
+		}
+		want = cur + 64*4096 // ask past it so the raise path is attempted where headroom exists
+	}
 	got, err := EnsureMemlockLimit(want)
 	if err != nil {
-		t.Logf("EnsureMemlockLimit(%d) = %d, %v (hard limit or working-set cap reached; not a failure of contract)", want, got, err)
+		t.Logf("EnsureMemlockLimit(%d) = %d, %v (soft==hard or working-set cap; not a failure of contract)", want, got, err)
 	}
 
 	// Now ask for far less — must not lower what we just achieved.

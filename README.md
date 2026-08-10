@@ -68,7 +68,7 @@ subpackage provides a `slog.Handler` wrapper.
 provided · **LOUD** opt-in only. This table is the threat model's spine; see
 [THREAT-MODEL.md](THREAT-MODEL.md) for what none of it protects against.
 
-| Protection | linux/amd64·arm64 (≥5.14) | linux (older / 32-bit) | darwin | windows | other |
+| Protection | linux/amd64·arm64 (≥5.14, secretmem live †) | linux (older / 32-bit / secretmem inert) | darwin | windows | other |
 |---|---|---|---|---|---|
 | Off the Go heap | ✓ memfd_secret | ✓ mmap | ✓ mmap | ✓ VirtualAlloc | **LOUD** heap only |
 | No swap (locked) | ✓ | ✓ mlock | ✓ mlock | ✓ VirtualLock | ✗ |
@@ -78,7 +78,9 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | No THP/KSM secret copies | ✓ madvise | ✓ madvise | n/a | n/a | ✗ |
 | Guaranteed wipe on destroy | ✓ asm + cache flush | ✓ (amd64/arm64 asm; else ⚠ constant-time) | ✓ asm | ✓ asm (amd64) | ⚠ constant-time store |
 | Guard pages + overflow canary | ✓ | ✓ | ✓ | ✓ | ✗ (heap fallback) |
-| Register + stack + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64); else frame-scrub | frame-scrub only | frame-scrub only | frame-scrub / ✗ |
+| Stack-frame scrub inside [`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub) | ✓ asm | ✓ asm on amd64/arm64; ✗ stub elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ stub |
+| No async register dump into the window (preemption signal blocked) | ✓ SIGURG+SIGPROF | ✓ SIGURG+SIGPROF | ✗ no `pthread_sigmask` binding | ✗ unmaskable (`SetThreadContext`) | ✗ |
+| Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
 | Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
@@ -87,9 +89,35 @@ The suite has been executed on real **linux/amd64 and linux/arm64** hardware,
 spanning kernels 5.10 through 7.x (see [`KERNELS.md`](KERNELS.md)). On arm64
 (Ampere Altra), the `memfd_secret` L4 path, the guard-page fault, the
 `/proc/self/mem` isolation proof, and the architecture-specific wipe assembly
-all pass. Whether `memfd_secret` is live depends on the kernel's
-`CONFIG_SECRETMEM`, not the version alone — where it is absent, secmem reports
-"fallback" and uses `mmap`+`mlock`, honestly, per allocation.
+all pass.
+
+The three `Scrub` rows are separate because they degrade separately, and the
+middle one is the newest: on Linux the window blocks Go's preemption signal for
+its duration, so `runtime.asyncPreempt` cannot spill the whole register file
+onto the stack partway through a cipher round. What that reaches — and the
+residue that is a constraint of the Go runtime or the OS rather than something
+this library can fix — is set out in
+[THREAT-MODEL.md](THREAT-MODEL.md#stack-residue-what-scrub-reaches-and-what-it-does-not).
+The stack-frame scrub is asserted by planting markers down the stack and reading
+the abandoned frames back as zero, on linux/amd64 and linux/arm64; the signal
+block is asserted against the kernel's own `SigBlk` for the calling thread, on
+linux/arm64 (Tegra 234, kernel 6.8.12; RK3328, kernel 6.18.35) and linux/amd64
+(kernel 7.0.0).
+
+† Whether `memfd_secret` is live is **not** decided by the kernel version, and
+not even by `CONFIG_SECRETMEM` alone. It needs the kernel to be able to split
+the linear map at page granularity; on arm64 that means `rodata=full` (or
+`DEBUG_PAGEALLOC`, or KFENCE). A measured counter-example: an NVIDIA Jetson
+Orin Nano on kernel 6.8.12 ships `CONFIG_SECRETMEM=y` and still returns
+`ENOSYS`, because `CONFIG_RODATA_FULL_DEFAULT_ENABLED` is off — see
+[`KERNELS.md`](KERNELS.md). Where it is inert, secmem reports "fallback" and
+uses `mmap`+`mlock`, honestly, per allocation. Read
+[`Capabilities`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Capabilities)
+at runtime; do not infer the tier from a config symbol or a `uname`.
+
+On a unified-memory SoC (Tegra, Apple Silicon, AMD APUs, most ARM SBCs) note
+also that locking a page constrains the CPU's view of it, not an on-die
+GPU/NPU sharing the same DRAM — see [`THREAT-MODEL.md`](THREAT-MODEL.md).
 
 Guard pages and the canary are a **memory-safety bug-catcher, not a
 confidentiality control** — they trap an accidental over/under-flow, and do

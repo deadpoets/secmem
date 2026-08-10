@@ -45,6 +45,17 @@
 //   - Guaranteed wipe. On destroy the pages are overwritten by an
 //     architecture-specific assembly routine that the compiler cannot elide.
 //
+//   - Scrub windows. A SecureBuffer governs where a secret lives, not the copies
+//     a computation makes of it on the stack. Scrub burns the stack band its
+//     callback's call tree used, via architecture assembly (amd64, arm64), and
+//     on Linux additionally blocks Go's preemption signal for the duration so
+//     runtime.asyncPreempt cannot spill the entire register file onto that stack
+//     partway through. Under GOEXPERIMENT=runtimesecret on linux/amd64 and
+//     linux/arm64, runtime/secret supersedes the frame wipe and erases the
+//     registers, stack, and heap of the whole call tree. The residue no tier
+//     reaches — and which parts of it are constraints of the Go runtime or the
+//     OS rather than gaps — is enumerated in THREAT-MODEL.md.
+//
 //   - Overflow trap. Each mapping is bracketed by inaccessible guard pages and
 //     its slack is canary-filled, so an adjacent over- or under-flow traps or is
 //     caught on destroy. This is a memory-safety bug-catcher, not a
@@ -55,7 +66,10 @@
 //     WipeAllSecrets call zeroes every one at once. secmem installs no signal
 //     handler itself: call WipeAllSecrets from your own shutdown or panic
 //     handler, or opt into InstallTerminationWipe to wipe on termination
-//     signals.
+//     signals. Wiping a buffer waits for any in-flight borrowing callback to
+//     return — zeroing memory a callback is reading would be a data race — so
+//     a callback that never returns blocks the call. Buffers that are NOT
+//     being borrowed are all wiped before that wait begins; see WipeAllSecrets.
 //
 // # Lifecycle
 //
@@ -86,11 +100,18 @@
 //
 // # RLIMIT_MEMLOCK budget
 //
-// Each SecureBuffer locks at least one page (4 KiB on amd64). The default
-// RLIMIT_MEMLOCK on many Linux systems is 64 KiB, which allows only about six to
-// ten concurrent buffers before allocation fails. A process that holds one
-// buffer per live secret should raise the limit once, before its first
-// allocation — either through the OS:
+// Each SecureBuffer locks at least one page, so the number of concurrent
+// buffers a process can hold is RLIMIT_MEMLOCK divided by the page size — no
+// other term. Read the limit rather than assuming one: `ulimit -l` reports it
+// in KiB, and it varies by two orders of magnitude across ordinary systems.
+// Measured on three Linux boxes, all with 4 KiB pages: two stock installs
+// (Ubuntu 26.04/amd64 and Armbian/arm64) had the systemd default of 8 MiB,
+// giving exactly 2048 buffers; a Jetson with a raised limit of 943 MiB gave
+// proportionally more. The historical 64 KiB kernel default, which allowed only
+// about a dozen buffers, is not what current systemd-based distributions set.
+//
+// A process that holds one buffer per live secret should raise the limit once,
+// before its first allocation — either through the OS:
 //
 //	# /etc/security/limits.d/secmem.conf
 //	someuser soft memlock 262144

@@ -1,10 +1,15 @@
 package secmem
 
 import (
+	"sync"
 	"sync/atomic"
 	"testing"
 	"testing/synctest"
+	"time"
 )
+
+// testSleep is the stress duration, a function so the stress test reads clean.
+func testSleep() { time.Sleep(300 * time.Millisecond) }
 
 // TestBufferRWLock_ConcurrentReaders verifies that multiple goroutines can
 // acquire rLock simultaneously without blocking each other.
@@ -202,4 +207,140 @@ func TestBufferRWLock_Mutex_Semantics(t *testing.T) {
 			t.Fatal("reader never entered after all writers completed")
 		}
 	})
+}
+
+// TestBufferRWLock_TryLock pins tryLock's refusal contract directly (it was
+// previously exercised only through the emergency-wipe path): it must fail
+// while a reader holds the lock, while a writer holds it, and while a writer
+// is merely WAITING — and succeed, exactly once, on an idle lock.
+func TestBufferRWLock_TryLock(t *testing.T) {
+	synctest.Test(t, func(t *testing.T) {
+		l := newBufferRWLock()
+
+		if !l.tryLock() {
+			t.Fatal("tryLock failed on an idle lock")
+		}
+		if l.tryLock() {
+			t.Fatal("tryLock succeeded while a writer (itself) holds the lock")
+		}
+		l.unlock()
+
+		l.rLock()
+		if l.tryLock() {
+			t.Fatal("tryLock succeeded while a reader holds the lock")
+		}
+
+		// A writer blocked behind the reader: tryLock must not barge past it.
+		writerDone := make(chan struct{})
+		go func() {
+			l.lock()
+			l.unlock()
+			close(writerDone)
+		}()
+		synctest.Wait() // writer is durably blocked, writersWaiting > 0
+		if l.tryLock() {
+			t.Fatal("tryLock barged ahead of a waiting writer")
+		}
+
+		l.rUnlock()
+		synctest.Wait()
+		<-writerDone
+
+		// Everyone gone: tryLock must work again, proving no state leaked.
+		if !l.tryLock() {
+			t.Fatal("tryLock failed on a lock every owner has released — state leaked")
+		}
+		l.unlock()
+	})
+}
+
+// TestBufferRWLock_ExclusionStress hammers the lock from readers, writers and
+// tryLockers at once and checks the one invariant everything else rests on:
+// a writer's critical section overlaps nothing. The lock guards munmap — a
+// reader observed inside a writer's section here is a use-after-unmap in
+// production, so this test is the cheap version of that crash.
+//
+// Not a synctest bubble on purpose: this one wants real preemption and real
+// parallelism, and it is the regression net for the atomic fast path — the
+// interleavings that could break the hybrid (fast enroll racing bias install,
+// phantom undo racing the drain check) only happen with true concurrency.
+func TestBufferRWLock_ExclusionStress(t *testing.T) {
+	l := newBufferRWLock()
+
+	var (
+		inWriter  atomic.Int32 // 1 while a writer is inside its section
+		inReaders atomic.Int32 // count of readers inside theirs
+		violated  atomic.Bool
+		stop      = make(chan struct{})
+		wg        sync.WaitGroup
+	)
+
+	check := func(fromWriter bool) {
+		if fromWriter {
+			if inReaders.Load() != 0 || inWriter.Load() != 1 {
+				violated.Store(true)
+			}
+			return
+		}
+		if inWriter.Load() != 0 {
+			violated.Store(true)
+		}
+	}
+
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				l.rLock()
+				inReaders.Add(1)
+				check(false)
+				inReaders.Add(-1)
+				l.rUnlock()
+			}
+		}()
+	}
+	for g := 0; g < 2; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; ; i++ {
+				select {
+				case <-stop:
+					return
+				default:
+				}
+				if i%2 == 0 {
+					l.lock()
+				} else if !l.tryLock() {
+					continue
+				}
+				inWriter.Add(1)
+				check(true)
+				inWriter.Add(-1)
+				l.unlock()
+			}
+		}()
+	}
+
+	// Long enough to interleave millions of operations; short enough for CI.
+	timerDone := make(chan struct{})
+	go func() { defer close(timerDone); testSleep() }()
+	<-timerDone
+	close(stop)
+	wg.Wait()
+
+	if violated.Load() {
+		t.Fatal("a writer's critical section overlapped a reader or another writer")
+	}
+	// Everything released: the lock must be fully idle, or state leaked.
+	if !l.tryLock() {
+		t.Fatal("lock not idle after all owners released — reader count or flags leaked")
+	}
+	l.unlock()
 }
