@@ -1,0 +1,37 @@
+# CodeQL static analysis over all four Go modules.
+#
+# build-mode: none scans source without compiling, which is the only mode
+# that covers a multi-module repo in one job — autobuild stops at the first
+# go.mod. The trade-off (no build-time information) costs little here: the
+# queries that matter for this codebase are source-level.
+#
+# This also satisfies OpenSSF Scorecard's SAST check, which looks for CodeQL
+# runs on recent commits.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "31 6 * * 1" # weekly, so the default branch never goes stale
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF results
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: go
+          build-mode: none
+      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: "/language:go"
