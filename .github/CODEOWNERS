@@ -1,5 +1,10 @@
-# Every change needs a review from the maintainer before merge — this file
-# is what makes that a GitHub-enforced rule (see branch protection) rather
-# than a convention that erodes over time.
+# Contributed changes need an approving review from the maintainer before
+# merge — this file is what makes that a GitHub-enforced rule (with branch
+# protection) rather than a convention that erodes over time.
+#
+# GitHub does not permit self-approval, so the maintainer's own PRs are gated
+# by the required-check matrix instead of by a review. See CONTRIBUTING.md;
+# the distinction is stated there rather than glossed, because it is publicly
+# checkable either way.
 
 * @deadpoets
