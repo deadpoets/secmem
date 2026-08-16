@@ -139,6 +139,21 @@ detailed in the godoc and the threat model.
 - **`secmem/redact`** — `Sanitizer` and an `slog.Handler` for boundary-level
   log scrubbing. Standard library only.
 
+Two further modules live in this repository and are versioned and tagged
+independently, so neither adds anything to the core's dependency graph:
+
+- **[`secmem-crypto`](secmem-crypto/)** — signing, AEAD, key agreement and KDFs
+  that keep their key material inside a `SecureBuffer` for the whole operation
+  rather than copying it out first. Includes an in-place RFC 8032 Ed25519
+  signer, because `crypto/ed25519`'s FIPS-140 cache panics on mmap'd memory —
+  the reasoning is set out in that module's README, up front, since "rolled
+  their own Ed25519" is a claim that deserves scrutiny. Adds
+  `filippo.io/edwards25519` and `golang.org/x/crypto`.
+- **[`secmem-lint`](secmem-lint/)** — a `go/analysis` analyzer (and
+  `go vet -vettool` binary) that enforces the borrowing-closure discipline at
+  compile time: the slice handed to `WithBytes` must not escape the closure.
+  Depends only on `golang.org/x/tools`.
+
 ## Documentation
 
 Full API docs, per-symbol runnable `Example`s, and per-symbol guarantees are on
