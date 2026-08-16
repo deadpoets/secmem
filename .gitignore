@@ -117,9 +117,19 @@ terraform.tfstate*
 # for a memory-hardening library would be a uniquely bad look, and the default
 # Linux core pattern drops it in the working directory.
 #
-# /core is anchored to the repo root so it cannot swallow a package named core.
+# /core is root-anchored, and !/core/ re-includes a directory of that name — the
+# anchor alone still matches a top-level core/ package, which would silently
+# vanish from a future commit.
+#
+# The dotted forms cover what kernel.core_pattern actually produces: bare "core"
+# is the classic default, %p gives core.<pid>, and the common
+# "core.%e.%p.%t" gives core.<exe>.<pid>.<time>. Matching only a leading digit
+# after the dot misses every pattern that puts the executable name first. Not
+# using a bare core.* because that would swallow core.go.
 /core
+!/core/
 core.[0-9]*
+core.*.[0-9]*
 *.dmp
 *.stackdump
 *.pprof
