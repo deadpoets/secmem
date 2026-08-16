@@ -135,10 +135,60 @@ printf '  ...   building and testing %s with GOWORK=off\n' "$module"
 (cd "$dir" && GOWORK=off go test ./... >/dev/null) || die "go test failed with GOWORK=off"
 ok "builds and tests against released dependencies"
 
-if ! grep -q "^## \[${tag}\]" CHANGELOG.md; then
-  die "CHANGELOG.md has no '## [${tag}]' entry. Write the entry, merge it, then release."
-fi
-ok "CHANGELOG.md has an entry for $tag"
+# The changelog heading is NOT always the tag. Keep a Changelog numbers the
+# primary module bare — "## [0.3.0]" for tag v0.3.0 — while nested modules are
+# namespaced and keep the v: "## [secmem-crypto/v0.3.1]". Deriving one from the
+# other is the whole reason this is a function: the first version of this check
+# compared against the tag directly, which silently made a CORE release
+# impossible while nested releases passed.
+changelog_key() {
+  if [ -z "$prefix" ]; then printf '%s' "${version#v}"; else printf '%s' "$tag"; fi
+}
+key=$(changelog_key)
+
+# Locate and extract in one step, in Python, so the key is matched with
+# re.escape rather than hand-rolled shell quoting. An earlier revision escaped
+# the key with sed for a grep and got it wrong — the '/' in a nested tag
+# terminated the s/// command, so every lookup silently reported MISSING.
+# Presence and extraction are the same question; asking it twice in two
+# languages was the bug.
+notes=$(mktemp)
+trap 'rm -f "$notes"' EXIT
+# The section is WRITTEN by Python with an explicit encoding rather than
+# printed to stdout: this repo is maintained from Windows, where Python's
+# stdout defaults to cp1252, and CHANGELOG.md is full of em-dashes. Redirecting
+# stdout there raises UnicodeEncodeError and the release notes come out either
+# mangled or empty.
+set +e
+python3 - "$key" "$notes" <<'PY'
+import re, sys
+key, out = sys.argv[1], sys.argv[2]
+text = open('CHANGELOG.md', encoding='utf-8').read()
+start = re.search(r'^## \[' + re.escape(key) + r'\][^\n]*\n', text, re.M)
+if not start:
+    sys.exit(3)
+body = text[start.end():]
+nxt = re.search(r'^## ', body, re.M)
+section = (body[:nxt.start()] if nxt else body).strip()
+if not section:
+    sys.exit(4)
+with open(out, 'w', encoding='utf-8', newline='\n') as f:
+    f.write(section + '\n')
+PY
+extract=$?
+set -e
+case "$extract" in
+  0) ;;
+  3) die "CHANGELOG.md has no '## [${key}]' entry.
+             (tag is ${tag}; the primary module is numbered bare in the
+             changelog — '## [0.4.0]' for tag v0.4.0 — while nested modules
+             keep their full prefix.)
+             Write the entry, merge it, then release." ;;
+  4) die "the '## [${key}]' section is empty. A release with no notes is worse
+             than no release; write the entry properly first." ;;
+  *) die "failed to read CHANGELOG.md (python exit ${extract})" ;;
+esac
+ok "CHANGELOG.md has an entry for [$key] ($(wc -l <"$notes" | tr -d ' ') lines)"
 
 # ---------------------------------------------------------------------------
 # Confirm, then act.
@@ -174,4 +224,32 @@ git tag -v "$tag" >/dev/null 2>&1 || die "tag $tag did not verify after creation
 ok "tag created and signature verifies"
 
 git push origin "$tag"
-printf '\n  published %s\n\n' "$tag"
+ok "tag pushed"
+
+# The GitHub Release. Deliberately AFTER the push and deliberately non-fatal:
+# the tag is the release as far as Go is concerned, and it is already public by
+# this point. Failing the script here would report an error for a release that
+# actually succeeded, which is a worse outcome than a missing sidebar entry the
+# maintainer can add later.
+#
+# --latest only for the primary module. Otherwise a nested module's patch
+# release would claim the repository's "Latest" badge and a visitor would land
+# on secmem-crypto instead of secmem.
+if command -v gh >/dev/null 2>&1; then
+  latest_flag="--latest=false"
+  [ -z "$prefix" ] && latest_flag="--latest"
+  if gh release create "$tag" --title "$tag" --notes-file "$notes" $latest_flag >/dev/null 2>&1; then
+    ok "GitHub Release created from the CHANGELOG section"
+  else
+    printf '  warn  could not create the GitHub Release (tag IS published).\n'
+    printf '        retry:  gh release create %s --title %s --notes-file <(section of CHANGELOG.md)\n' "$tag" "$tag"
+  fi
+else
+  printf '  warn  gh not found; tag is published but no GitHub Release was created\n'
+fi
+
+printf '\n  published %s\n' "$tag"
+printf '  note: proxy.golang.org negative-caches a version it was asked about\n'
+printf '        before publication, so %s.info may 404 for a while even though\n' "$version"
+printf '        the module resolves. Check with:\n'
+printf '          GOPROXY=proxy.golang.org go list -m %s@%s\n\n' "$module" "$version"
