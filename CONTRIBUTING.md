@@ -13,10 +13,21 @@ discussion up front saves a rewritten PR later.
 
 ## Governance
 
-secmem is BDFL-maintained. **Every PR requires a review from
-[@deadpoets](https://github.com/deadpoets)** — this is enforced by branch
-protection, not just convention, and applies to the maintainer too: nothing
-lands on `main` without going through a PR and passing CI.
+secmem is BDFL-maintained. **Contributed PRs require an approving review from
+[@deadpoets](https://github.com/deadpoets)** — enforced by `CODEOWNERS` plus
+branch protection, not by convention.
+
+Nothing reaches `main` except through a PR that passes every required check —
+currently 20 of them, covering linux/macOS/Windows, arm64, 386,
+`GOEXPERIMENT=runtimesecret`, the no-heap-escape gates, cross-compilation, API
+compatibility and secret scanning — on a branch that also requires signed
+commits and linear history.
+
+This is a single-maintainer project, and GitHub does not permit self-approval,
+so the maintainer's own PRs are gated by that matrix rather than by a second
+reviewer. Stated plainly, because claiming a review gate that cannot exist is
+exactly the kind of unverifiable assurance this project refuses to make about
+its own memory guarantees.
 
 ## Workflow
 

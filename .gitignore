@@ -20,7 +20,50 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
-# Agent tooling and scratch — must never be committed.
+# Agent tooling and scratch — must never be committed. Directory patterns do
+# not cover the instruction files agents look for at the repo root, so those
+# are listed by name; anything project-relevant belongs in a normal doc or in
+# the script that enforces it, not in a tool-specific file.
+#
+# A name blocklist always lags the tooling, so the pre-commit hook installed by
+# .github/scripts/install-hooks.sh is the real guard — this list is the cheap
+# first line, not the last one.
 .claude/
+.codex/
+.continue/
+.cursor/
+.github/instructions/
+.opencode/
+.aider*
+.clinerules
+.cursorrules
+.github/copilot-instructions.md
+.mcp.json
+.roomodes
+.windsurfrules
+AGENT.md
+AGENTS.md
+CLAUDE.md
+GEMINI.md
 scratch/
 tmp/
+
+# Credentials — never committed, no exceptions. Nothing of this shape exists in
+# the project today (pure Go, no service dependencies), which is exactly why it
+# is worth ignoring pre-emptively: the first one to appear will arrive during
+# some unrelated debugging session, and a public repo publishes on push.
+.env
+.env.*
+!.env.example
+.envrc
+.direnv/
+*.pem
+*.key
+*.p12
+*.pfx
+id_rsa*
+id_ecdsa*
+id_ed25519*
+credentials
+.netrc
+kubeconfig

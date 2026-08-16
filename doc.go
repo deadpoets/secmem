@@ -16,7 +16,14 @@
 // is worse than none. A protection that cannot be provided on a given platform
 // is reported through Capabilities rather than silently skipped, and a platform
 // with no lockable off-heap memory fails loudly rather than degrading to
-// unprotected heap storage. Use Probe at startup to see exactly which
+// unprotected heap storage.
+//
+// secmem has NOT had an independent third-party security audit. Every guarantee
+// documented here is self-verified by the test suite that runs in CI, and
+// self-verification is not an audit — TESTING.md records what is measured and,
+// separately, the properties that are deliberately not proven. See SECURITY.md.
+//
+// Use Probe at startup to see exactly which
 // protections are in force for your build, and inspect a buffer's own
 // Capabilities to see how that allocation was actually backed.
 //

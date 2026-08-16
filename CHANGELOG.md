@@ -13,21 +13,15 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
-## [secmem-crypto/v0.3.0] - 2026-08-16
+## [secmem-crypto/v0.3.1] - 2026-08-16
 
-Dependency-only release. `secmem-crypto` now requires `secmem` v0.3.0, so code
-that imports only this module picks up the wipe and emergency-wipe fixes below.
-`secmem-crypto/v0.2.0` pins `secmem` v0.2.0 and would otherwise keep resolving a
-core whose portable `secureWipe` is not a barrier — which matters here, because
-this module's derivation paths (`HKDFInto`, `Argon2IDKeyInto`, `HMACInto`) run
-on whatever architecture the consumer builds for, including the ones that have
-no wipe assembly.
+Dependency-only release: requires `secmem` v0.3.0, so code importing only this
+module resolves the v0.3.0 core.
 
-No `secmem-crypto` source change. It is a **minor** bump rather than a patch for
-the same reason `secmem-crypto/v0.2.0` was: this module's exported API hands
-back `*secmem.SecureBuffer` values, so raising its `secmem` floor raises the
-minimum for every consumer too — a dependency-graph change they should opt into
-deliberately (`gorelease` classifies it the same way).
+Supersedes `secmem-crypto/v0.3.0`, which was tagged from a commit predating the
+`go.mod` change and therefore still requires `secmem` v0.2.0. That tag is left
+published: `proxy.golang.org` and `sum.golang.org` are append-only, so
+re-pointing it would only make this repository disagree with them.
 
 ## [0.3.0] - 2026-08-16
 
@@ -394,6 +388,7 @@ First tagged release of the core `secmem` module.
   itself a `go vet` copylocks violation) a dereferenced value.
 
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.3.0...HEAD
+[secmem-crypto/v0.3.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.1
 [secmem-crypto/v0.3.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.0
 [0.3.0]: https://github.com/deadpoets/secmem/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/deadpoets/secmem/compare/v0.1.0...v0.2.0
