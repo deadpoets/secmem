@@ -13,6 +13,170 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [secmem-crypto/v0.3.0] - 2026-08-16
+
+Dependency-only release. `secmem-crypto` now requires `secmem` v0.3.0, so code
+that imports only this module picks up the wipe and emergency-wipe fixes below.
+`secmem-crypto/v0.2.0` pins `secmem` v0.2.0 and would otherwise keep resolving a
+core whose portable `secureWipe` is not a barrier — which matters here, because
+this module's derivation paths (`HKDFInto`, `Argon2IDKeyInto`, `HMACInto`) run
+on whatever architecture the consumer builds for, including the ones that have
+no wipe assembly.
+
+No `secmem-crypto` source change. It is a **minor** bump rather than a patch for
+the same reason `secmem-crypto/v0.2.0` was: this module's exported API hands
+back `*secmem.SecureBuffer` values, so raising its `secmem` floor raises the
+minimum for every consumer too — a dependency-graph change they should opt into
+deliberately (`gorelease` classifies it the same way).
+
+## [0.3.0] - 2026-08-16
+
+The result of the library's first adversarial audit. Every finding below was
+reached from the source rather than reported in the field, so nothing here is
+known to have bitten anyone — but two of them are the kind that would never have
+announced themselves: a compiler barrier that was not one, and an emergency wipe
+that leaked the mappings it wiped.
+
+`ErrWiped`, `Capabilities.FrameScrub`, and `Capabilities.AsyncPreemptSuppressed`
+are the only API additions and nothing was removed, so the change is backward
+compatible (confirmed by `gorelease`). Behavior changes that the type surface
+does not show are listed under **Changed** — read that section before upgrading.
+
+### Fixed
+
+- **The portable wipe's compiler barrier was not a barrier.** `secureWipe` on
+  every architecture without wipe assembly — everything except amd64 and arm64
+  — zeroed via `subtle.ConstantTimeSelect(1, 0, b[i])`. With a constant selector
+  that whole expression folds to a constant `0` at compile time, leaving exactly
+  the plain zeroing loop over never-read-again memory that it was written to
+  protect from dead-store elimination. Go's compiler does not currently remove
+  that loop, so this is a latent hole rather than a known leak, but "does not
+  currently" is not a guarantee and the package's entire promise rests on the
+  zeros reaching memory. The wipe now takes its zero byte from a package-level
+  atomic (not a compile-time constant), reads every byte back into an
+  accumulator, and publishes the accumulator to a second atomic, so the stores
+  are provably observed. Verified in the GOARCH=386 disassembly: both loops and
+  both atomics survive.
+- **`WipeAllSecrets` no longer leaks the mappings it wipes.** It deliberately
+  leaves regions mapped so a late read returns zeros instead of faulting on
+  freed memory — but nothing ever completed the unmap, so the address space and
+  the locked pages were held until process exit. Wiped regions are now retained
+  separately, and a later explicit `Destroy` — or the GC cleanup once the
+  wrapper is unreachable — finishes the reclaim. That is safe where the
+  emergency path is not: both run with no accessor in flight.
+- **One slow borrow no longer holds the whole emergency wipe hostage.** Wiping a
+  region takes its exclusive lock, so a buffer parked inside a `WithBytes`
+  callback cannot be wiped until that callback returns — correct, since zeroing
+  memory a callback is reading is a data race. But the single blocking pass
+  meant one slow borrow delayed every *other* secret in the process, in registry
+  map order. The wipe now runs a non-blocking pass first and blocks only on what
+  is left, so a stuck borrow delays only its own buffer.
+- **A `Destroy` racing the emergency wipe no longer strands the mapping.** The
+  blocking wipe pass removed a region from the registry *before* taking its
+  lock, leaving a window in which the key was in neither the live set nor the
+  wiped set. A `Destroy` already queued on that same lock reached the janitor
+  inside that window, found nothing to free, reported success, and never
+  unmapped; the retain that landed afterwards then filed the region where
+  nothing collects it. The GC-cleanup path was worse, since its cleanup is
+  stopped and never runs again. The lock is now held across the whole take /
+  wipe / retain sequence. Reached by the exact API pair `WipeAllSecrets`
+  documents as safe to use concurrently.
+- **`memfd_secret` mappings now apply `MADV_DONTFORK`, and report whether it
+  took.** The L4 mapping is `MAP_SHARED`, so a forked child did not inherit a
+  copy-on-write snapshot of the secret pages — it shared the live ones. `noFork`
+  was reported `false` without anything having been attempted. It is now
+  attempted and the outcome reported honestly per allocation.
+- **windows/386 did not compile.** The WER dump-exclusion size bound was written
+  `int(^uint32(0))`, whose constant overflows `int` on a 32-bit word. Widened to
+  `uint64`, and the cross-compile matrix gained the windows/386 row that would
+  have caught it — nothing else in it is both Windows and 32-bit.
+
+### Added
+
+- `ErrWiped` — returned by every mutating method after `WipeAllSecrets` has
+  emergency-wiped the object, and by `SecureArena.Acquire`. Previously those
+  calls succeeded, which let a process that kept running write a *fresh* secret
+  into a region the emergency wipe had already reported as handled. Reads still
+  work and return the zeros. It wraps `ErrDestroyed`, so existing
+  `errors.Is(err, ErrDestroyed)` checks keep working unchanged; test for
+  `ErrWiped` only to tell "the process emergency-wiped this" apart from "the
+  owner destroyed this".
+- **Asynchronous-preemption suppression inside `Scrub` windows (Linux).** Go's
+  non-cooperative preemption is signal-delivered, and `runtime.asyncPreempt`
+  saves the entire user register file — general purpose and vector — onto the
+  goroutine stack at an arbitrary instruction boundary. Land one inside a cipher
+  round and a copy of live key material is written to the stack at an offset
+  nothing chose and nothing tracks. `Scrub` now blocks SIGURG for the duration
+  of its window, so that spill cannot happen. Cooperative preemption is
+  untouched, so the collector still reaches the goroutine through ordinary calls
+  — but a window whose callback contains an unbounded loop with no function
+  calls offers no cooperative preemption point either and will stall `suspendG`;
+  keep callbacks short and call-bearing, which the borrowing contract already
+  asks for. Unavailable on Windows (preemption there rewrites thread context
+  rather than delivering a signal, and nothing in userspace can mask that) and
+  on Darwin (no `PthreadSigmask` in `x/sys/unix`).
+- **arm64 scrub-frame assembly.** `Scrub`'s stack-band burn was amd64-only and
+  silently did nothing elsewhere; arm64 now has a real implementation.
+- `Capabilities.FrameScrub` and `Capabilities.AsyncPreemptSuppressed` — report
+  whether the two mechanisms above are real on the running platform rather than
+  leaving callers to infer it. Both feed `Warnings()`.
+- **THREAT-MODEL.md gains a stack-residue section** enumerating what `Scrub`
+  reaches, what it does not, and — stated separately — which of the gaps are
+  constraints of the Go runtime or the OS rather than defects. KERNELS.md and
+  TESTING.md record the verified kernels and the contention measurements behind
+  the lock rework.
+
+### Changed
+
+- **`SecureArena` per-slot bookkeeping dropped from 90 to 16 bytes** — measured
+  at 4096 × 32-byte slots, where the Go-heap index went from 1.88× the locked
+  slab it describes to 0.34×. For a type whose stated purpose is hundreds of
+  short-lived per-session keys, the metadata previously cost nearly twice the
+  secrets. Three changes got there: `slotMeta` now carries one `atomic.Uint64`
+  generation that encodes liveness in its low bit (even = free, odd = live)
+  instead of a separate flag padded to a cache line; the free list is an
+  intrusive `int32` link inside `slotMeta` rather than a separate `[]int`; and
+  the canary zones are a fixed-size descriptor regenerated on demand rather than
+  a materialized `[][2]int` costing 16 bytes per slot.
+- **The arena borrow path is now lock-free.** Slot liveness is one atomic load
+  and compare against the handle's generation, with no mutex on the read side.
+- **`SecureArena.Acquire` and `LiveCount` are O(1)**, not a scan over every
+  slot. A consequence worth knowing: after any `Release`, `Acquire` hands out
+  the most recently freed slot rather than the lowest free index. A fresh arena
+  still hands out 0, 1, 2, … Nothing documented the old order, but code that
+  depended on it will observe the change.
+- **`NewArena` now rejects `count > math.MaxInt32`** with an error, rather than
+  overflowing the intrusive free link quietly.
+- **The buffer read-write lock has an atomic read fast path.** The read side
+  sits under every `SecureBuffer` access and every `ArenaSlot` borrow, and it
+  previously took a mutex in both directions. Measured, that was ~85% of the
+  cost of an arena borrow at 16 cores, and aggregate throughput *fell* as cores
+  were added — goroutines borrowing entirely disjoint secrets were serializing
+  on it. Readers now enroll with a single atomic add and take no mutex unless a
+  writer is involved. Writers stay on the mutex-and-cond slow path, so every
+  blocking state remains durably blocked under `testing/synctest`. Writer
+  preference is unchanged.
+- **`WipeAllSecrets` documents that it can block**, which it always could. A
+  borrowing callback that never returns blocks it forever; the alternative would
+  be zeroing memory a callback is actively reading. The two-pass wipe contains
+  the cost to the offending buffer. If your shutdown path must be bounded, run
+  it in its own goroutine and exit on a timer — the first pass will have done
+  its work regardless.
+- **`EnsureMemlockLimit` documents that it disarms an implicit guard.** A
+  bounded `RLIMIT_MEMLOCK` is incidentally what stops an oversized `NewArena`
+  from killing the process: `NewArena` requests its locked slab before its
+  Go-heap slot index precisely because a refused slab returns an error while a
+  refused heap allocation is `runtime.throw`, which no `defer` and no `recover`
+  survives. Raising the budget raises that ceiling with it; raising it to
+  unlimited removes it. If you raise it and then size arenas from something
+  outside your control, bound the count yourself.
+- **The `RLIMIT_MEMLOCK` guidance is now measured rather than folklore.** The
+  ceiling is `RLIMIT_MEMLOCK / pagesize` buffers exactly, and current
+  systemd-based distributions default it to 8 MiB — 2048 buffers at 4 KiB
+  pages, measured on stock Ubuntu 26.04/amd64 and Armbian/arm64 — not the
+  historical 64 KiB kernel default that allowed about a dozen. Read the runtime
+  limit rather than designing against either number.
+
 ## [secmem-crypto/v0.2.0] - 2026-07-19
 
 Dependency-only release. `secmem-crypto` now requires `secmem` v0.2.0, so code
@@ -229,7 +393,9 @@ First tagged release of the core `secmem` module.
   cover all three types, both the pointer and (where a value copy is not
   itself a `go vet` copylocks violation) a dereferenced value.
 
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.3.0...HEAD
+[secmem-crypto/v0.3.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.0
+[0.3.0]: https://github.com/deadpoets/secmem/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/deadpoets/secmem/compare/v0.1.0...v0.2.0
 [secmem-crypto/v0.2.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.2.0
 [secmem-lint/v0.1.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.1.0
