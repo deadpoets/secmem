@@ -64,9 +64,22 @@ cat "$report"
 #
 # Anything else non-zero is still loud. A parse error, a missing tool, or an
 # auth failure must not pass silently.
+#
+# The transient bucket does also swallow a genuinely unresolvable module graph —
+# a deleted upstream dependency and a propagation lag produce the same 404. That
+# is accepted rather than overlooked: an unresolvable graph fails `go build` and
+# `go test` in the test, cross-compile and examples jobs, all of which are
+# required checks. apicompat is report-only and is not the control that catches
+# it, so downgrading resolution failures here loses no coverage.
 transient_re='unknown revision|404 Not Found|reading https://(proxy|sum)\.golang\.org|dial tcp|connection reset|i/o timeout|TLS handshake timeout|no such host'
 
-if grep -qi "incompatible" "$report"; then
+# Match the section header and summary lines gorelease actually emits
+# ("## incompatible changes", "There are incompatible changes.", "Incompatible
+# changes were detected.") — NOT the bare word. A bare match also hits the
+# "+incompatible" suffix Go puts on pre-modules major versions, so a genuine
+# tool error whose output happened to name such a dependency would have been
+# reported as an API break and its real cause lost.
+if grep -qi "incompatible changes" "$report"; then
   echo "::warning title=API break in ${mod} vs ${base}::Exported API changed incompatibly. Intended? Record it in CHANGELOG.md — the next tag must bump accordingly."
 elif [ $status -eq 0 ]; then
   : # clean comparison
