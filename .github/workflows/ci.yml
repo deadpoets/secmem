@@ -28,7 +28,17 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26"
+  # Pinned to an exact patch, not the "1.26" minor line, because the floating
+  # form resolves through actions/setup-go's version manifest, which lags a Go
+  # release by up to a day. On 2026-08-16 that gap put every job on go1.26.5
+  # while GO-2026-5972 (encoding/asn1 recursion depth) and GO-2026-6218
+  # (net/url resolvePath) were already fixed in go1.26.6 — and the asn1 one is
+  # REACHABLE from secmem-crypto's ssh signing path, so the vuln job was
+  # correctly red on a toolchain we could not float our way off. setup-go
+  # fetches an exact version straight from the Go dist site when the manifest
+  # does not have it yet, so pinning is also what makes CI reproducible.
+  # Bump deliberately when a patch release lands.
+  GO_VERSION: "1.26.6"
 
 jobs:
   test:

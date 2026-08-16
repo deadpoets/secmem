@@ -26,7 +26,9 @@ permissions:
   contents: read
 
 env:
-  GO_VERSION: "1.26"
+  # Exact patch, kept in step with ci.yml — see the reasoning on GO_VERSION
+  # there. Fuzzing findings are only meaningful against a known toolchain.
+  GO_VERSION: "1.26.6"
 
 jobs:
   fuzz:
