@@ -136,7 +136,7 @@ rather than together. Correctness only; no benchmark numbers were taken (see
 | Box | Arch · kernel | `RLIMIT_MEMLOCK` | secretmem | Suite | `-race` |
 |---|---|---|---|---|---|
 | Jetson Orin Nano (Tegra 234, Cortex-A78AE) | arm64 · 6.8.12-1021-tegra | 943 MiB | **fallback** (see above) | PASS | PASS |
-| Libre Renegade (RK3328, Cortex-A53) | arm64 · 6.18.35-rockchip64 | 8 MiB | live | PASS | not run (git server; kept idle) |
+| Libre Renegade (RK3328, Cortex-A53) | arm64 · 6.18.35-rockchip64 | 8 MiB | live | PASS | not run (board kept idle for other work) |
 | Hyper-V guest, Ubuntu 26.04 | amd64 · 7.0.0-1010-azure | 8 MiB | live | PASS | PASS |
 
 What the design isolates, stated as the comparison it came from:

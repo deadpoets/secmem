@@ -12,7 +12,7 @@ suite ran on real hardware or a real VM, never cross-compiled-and-assumed.
 | Date | Edition | Build | Arch | Environment | Suite | Proofs |
 |---|---|---|---|---|---|---|
 | 2026-07-12 | Windows 11 Pro (Insider Preview) | 10.0.26220 | amd64 | Real workstation hardware | PASS | guard-fault ✓ · canary ✓ · WER exclusion ✓ · seal/`CryptProtectMemory` ✓ · process hardening ✓ |
-| (every CI run) | Windows Server 2022 | GitHub-hosted runner | amd64 | `windows-latest` GitHub Actions VM | PASS | full suite via `go test -race`, run on every push/PR |
+| (every CI run) | Windows Server 2025 | GitHub-hosted runner (`windows-2025-vs2026`) | amd64 | `windows-latest` GitHub Actions VM | PASS | full suite via `go test -race`, run on every push/PR |
 
 CI's `test (windows-latest)` job **executes** the suite on a real (if
 virtualized) Windows Server VM — it is not a cross-compile-only check, unlike

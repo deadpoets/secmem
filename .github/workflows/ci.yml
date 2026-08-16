@@ -281,7 +281,14 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
-      - run: go install golang.org/x/vuln/cmd/govulncheck@latest
+      # Pinned, and pinning costs nothing here: govulncheck reads the advisory
+      # data from https://vuln.go.dev at RUN time (`govulncheck -db`), so the
+      # binary version does not gate freshness — a pinned scanner still sees an
+      # advisory published this morning. What pinning buys is that CI executes a
+      # known binary rather than whatever this module published today, which is
+      # the same reason this repo has sha_pinning_required for Actions. Bump
+      # deliberately to pick up detection improvements.
+      - run: go install golang.org/x/vuln/cmd/govulncheck@v1.7.0
       - run: govulncheck ./...
       - run: govulncheck ./...
         working-directory: secmem-crypto
@@ -316,6 +323,15 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
+      # Deliberately NOT pinned, unlike govulncheck above. golang.org/x/exp
+      # publishes no semantic tags at all — `go list -m -versions` returns an
+      # empty set — so the only thing to pin to is an opaque pseudo-version
+      # (v0.0.0-<date>-<sha>). A pin nobody can read, nobody will bump, and that
+      # rots invisibly is worse than an honest float: it looks like a control
+      # while being an unmaintained constant. The exposure it buys back is small
+      # and bounded — this job holds a read-only GITHUB_TOKEN on a public repo
+      # with zero repository secrets, and apicompat is report-only. Revisit if
+      # x/exp ever starts tagging.
       - run: go install golang.org/x/exp/cmd/gorelease@latest
       - name: core
         run: bash .github/scripts/apicompat.sh . ''

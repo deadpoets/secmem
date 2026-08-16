@@ -13,6 +13,22 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [secmem-crypto/v0.3.2] - 2026-08-16
+
+Retracts `secmem-crypto/v0.3.0`, and documents the module.
+
+The `retract` directive is the supported way to mark a published version
+unusable, and unlike a changelog note it reaches the toolchain — `go list -m
+-retracted` and `go get` surface it to someone already on v0.3.0. A retraction
+only ships in a *later* version, which is what this release is for. No source
+change.
+
+Adds `secmem-crypto/README.md`, which puts the reason this module reimplements
+RFC 8032 signing above the fold: `crypto/ed25519`'s FIPS-140 path caches the
+private key in a structure no wipe can reach, and panics outright on mmap'd
+memory. "Rolled their own Ed25519" deserves scrutiny, so the justification
+should not be buried in a per-file comment.
+
 ## [secmem-crypto/v0.3.1] - 2026-08-16
 
 Dependency-only release: requires `secmem` v0.3.0, so code importing only this
@@ -388,6 +404,7 @@ First tagged release of the core `secmem` module.
   itself a `go vet` copylocks violation) a dereferenced value.
 
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.3.0...HEAD
+[secmem-crypto/v0.3.2]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.2
 [secmem-crypto/v0.3.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.1
 [secmem-crypto/v0.3.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.0
 [0.3.0]: https://github.com/deadpoets/secmem/compare/v0.2.0...v0.3.0
