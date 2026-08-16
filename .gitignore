@@ -34,7 +34,21 @@ Thumbs.db
 .cursor/
 .github/instructions/
 .opencode/
+.amazonq/
+.augment/
+.devin/
+.github/prompts/
+.goose/
+.junie/
+.kiro/
+.qodo/
+.replit
+.roo/
+.specstory/
+.tabnine/
+.zed/
 .aider*
+.augmentignore
 .clinerules
 .cursorrules
 .github/copilot-instructions.md
@@ -44,9 +58,16 @@ Thumbs.db
 AGENT.md
 AGENTS.md
 CLAUDE.md
+CLAUDE.local.md
 GEMINI.md
+replit.md
 scratch/
 tmp/
+
+# Deliberately NOT ignored: CONVENTIONS.md. It is aider's conventions file, but
+# the name is generic enough to be a document someone means to commit, and its
+# contents are coding style rather than anything private. Blocking it would cost
+# more than it saves.
 
 # Credentials — never committed, no exceptions. Nothing of this shape exists in
 # the project today (pure Go, no service dependencies), which is exactly why it
@@ -61,9 +82,56 @@ tmp/
 *.key
 *.p12
 *.pfx
+*.jks
+*.keystore
+*.kdbx
+*.ovpn
+*.asc
+secring.*
 id_rsa*
+id_dsa*
 id_ecdsa*
 id_ed25519*
+known_hosts
+.ssh/
+.gnupg/
+.aws/
+.npmrc
+.pypirc
+.htpasswd
 credentials
 .netrc
 kubeconfig
+secrets.json
+secrets.yaml
+secrets.yml
+service-account*.json
+gha-creds-*.json
+terraform.tfvars
+terraform.tfstate*
+.terraform/
+
+# Crash dumps and profiles. This one is not boilerplate: the suite deliberately
+# faults on guard pages, and this library's entire purpose is keeping secret
+# pages out of exactly these artifacts. A core file committed to a public repo
+# for a memory-hardening library would be a uniquely bad look, and the default
+# Linux core pattern drops it in the working directory.
+#
+# /core is anchored to the repo root so it cannot swallow a package named core.
+/core
+core.[0-9]*
+*.dmp
+*.stackdump
+*.pprof
+hs_err_pid*.log
+__debug_bin*
+
+# Editor and shell leftovers that carry local paths or history.
+*.swo
+*~
+Session.vim
+.netrwhist
+/tags
+/TAGS
+.bash_history
+.python-history
