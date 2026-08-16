@@ -20,7 +20,16 @@ go.work.sum
 .DS_Store
 Thumbs.db
 
-# Agent tooling and scratch — must never be committed.
+# Agent tooling and scratch — must never be committed. Directory patterns do
+# not cover the instruction files agents look for at the repo root, so those
+# are listed by name; anything project-relevant belongs in a normal doc or in
+# the script that enforces it, not in a tool-specific file.
 .claude/
+CLAUDE.md
+AGENTS.md
+.cursor/
+.cursorrules
+.aider*
+.github/copilot-instructions.md
 scratch/
 tmp/
