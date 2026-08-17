@@ -350,11 +350,26 @@ func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
 // each, and returns any canary/wipe errors joined.
 //
 // Two passes, deliberately. The first wipes every region whose lock is free at
-// that instant; the second blocks on whatever is left. A single goroutine parked
-// inside a long WithBytes callback therefore delays only ITS OWN buffer — every
-// other secret in the process is already zeroed by the time the first pass
-// returns. A one-pass loop would let that one borrow hold the whole emergency
-// wipe hostage in registry-map order.
+// that instant; the second blocks on whatever is left, one goroutine per region.
+// A single goroutine parked inside a long WithBytes callback therefore delays
+// only ITS OWN buffer — every other secret in the process is either already
+// zeroed by the first pass or wiped the moment its own lock frees. A one-pass
+// loop would let that one borrow hold the whole emergency wipe hostage in
+// registry-map order.
+//
+// The second pass must not be a sequential loop, which is the bug this shape
+// fixes. tryWipeInPlace reports "not done" for a lock held at the instant it
+// looks, including a momentary one, so a buffer that is merely mid-WithBytes
+// during the first pass lands in deferred alongside the genuinely stuck one.
+// Blocking on those in slice order — which is map-iteration order, i.e. random —
+// then serializes an innocent buffer behind the long borrow, recreating exactly
+// the hostage situation the two-pass split exists to prevent. Waiting on each
+// region independently makes the ordering irrelevant.
+//
+// The cost is one goroutine per region still locked at the end of the first
+// pass. That set is normally empty and is bounded by the number of live
+// registrations; bounding it with a worker pool would reintroduce the bug as
+// soon as the stuck borrows outnumbered the workers.
 //
 // The already-wiped set is swept too. Those regions are still mapped and their
 // owners are still usable, so anything written to one since the last wipe is a
@@ -384,11 +399,26 @@ func (j *janitor) wipeAllInPlace() error {
 			deferred = append(deferred, key)
 		}
 	}
-	for _, key := range deferred {
-		if err := j.wipeInPlace(key); err != nil {
-			errs = errors.Join(errs, err)
-		}
+	if len(deferred) == 0 {
+		return errs
 	}
+
+	var (
+		mu sync.Mutex
+		wg sync.WaitGroup
+	)
+	wg.Add(len(deferred))
+	for _, key := range deferred {
+		go func() {
+			defer wg.Done()
+			if err := j.wipeInPlace(key); err != nil {
+				mu.Lock()
+				errs = errors.Join(errs, err)
+				mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
 	return errs
 }
 
