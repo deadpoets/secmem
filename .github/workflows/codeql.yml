@@ -1,0 +1,51 @@
+# CodeQL static analysis over all four Go modules.
+#
+# build-mode: manual, because Go's extractor supports only autobuild and
+# manual (build-mode: none is rejected at init), and autobuild stops at the
+# first go.mod — this repo has four. The traced build uses the same go.work
+# union as CI, so one `go build ./...` at the root covers core, crypto and
+# lint; examples builds separately under GOWORK=off, matching its own CI job.
+#
+# Go's version comes from go.mod rather than CI's pinned GO_VERSION: a scan
+# job never executes the toolchain against untrusted input, so the manifest
+# lag that pin defends against does not apply, and a second pin site that
+# dependabot does not bump would rot.
+#
+# This also satisfies OpenSSF Scorecard's SAST check, which looks for CodeQL
+# runs on recent commits.
+name: codeql
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: "31 6 * * 1" # weekly, so the default branch never goes stale
+
+permissions:
+  contents: read
+
+jobs:
+  analyze:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write # upload SARIF results
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+      - uses: ./.github/actions/setup-workspace
+      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          languages: go
+          build-mode: manual
+      - name: build all modules (traced)
+        run: |
+          go build ./...
+          cd examples && GOWORK=off go build ./...
+      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+        with:
+          category: "/language:go"

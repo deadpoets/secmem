@@ -7,13 +7,16 @@ updates:
     schedule:
       interval: "weekly"
 
-  # Two Go modules: the core (x/sys only) and secmem-crypto (x/crypto,
-  # edwards25519 — the dependency class that actually receives security
-  # releases). Dependabot's gomod ecosystem does not recurse into nested
-  # modules, so each needs its own directory entry.
+  # All four Go modules. Dependabot's gomod ecosystem does not recurse into
+  # nested modules, so each needs its own directory entry. secmem-lint and
+  # examples were originally omitted as low-risk; that let x/mod lag two
+  # releases behind a published advisory (GO-2026-6179/-6180) — tooling-only
+  # exposure, but exactly the silent rot the omission was betting against.
   - package-ecosystem: "gomod"
     directories:
       - "/"
       - "/secmem-crypto"
+      - "/secmem-lint"
+      - "/examples"
     schedule:
       interval: "weekly"
