@@ -1,0 +1,112 @@
+name: Windows Race Soak
+
+# Hunts a rare runtime-state corruption that CI has seen exactly once and this
+# project cannot reproduce locally.
+#
+# On 2026-08-17, `test (windows-latest)` died with:
+#
+#     fatal error: stack not a power of 2
+#     runtime.stackfree(...)  stack.go:468
+#     runtime.gfget(...)      proc.go:5534
+#     runtime.newproc1 / newproc  <- testing.(*T).Run
+#
+# The runtime found a cached goroutine on its free list whose stack size is not
+# a power of two — i.e. runtime state that something corrupted. A re-run of the
+# same job passed, ~500 local processes never reproduced it, and no upstream Go
+# issue matches. For a library whose entire purpose is writing to memory the
+# runtime does not manage, "we saw it once and it went away" is not a conclusion
+# anyone should accept.
+#
+# One CI run per PR samples this once. This workflow samples it a few hundred
+# times on the same runner image, which is the only place it has ever appeared.
+# It is diagnostic tooling, not a gate: nothing depends on it, and a red run here
+# is a finding to investigate rather than a broken build.
+#
+# GOTRACEBACK=system is the point of the exercise — the default traceback elides
+# runtime frames, and the runtime frames are the evidence.
+#
+# Delete this workflow once the crash is understood. A soak that nobody reads is
+# worse than no soak, because it looks like coverage.
+
+on:
+  schedule:
+    - cron: "0 9 * * *" # 09:00 UTC daily, clear of the 07:00 fuzz run
+  workflow_dispatch:
+    inputs:
+      iterations:
+        description: "Test processes to run (each is one full package run)"
+        default: "200"
+      gomaxprocs:
+        description: "GOMAXPROCS per process (runners have 4 CPUs; the crash appeared at the default)"
+        default: "4"
+      godebug:
+        description: "GODEBUG for each process, e.g. clobberfree=1 (empty for none)"
+        default: ""
+      package:
+        description: "Module directory to soak"
+        default: "."
+
+permissions:
+  contents: read
+
+env:
+  # Exact patch, kept in step with ci.yml. The one observation was on 1.26.6,
+  # and a soak against a different toolchain would not be evidence about it.
+  GO_VERSION: "1.26.6"
+
+jobs:
+  soak:
+    runs-on: windows-latest
+    # Generous but bounded: 200 race-built processes at GOMAXPROCS=4 runs well
+    # under an hour, and a hang should not burn a 6-hour default.
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+
+      - name: soak
+        shell: bash
+        working-directory: ${{ github.event.inputs.package || '.' }}
+        env:
+          ITERATIONS: ${{ github.event.inputs.iterations || '200' }}
+          GOMAXPROCS: ${{ github.event.inputs.gomaxprocs || '4' }}
+          GODEBUG: ${{ github.event.inputs.godebug || '' }}
+          GOTRACEBACK: system
+        run: |
+          set -uo pipefail
+          go test -race -c -o soak.exe .
+          echo "soaking $ITERATIONS processes at GOMAXPROCS=$GOMAXPROCS, GODEBUG='${GODEBUG:-}'"
+
+          failures=0
+          # Pure-bash counter: seq is coreutils and not guaranteed on the
+          # runner's Git bash.
+          for ((i = 1; i <= ITERATIONS; i++)); do
+            if ! out=$(./soak.exe -test.count=1 2>&1); then
+              failures=$((failures + 1))
+              echo "::group::FAILURE on iteration $i"
+              echo "$out"
+              echo "::endgroup::"
+              # The first ~40 lines carry the fatal error and the faulting
+              # stack; the full traceback is in the group above.
+              {
+                echo "### iteration $i"
+                echo '```'
+                echo "$out" | head -40
+                echo '```'
+              } >> "$GITHUB_STEP_SUMMARY"
+            fi
+          done
+
+          echo "$failures failures in $ITERATIONS processes" | tee -a "$GITHUB_STEP_SUMMARY"
+          # A soak that goes green tells us the rate is below what this sample
+          # can see — NOT that the bug is gone. Say so, so a green tick here is
+          # never mistaken for a clean bill of health.
+          if [ "$failures" -eq 0 ]; then
+            echo "No failures observed. This bounds the rate; it does not clear the defect." \
+              >> "$GITHUB_STEP_SUMMARY"
+            exit 0
+          fi
+          exit 1
