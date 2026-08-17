@@ -117,9 +117,13 @@ func TestSealCipher_RealOverflowStillDetected(t *testing.T) {
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 
-	// Overflow into the canary slack (unsealed, plaintext state).
+	// Overflow into the canary slack (unsealed, plaintext state). corruptCanary,
+	// not a fixed byte: the pattern is random and process-global, so writing a
+	// literal 0x00 here plants no overflow at all on the ~1/256 of runs where
+	// that pattern byte is already 0x00, and this test then fails claiming the
+	// cipher masked a violation that was never inflicted.
 	base := uintptr(unsafe.Pointer(&buf.region.inner[0]))
-	probeWrite(base+uintptr(cap(buf.data)), 0x00)
+	corruptCanary(base + uintptr(cap(buf.data)))
 
 	// Cycle the cipher: encrypts the corrupted slack, decrypts it back —
 	// the corruption must survive the round trip and still be detected.
