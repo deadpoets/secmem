@@ -102,26 +102,24 @@ func TestWipeAllSecrets_UnborrowedBuffersWipeWhileOneIsBorrowed(t *testing.T) {
 // borrow was held hostage, which is the very thing the two-pass split exists to
 // prevent.
 //
-// Forcing rather than racing, per the repo's testing convention:
+// The interleaving is forced rather than raced, and the detector is
+// deterministic rather than probabilistic:
 //
-//   - Every idle buffer is held borrowed from BEFORE WipeAllSecrets is called
-//     until well after the first pass has run, so its demotion into the deferred
-//     set is guaranteed, not hoped for. The first pass is a synchronous handful
-//     of memclrs at the top of wipeAllInPlace; the hold window is three orders of
-//     magnitude longer.
-//   - The stuck borrows are never released while the assertion runs, so the only
-//     way an idle buffer can be zeroed is if the wipe waited on it independently.
-//
-// The one dimension that cannot be forced is the order of the deferred slice:
-// Go randomizes map iteration by design. Using several buffers on each side
-// handles that statistically — the unfixed code passes only when all nIdle idle
-// keys happen to precede all nStuck stuck ones, which is 1 ordering in
-// C(12,6) = 924. That is a deliberate trade, stated rather than hidden.
+//   - Both buffers are borrowed BEFORE WipeAllSecrets is called, so the first
+//     pass cannot take either and both are guaranteed to land in the deferred
+//     set. No sleep and no timing assumption.
+//   - The fixed wipe waits on every deferred region independently, so each has a
+//     writer queued on its OWN lock. A sequential second pass can only ever have
+//     one queued at a time. Requiring a queued writer on BOTH locks therefore
+//     fails against the unfixed code regardless of which key map iteration put
+//     first — the ordering that made the original flake intermittent cannot
+//     rescue it here.
+//   - The stuck borrow is never released while the assertion runs, so the idle
+//     buffer can only reach zero if the wipe waited on it independently.
 func TestWipeAllSecrets_TransientBorrowDoesNotStrandOtherSecrets(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
 	}
-	const nIdle, nStuck = 6, 6
 	secret := bytes.Repeat([]byte{0x5A}, 40)
 
 	newBuf := func(what string) *SecureBuffer {
@@ -132,10 +130,20 @@ func TestWipeAllSecrets_TransientBorrowDoesNotStrandOtherSecrets(t *testing.T) {
 		}
 		return b
 	}
+	stuck := newBuf("stuck")
+	defer func() { _ = stuck.Destroy() }()
+	idle := newBuf("idle")
+	defer func() { _ = idle.Destroy() }()
+
+	var borrows sync.WaitGroup
+	var stuckOnce, idleOnce sync.Once
+	releaseStuck := make(chan struct{})
+	releaseIdle := make(chan struct{})
+	freeStuck := func() { stuckOnce.Do(func() { close(releaseStuck) }) }
+	freeIdle := func() { idleOnce.Do(func() { close(releaseIdle) }) }
 
 	// borrow parks a goroutine inside WithBytes and returns once the callback is
 	// confirmed to be running, so the region's lock is definitely held on return.
-	var borrows sync.WaitGroup
 	borrow := func(b *SecureBuffer, until <-chan struct{}) {
 		entered := make(chan struct{})
 		borrows.Add(1)
@@ -149,69 +157,53 @@ func TestWipeAllSecrets_TransientBorrowDoesNotStrandOtherSecrets(t *testing.T) {
 		<-entered
 	}
 
-	stuck := make([]*SecureBuffer, 0, nStuck)
-	idle := make([]*SecureBuffer, 0, nIdle)
-	for i := 0; i < nStuck; i++ {
-		b := newBuf("stuck")
-		defer func() { _ = b.Destroy() }()
-		stuck = append(stuck, b)
-	}
-	for i := 0; i < nIdle; i++ {
-		b := newBuf("idle")
-		defer func() { _ = b.Destroy() }()
-		idle = append(idle, b)
-	}
-
 	wipeDone := make(chan error, 1)
-	releaseStuck := make(chan struct{})
-	releaseIdle := make(chan struct{})
 
-	// Teardown runs LIFO and must undo this in the reverse of the order it was
-	// built: free the borrows, let the wipe finish, and only then let the
-	// deferred Destroy calls above run — a Destroy that races a live borrow
-	// would block forever and hang the test instead of failing it.
+	// Teardown runs LIFO, so this is registered in reverse of the order it must
+	// happen: release both borrows, let the wipe finish, and only then let the
+	// deferred Destroy calls above run. A Destroy racing a live borrow would
+	// block forever and hang the test instead of failing it, and every assertion
+	// below can abort, so both releases have to be idempotent and unconditional.
 	defer func() { <-wipeDone }()
 	defer borrows.Wait()
-	defer close(releaseStuck)
+	defer freeStuck()
+	defer freeIdle()
 
-	for _, b := range stuck {
-		borrow(b, releaseStuck)
-	}
-	for _, b := range idle {
-		borrow(b, releaseIdle)
-	}
+	borrow(stuck, releaseStuck)
+	borrow(idle, releaseIdle)
 
 	go func() { wipeDone <- WipeAllSecrets() }()
 
-	// Let the first pass run to completion with every idle buffer locked, which
-	// is what forces them all into the deferred set, then free them. Nothing
-	// else changes: the stuck borrows stay held for the whole assertion.
-	time.Sleep(250 * time.Millisecond)
-	close(releaseIdle)
+	// The deterministic detector: both deferred regions must be waited on at the
+	// same time. A sequential second pass can only ever queue one writer, so it
+	// fails here whichever key map iteration happened to put first.
+	waitForWritersWaiting(t, stuck.mu, 1)
+	waitForWritersWaiting(t, idle.mu, 1)
 
+	// End to end: releasing ONLY the idle borrow must zero that buffer while the
+	// unrelated borrow is still held.
+	freeIdle()
 	deadline := time.Now().Add(10 * time.Second)
-	for i, b := range idle {
-		for {
-			zeroed := true
-			if err := b.WithBytes(func(p []byte) {
-				for _, x := range p {
-					if x != 0 {
-						zeroed = false
-					}
+	for {
+		zeroed := true
+		if err := idle.WithBytes(func(p []byte) {
+			for _, x := range p {
+				if x != 0 {
+					zeroed = false
 				}
-			}); err != nil {
-				t.Fatalf("idle[%d].WithBytes: %v", i, err)
 			}
-			if zeroed {
-				break
-			}
-			if time.Now().After(deadline) {
-				t.Errorf("idle[%d] still holds its secret while unrelated buffers are borrowed — "+
-					"the emergency wipe's blocking pass serialized it behind another region's borrow", i)
-				return
-			}
-			time.Sleep(time.Millisecond)
+		}); err != nil {
+			t.Fatalf("idle.WithBytes: %v", err)
 		}
+		if zeroed {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Error("idle buffer still holds its secret while an unrelated buffer is borrowed — " +
+				"the emergency wipe's blocking pass serialized it behind another region's borrow")
+			return
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
