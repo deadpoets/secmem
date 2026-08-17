@@ -13,6 +13,21 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Fixed
+
+- `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
+  The emergency wipe's second pass blocked on the deferred regions sequentially,
+  in map-iteration order. Because `tryWipeInPlace` defers a region whose lock is
+  held at the instant it looks — including momentarily — a buffer that was
+  merely mid-`WithBytes` during the first pass could be serialized behind a
+  genuinely stuck borrow and keep its plaintext for as long as that borrow ran.
+  That is precisely the hostage situation the two-pass split exists to prevent,
+  reintroduced by the second pass itself. Each deferred region is now waited on
+  independently, so ordering cannot matter. Present since the two-pass wipe
+  landed, and reachable on any `WipeAllSecrets` call — including from
+  `InstallTerminationWipe` — whenever a second buffer was in use at the moment
+  the wipe began.
+
 ## [secmem-crypto/v0.3.2] - 2026-08-16
 
 Retracts `secmem-crypto/v0.3.0`, and documents the module.
