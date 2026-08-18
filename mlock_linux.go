@@ -174,7 +174,36 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 	if unsafe.Sizeof(uintptr(0)) != 8 {
 		return secRegion{}, false, errors.New("memfd_secret: requires a 64-bit architecture")
 	}
-	fd, _, errno := unix.Syscall(sysMemfdSecret, 0, 0, 0)
+	// Close-on-exec, asked for at creation. Without it the descriptor stays
+	// inheritable for the whole window below — ftruncate, the guard
+	// reservation, and the MAP_FIXED — and a fork+exec from any other
+	// goroutine during it hands the child a live descriptor to the secret
+	// pages. secretmem is readable through that fd, so the strongest tier
+	// would be the one that leaks across exec.
+	//
+	// The bit is O_CLOEXEC, not FD_CLOEXEC. memfd_secret(2)'s man page names
+	// FD_CLOEXEC, but the kernel tests `flags & O_CLOEXEC` and returns EINVAL
+	// for anything outside SECRETMEM_FLAGS_MASK|O_CLOEXEC. Passing FD_CLOEXEC
+	// (bit 0) would therefore not merely fail to set close-on-exec — it would
+	// fail the syscall outright and silently drop every allocation to the
+	// weaker L3 path, which is worse than the leak being fixed.
+	//
+	// That distinction is kernel-version sensitive and this file cannot be
+	// executed from the maintainer's platform, so EINVAL is not trusted to
+	// mean "flag unsupported" and nothing else: it retries bare and sets
+	// close-on-exec with fcntl instead. Slightly larger window than the
+	// atomic form, still far smaller than none, and a tier downgrade is
+	// impossible either way.
+	fd, _, errno := unix.Syscall(sysMemfdSecret, uintptr(unix.O_CLOEXEC), 0, 0)
+	if errno == unix.EINVAL {
+		fd, _, errno = unix.Syscall(sysMemfdSecret, 0, 0, 0)
+		if errno == 0 {
+			if _, ferr := unix.FcntlInt(fd, unix.F_SETFD, unix.FD_CLOEXEC); ferr != nil {
+				_ = unix.Close(int(fd))
+				return secRegion{}, false, fmt.Errorf("memfd_secret: set FD_CLOEXEC: %w", ferr)
+			}
+		}
+	}
 	if errno != 0 {
 		return secRegion{}, false, errno // ENOSYS = kernel too old / not built; EPERM = lockdown
 	}

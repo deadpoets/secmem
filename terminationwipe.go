@@ -9,6 +9,7 @@
 package secmem
 
 import (
+	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
@@ -28,6 +29,15 @@ import (
 // With no arguments it handles [os.Interrupt] (SIGINT) and SIGTERM. Pass
 // explicit signals to override — note that adding SIGQUIT both suppresses Go's
 // default SIGQUIT goroutine dump and re-raises to a core-dumping disposition.
+//
+// # Windows does not self-terminate
+//
+// The re-raise that makes the process exit is a no-op on Windows:
+// [os.Process.Signal] there supports only [os.Kill] and rejects both
+// [os.Interrupt] and SIGTERM outright. So on Windows this installer wipes and
+// then RETURNS — every secret is gone, but the process keeps running and must
+// exit on its own. The failure is logged at warn level rather than swallowed.
+// Handle the exit in your own handler if you need one on that platform.
 //
 // It does NOT clobber other signal handling. It registers its own channel with
 // [signal.Notify] (which is additive: a handler you installed with
@@ -63,8 +73,32 @@ func InstallTerminationWipe(signals ...os.Signal) (uninstall func()) {
 			// disposition until this Stop, so a second signal arriving mid-wipe
 			// could not kill us early — no global Ignore is needed.
 			signal.Stop(ch)
-			if p, err := os.FindProcess(os.Getpid()); err == nil {
-				_ = p.Signal(sig)
+			// Re-raise so the now-default disposition terminates the process.
+			//
+			// This cannot work on Windows: os.Process.Signal rejects everything
+			// except Kill with "not supported by windows" — verified on go1.26,
+			// windows/amd64, for both os.Interrupt and SIGTERM. Discarding that
+			// error left the worst of the three possible outcomes: the process
+			// sails past Ctrl-C still running, with every secret already zeroed
+			// (reads return zeros, mutations return ErrWiped), while this
+			// function's documentation says it terminates.
+			//
+			// Reported rather than escalated to a forced os.Exit, because the
+			// installer promises never to take the exit out from under a
+			// co-installed graceful shutdown — and signal.Notify is additive,
+			// so any such handler already received this signal independently.
+			// On Windows the exit is therefore the application's job, and the
+			// log line says so instead of leaving it to be discovered.
+			proc, err := os.FindProcess(os.Getpid())
+			if err == nil {
+				err = proc.Signal(sig)
+			}
+			if err != nil {
+				slog.Warn("secmem: could not re-raise the termination signal — secrets are wiped, but this process will NOT exit on its own",
+					slog.String("signal", sig.String()),
+					slog.Any("error", err),
+					slog.String("advice", "exit from your own signal handler; on Windows os.Process.Signal supports only Kill"),
+				)
 			}
 		case <-done:
 			signal.Stop(ch)

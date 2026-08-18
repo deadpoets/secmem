@@ -101,6 +101,32 @@ esac
 # Parsed via `go mod edit -json` rather than by reading go.mod as text — the
 # require block has several legal shapes and a regex over it is exactly the
 # kind of thing that quietly matches nothing and reports success.
+# latest_version extracts .Version from a proxy @latest JSON body on stdin.
+latest_version() {
+  python3 -c 'import json,sys
+try:
+    print(json.load(sys.stdin).get("Version", ""))
+except Exception:
+    print("")' 2>/dev/null || printf ""
+}
+
+# version_lt reports whether $1 is an older semver than $2, i.e. whether this
+# module's go.mod still points at a superseded release. SECMEM_ALLOW_STALE_DEP=1
+# disables the refusal for a deliberately older floor.
+#
+# An unparseable version on either side reports "not older": pseudo-versions and
+# +incompatible are shapes this comparison does not understand, and refusing on
+# something it cannot read would be a different kind of wrong answer.
+version_lt() {
+  [ "${SECMEM_ALLOW_STALE_DEP:-0}" = "1" ] && return 1
+  python3 -c 'import re, sys
+def parse(v):
+    m = re.match(r"^v(\d+)\.(\d+)\.(\d+)", v or "")
+    return tuple(int(x) for x in m.groups()) if m else None
+a, b = parse(sys.argv[1]), parse(sys.argv[2])
+sys.exit(0 if (a and b and a < b) else 1)' "$1" "$2"
+}
+
 repo_root_module=$(GOWORK=off go list -m)
 deps=$(cd "$dir" && GOWORK=off go mod edit -json | python3 -c '
 import json,sys
@@ -123,6 +149,38 @@ else
              Tagging now would publish a release pointing at a version that
              cannot be resolved. Release $req $reqver first, then re-run this."
     ok "in-repo dependency $req $reqver is published"
+
+    # "Published" is NOT the invariant this gate exists for. The failure that
+    # actually happened — secmem-crypto/v0.3.0, permanently inert — had a
+    # go.mod requiring a version that was published just fine. It was simply
+    # the OLD one, because the tag was cut before the floor-raise PR merged.
+    # Checking only for publication passes that case and reports success, which
+    # is the one outcome this script must never produce.
+    #
+    # So the required version must also be the newest published one. If the
+    # dependency has moved ahead, this module's go.mod has not caught up and the
+    # tag would claim a dependency it does not have.
+    latestbody=$(curl -s -w '
+%{http_code}' "https://proxy.golang.org/${reqesc}/@latest" || printf '
+000')
+    latestcode=$(printf '%s' "$latestbody" | tail -1)
+    latest=$(printf '%s' "$latestbody" | sed '$d' | latest_version)
+    if [ "$latestcode" != "200" ] || [ -z "$latest" ]; then
+      # Fail closed. An unreachable proxy is exactly when a human is most
+      # tempted to shrug and tag anyway.
+      die "cannot determine the latest published $req (HTTP $latestcode).
+             Refusing to tag: this is the check that catches a stale go.mod, and
+             it does not get skipped because the proxy is unreachable. Retry
+             when proxy.golang.org answers."
+    fi
+    if version_lt "$reqver" "$latest"; then
+      die "$dir/go.mod requires $req $reqver, but $latest is published.
+             This is the ordering footgun: the tag would claim a dependency it
+             does not have, permanently. Merge the go.mod floor raise and
+             re-run. If the older floor is deliberate, re-run with
+             SECMEM_ALLOW_STALE_DEP=1 and record why in CHANGELOG.md."
+    fi
+    ok "in-repo dependency $req $reqver is the newest published"
   done <<EOF
 $deps
 EOF
