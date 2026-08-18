@@ -521,3 +521,96 @@ func TestWipeAllSecrets_ClearsSealCipherFlag(t *testing.T) {
 // errOf adapts a (T, error) call to the error alone, so the mutation table above
 // reads uniformly.
 func errOf(fn func() error) error { return fn() }
+
+// TestWipeInPlace_RefusesAliasedRegistration pins the identity check in the
+// blocking wipe pass.
+//
+// wipeInPlace resolves a key, drops the janitor lock to wait on that region's
+// lock, then resolves the key AGAIN. Those two resolutions are not guaranteed
+// to name the same buffer. The janitor key used to be the mapping's base
+// address, which is unique for a mapping's lifetime but not across lifetimes:
+// free a region and the OS may hand the same base to the next allocation, which
+// then registers under the identical key. A wipe blocked on the dead buffer's
+// lock would wake, re-resolve the key to the NEW buffer, and zero it with
+// lockHeld=true — i.e. with no lock on it at all — racing its accessors and its
+// Seal (which flips the pages to PAGE_NOACCESS mid-write).
+//
+// Keys are now minted from a counter, so that aliasing is unreachable in
+// production. This test therefore forces the aliased state directly, under the
+// janitor lock, rather than trying to race the allocator into reusing an
+// address: the point is that the wipe must be safe even when handed a key that
+// resolves to a region it never locked, without relying on the key scheme.
+func TestWipeInPlace_RefusesAliasedRegistration(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	secret := bytes.Repeat([]byte{0x5A}, 64)
+
+	victim, err := NewBuffer(append([]byte(nil), secret...)) // the wipe targets this one
+	if err != nil {
+		t.Skipf("NewBuffer(victim): %v", err)
+	}
+	defer func() { _ = victim.Destroy() }()
+	bystander, err := NewBuffer(append([]byte(nil), secret...)) // must NOT be touched
+	if err != nil {
+		t.Skipf("NewBuffer(bystander): %v", err)
+	}
+	defer func() { _ = bystander.Destroy() }()
+
+	vKey, bKey := victim.janitorKey, bystander.janitorKey
+	if vKey == bKey {
+		t.Fatalf("janitor keys collided (%#x) — keys must be unique per registration", vKey)
+	}
+
+	// Park a reader on the victim so wipeInPlace blocks with the victim's
+	// region and lock already peeked.
+	release := make(chan struct{})
+	borrowDone := make(chan struct{})
+	entered := make(chan struct{})
+	go func() {
+		defer close(borrowDone)
+		_ = victim.WithBytes(func([]byte) { close(entered); <-release })
+	}()
+	<-entered
+
+	wipeDone := make(chan error, 1)
+	go func() { wipeDone <- emergencyJanitor.wipeInPlace(vKey) }()
+	waitForWritersWaiting(t, victim.mu, 1) // wipeInPlace has peeked and is blocked
+
+	// Force the aliasing: the victim's key now resolves to the BYSTANDER's
+	// registration, exactly as a base-address key would after the victim was
+	// freed and its address re-handed to the bystander.
+	emergencyJanitor.mu.Lock()
+	victimReg := emergencyJanitor.regions[vKey]
+	bystanderReg := emergencyJanitor.regions[bKey]
+	emergencyJanitor.regions[vKey] = bystanderReg
+	emergencyJanitor.mu.Unlock()
+
+	close(release)
+	<-borrowDone
+	if err := <-wipeDone; err != nil {
+		t.Errorf("wipeInPlace: %v", err)
+	}
+
+	// Restore the registry BEFORE any Destroy runs: the deferred Destroy calls
+	// resolve by key, and leaving the alias in place would make the victim's
+	// teardown free the bystander's mapping.
+	emergencyJanitor.mu.Lock()
+	delete(emergencyJanitor.wiped, vKey)
+	emergencyJanitor.regions[vKey] = victimReg
+	emergencyJanitor.mu.Unlock()
+
+	// The assertion: the bystander was never locked by that wipe, so it must not
+	// have been touched.
+	if bystander.wiped.Load() {
+		t.Error("bystander was marked wiped by a wipe that resolved a key it never locked")
+	}
+	if err := bystander.WithBytes(func(b []byte) {
+		if !bytes.Equal(b, secret) {
+			t.Errorf("bystander was ZEROED by a wipe holding a different buffer's lock — "+
+				"got %x…, want %x…", b[:8], secret[:8])
+		}
+	}); err != nil {
+		t.Fatalf("bystander.WithBytes: %v", err)
+	}
+}

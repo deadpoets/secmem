@@ -6,7 +6,6 @@ import (
 	"log/slog"
 	"sync"
 	"sync/atomic"
-	"unsafe"
 )
 
 // janitorRegion is one live secret-mapping record.
@@ -80,18 +79,27 @@ func init() { //nolint:gochecknoinits // Emergency janitor must be initialized b
 	// registry are wired up by default.
 }
 
-// regionKey returns a stable per-mapping key: the base address of the outer
-// reservation, which is unique for the mapping's whole lifetime.
-func regionKey(region secRegion) uintptr {
-	//nolint:gosec // G103: deriving a stable identity key from the mapping base; no dereference.
-	return uintptr(unsafe.Pointer(&region.outer[0]))
-}
+// nextJanitorKey mints registration identities. It is a counter, deliberately,
+// and NOT the mapping's base address.
+//
+// The base address is unique for a mapping's lifetime but emphatically not
+// across lifetimes: free a region and the OS is free to hand the very same base
+// back to the next allocation. A key derived from it therefore aliases two
+// unrelated buffers, and every lookup that resolves a key to a region after
+// having released the janitor lock can be handed a DIFFERENT buffer than the
+// one it looked up. wipeInPlace does exactly that — it waits on one buffer's
+// lock and then re-resolves the key — so the aliasing turned into a wipe of a
+// live buffer whose lock was never held. A counter cannot be reused, so the
+// resolution can only ever return the registration the key was minted for.
+//
+// Starts at 1 so a zero janitorKey stays recognisable as "never registered".
+var nextJanitorKey atomic.Uint64 //nolint:gochecknoglobals // identity source for the crash registry.
 
 // register records one live secret mapping and returns its janitor key.
 // canary may be the zero layout when the allocation has no armed slack;
 // sealCipher may be nil when the owner has no seal-cipher state (arenas).
 func (j *janitor) register(region secRegion, canary canaryLayout, mu *bufferRWLock, sealCipher, wiped *atomic.Bool) uintptr {
-	key := regionKey(region)
+	key := uintptr(nextJanitorKey.Add(1))
 	j.mu.Lock()
 	j.regions[key] = janitorRegion{
 		region:     region,
@@ -130,16 +138,37 @@ func (j *janitor) peekAny(key uintptr) (janitorRegion, bool) {
 	return region, ok
 }
 
-// takeAny removes and returns one region from whichever set holds it — the
-// take counterpart of peekAny.
-func (j *janitor) takeAny(key uintptr) (janitorRegion, bool) {
+// takeAnyIf is takeAny that refuses unless the stored region is the SAME
+// registration the caller already locked, identified by its lock pointer.
+//
+// wipeInPlace and tryWipeInPlace resolve a key, release the janitor lock to
+// wait on that region's lock, then resolve the key again. Between those two
+// resolutions the registration can be torn down and a new one filed — so the
+// second resolution must be told which registration the caller is actually
+// holding, not merely which key it started from. Wiping the other one would
+// zero a live buffer with no lock held, racing its accessors and its Seal.
+//
+// Unique keys (see nextJanitorKey) already make that aliasing unreachable. This
+// check is what makes the wipe safe LOCALLY, without depending on that global
+// invariant surviving a future change to how keys are minted — and it is the
+// property the regression test can actually assert.
+//
+// The lock pointer is a sound identity: the caller holds a live reference to it
+// for the whole comparison, so the GC cannot recycle the address underneath.
+func (j *janitor) takeAnyIf(key uintptr, mu *bufferRWLock) (janitorRegion, bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if region, ok := j.regions[key]; ok {
+		if region.mu != mu {
+			return janitorRegion{}, false
+		}
 		delete(j.regions, key)
 		return region, true
 	}
 	if region, ok := j.wiped[key]; ok {
+		if region.mu != mu {
+			return janitorRegion{}, false
+		}
 		delete(j.wiped, key)
 		return region, true
 	}
@@ -308,8 +337,9 @@ func (j *janitor) wipeInPlace(key uintptr) error {
 
 	// Re-take under our own exclusive lock: Destroy or the GC cleanup may have
 	// completed the whole teardown while we waited, in which case there is
-	// nothing left to wipe.
-	region, ok := j.takeAny(key)
+	// nothing left to wipe. Matched on the lock we are holding, not on the key
+	// alone — see takeAnyIf for why the key is not sufficient identity here.
+	region, ok := j.takeAnyIf(key, peeked.mu)
 	if !ok {
 		return nil
 	}
@@ -335,8 +365,10 @@ func (j *janitor) tryWipeInPlace(key uintptr) (done bool, err error) {
 	defer peeked.mu.unlock()
 
 	// Re-take under our own exclusive lock so the wipe still happens exactly
-	// once even if Destroy or the GC cleanup won the race in between.
-	region, ok := j.takeAny(key)
+	// once even if Destroy or the GC cleanup won the race in between. Matched on
+	// the held lock: the window here is far narrower than wipeInPlace's, because
+	// tryLock does not wait, but it is not zero.
+	region, ok := j.takeAnyIf(key, peeked.mu)
 	if !ok {
 		return true, nil
 	}

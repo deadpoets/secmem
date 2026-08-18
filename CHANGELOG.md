@@ -30,6 +30,27 @@ mark the stability commitment.
 
 ### Fixed
 
+- **The emergency wipe could zero a different, live buffer without holding its
+  lock.** The janitor keyed each registration by its mapping's base address.
+  That is unique for a mapping's lifetime but not across lifetimes: free a
+  region and the OS may hand the same base to the next allocation, which then
+  registers under the identical key. `wipeInPlace` resolves a key, drops the
+  janitor lock to wait on that region's lock, then resolves the key *again* — so
+  a wipe blocked on a buffer that was destroyed during the wait could wake,
+  resolve the key to the buffer now occupying that address, and zero it with
+  `lockHeld=true`, i.e. with no lock on it at all. That races the new buffer's
+  accessors and its `Seal`, which flips the pages to `PAGE_NOACCESS` mid-write.
+
+  Reachable from the exact API combination the package documents as
+  concurrency-safe: `WipeAllSecrets` running while one buffer is destroyed and
+  another is allocated. Registrations are now identified by a counter, which
+  cannot be reused, and the re-resolution additionally matches on the lock the
+  caller actually holds — so the wipe is safe even if the key scheme changes
+  again. Found by an external adversarial review; the reporter also flags it as
+  a candidate mechanism for the unexplained one-off `windows/amd64` runtime
+  corruption, since a stray write into re-handed address space lands in whatever
+  the allocator gave that range next.
+
 - `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
   The emergency wipe's second pass blocked on the deferred regions sequentially,
   in map-iteration order. Because `tryWipeInPlace` defers a region whose lock is
