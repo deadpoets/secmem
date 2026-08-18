@@ -13,6 +13,21 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Changed
+
+- **`secmem-crypto`, `examples`: `golang.org/x/crypto` 0.54.0 → 0.55.0.**
+  Maintenance, not a fix: the `vuln` job was green against 0.54.0, so nothing
+  outstanding was reachable. Recorded because a `require` change in
+  `secmem-crypto` raises the floor for everyone importing it, which is the same
+  reason `secmem-crypto/v0.3.1` was a dependency-only release with an entry of
+  its own.
+
+  The two modules have to move together. `examples` pins `secmem-crypto` with a
+  `replace`, but a replace does not exempt the `require` line from minimum
+  version selection: bumping only `secmem-crypto` makes MVS select 0.55.0 for
+  `examples` too, while `examples/go.mod` still asks for 0.54.0 — and CI runs
+  readonly, so that is a hard error before any package loads.
+
 ### Fixed
 
 - `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
