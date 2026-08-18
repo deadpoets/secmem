@@ -15,6 +15,16 @@ mark the stability commitment.
 
 ### Changed
 
+- **`release.sh` now refuses a stale in-repo dependency instead of passing it.**
+  The ordering check only asked whether the required version was *published*.
+  The failure it exists to prevent — the permanently inert
+  `secmem-crypto/v0.3.0` — required a version that was published perfectly well;
+  it was simply the previous one, because the tag was cut before the floor-raise
+  PR merged. The gate therefore reported success on exactly the case it was
+  written to catch. It now also requires that version to be the newest published
+  one, fails closed when the proxy cannot be reached, and honours
+  `SECMEM_ALLOW_STALE_DEP=1` for a deliberately older floor.
+
 - **`secmem-crypto`, `examples`: `golang.org/x/crypto` 0.54.0 → 0.55.0.**
   Maintenance, not a fix: the `vuln` job was green against 0.54.0, so nothing
   outstanding was reachable. Recorded because a `require` change in
@@ -50,6 +60,26 @@ mark the stability commitment.
   a candidate mechanism for the unexplained one-off `windows/amd64` runtime
   corruption, since a stray write into re-handed address space lands in whatever
   the allocator gave that range next.
+
+- **`memfd_secret` descriptors are now close-on-exec.** The fd was created with
+  no flags and stayed inheritable across `ftruncate`, the guard reservation and
+  the `MAP_FIXED` — so a `fork`+`exec` from any other goroutine in that window
+  handed the child a live descriptor to the secret pages, making the strongest
+  allocation tier the one that leaked across `exec`. The flag is `O_CLOEXEC`,
+  not the `FD_CLOEXEC` the man page names: the kernel tests `flags & O_CLOEXEC`
+  and `EINVAL`s anything else, so the wrong bit would have silently dropped
+  every allocation to the weaker anon path. An `EINVAL` is retried bare with
+  `fcntl(F_SETFD)` instead, so a kernel that disagrees still gets close-on-exec
+  and never a tier downgrade.
+
+- **`InstallTerminationWipe` no longer claims to terminate the process on
+  Windows.** `os.Process.Signal` there supports only `os.Kill` and rejects both
+  `os.Interrupt` and SIGTERM, so the re-raise was a guaranteed no-op whose error
+  was discarded: the process ran on past Ctrl-C with every secret already
+  zeroed, while the documentation said it exited. The failure is now logged and
+  the platform limit is documented. The behaviour is deliberately not escalated
+  to a forced `os.Exit`, because the installer promises never to take the exit
+  away from a co-installed graceful shutdown.
 
 - `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
   The emergency wipe's second pass blocked on the deferred regions sequentially,
