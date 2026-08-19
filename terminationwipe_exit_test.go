@@ -71,10 +71,13 @@ func TestForcedExitStatus_MatchesUninterceptedSignal(t *testing.T) {
 	if runtime.GOOS != "windows" {
 		t.Skipf("status only has to match the OS default on Windows (GOOS=%s uses %d)", runtime.GOOS, forcedExitStatus)
 	}
-	// Via a variable: os.Exit narrows to int32 and Windows reads the result as
-	// an unsigned status, and a direct uint32(constant) would not compile.
+	// Typed, not an untyped literal: passed to Errorf an untyped 0xC000013A
+	// defaults to int and overflows on 386, which is what the 32-bit jobs
+	// caught. Going through a variable for the narrowing likewise, since
+	// uint32(constant) of a negative constant does not compile.
+	const statusControlCExit uint32 = 0xC000013A
 	narrowed := int32(forcedExitStatus)
-	if got := uint32(narrowed); got != 0xC000013A {
-		t.Errorf("forcedExitStatus = %#x, want %#x (STATUS_CONTROL_C_EXIT)", got, 0xC000013A)
+	if got := uint32(narrowed); got != statusControlCExit {
+		t.Errorf("forcedExitStatus = %#x, want %#x (STATUS_CONTROL_C_EXIT)", got, statusControlCExit)
 	}
 }
