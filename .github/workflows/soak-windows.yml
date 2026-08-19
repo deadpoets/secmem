@@ -108,11 +108,17 @@ jobs:
           # `((i <= ITERATIONS))` is a code-execution sink: bash evaluates array
           # subscripts inside arithmetic, so ITERATIONS='a[$(id>&2)]' runs the
           # substitution. Passing the inputs through `env:` rather than
-          # interpolating `${{ }}` into the script already closes the YAML-level
-          # injection — this closes the arithmetic one, which is the half that
-          # remained. Dispatching needs write access, so this is hardening rather
-          # than a hole anyone else can reach, but a workflow that evaluates its
-          # own inputs is not a thing to leave lying around in a security repo.
+          # interpolating a github.event.inputs expression straight into the
+          # script already closes the YAML-level injection — this closes the
+          # arithmetic one, which is the half that remained. Dispatching needs
+          # write access, so this is hardening rather than a hole anyone else
+          # can reach, but a workflow that evaluates its own inputs is not a
+          # thing to leave lying around in a security repo.
+          #
+          # Do NOT write a literal expression delimiter in these comments, even
+          # inside backticks. Actions expands expressions in `run:` before any
+          # shell sees the text, so a `#` does not protect it, and an empty one
+          # is a parse error that stops the whole workflow from starting.
           case "$ITERATIONS" in
             '' | *[!0-9]*) echo "::error title=soak: bad input::iterations must be a positive integer, got '$ITERATIONS'"; exit 1 ;;
           esac
