@@ -26,12 +26,14 @@
 package main
 
 import (
-	"bufio"
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"os"
 	"strings"
+
+	"golang.org/x/term"
 
 	"github.com/deadpoets/secmem"
 	secmemcrypto "github.com/deadpoets/secmem/secmem-crypto"
@@ -40,6 +42,10 @@ import (
 const (
 	saltLen = 16
 	keyLen  = 32
+
+	// maxPasswordLen bounds the secure allocation. Longer input is an error,
+	// not a silent truncation — truncating would let a prefix log in.
+	maxPasswordLen = 256
 )
 
 func main() {
@@ -66,15 +72,13 @@ func run(cmd, user string) error {
 	}
 
 	fmt.Print("password: ")
-	line, err := bufio.NewReader(os.Stdin).ReadString('\n')
+	password, err := readPassword(os.Stdin)
 	if err != nil {
 		return err
 	}
-	// Take ownership of the password bytes and guarantee their wipe on
-	// every path out of this function. From here down, no code path may
-	// copy them anywhere except an Argon2 derivation input.
-	password := []byte(strings.TrimRight(line, "\r\n"))
-	defer secmem.SecureWipe(password)
+	// The password now lives only in secure memory, and is destroyed on every
+	// path out of this function. From here down it is borrowed, never copied.
+	defer func() { _ = password.Destroy() }()
 
 	switch cmd {
 	case "register":
@@ -84,7 +88,7 @@ func run(cmd, user string) error {
 	}
 }
 
-func register(user string, password []byte) error {
+func register(user string, password *secmem.SecureBuffer) error {
 	salt := make([]byte, saltLen)
 	if _, err := rand.Read(salt); err != nil {
 		return err
@@ -97,7 +101,9 @@ func register(user string, password []byte) error {
 		return err
 	}
 	defer func() { _ = derived.Destroy() }()
-	if err := secmemcrypto.Argon2DeriveInto(password, salt, derived); err != nil {
+	if err := password.WithBytesErr(func(p []byte) error {
+		return secmemcrypto.Argon2DeriveInto(p, salt, derived)
+	}); err != nil {
 		return err
 	}
 
@@ -119,7 +125,7 @@ func register(user string, password []byte) error {
 	return nil
 }
 
-func login(user string, password []byte) error {
+func login(user string, password *secmem.SecureBuffer) error {
 	//nolint:gosec // G703: user is validated to a bare name (no path separators) in run().
 	raw, err := os.ReadFile(dbPath(user))
 	if err != nil {
@@ -140,7 +146,9 @@ func login(user string, password []byte) error {
 		return err
 	}
 	defer func() { _ = candidate.Destroy() }()
-	if err := secmemcrypto.Argon2DeriveInto(password, salt, candidate); err != nil {
+	if err := password.WithBytesErr(func(p []byte) error {
+		return secmemcrypto.Argon2DeriveInto(p, salt, candidate)
+	}); err != nil {
 		return err
 	}
 
@@ -156,6 +164,81 @@ func login(user string, password []byte) error {
 	}
 	fmt.Println("welcome,", user)
 	return nil
+}
+
+// readPassword reads one line from f into secure memory with terminal echo
+// disabled, a byte at a time.
+//
+// The obvious version leaks the password three times over:
+//
+//	line, _ := bufio.NewReader(os.Stdin).ReadString('\n')  // 4 KiB buffer keeps a copy
+//	password := []byte(strings.TrimRight(line, "\r\n"))    // via two immutable strings
+//
+// A Go string cannot be wiped and neither copy is reachable to try, so the
+// plaintext outlives the program's care by however long the GC takes. Reading
+// straight into a SecureBuffer keeps it in memory this program can erase, which
+// is the whole claim the example is making.
+func readPassword(f *os.File) (*secmem.SecureBuffer, error) {
+	fd := int(f.Fd())
+	if term.IsTerminal(fd) {
+		// Raw mode does two jobs here: the password does not appear on screen,
+		// and bytes arrive as typed rather than through a line buffer nobody
+		// can wipe.
+		state, err := term.MakeRaw(fd)
+		if err != nil {
+			return nil, fmt.Errorf("disabling terminal echo: %w", err)
+		}
+		defer func() {
+			_ = term.Restore(fd, state)
+			fmt.Fprintln(os.Stderr) // the un-echoed Enter still needs a newline
+		}()
+	}
+
+	buf, err := secmem.NewEmptyBuffer(maxPasswordLen)
+	if err != nil {
+		return nil, err
+	}
+	var one [1]byte
+	defer secmem.SecureWipe(one[:])
+
+	n := 0
+readLoop:
+	for {
+		read, rerr := f.Read(one[:])
+		if read == 0 {
+			if n == 0 && rerr != nil {
+				_ = buf.Destroy()
+				return nil, rerr
+			}
+			break // EOF ends the line, same as Enter
+		}
+		switch c := one[0]; {
+		case c == '\n' || c == '\r':
+			break readLoop
+		case c == 0x03: // ^C, which raw mode delivers to us instead of the kernel
+			_ = buf.Destroy()
+			return nil, errors.New("interrupted")
+		case c == 0x7f || c == 0x08: // backspace
+			if n > 0 {
+				n--
+				_ = buf.SetByteAt(n, 0)
+			}
+		case n == maxPasswordLen:
+			_ = buf.Destroy()
+			return nil, fmt.Errorf("password longer than %d bytes", maxPasswordLen)
+		default:
+			if err := buf.SetByteAt(n, c); err != nil {
+				_ = buf.Destroy()
+				return nil, err
+			}
+			n++
+		}
+	}
+	if err := buf.Truncate(n); err != nil {
+		_ = buf.Destroy()
+		return nil, err
+	}
+	return buf, nil
 }
 
 func dbPath(user string) string {
