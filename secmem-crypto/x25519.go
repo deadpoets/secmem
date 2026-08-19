@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"unsafe"
 
 	"golang.org/x/crypto/curve25519"
 
@@ -170,9 +171,31 @@ func (k *X25519Key) ConstantTimeEqual(other *X25519Key) bool {
 		// ErrDestroyed/ErrSealed and yield false).
 		return !k.scalarBuf.IsDestroyed() && !k.scalarBuf.IsSealed()
 	}
+	// Acquire the two read locks in a FIXED GLOBAL ORDER. Taking them in
+	// argument order is an ABBA deadlock: k.ConstantTimeEqual(other) and
+	// other.ConstantTimeEqual(k) running concurrently grab them in opposite
+	// directions, and secmem's lock is writer-preferring, so a read acquire
+	// blocks behind any queued writer — each goroutine then holds one and waits
+	// forever for the other, wedging Destroy and WipeAllSecrets with them.
+	//
+	// Ordered by buffer ADDRESS, which is not the mechanism the core uses
+	// internally: it orders by a process-unique counter, which is strictly
+	// better because it assumes nothing about object placement. That counter is
+	// not exported, and this module builds against a RELEASED core tag, so
+	// reaching for it would mean a core release plus a floor raise before this
+	// deadlock could be fixed at all. Address ordering is sound while the Go GC
+	// does not relocate heap objects, which it has never done; switch to an
+	// exported identity if one ever lands.
+	//
+	// Swapping the operands is safe because equality is symmetric.
+	first, second := k.scalarBuf, other.scalarBuf
+	//nolint:gosec // G103: ordering two locks by address; the pointers are never dereferenced through the uintptr.
+	if uintptr(unsafe.Pointer(first)) > uintptr(unsafe.Pointer(second)) {
+		first, second = second, first
+	}
 	var equal bool
-	err := k.scalarBuf.WithBytesErr(func(a []byte) error {
-		return other.scalarBuf.WithBytesErr(func(b []byte) error {
+	err := first.WithBytesErr(func(a []byte) error {
+		return second.WithBytesErr(func(b []byte) error {
 			equal = subtle.ConstantTimeCompare(a, b) == 1
 			return nil
 		})

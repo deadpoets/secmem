@@ -89,9 +89,25 @@ func (s Secret) ConstantTimeEqual(other Secret) bool {
 		// which the borrowing contract forbids (writer-preference deadlock).
 		return s.buf.WithBytes(func([]byte) {}) == nil
 	}
+	// Acquire the two read locks in a FIXED GLOBAL ORDER. Taking them in
+	// argument order is an ABBA deadlock: a.ConstantTimeEqual(b) and
+	// b.ConstantTimeEqual(a) running concurrently grab them in opposite
+	// directions, and because the lock is writer-preferring a read acquire
+	// blocks behind any queued writer — so each holds one and waits forever for
+	// the other, wedging Destroy and WipeAllSecrets on both buffers with them.
+	//
+	// Ordered by janitorKey, which is a process-unique counter (see the janitor)
+	// rather than an address: it is stable for the buffer's whole lifetime and
+	// does not assume anything about where the GC keeps objects.
+	//
+	// Swapping the operands is safe because equality is symmetric.
+	first, second := s.buf, other.buf
+	if first.janitorKey > second.janitorKey {
+		first, second = second, first
+	}
 	equal := false
-	err := s.buf.WithBytesErr(func(a []byte) error {
-		return other.buf.WithBytesErr(func(b []byte) error {
+	err := first.WithBytesErr(func(a []byte) error {
+		return second.WithBytesErr(func(b []byte) error {
 			if len(a) == len(b) {
 				equal = subtle.ConstantTimeCompare(a, b) == 1
 			}

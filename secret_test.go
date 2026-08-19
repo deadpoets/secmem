@@ -11,6 +11,7 @@ import (
 	"log/slog"
 	"strings"
 	"testing"
+	"time"
 )
 
 // Compile-time proof the leak-safe surface is actually wired to the
@@ -322,4 +323,94 @@ func TestSecret_RedactionIgnoresState(t *testing.T) {
 	if before != after {
 		t.Errorf("redacted form changed across Destroy: %q -> %q", before, after)
 	}
+}
+
+// TestSecret_ConstantTimeEqual_AcquiresInKeyOrder pins the acquisition ORDER,
+// which is the property that makes the ABBA deadlock impossible.
+//
+// Taking the two read locks in argument order deadlocks:
+// a.ConstantTimeEqual(b) and b.ConstantTimeEqual(a) running concurrently take
+// them in opposite directions. Read locks are shared, so the cycle needs a
+// writer queued on each buffer — which this package's writer-preferring lock
+// makes routine, since a Destroy or an emergency wipe is enough.
+//
+// The deadlock itself is not what is asserted here. Reproducing it needs both
+// goroutines paused BETWEEN their two acquires, and there is no hook to pause
+// them; a stress version of this test passed just as happily against the
+// unfixed code, which makes it worthless. The order is directly observable
+// instead, and it is the actual fix.
+//
+// Construction: hold an exclusive lock on the LOWER-keyed buffer, then call
+// ConstantTimeEqual with the HIGHER-keyed one as the receiver — so argument
+// order and key order disagree.
+//
+//   - ordered (fixed): the lower-keyed buffer is taken first, blocks
+//     immediately, and the higher-keyed buffer is never read-locked at all.
+//   - argument order (unfixed): the receiver is read-locked first and STAYS
+//     locked while the call blocks on the other one.
+//
+// So a reader appearing on the higher-keyed buffer is exactly the bug.
+func TestSecret_ConstantTimeEqual_AcquiresInKeyOrder(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	s1, err := NewSecret([]byte("secret-value-aaaaaaaaaaaaaaaaaaa"))
+	if err != nil {
+		t.Skipf("NewSecret: %v", err)
+	}
+	defer func() { _ = s1.buf.Destroy() }()
+	s2, err := NewSecret([]byte("secret-value-bbbbbbbbbbbbbbbbbbb"))
+	if err != nil {
+		t.Skipf("NewSecret: %v", err)
+	}
+	defer func() { _ = s2.buf.Destroy() }()
+
+	lo, hi := s1, s2
+	if lo.buf.janitorKey > hi.buf.janitorKey {
+		lo, hi = hi, lo
+	}
+
+	// Block the lower-keyed buffer so whichever side is taken first stalls
+	// there, holding the state still for inspection.
+	lo.buf.mu.lock()
+	unlocked := false
+	defer func() {
+		if !unlocked {
+			lo.buf.mu.unlock()
+		}
+	}()
+
+	started := make(chan struct{})
+	returned := make(chan struct{})
+	go func() {
+		close(started)
+		_ = hi.ConstantTimeEqual(lo) // receiver is the HIGHER key
+		close(returned)
+	}()
+	<-started
+
+	// Poll: the unfixed order takes the receiver's read lock within
+	// microseconds and holds it for the whole blocked call, so a clean window
+	// here means the lower-keyed buffer really was taken first.
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if hi.buf.mu.readers.Load() > 0 {
+			lo.buf.mu.unlock()
+			unlocked = true
+			<-returned
+			t.Fatal("ConstantTimeEqual read-locked the higher-keyed buffer first: it acquires in " +
+				"argument order, so a concurrent reversed comparison deadlocks (ABBA)")
+		}
+		select {
+		case <-returned:
+			t.Fatal("ConstantTimeEqual returned while the lower-keyed buffer was exclusively locked; " +
+				"it cannot have taken that lock at all")
+		default:
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	lo.buf.mu.unlock()
+	unlocked = true
+	<-returned
 }

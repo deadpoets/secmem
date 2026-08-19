@@ -46,6 +46,22 @@ mark the stability commitment.
 
 ### Fixed
 
+- **`Secret.ConstantTimeEqual` and `X25519Key.ConstantTimeEqual` no longer
+  deadlock on a reversed comparison.** Both took their two read locks in
+  argument order, so `a.ConstantTimeEqual(b)` and `b.ConstantTimeEqual(a)`
+  running concurrently acquired them in opposite directions. Read locks are
+  shared, so the cycle needs a writer queued on each buffer — which a
+  writer-preferring lock makes routine, since a `Destroy` or an emergency wipe
+  is enough. Once wedged, both buffers are unreachable for `Destroy` and
+  `WipeAllSecrets` too.
+
+  Both now acquire in a fixed global order. The core orders by `janitorKey`, a
+  process-unique counter that assumes nothing about object placement;
+  `secmem-crypto` orders by buffer address, because that counter is unexported
+  and the module builds against a released core tag — using it would have meant
+  a core release plus a floor raise before the deadlock could be fixed at all.
+  Address ordering is sound while the Go GC does not relocate heap objects.
+
 - **Constructors now wipe the caller's input on failure, not only on success.**
   `NewBuffer`, `NewSyscallSafeBuffer` and `NewSecret` warn that the input is
   zeroed and must not be reused — but every error path returned with the
