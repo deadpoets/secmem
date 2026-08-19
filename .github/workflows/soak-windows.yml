@@ -64,6 +64,9 @@ on:
       mode:
         description: "gotest = `go test -race ./...` exactly as ci.yml runs it (reproduces); binary = loop one prebuilt package binary (faster, has NOT reproduced)"
         default: "gotest"
+      timeout:
+        description: "Per-iteration Go test timeout (e.g. 180s). A hang must panic with a full goroutine dump rather than stall silently."
+        default: "180s"
 
 permissions:
   contents: read
@@ -94,9 +97,40 @@ jobs:
           GOMAXPROCS: ${{ github.event.inputs.gomaxprocs || '4' }}
           GODEBUG: ${{ github.event.inputs.godebug || '' }}
           MODE: ${{ github.event.inputs.mode || 'gotest' }}
+          TIMEOUT: ${{ github.event.inputs.timeout || '180s' }}
           GOTRACEBACK: system
         run: |
           set -uo pipefail
+
+          # Validate every dispatch input BEFORE it reaches a shell context that
+          # can evaluate it.
+          #
+          # `((i <= ITERATIONS))` is a code-execution sink: bash evaluates array
+          # subscripts inside arithmetic, so ITERATIONS='a[$(id>&2)]' runs the
+          # substitution. Passing the inputs through `env:` rather than
+          # interpolating `${{ }}` into the script already closes the YAML-level
+          # injection — this closes the arithmetic one, which is the half that
+          # remained. Dispatching needs write access, so this is hardening rather
+          # than a hole anyone else can reach, but a workflow that evaluates its
+          # own inputs is not a thing to leave lying around in a security repo.
+          case "$ITERATIONS" in
+            '' | *[!0-9]*) echo "::error title=soak: bad input::iterations must be a positive integer, got '$ITERATIONS'"; exit 1 ;;
+          esac
+          if [ "$ITERATIONS" -lt 1 ] || [ "$ITERATIONS" -gt 5000 ]; then
+            echo "::error title=soak: bad input::iterations must be 1..5000, got $ITERATIONS"; exit 1
+          fi
+          case "$GOMAXPROCS" in
+            '' | *[!0-9]*) echo "::error title=soak: bad input::gomaxprocs must be a positive integer, got '$GOMAXPROCS'"; exit 1 ;;
+          esac
+          case "$MODE" in
+            gotest | binary) ;;
+            *) echo "::error title=soak: bad input::mode must be gotest or binary, got '$MODE'"; exit 1 ;;
+          esac
+          # Go durations only: digits and unit letters, nothing that could be
+          # read as another flag.
+          case "$TIMEOUT" in
+            '' | *[!0-9smh]*) echo "::error title=soak: bad input::timeout must be a Go duration such as 180s, got '$TIMEOUT'"; exit 1 ;;
+          esac
 
           # Two shapes, and the difference turned out to matter.
           #
@@ -112,27 +146,85 @@ jobs:
           # free-list caches, "what the allocator hands back next" is the whole
           # question. It is the default because it is the only shape that has
           # actually reproduced.
+          #
+          # Each iteration carries a per-iteration timeout. Without one, a hang
+          # produces NOTHING: the job sits until its own 90-minute limit and is
+          # killed with no traceback, so the single most interesting outcome
+          # after a crash — a deadlock — is the one this workflow could not
+          # report. Go's timeout panics and dumps every goroutine, which with
+          # GOTRACEBACK=system is exactly the evidence wanted.
+          #
+          # Compilation happens ONCE, before the loop, and a failure there exits
+          # immediately. Left inside the loop it would fail all N iterations
+          # identically and be reported as N crashes — a wall of false positives
+          # burying the rare real one, and a "failures: 200" line that means the
+          # opposite of what it appears to.
           if [ "$MODE" = "binary" ]; then
-            go test -race -c -o soak.exe .
-            run_once() { ./soak.exe -test.count=1 2>&1; }
+            echo "::group::build test binary"
+            if ! go test -race -c -o soak.exe .; then
+              echo "::error title=soak: build failed::the test binary does not compile; not looping"
+              exit 1
+            fi
+            echo "::endgroup::"
+            run_once() { ./soak.exe -test.count=1 -test.timeout="$TIMEOUT" 2>&1; }
           else
-            run_once() { go test -race -count=1 ./... 2>&1; }
+            echo "::group::compile check"
+            if ! go test -race -run '^$' -count=1 -timeout "$TIMEOUT" ./...; then
+              echo "::error title=soak: compile failed::the suite does not build; not looping"
+              exit 1
+            fi
+            echo "::endgroup::"
+            run_once() { go test -race -count=1 -timeout "$TIMEOUT" ./... 2>&1; }
           fi
           echo "soaking $ITERATIONS iterations, mode=$MODE, GOMAXPROCS=$GOMAXPROCS, GODEBUG='${GODEBUG:-}'"
 
           failures=0
+          runtime_crashes=0
+          hangs=0
+          data_races=0
+          test_failures=0
+
+          # classify says what a failing iteration actually was. The hunt is for
+          # runtime-state corruption specifically, and an ordinary flaky
+          # assertion counted beside it would make the number meaningless — the
+          # whole point of this workflow is a rate for ONE phenomenon.
+          # Patterns checked against real output, not guessed: both recorded
+          # sightings ("fatal error: stack not a power of 2", "fatal error:
+          # acquireSudog: ..."), a real `go test -timeout` panic, and an ordinary
+          # t.Fatal.
+          classify() {
+            case "$1" in
+              *"fatal error: "*) echo runtime-crash ;;
+              *"panic: test timed out"* | *"test timed out"*) echo hang ;;
+              # A race report gets its own bucket: -race finding a genuine write
+              # race here would be the best lead available on a bug whose whole
+              # signature is a stray write, and it must not be filed beside a
+              # flaky assertion.
+              *"WARNING: DATA RACE"*) echo data-race ;;
+              *) echo test-failure ;;
+            esac
+          }
+
           # Pure-bash counter: seq is coreutils and not guaranteed on the
-          # runner's Git bash.
+          # runner's Git bash. ITERATIONS is validated as digits above, which is
+          # what makes this arithmetic safe.
           for ((i = 1; i <= ITERATIONS; i++)); do
             if ! out=$(run_once); then
               failures=$((failures + 1))
-              echo "::group::FAILURE on iteration $i"
+              kind=$(classify "$out")
+              case "$kind" in
+                runtime-crash) runtime_crashes=$((runtime_crashes + 1)) ;;
+                hang) hangs=$((hangs + 1)) ;;
+                data-race) data_races=$((data_races + 1)) ;;
+                *) test_failures=$((test_failures + 1)) ;;
+              esac
+              echo "::group::FAILURE ($kind) on iteration $i"
               echo "$out"
               echo "::endgroup::"
               # The first ~40 lines carry the fatal error and the faulting
               # stack; the full traceback is in the group above.
               {
-                echo "### iteration $i"
+                echo "### iteration $i — $kind"
                 echo '```'
                 echo "$out" | head -40
                 echo '```'
@@ -140,7 +232,13 @@ jobs:
             fi
           done
 
-          echo "$failures failures in $ITERATIONS processes" | tee -a "$GITHUB_STEP_SUMMARY"
+          {
+            echo "$failures failures in $ITERATIONS iterations"
+            echo "  runtime crashes : $runtime_crashes   <- the phenomenon this workflow hunts"
+            echo "  data races      : $data_races   <- would be the best lead yet"
+            echo "  hangs (timeout) : $hangs"
+            echo "  test failures   : $test_failures"
+          } | tee -a "$GITHUB_STEP_SUMMARY"
           # A soak that goes green tells us the rate is below what this sample
           # can see — NOT that the bug is gone. Say so, so a green tick here is
           # never mistaken for a clean bill of health.
