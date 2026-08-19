@@ -203,3 +203,80 @@ func TestCustomTag(t *testing.T) {
 		t.Errorf("custom tag: got %q", got)
 	}
 }
+
+// TestSanitize_QuotedCredentialShapes covers the two shapes the original
+// `field[=:]\s*\S+` patterns got wrong. Both are the common case in structured
+// logs, not an exotic one.
+func TestSanitize_QuotedCredentialShapes(t *testing.T) {
+	t.Parallel()
+	s := redact.NewDefaultSanitizer()
+	cases := []struct{ name, in, secret string }{
+		// A quoted KEY was missed entirely: the character after the key is a
+		// quote, not the separator, so the pattern matched nothing at all.
+		{"json quoted key", `{"password": "hunter2", "user": "bob"}`, "hunter2"},
+		{"json quoted key, spaced", `{"token" : "abc123"}`, "abc123"},
+		{"json api_key", `{"api_key": "deadbeef"}`, "deadbeef"},
+		// A quoted MULTI-WORD value was only partly masked: \S+ stopped at the
+		// first space and left the remainder in the message.
+		{"double-quoted multiword", `password="hunter 2 correct horse"`, "correct horse"},
+		{"single-quoted multiword", `secret='two words here'`, "two words here"},
+	}
+	for _, c := range cases {
+		got := s.Sanitize(c.in)
+		if strings.Contains(got, c.secret) {
+			t.Errorf("%s: Sanitize(%q) leaked %q: %q", c.name, c.in, c.secret, got)
+		}
+	}
+}
+
+// TestSanitize_C1AndInvalidUTF8 covers the half of the CWE-117 backstop that was
+// documented but not implemented. U+009B is the single-character CSI: a terminal
+// decoding the stream as Latin-1/ISO-2022 acts on it exactly as it would on the
+// two-byte ESC-[ that the ansi rule strips.
+func TestSanitize_C1AndInvalidUTF8(t *testing.T) {
+	t.Parallel()
+	s := redact.NewDefaultSanitizer()
+
+	if got := s.Sanitize("before31mafter"); strings.ContainsRune(got, '') {
+		t.Errorf("C1 CSI (U+009B) survived the backstop: %q", got)
+	}
+	if got := s.Sanitize("padpad"); strings.ContainsRune(got, '') {
+		t.Errorf("C1 NEL (U+0085) survived the backstop: %q", got)
+	}
+	// A raw invalid UTF-8 byte must be reported, not silently become U+FFFD.
+	// Built from bytes: a source escape is too easy to write as U+00FF by
+	// accident, which would test nothing.
+	raw := string([]byte{0x76, 0x61, 0x6c, 0xff, 0x69, 0x64})
+	got := s.Sanitize(raw)
+	if strings.ContainsRune(got, rune(0xfffd)) || strings.Contains(got, string([]byte{0xff})) {
+		t.Errorf("invalid UTF-8 byte survived: %q", got)
+	}
+	if !strings.Contains(got, "[REDACTED:invalid_utf8]") {
+		t.Errorf("invalid UTF-8 byte not reported as redacted: %q", got)
+	}
+	// Printable text, including multi-byte UTF-8, must be untouched.
+	const clean = "ordinary message with an em dash — and café"
+	if got := s.Sanitize(clean); got != clean {
+		t.Errorf("printable UTF-8 was altered: %q -> %q", clean, got)
+	}
+}
+
+// TestSanitize_AllowlistAfterEarlierLabel pins the allowlist against an earlier
+// occurrence of its own label. isAllowlisted used FindStringIndex, which returns
+// the EARLIEST match, so a message mentioning the label anywhere before the
+// credential compared the wrong match's end position, failed, and silently
+// disabled the allowlist for the rest of the message.
+//
+// Uses an entropy rule because those are the only allowlist-gated category.
+func TestSanitize_AllowlistAfterEarlierLabel(t *testing.T) {
+	t.Parallel()
+	s := redact.NewSanitizer(redact.DefaultRules(), redact.WithAllowlist(redact.DefaultAllowlist()))
+
+	// "commit=" appears once early and again immediately before the hex value
+	// it is meant to exempt.
+	in := "commit= earlier mention; commit=" + sha256hex
+	got := s.Sanitize(in)
+	if !strings.Contains(got, sha256hex) {
+		t.Errorf("allowlisted hex was redacted because the label also appeared earlier: %q", got)
+	}
+}

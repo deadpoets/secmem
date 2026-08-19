@@ -3,6 +3,7 @@ package redact_test
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"log/slog"
 	"strings"
@@ -125,5 +126,37 @@ func TestHandler_Enabled(t *testing.T) {
 	}
 	if !h.Enabled(context.Background(), slog.LevelError) {
 		t.Error("Enabled(Error) = false, want true")
+	}
+}
+
+// TestHandler_WithAttrsBeforeGroupStaysOutsideIt pins the slog.Handler contract
+// on attribute placement. Attributes added before WithGroup belong OUTSIDE that
+// group; the wrapper used to hold them and re-add them to every record, so the
+// inner handler emitted them at whatever nesting it had reached by then and they
+// landed INSIDE the group.
+func TestHandler_WithAttrsBeforeGroupStaysOutsideIt(t *testing.T) {
+	t.Parallel()
+	var buf bytes.Buffer
+	inner := slog.NewJSONHandler(&buf, &slog.HandlerOptions{})
+	log := slog.New(redact.NewHandler(inner, redact.NewDefaultSanitizer()))
+
+	log.With("req", "r1").WithGroup("db").Info("query", "table", "users")
+
+	var got map[string]any
+	if err := json.Unmarshal(buf.Bytes(), &got); err != nil {
+		t.Fatalf("unmarshal %q: %v", buf.String(), err)
+	}
+	if _, ok := got["req"]; !ok {
+		t.Errorf("attr added before WithGroup was not at the top level: %s", buf.String())
+	}
+	grp, ok := got["db"].(map[string]any)
+	if !ok {
+		t.Fatalf("group \"db\" missing or not an object: %s", buf.String())
+	}
+	if _, leaked := grp["req"]; leaked {
+		t.Errorf("attr added before WithGroup was misfiled INTO the group: %s", buf.String())
+	}
+	if _, ok := grp["table"]; !ok {
+		t.Errorf("record attr should be inside the group: %s", buf.String())
 	}
 }

@@ -27,6 +27,7 @@ package redact
 import (
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // Category classifies why a [Rule] exists — useful for building or filtering
@@ -176,26 +177,54 @@ func (s *Sanitizer) applyWithAllowlist(message string, rule Rule) string {
 func (s *Sanitizer) isAllowlisted(message string, matchStart int) bool {
 	prefix := message[:matchStart]
 	for _, allow := range s.allowlist {
-		if loc := allow.FindStringIndex(prefix); len(loc) >= 2 && loc[1] == matchStart {
-			return true
+		// Every occurrence, not just the first. FindStringIndex returns the
+		// EARLIEST match, so a message mentioning the allowlist label anywhere
+		// before the credential compared that first match's end against
+		// matchStart, failed, and silently disabled the allowlist for the rest
+		// of the message.
+		for _, loc := range allow.FindAllStringIndex(prefix, -1) {
+			if len(loc) >= 2 && loc[1] == matchStart {
+				return true
+			}
 		}
 	}
 	return false
 }
 
-// stripNonPrintable replaces C0/C1-range control characters (and DEL) with a
-// tag, preserving valid printable UTF-8. This is the final CWE-117 backstop:
-// any injection byte a rule missed cannot reach the sink intact.
+// stripNonPrintable replaces C0/C1-range control characters, DEL, and bytes
+// that are not valid UTF-8 with a tag, preserving valid printable UTF-8. This
+// is the final CWE-117 backstop: any injection byte a rule missed cannot reach
+// the sink intact.
+//
+// The C1 range (U+0080–U+009F) is the half this used to miss while claiming to
+// cover it. `r >= 32 && r != 127` passes every C1 code point, and C1 carries
+// real terminal control — most notably U+009B, the single-character CSI, which
+// a terminal decoding the output as ISO-2022/Latin-1 treats exactly as the
+// two-byte ESC-[ sequence the ansi rule strips. A backstop that lets the
+// alternate spelling through is not a backstop.
+//
+// Invalid UTF-8 is handled explicitly rather than left to range's implicit
+// U+FFFD substitution, so a raw injection byte is reported as redacted instead
+// of silently becoming a replacement character.
 func stripNonPrintable(s string) string {
 	var b strings.Builder
 	changed := false
-	for _, r := range s {
-		if r >= 32 && r != 127 {
-			b.WriteRune(r)
-		} else {
+	for i, r := range s {
+		if r == utf8.RuneError {
+			// range yields RuneError both for a real U+FFFD and for an invalid
+			// byte; width 1 distinguishes the invalid byte.
+			if _, w := utf8.DecodeRuneInString(s[i:]); w == 1 {
+				b.WriteString("[REDACTED:invalid_utf8]")
+				changed = true
+				continue
+			}
+		}
+		if r < 32 || r == 127 || (r >= 0x80 && r <= 0x9f) {
 			b.WriteString("[REDACTED:control_char]")
 			changed = true
+			continue
 		}
+		b.WriteRune(r)
 	}
 	if !changed {
 		return s
@@ -203,15 +232,34 @@ func stripNonPrintable(s string) string {
 	return b.String()
 }
 
+// credRe builds the matcher for one key=value credential field.
+//
+// Two shapes the original `field[=:]\s*\S+` form got wrong, both of them the
+// common case rather than the exotic one:
+//
+//   - A QUOTED KEY was missed entirely. Structured logs and JSON emit
+//     "password": "hunter2", where the character following the key is a quote
+//     rather than the separator — so the pattern matched nothing at all and the
+//     credential reached the sink in full. An optional closing quote and
+//     surrounding whitespace are now allowed before the separator.
+//   - A QUOTED MULTI-WORD VALUE was only partly masked. \S+ stops at the first
+//     space, so password="hunter 2" left ` 2"` in the message. The alternation
+//     tries the quoted forms FIRST so the whole literal is consumed, falling
+//     back to \S+ for the unquoted case.
+func credRe(field string) *regexp.Regexp {
+	return regexp.MustCompile(`(?i)` + field + `"?\s*[=:]\s*("[^"]*"|'[^']*'|\S+)`)
+}
+
 // ── Generic default rules (provider-agnostic) ────────────────────────────────
 
 var (
-	// Tier 1: key=value credential fields (high confidence).
-	passwordRe    = regexp.MustCompile(`(?i)password[=:]\s*\S+`)
-	secretFieldRe = regexp.MustCompile(`(?i)secret[=:]\s*\S+`)
-	tokenFieldRe  = regexp.MustCompile(`(?i)token[=:]\s*\S+`)
-	apiKeyRe      = regexp.MustCompile(`(?i)\bapi[_-]?key[=:]\s*\S+`)
-	authFieldRe   = regexp.MustCompile(`(?i)auth[=:]\s*\S+`)
+	// Tier 1: key=value credential fields (high confidence). Built by credRe so
+	// the quoting rules stay identical across all five.
+	passwordRe    = credRe(`password`)
+	secretFieldRe = credRe(`secret`)
+	tokenFieldRe  = credRe(`token`)
+	apiKeyRe      = credRe(`\bapi[_-]?key`)
+	authFieldRe   = credRe(`auth`)
 
 	// Tier 2: injection neutralization (CWE-117).
 	crlfRe     = regexp.MustCompile(`[\r\n]+`)

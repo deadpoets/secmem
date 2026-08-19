@@ -19,7 +19,6 @@ import (
 type Handler struct {
 	inner     slog.Handler
 	sanitizer *Sanitizer
-	attrs     []slog.Attr
 }
 
 // NewHandler wraps inner so all output is sanitized by s. A nil inner discards
@@ -39,13 +38,12 @@ func (h *Handler) Enabled(ctx context.Context, level slog.Level) bool {
 	return h.inner.Enabled(ctx, level)
 }
 
-// Handle sanitizes the record's message and inline attributes, prepends the
-// pre-sanitized WithAttrs attributes, and forwards to the inner handler.
+// Handle sanitizes the record's message and inline attributes and forwards to
+// the inner handler. WithAttrs attributes are NOT re-added here — they were
+// handed to the inner handler when WithAttrs was called, which is what keeps
+// them outside any group opened afterwards.
 func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	clean := slog.NewRecord(r.Time, r.Level, h.sanitizer.Sanitize(r.Message), r.PC)
-	if len(h.attrs) > 0 {
-		clean.AddAttrs(h.attrs...)
-	}
 	r.Attrs(func(a slog.Attr) bool {
 		clean.AddAttrs(h.sanitizeAttr(a))
 		return true
@@ -53,16 +51,32 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 	return h.inner.Handle(ctx, clean)
 }
 
-// WithAttrs pre-sanitizes attrs once so repeated records do not re-scan them.
+// WithAttrs pre-sanitizes attrs once, so repeated records do not re-scan them,
+// and hands them straight to the inner handler.
+//
+// Holding them locally and re-adding them to every record — which is what this
+// used to do — misfiles them into any group opened later. slog's contract is
+// positional: attributes added before WithGroup belong OUTSIDE that group, but a
+// record attribute is emitted by the inner handler at whatever nesting it has
+// reached by then, so
+//
+//	log.With("req", id).WithGroup("db").Info("query", "table", t)
+//
+// produced {"db":{"req":...,"table":...}} instead of {"req":...,"db":{"table":...}}.
+// Delegating to inner.WithAttrs pins each attribute at the nesting level it was
+// added at, which is the inner handler's job and not something this wrapper
+// should be re-deciding.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
+	if len(attrs) == 0 {
+		return h
+	}
 	sanitized := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
 		sanitized[i] = h.sanitizeAttr(a)
 	}
 	return &Handler{
-		inner:     h.inner,
+		inner:     h.inner.WithAttrs(sanitized),
 		sanitizer: h.sanitizer,
-		attrs:     append(cloneAttrs(h.attrs), sanitized...),
 	}
 }
 
@@ -72,7 +86,6 @@ func (h *Handler) WithGroup(name string) slog.Handler {
 	return &Handler{
 		inner:     h.inner.WithGroup(name),
 		sanitizer: h.sanitizer,
-		attrs:     cloneAttrs(h.attrs),
 	}
 }
 
@@ -102,15 +115,6 @@ func (h *Handler) sanitizeAttr(a slog.Attr) slog.Attr {
 		// Numeric, bool, duration, time — nothing string-shaped to redact.
 	}
 	return a
-}
-
-func cloneAttrs(attrs []slog.Attr) []slog.Attr {
-	if attrs == nil {
-		return nil
-	}
-	out := make([]slog.Attr, len(attrs))
-	copy(out, attrs)
-	return out
 }
 
 // discardHandler is a minimal slog.Handler that drops everything.

@@ -117,6 +117,37 @@ mark the stability commitment.
   Fixed to use `len(b)`, which the borrowed slice already carries and which
   needs no lock — the pattern the example should have been demonstrating.
 
+- **`redact` credential rules missed the shape structured logs actually emit.**
+  The Tier-1 patterns were `field[=:]\s*\S+`, which requires the separator to
+  follow the key immediately — so `{"password": "hunter2"}` matched nothing at
+  all and went to the sink in full. `\S+` also stops at the first space, so
+  `password="hunter 2 correct horse"` was only partly masked, leaving the rest
+  of the secret in the message. All five fields are now built by one helper that
+  allows a quoted key and consumes a quoted value whole.
+
+- **`redact`'s CWE-117 backstop passed the C1 controls it claimed to strip.**
+  `stripNonPrintable` tested `r >= 32 && r != 127`, which lets every C1 code
+  point (U+0080–U+009F) through while the doc comment said C0/C1. That includes
+  U+009B, the single-character CSI, which a terminal decoding the stream as
+  Latin-1/ISO-2022 acts on exactly as it would on the two-byte `ESC [` the ansi
+  rule strips — so the backstop was bypassable by spelling the escape
+  differently. Invalid UTF-8 bytes are now reported as redacted rather than
+  silently becoming U+FFFD.
+
+- **`redact`'s allowlist switched itself off when its label appeared twice.**
+  `isAllowlisted` used `FindStringIndex`, which returns the EARLIEST match, and
+  compared that match's end against the credential's start. A message mentioning
+  the label anywhere earlier therefore failed the comparison and redacted a
+  value the allowlist existed to exempt. All occurrences are now considered.
+
+- **`redact.Handler` misfiled `WithAttrs` attributes into groups opened later.**
+  It held them and re-added them to every record, so the inner handler emitted
+  them at whatever nesting it had reached — meaning
+  `log.With("req", id).WithGroup("db").Info(...)` produced
+  `{"db":{"req":…}}` instead of `{"req":…,"db":{…}}`, violating the positional
+  guarantee in `slog.Handler`'s contract. They are now handed to the inner
+  handler at the point they are added, which is where that decision belongs.
+
 - `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
   The emergency wipe's second pass blocked on the deferred regions sequentially,
   in map-iteration order. Because `tryWipeInPlace` defers a region whose lock is
