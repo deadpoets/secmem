@@ -16,6 +16,7 @@
 package secmem
 
 import (
+	"runtime/debug"
 	"testing"
 	"unsafe"
 )
@@ -63,8 +64,13 @@ func plantMarkers(depth int) uintptr {
 
 // countMarkers reads scrubPad bytes of (dead) stack at addr and counts markers.
 // nocheckptr: reading an address held across calls is exactly what checkptr
-// forbids; it is intentional here and safe (stack segments are pooled, not
-// unmapped).
+// forbids, and it is intentional here.
+//
+// It is NOT unconditionally safe, which an earlier version of this comment
+// claimed: "stack segments are pooled, not unmapped" holds only while the
+// segment is still this goroutine's. After a stack shrink it returns to the
+// pool and may be scavenged, so the caller is responsible for keeping the
+// collector out of the window — see TestScrub_ScrubsShallowCallTree.
 //
 //go:nocheckptr
 //go:noinline
@@ -81,6 +87,22 @@ func countMarkers(addr uintptr) int {
 // TestScrub_ScrubsShallowCallTree verifies Scrub scrubs the stack residue
 // its own shallow call tree leaves — without any manual pre-growth.
 func TestScrub_ScrubsShallowCallTree(t *testing.T) {
+	// The markers are addressed by a raw uintptr into this goroutine's stack,
+	// which the GC neither tracks nor adjusts. A stack shrink between planting
+	// and reading frees that segment back to the pool, and the read then lands
+	// on whatever now occupies the address:
+	//
+	//   - unrelated memory, which holds no 0xA5 markers, so countMarkers
+	//     returns 0 and the assertion PASSES having tested nothing — a
+	//     vacuous green on a security regression test, which is worse than a
+	//     failure;
+	//   - or a scavenged span, which faults.
+	//
+	// shrinkstack only runs while the collector is scanning this goroutine, so
+	// turning the collector off for the window closes both. Done before the
+	// control read so it covers that too.
+	defer debug.SetGCPercent(debug.SetGCPercent(-1))
+
 	// Control: confirm markers are observable on dead stack when nothing scrubs
 	// them. If a future toolchain zeros eagerly, the subject would be vacuous.
 	if countMarkers(plantMarkers(4)) == 0 {
