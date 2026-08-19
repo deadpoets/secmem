@@ -89,6 +89,84 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
 
+      - name: environment fingerprint
+        shell: pwsh
+        run: |
+          # The crash has only ever appeared on this runner image, never on the
+          # maintainer's workstation across ~1190 processes. Measured on
+          # 2026-08-19, the two differ in five ways that touch memory layout,
+          # scheduling, or what else is writing to the same pages:
+          #
+          #                        workstation               windows-latest
+          #     CPU                Intel Core Ultra 7 265KF  AMD EPYC 7763
+          #     logical CPUs       20                        4
+          #     mandatory ASLR     ForceRelocateImages ON    off
+          #     HVCI               running                   not running
+          #     Defender realtime  on                        off
+          #
+          # Two differences that sounded obvious turned out not to exist: both
+          # are build 261xx (Server 2025 is 26100, the workstation 26220), and
+          # both run the client scheduler quantum. That is the argument for
+          # recording this on every run instead of reasoning about "the runner
+          # image" — a hit gets correlated against a CPU model and image version
+          # someone actually observed.
+          #
+          # Note also that GOMAXPROCS=4 does not emulate a 4-CPU machine. It
+          # caps Go's Ps while the OS still spreads sysmon, GC workers and the
+          # race detector's own threads over every core, so the local samples
+          # were never the runner's contention profile.
+          #
+          # Diagnostic only. Every probe is optional and this step always
+          # succeeds — a soak must not go red because a WMI class was missing.
+          $ErrorActionPreference = 'Continue'
+          $lines = New-Object System.Collections.Generic.List[string]
+          function Note([string]$k, $v) { $lines.Add(('{0,-24}: {1}' -f $k, $v)) }
+          function Probe([string]$k, [scriptblock]$fn) {
+            try { Note $k (& $fn) } catch { Note $k "<unavailable: $($_.Exception.Message)>" }
+          }
+
+          Note 'ImageOS'        $env:ImageOS
+          Note 'ImageVersion'   $env:ImageVersion
+          Probe 'OS' {
+            $o = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
+            "$($o.Caption) build $($o.BuildNumber) (ProductType $($o.ProductType); 1=client, 3=server)"
+          }
+          Probe 'CPU' {
+            $c = @(Get-CimInstance Win32_Processor -ErrorAction Stop)[0]
+            "$($c.Name.Trim()) | $($c.NumberOfLogicalProcessors) logical | rev $($c.Revision)"
+          }
+          Probe 'Hypervisor' {
+            (Get-CimInstance Win32_ComputerSystem -ErrorAction Stop).HypervisorPresent
+          }
+          Probe 'PrioritySeparation' {
+            $v = (Get-ItemProperty 'HKLM:\SYSTEM\CurrentControlSet\Control\PriorityControl' `
+                    -Name Win32PrioritySeparation -ErrorAction Stop).Win32PrioritySeparation
+            '{0} (0x{0:X}) — client default 2 = short/variable/boost, server default 0x18 = long/fixed' -f $v
+          }
+          Probe 'Mitigations' {
+            $m = Get-ProcessMitigation -System -ErrorAction Stop
+            "DEP=$($m.Dep.Enable) ASLR.BottomUp=$($m.Aslr.BottomUp) " +
+            "ASLR.ForceRelocate=$($m.Aslr.ForceRelocateImages) " +
+            "ASLR.HighEntropy=$($m.Aslr.HighEntropy) CFG=$($m.Cfg.Enable)"
+          }
+          Probe 'DeviceGuard' {
+            $d = Get-CimInstance -Namespace 'root\Microsoft\Windows\DeviceGuard' `
+                   -ClassName Win32_DeviceGuard -ErrorAction Stop
+            "VBS=$($d.VirtualizationBasedSecurityStatus) (0=off,1=configured,2=running) " +
+            "services=$($d.SecurityServicesRunning -join ',') (2=HVCI)"
+          }
+          Probe 'Defender' {
+            $s = Get-MpComputerStatus -ErrorAction Stop
+            "RealTimeProtection=$($s.RealTimeProtectionEnabled) Antivirus=$($s.AntivirusEnabled)"
+          }
+          Probe 'Go' { (go version) -join ' ' }
+
+          $body = $lines -join "`n"
+          Write-Host $body
+          "## Environment fingerprint`n`n``````text`n$body`n``````" |
+            Out-File -FilePath $env:GITHUB_STEP_SUMMARY -Append -Encoding utf8
+          exit 0
+
       - name: soak
         shell: bash
         working-directory: ${{ github.event.inputs.package || '.' }}
@@ -108,11 +186,19 @@ jobs:
           # `((i <= ITERATIONS))` is a code-execution sink: bash evaluates array
           # subscripts inside arithmetic, so ITERATIONS='a[$(id>&2)]' runs the
           # substitution. Passing the inputs through `env:` rather than
-          # interpolating `${{ }}` into the script already closes the YAML-level
-          # injection — this closes the arithmetic one, which is the half that
-          # remained. Dispatching needs write access, so this is hardening rather
-          # than a hole anyone else can reach, but a workflow that evaluates its
-          # own inputs is not a thing to leave lying around in a security repo.
+          # interpolating a github.event.inputs expression straight into the
+          # script already closes the YAML-level injection — this closes the
+          # arithmetic one, which is the half that remained. Dispatching needs
+          # write access, so this is hardening rather than a hole anyone else
+          # can reach, but a workflow that evaluates its own inputs is not a
+          # thing to leave lying around in a security repo.
+          #
+          # Do NOT write a literal expression delimiter in these comments, even
+          # inside backticks. Actions expands expressions in `run:` before any
+          # shell sees the text, so a `#` does not protect it: an empty one is a
+          # parse error that takes the whole workflow file down. That is exactly
+          # how this file spent 2026-08-19 unable to start — see the actionlint
+          # step in ci.yml, which now catches it.
           case "$ITERATIONS" in
             '' | *[!0-9]*) echo "::error title=soak: bad input::iterations must be a positive integer, got '$ITERATIONS'"; exit 1 ;;
           esac

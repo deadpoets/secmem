@@ -242,6 +242,26 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
+
+      # A workflow file with an invalid expression does not fail loudly. GitHub
+      # refuses to start the workflow, records a zero-job run against a push,
+      # and shows NOTHING on any pull request's checks. On 2026-08-19 that
+      # silently disabled the Windows race soak — the only live lead on the open
+      # runtime-corruption defect — for a full day, while every PR in that span
+      # reported 22/22 green. A workflow that cannot start looks exactly like a
+      # workflow that has nothing to say.
+      #
+      # shellcheck and pyflakes integration are off deliberately: this step
+      # exists to prove the workflow FILES parse and their expressions resolve.
+      # Folding in two more linters would make it fail for unrelated reasons,
+      # and a noisy required check is one somebody eventually removes.
+      - name: actionlint (workflow files parse and expressions resolve)
+        env:
+          GOWORK: "off" # tool install, not a workspace build
+        run: |
+          go install github.com/rhysd/actionlint/cmd/actionlint@v1.7.12
+          "$(go env GOPATH)/bin/actionlint" -shellcheck= -pyflakes=
+
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.12.2
