@@ -29,6 +29,9 @@ var sinks = map[string]string{ //nolint:gochecknoglobals // immutable lookup tab
 	"fmt.Printf":   "it prints the secret to stdout",
 	"fmt.Print":    "it prints the secret to stdout",
 	"fmt.Println":  "it prints the secret to stdout",
+	"fmt.Append":   "it appends the secret to an escaping byte slice",
+	"fmt.Appendf":  "it appends the secret to an escaping byte slice",
+	"fmt.Appendln": "it appends the secret to an escaping byte slice",
 
 	// log / log/slog: never log secret material.
 	"log.Printf":            "it logs the secret",
@@ -39,6 +42,7 @@ var sinks = map[string]string{ //nolint:gochecknoglobals // immutable lookup tab
 	"log.Fatalln":           "it logs the secret",
 	"log.Panicf":            "it logs the secret",
 	"log.Panic":             "it logs the secret",
+	"log.Panicln":           "it logs the secret",
 	"log/slog.Info":         "it logs the secret",
 	"log/slog.Warn":         "it logs the secret",
 	"log/slog.Error":        "it logs the secret",
@@ -47,4 +51,22 @@ var sinks = map[string]string{ //nolint:gochecknoglobals // immutable lookup tab
 	"log/slog.WarnContext":  "it logs the secret",
 	"log/slog.ErrorContext": "it logs the secret",
 	"log/slog.DebugContext": "it logs the secret",
+	"log/slog.Log":          "it logs the secret",
+	"log/slog.LogAttrs":     "it logs the secret",
+}
+
+// loggerMethods are the logging METHODS on *log.Logger and *slog.Logger. The
+// package-level table above is keyed by "import/path.Func" and therefore never
+// matches a method call: sl.Info(b), l.Printf("%s", b) and
+// slog.Default().Info("", "k", b) all resolve their receiver to a variable or a
+// call result rather than to a package name, so every one of them passed
+// unflagged. Matched by receiver type so an unrelated Info method is not.
+var loggerMethods = map[string]bool{ //nolint:gochecknoglobals // immutable lookup table.
+	"Print": true, "Printf": true, "Println": true,
+	"Fatal": true, "Fatalf": true, "Fatalln": true,
+	"Panic": true, "Panicf": true, "Panicln": true,
+	"Output": true,
+	"Debug":  true, "Info": true, "Warn": true, "Error": true,
+	"DebugContext": true, "InfoContext": true, "WarnContext": true, "ErrorContext": true,
+	"Log": true, "LogAttrs": true,
 }
