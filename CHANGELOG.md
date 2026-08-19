@@ -111,6 +111,12 @@ mark the stability commitment.
   All fifteen new fixture cases were verified to fail against the previous
   analyzer, so none of them is a vacuous assertion.
 
+  The improved analyzer immediately caught a real instance in this repo's own
+  shipped example: `ExampleScope` called `buf.Len()` from inside
+  `buf.WithBytesErr`, taking the read lock a second time from within the borrow.
+  Fixed to use `len(b)`, which the borrowed slice already carries and which
+  needs no lock — the pattern the example should have been demonstrating.
+
 - `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
   The emergency wipe's second pass blocked on the deferred regions sequentially,
   in map-iteration order. Because `tryWipeInPlace` defers a region whose lock is
