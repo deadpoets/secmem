@@ -3,7 +3,7 @@
 // secmem-agent: a minimal SSH agent whose keys never touch the Go heap.
 //
 //	$ go run . &
-//	$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent/agent.sock  # printed at start
+//	$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent-3f9c/agent.sock  # printed at start
 //	$ ssh-add ~/.ssh/id_ed25519
 //	$ ssh somewhere
 //
@@ -18,6 +18,7 @@
 //	no core dumps, no new privs           HardenProcess           main.go
 //	mlock budget raised up front          EnsureMemlockLimit      main.go
 //	wipe on SIGINT/SIGTERM                InstallTerminationWipe  main.go
+//	peer uid checked on every accept      SO_PEERCRED/getpeereid  main.go
 //	wire transients wiped every message   SecureWipe              serveConn
 //	log output cannot leak secrets        redact.NewHandler       main.go
 //	honest capability report at boot      Probe().Warnings()      main.go
@@ -100,16 +101,25 @@ func run(socketPath string, logger *slog.Logger) error {
 
 	// ---- Socket --------------------------------------------------------
 
+	if !peerCredSupported {
+		return errors.New("this platform cannot identify unix-socket peers; " +
+			"refusing to start an agent that cannot tell who is asking it to sign")
+	}
+
 	if socketPath == "" {
 		base := os.Getenv("XDG_RUNTIME_DIR")
 		if base == "" {
 			base = os.TempDir()
 		}
-		dir := filepath.Join(base, fmt.Sprintf("secmem-agent-%d", os.Getpid()))
-		//nolint:gosec // G703: dir is $XDG_RUNTIME_DIR (or the temp dir) joined with our own pid — not attacker-controlled path input.
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			return fmt.Errorf("creating socket dir: %w", err)
+		// Random name, not the pid. A pid is small, guessable and enumerable,
+		// so anyone local could pre-create the directory for the pids an agent
+		// is likely to get and deny it a socket. MkdirTemp retries on
+		// collision and creates at 0700.
+		dir, derr := os.MkdirTemp(base, "secmem-agent-")
+		if derr != nil {
+			return fmt.Errorf("creating socket dir: %w", derr)
 		}
+		defer func() { _ = os.Remove(dir) }()
 		socketPath = filepath.Join(dir, "agent.sock")
 	}
 
@@ -153,8 +163,37 @@ func run(socketPath string, logger *slog.Logger) error {
 			}
 			return fmt.Errorf("accept: %w", err)
 		}
+		if err := authorizePeer(conn, logger); err != nil {
+			_ = conn.Close()
+			continue
+		}
 		go serveConn(conn, keyring, logger)
 	}
+}
+
+// authorizePeer rejects connections from other users, which is what OpenSSH's
+// ssh-agent does on every accept. The socket is already 0600 inside a 0700
+// directory, so this is a second lock on the same door — it earns its keep if a
+// umask, a fork point, or an inherited descriptor ever loosens the first.
+//
+// Root is let through, matching ssh-agent: a peer that is already root can read
+// this process's memory anyway, so refusing it buys nothing.
+func authorizePeer(conn net.Conn, logger *slog.Logger) error {
+	uc, ok := conn.(*net.UnixConn)
+	if !ok {
+		// Unreachable through the unix listener above; fail closed anyway.
+		return errors.New("connection is not a unix socket")
+	}
+	uid, err := peerUID(uc)
+	if err != nil {
+		logger.Warn("rejecting connection: cannot identify peer", "error", err)
+		return err
+	}
+	if uid != 0 && uid != uint32(os.Getuid()) {
+		logger.Warn("rejecting connection from another user", "peer_uid", uid)
+		return fmt.Errorf("peer uid %d is not %d", uid, os.Getuid())
+	}
+	return nil
 }
 
 // serveConn handles one client connection: read message, dispatch, reply,

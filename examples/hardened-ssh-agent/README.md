@@ -99,8 +99,9 @@ key *confidentiality at rest in memory* against swap, dumps, same-user
 memory readers, stray in-process reads, and post-exit remanence. It does
 **not** defend against code execution inside the agent process (which can
 call `Unseal` like the agent does), a hostile root/kernel, or cold-boot RAM
-capture. The socket is `0600` in a `0700` directory — anything that can
-connect can request signatures, exactly as with `ssh-agent`; the lock and
+capture. The socket is `0600` in a randomly-named `0700` directory, and every accepted
+connection's peer uid must match the agent's own (root excepted), as
+`ssh-agent` checks it. Anything that clears both can request signatures; the lock and
 `-t` key lifetimes are the mitigations for that layer, and per-key
 confirmation (`-c`) is a documented fork point.
 
