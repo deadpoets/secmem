@@ -5,6 +5,7 @@
 package secmemcrypto
 
 import (
+	"bytes"
 	"crypto"
 	"crypto/ed25519"
 	"encoding/pem"
@@ -103,8 +104,18 @@ func (s *Ed25519Signer) MarshalOpenSSHPrivateKey(comment string) (*secmem.Secure
 	err := secmem.ScrubErr(func() error {
 		return s.seedBuf.WithBytesErr(func(seed []byte) error {
 			// ed25519.NewKeyFromSeed's FIPS self-check panics on a mmap'd
-			// (off-heap) input — copy to an ordinary heap slice first. This
-			// copy, and every derived form below, is wiped before returning.
+			// (off-heap) input — copy to an ordinary heap slice first.
+			//
+			// Every derived form this function can REACH is wiped before
+			// returning: seedCopy, priv, block.Bytes and the encoded PEM. That
+			// is not the same as "every copy of the key is wiped", which an
+			// earlier version of this comment claimed. ssh.MarshalPrivateKey
+			// builds its own intermediates around the private key — the marshal
+			// scratch and the padded key block — and hands back only the final
+			// slice, so those copies are unreachable from here and are left to
+			// the GC. Naming the limit is the honest version; the ScrubErr
+			// window above is what narrows it, and on
+			// GOEXPERIMENT=runtimesecret builds erases them once unreachable.
 			seedCopy := make([]byte, len(seed))
 			copy(seedCopy, seed) //nolint:secmem-lint // required: ed25519.NewKeyFromSeed panics on mmap'd input, wiped via defer above
 			defer secmem.SecureWipe(seedCopy)
@@ -118,7 +129,23 @@ func (s *Ed25519Signer) MarshalOpenSSHPrivateKey(comment string) (*secmem.Secure
 			}
 			defer secmem.SecureWipe(block.Bytes)
 
-			pemBytes = pem.EncodeToMemory(block)
+			// pem.Encode into a pre-grown buffer rather than
+			// pem.EncodeToMemory. EncodeToMemory grows a bytes.Buffer as it
+			// writes, and every growth orphans the previous array — each one
+			// holding a prefix of the base64-encoded PRIVATE KEY, unreachable
+			// and unwiped. Sizing up front means one array, which the defer
+			// below wipes in full.
+			//
+			// The bound is deliberately loose: base64 expands by 4/3 plus a
+			// newline every 64 characters, so twice the input plus the header
+			// and footer cannot be reached, and Grow guarantees no reallocation
+			// below it.
+			var buf bytes.Buffer
+			buf.Grow(2*len(block.Bytes) + 128)
+			if err := pem.Encode(&buf, block); err != nil {
+				return fmt.Errorf("pem encode: %w", err)
+			}
+			pemBytes = buf.Bytes()
 			return nil
 		})
 	})

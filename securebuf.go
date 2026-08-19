@@ -111,6 +111,16 @@ type SecureBuffer struct {
 // WARNING: raw is zeroed after copying. The caller must not reuse raw after
 // this call. If the same secret must be used multiple times, copy it first.
 //
+// raw is zeroed whether this call SUCCEEDS OR FAILS. Wiping only on success
+// would leave the caller's plaintext sitting in an ordinary heap slice that the
+// warning above has just told them is gone — the worst of both, since they will
+// not wipe it themselves. The only exception is an empty raw, where there is
+// nothing to wipe.
+//
+// That means a retry after [ErrNoSecureMemory] has nothing left to copy. It does
+// not need one: that error depends only on the platform and on
+// [WithInsecureFallback], both knowable before the call — see [Probe].
+//
 // Common errors: EPERM / ENOMEM from mlock (RLIMIT_MEMLOCK exceeded — check
 // `ulimit -l` or systemd LimitMEMLOCK=). On platforms with no lockable
 // off-heap memory the error is [ErrNoSecureMemory] unless
@@ -119,6 +129,10 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("secmem.NewBuffer: empty input")
 	}
+	// Deferred, not placed after the copy: every early return below is an error
+	// path that used to hand the caller back their plaintext intact. A defer
+	// also means a future error path cannot forget it.
+	defer secureWipeSlice(raw)
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
@@ -131,7 +145,6 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	copy(data, raw)
-	secureWipeSlice(raw) // zero the caller's copy defense-in-depth
 	return newSecureBuffer(region, data, info), nil
 }
 
@@ -163,6 +176,7 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if len(raw) == 0 {
 		return nil, errors.New("secmem.NewSyscallSafeBuffer: empty input")
 	}
+	defer secureWipeSlice(raw) // on failure too — see NewBuffer
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
@@ -175,7 +189,6 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	copy(data, raw)
-	secureWipeSlice(raw)
 	return newSecureBuffer(region, data, info), nil
 }
 

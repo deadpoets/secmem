@@ -46,6 +46,39 @@ mark the stability commitment.
 
 ### Fixed
 
+- **Constructors now wipe the caller's input on failure, not only on success.**
+  `NewBuffer`, `NewSyscallSafeBuffer` and `NewSecret` warn that the input is
+  zeroed and must not be reused — but every error path returned with the
+  plaintext intact. A caller following the warning does not wipe it themselves,
+  so an allocation failure left the secret in an ordinary heap slice they
+  believed was gone. The wipe is now deferred so future error paths cannot forget
+  it. A retry after `ErrNoSecureMemory` therefore has nothing left to copy, and
+  does not need one: that error depends only on the platform and on
+  `WithInsecureFallback`, both knowable up front via `Probe`.
+
+- **`HKDFInto` now performs the Extract step inside its scrub window.**
+  `hkdf.New` computes the PRK — `HMAC(salt, secret)`, key-equivalent for every
+  byte Expand goes on to produce — and it was called *outside* the
+  `secmem.ScrubErr` window the doc says wraps the derivation. The single most
+  sensitive intermediate was the one value the window did not cover.
+
+- **`MarshalOpenSSHPrivateKey` no longer claims to wipe copies it cannot
+  reach.** The comment said "this copy, and every derived form below, is wiped";
+  in fact only the forms this package holds a reference to are —
+  `ssh.MarshalPrivateKey` builds its own intermediates around the private key
+  and returns only the final slice. The claim now names its limit. The PEM step
+  also encodes into a pre-grown buffer instead of `pem.EncodeToMemory`, whose
+  growing `bytes.Buffer` orphaned an unwiped array holding a prefix of the
+  base64-encoded private key on every reallocation.
+
+- **`Scrub`'s "nothing sensitive is on the abandoned copy" was false.** The entry
+  wipe orders the stack growth, but `morestack` copies the *whole* stack, so the
+  abandoned segment carries whatever the CALLER already had on its stack — a key
+  in a local, or residue from an earlier operation — and returns to the stack
+  pool unwiped, unreachable from Go. Added to the documented limits rather than
+  left as a claim. Also corrects the stale "a no-op on other architectures",
+  which has not been true since `scrubframe_arm64.s` landed.
+
 - **`InstallTerminationWipe` now terminates the process on Windows instead of
   wiping and running on.** `os.Process.Signal` there implements only `os.Kill`
   and rejects `os.Interrupt` and SIGTERM, and the console event that triggered

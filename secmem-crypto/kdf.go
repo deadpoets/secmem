@@ -193,7 +193,8 @@ func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer) error {
 // directly into the locked SecureBuffer mapping, where stdlib's Key()
 // returns a heap-allocated slice. The reader's internal extract/expand
 // state (the pseudorandom key and the last HMAC block) lives in unexported
-// heap fields it provides no way to wipe; the derivation is therefore
+// heap fields it provides no way to wipe; the derivation — including the
+// Extract step that computes the PRK, which hkdf.New performs — is therefore
 // wrapped in [secmem.ScrubErr], which on GOEXPERIMENT=runtimesecret builds
 // erases those allocations once unreachable. On other builds that state is
 // reclaimed by the GC but not explicitly zeroed — a residue window this
@@ -216,8 +217,14 @@ func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureB
 		return fmt.Errorf("secmemcrypto: hkdf derive: output %d exceeds the RFC 5869 limit of %d bytes (255 x hash size)", size, maxOut)
 	}
 
-	r := hkdf.New(h, secret, salt, info)
 	err := secmem.ScrubErr(func() error {
+		// hkdf.New INSIDE the window, not before it. New performs the Extract
+		// step — PRK = HMAC(salt, secret) — and the PRK is key-equivalent for
+		// every byte Expand goes on to produce. Constructing the reader outside
+		// the scrub left that computation's stack residue and the PRK allocation
+		// outside the very window this function's doc says covers the
+		// derivation, which is the one value it most needed to cover.
+		r := hkdf.New(h, secret, salt, info)
 		return out.WithBytesErr(func(dst []byte) error {
 			_, err := io.ReadFull(r, dst)
 			return err

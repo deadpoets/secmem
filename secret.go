@@ -47,6 +47,8 @@ type Secret struct {
 // NewSecret copies b into hardened memory and returns the Secret. b is wiped
 // after the copy (defense-in-depth) — the caller must not reuse it.
 //
+// As with [NewBuffer], b is wiped whether this call succeeds or fails.
+//
 // Errors are those of [NewBuffer]: empty input, allocation or mlock failure,
 // and [ErrNoSecureMemory] on platforms without secure memory unless
 // [WithInsecureFallback] is passed.

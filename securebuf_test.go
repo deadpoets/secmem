@@ -1,6 +1,7 @@
 package secmem
 
 import (
+	"bytes"
 	"errors"
 	"runtime"
 	"strconv"
@@ -500,4 +501,37 @@ func janitorRegionCount() int {
 	emergencyJanitor.mu.Lock()
 	defer emergencyJanitor.mu.Unlock()
 	return len(emergencyJanitor.regions)
+}
+
+// TestNewBuffer_WipesInputOnFailure pins the constructor contract on its error
+// paths. The doc warns that raw is zeroed and must not be reused; wiping only on
+// success left the caller's plaintext in an ordinary heap slice they had just
+// been told was gone, so they would not wipe it themselves.
+//
+// Driven through an allocation the lock budget refuses, which is the only error
+// path reachable without a platform that lacks secure memory: gateInsecure keys
+// off a per-platform const, and fillCanary fails only if crypto/rand does.
+// Inverting the repo's usual convention — an allocation that unexpectedly
+// SUCCEEDS is the environment condition here, so that skips.
+func TestNewBuffer_WipesInputOnFailure(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	const size = 512 << 20 // far past any default mlock / VirtualLock budget
+	raw := bytes.Repeat([]byte{0x5A}, size)
+
+	buf, err := NewBuffer(raw)
+	if err == nil {
+		_ = buf.Destroy()
+		t.Skip("this environment locked 512 MiB; cannot exercise the failure path here")
+	}
+	if !bytes.Equal(raw, make([]byte, size)) {
+		nonzero := 0
+		for _, b := range raw {
+			if b != 0 {
+				nonzero++
+			}
+		}
+		t.Errorf("NewBuffer failed (%v) and left %d/%d plaintext bytes in the caller's slice", err, nonzero, size)
+	}
 }

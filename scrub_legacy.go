@@ -13,7 +13,9 @@ package secmem
 // is backed by runtime/secret and erases the registers, stack, and heap of fn's
 // entire call tree with runtime cooperation. This file is the fallback used on
 // every other build; it cannot match that, and scrubs only fn's stack frame via
-// assembly (REP STOSB + SFENCE on amd64; a no-op on other architectures).
+// assembly — REP STOSB + SFENCE on amd64, and a real store loop on arm64 since
+// scrubframe_arm64.s landed, so "a no-op on other architectures" now means
+// every architecture except those two.
 //
 // # Why the wipe runs twice
 //
@@ -23,8 +25,17 @@ package secmem
 // deferred wipe would then run on the RELOCATED stack, zeroing the fresh copy
 // while fn's real residue sits on the old segment the runtime just freed —
 // untouched. Calling the wipe once on entry forces any growth to happen BEFORE
-// fn writes a secret (nothing sensitive is on the abandoned copy) and pre-cleans
-// the band; the deferred call is then guaranteed to run in place.
+// fn writes a secret and pre-cleans the band; the deferred call is then
+// guaranteed to run in place.
+//
+// The entry wipe orders that growth, it does not make it free. morestack copies
+// the WHOLE stack, so the abandoned segment holds a copy of the caller's stack
+// as it was on entry — and an earlier version of this comment claimed nothing
+// sensitive was on it. That holds only if the caller had nothing sensitive
+// there, which is not the situation this package exists for: a key in a local,
+// or residue from an earlier operation, is copied to the new segment and left
+// behind on the old one, which returns to the stack pool unwiped. Scrub cannot
+// reach it, because the runtime owns the abandoned segment and does not name it.
 //
 // # Best-effort limits (stated honestly)
 //
@@ -34,6 +45,8 @@ package secmem
 //   - a stack relocation triggered inside fn if fn exceeds the reserved band;
 //   - a GC stack-shrink that frees fn's segment before the wipe (asynchronous,
 //     runtime-owned, and unreachable from Go);
+//   - the stack segment abandoned by the entry wipe's own growth, which carries
+//     a copy of whatever the CALLER already had on its stack (see above);
 //   - CPU or vector registers.
 //
 // None of these are fixable in pure Go without runtime support — the
