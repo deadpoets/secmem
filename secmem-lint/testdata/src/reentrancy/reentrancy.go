@@ -29,3 +29,18 @@ func differentBufferOK(key, out *secmem.SecureBuffer) {
 		})
 	})
 }
+
+// sameBufferLockingInspectors covers the members added after the review: the
+// exclusive-lock mutator and the rLock inspectors. SetByteAt self-deadlocks
+// outright; the inspectors deadlock as soon as a writer queues between the two
+// read acquires, because the lock is writer-preferring.
+func sameBufferLockingInspectors(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		_ = b
+		_ = buf.SetByteAt(0, 1) // want `secmem-lint: SetByteAt called on the same buffer`
+		_ = buf.Len()           // want `secmem-lint: Len called on the same buffer`
+		_ = buf.MappedLen()     // want `secmem-lint: MappedLen called on the same buffer`
+		_ = buf.IsSealed()      // want `secmem-lint: IsSealed called on the same buffer`
+		_ = buf.IsDestroyed()   // want `secmem-lint: IsDestroyed called on the same buffer`
+	})
+}

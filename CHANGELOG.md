@@ -30,6 +30,36 @@ mark the stability commitment.
 
 ### Fixed
 
+- **`secmem-lint` no longer certifies code it never examined.** Eight
+  false-negative classes, every one of which reported clean rather than
+  reporting a limitation:
+
+  - Assignment escapes matched only a bare identifier, so `s.field = b`,
+    `m[k] = b`, `out[i] = b` and `*p = b` were all silently clean — stashing a
+    borrowed slice in a struct field being the most natural way to leak one.
+    Targets are now classified by shape, with a local struct or array value
+    still correctly treated as staying inside the lease.
+  - Logging **methods** could never match. The sink table is keyed by
+    `import/path.Func`, so `sl.Info(b)`, `l.Printf("%s", b)` and
+    `slog.Default().Warn(…, b)` all resolved their receiver to a variable or a
+    call result rather than to a package name. Now matched by receiver type, so
+    an unrelated `Info` method is still not swept in.
+  - `append(dst, b[:n]...)` escaped unflagged, because only a bare identifier
+    was matched where the rest of the file already used `refersToParam`.
+  - `panic(b)` was not flagged, though the value lands in the runtime traceback
+    and in any `recover()`.
+  - Sink table omissions: `log.Panicln` (both its siblings were present),
+    `log/slog.Log`, `log/slog.LogAttrs`, `fmt.Append`, `fmt.Appendf`,
+    `fmt.Appendln`.
+  - The reentrancy set omitted `SetByteAt`, which takes the **exclusive** lock
+    and is therefore an unconditional self-deadlock, and the `rLock`
+    inspectors `Len`, `MappedLen`, `IsSealed`, `IsDestroyed` — a nested read
+    acquire deadlocks as soon as a writer queues between the two, because the
+    lock is writer-preferring.
+
+  All fifteen new fixture cases were verified to fail against the previous
+  analyzer, so none of them is a vacuous assertion.
+
 - `WipeAllSecrets` no longer lets one borrowed buffer strand another's secret.
   The emergency wipe's second pass blocked on the deferred regions sequentially,
   in map-iteration order. Because `tryWipeInPlace` defers a region whose lock is

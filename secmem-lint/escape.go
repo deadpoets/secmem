@@ -42,10 +42,20 @@ func checkCallEscape(pass *analysis.Pass, acc accessor, call *ast.CallExpr, sup 
 			}
 			return
 		case "append":
+			// refersToParam, not a bare *ast.Ident: append(dst, b[:n]...) is
+			// the same escape written with a slice expression, and matching
+			// only the identifier let it through.
 			if call.Ellipsis.IsValid() && len(call.Args) >= 2 {
-				if last, ok := call.Args[len(call.Args)-1].(*ast.Ident); ok && acc.params[last.Name] && !sup.suppressed(pass, call.Pos()) {
+				if refersToParam(call.Args[len(call.Args)-1], acc.params) && !sup.suppressed(pass, call.Pos()) {
 					report(pass, call.Pos(), "append(dst, borrowed...) copies borrowed secret bytes into an escaping slice")
 				}
+			}
+			return
+		case "panic":
+			// The value is formatted into the runtime traceback and handed to
+			// any recover() up the stack, both well outside the lease.
+			if len(call.Args) == 1 && refersToParam(call.Args[0], acc.params) && !sup.suppressed(pass, call.Pos()) {
+				report(pass, call.Pos(), "panic() puts borrowed secret bytes in the traceback and in any recover()")
 			}
 			return
 		case "copy":
@@ -69,16 +79,95 @@ func checkAssignEscape(pass *analysis.Pass, acc accessor, stmt *ast.AssignStmt, 
 		if i >= len(stmt.Lhs) || !refersToParam(rhs, acc.params) {
 			continue
 		}
-		lhs, ok := stmt.Lhs[i].(*ast.Ident)
-		if !ok || lhs.Name == "_" {
+		where, escapes := assignTargetEscapes(pass, stmt.Lhs[i], acc)
+		if !escapes {
 			continue
 		}
-		obj := pass.TypesInfo.ObjectOf(lhs)
-		if obj == nil || withinNode(obj.Pos(), acc.fn) {
-			continue // an inner variable — it stays within the lease
-		}
 		if !sup.suppressed(pass, stmt.Pos()) {
-			report(pass, stmt.Pos(), "borrowed secret bytes assigned to a variable outside the closure; they can outlive it")
+			report(pass, stmt.Pos(), "borrowed secret bytes assigned to "+where+"; they can outlive the closure")
+		}
+	}
+}
+
+// assignTargetEscapes reports whether assigning to target can put the value
+// somewhere that outlives the closure, and names the shape for the diagnostic.
+//
+// Matching only *ast.Ident — which is all this check used to do — meant
+// s.field = b, m[k] = b, out[i] = b and *p = b were every one of them silently
+// clean. Those are not exotic; stashing a borrowed slice into a struct field is
+// the most natural way to leak one.
+func assignTargetEscapes(pass *analysis.Pass, target ast.Expr, acc accessor) (string, bool) {
+	switch t := target.(type) {
+	case *ast.ParenExpr:
+		return assignTargetEscapes(pass, t.X, acc)
+
+	case *ast.Ident:
+		if t.Name == "_" {
+			return "", false
+		}
+		obj := pass.TypesInfo.ObjectOf(t)
+		if obj == nil || withinNode(obj.Pos(), acc.fn) {
+			return "", false // an inner variable — it stays within the lease
+		}
+		return "a variable outside the closure", true
+
+	case *ast.StarExpr:
+		// Writing through a pointer: the pointee is chosen by whoever produced
+		// the pointer, so it cannot be assumed to be inside the lease.
+		return "a pointer target", true
+
+	case *ast.SelectorExpr:
+		if rootIsInnerValue(pass, t, acc) {
+			return "", false
+		}
+		return "a struct field", true
+
+	case *ast.IndexExpr:
+		if rootIsInnerValue(pass, t, acc) {
+			return "", false
+		}
+		return "a map or slice element", true
+	}
+	return "", false
+}
+
+// rootIsInnerValue reports whether expr is rooted at a variable declared inside
+// the closure whose type cannot alias memory outside it.
+//
+// A local struct or array is genuinely inner: writing to its field or element
+// keeps the bytes within the lease. A local pointer, slice or map is not — the
+// variable is inner but what it refers to need not be, so those still escape.
+func rootIsInnerValue(pass *analysis.Pass, expr ast.Expr, acc accessor) bool {
+	root := rootIdent(expr)
+	if root == nil {
+		return false
+	}
+	obj := pass.TypesInfo.ObjectOf(root)
+	if obj == nil || !withinNode(obj.Pos(), acc.fn) {
+		return false
+	}
+	switch pass.TypesInfo.TypeOf(root).Underlying().(type) {
+	case *types.Struct, *types.Array:
+		return true
+	}
+	return false
+}
+
+// rootIdent walks selector/index/paren chains down to the identifier they are
+// rooted at, or nil if the expression is not rooted at a plain identifier.
+func rootIdent(expr ast.Expr) *ast.Ident {
+	for {
+		switch e := expr.(type) {
+		case *ast.Ident:
+			return e
+		case *ast.ParenExpr:
+			expr = e.X
+		case *ast.SelectorExpr:
+			expr = e.X
+		case *ast.IndexExpr:
+			expr = e.X
+		default:
+			return nil
 		}
 	}
 }
@@ -114,6 +203,22 @@ func sinkFor(pass *analysis.Pass, sel *ast.SelectorExpr) (name, reason string) {
 			}
 		}
 	}
+	// Logger-receiver form: sl.Info(b), l.Printf("%s", b),
+	// slog.Default().Info("", "k", b). The package table above is keyed by
+	// "import/path.Func" and matches only a call qualified by a package name,
+	// so every logging METHOD reached this point unflagged. Resolved by
+	// receiver type so an unrelated Info method on some other type is not
+	// swept in.
+	if loggerMethods[sel.Sel.Name] {
+		recv := pass.TypesInfo.TypeOf(sel.X)
+		if typeFromPkg(recv, "log/slog") {
+			return "log/slog.Logger." + sel.Sel.Name, "it logs the secret"
+		}
+		if typeFromPkg(recv, "log") {
+			return "log.Logger." + sel.Sel.Name, "it logs the secret"
+		}
+	}
+
 	// Encoder-receiver form, e.g. base64.StdEncoding.EncodeToString(borrowed).
 	if sel.Sel.Name == "EncodeToString" || sel.Sel.Name == "Encode" {
 		if typeFromPkg(pass.TypesInfo.TypeOf(sel.X), "encoding/base64") {
