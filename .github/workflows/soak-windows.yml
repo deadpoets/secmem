@@ -25,6 +25,22 @@ name: Windows Race Soak
 # GOTRACEBACK=system is the point of the exercise — the default traceback elides
 # runtime frames, and the runtime frames are the evidence.
 #
+# SECOND SIGHTING, 2026-08-19 (CI run 32201035150, PR #59):
+#
+#     fatal error: acquireSudog: found s.elem != nil in cache
+#
+# Different message, same class, and together they make the signature specific:
+# both are per-P runtime FREE-LIST CACHES found in an impossible state — the
+# goroutine free list with a non-power-of-two stack size, and the sudog cache
+# holding a released sudog whose elem is not nil. In both the crashing frame is
+# innocuous (TestCapabilities_String; t.Parallel), so the goroutine is merely
+# tripping over damage done earlier. That is a stray WRITE into memory the Go
+# runtime owns.
+#
+# One useful discriminator: the sudog case needs a write that makes a field
+# NON-nil, which a plain zero-wipe cannot do. Canary fill (a random pattern) and
+# ordinary buffer writes can.
+#
 # Delete this workflow once the crash is understood. A soak that nobody reads is
 # worse than no soak, because it looks like coverage.
 
@@ -45,6 +61,9 @@ on:
       package:
         description: "Module directory to soak"
         default: "."
+      mode:
+        description: "gotest = `go test -race ./...` exactly as ci.yml runs it (reproduces); binary = loop one prebuilt package binary (faster, has NOT reproduced)"
+        default: "gotest"
 
 permissions:
   contents: read
@@ -74,17 +93,38 @@ jobs:
           ITERATIONS: ${{ github.event.inputs.iterations || '200' }}
           GOMAXPROCS: ${{ github.event.inputs.gomaxprocs || '4' }}
           GODEBUG: ${{ github.event.inputs.godebug || '' }}
+          MODE: ${{ github.event.inputs.mode || 'gotest' }}
           GOTRACEBACK: system
         run: |
           set -uo pipefail
-          go test -race -c -o soak.exe .
-          echo "soaking $ITERATIONS processes at GOMAXPROCS=$GOMAXPROCS, GODEBUG='${GODEBUG:-}'"
+
+          # Two shapes, and the difference turned out to matter.
+          #
+          # `binary` builds the package test binary once and loops it. It is
+          # several times faster per iteration, and it is what this workflow did
+          # originally — for 1250 iterations, finding nothing, while two
+          # ordinary CI runs reproduced the crash.
+          #
+          # `gotest` runs `go test -race ./...`, exactly as ci.yml does. That
+          # compiles and runs the core and redact test binaries CONCURRENTLY,
+          # which is a materially different address-space and allocator story —
+          # and for a bug whose signature is a stray write into runtime
+          # free-list caches, "what the allocator hands back next" is the whole
+          # question. It is the default because it is the only shape that has
+          # actually reproduced.
+          if [ "$MODE" = "binary" ]; then
+            go test -race -c -o soak.exe .
+            run_once() { ./soak.exe -test.count=1 2>&1; }
+          else
+            run_once() { go test -race -count=1 ./... 2>&1; }
+          fi
+          echo "soaking $ITERATIONS iterations, mode=$MODE, GOMAXPROCS=$GOMAXPROCS, GODEBUG='${GODEBUG:-}'"
 
           failures=0
           # Pure-bash counter: seq is coreutils and not guaranteed on the
           # runner's Git bash.
           for ((i = 1; i <= ITERATIONS; i++)); do
-            if ! out=$(./soak.exe -test.count=1 2>&1); then
+            if ! out=$(run_once); then
               failures=$((failures + 1))
               echo "::group::FAILURE on iteration $i"
               echo "$out"
