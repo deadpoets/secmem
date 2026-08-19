@@ -39,7 +39,13 @@ func ExampleScope() {
 			return err
 		}
 		return buf.WithBytesErr(func(b []byte) error {
-			fmt.Println("filled", buf.Len(), "bytes")
+			// len(b), not buf.Len(): the borrowed slice already carries the
+			// length and needs no lock, whereas Len takes the read lock a
+			// second time from inside the borrow. That is not reentrant — the
+			// lock is writer-preferring, so the nested acquire waits behind any
+			// queued writer and deadlocks the moment a Destroy or an emergency
+			// wipe arrives between the two.
+			fmt.Println("filled", len(b), "bytes")
 			return nil
 		})
 	})
