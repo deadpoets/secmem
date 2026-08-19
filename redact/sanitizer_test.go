@@ -237,10 +237,10 @@ func TestSanitize_C1AndInvalidUTF8(t *testing.T) {
 	t.Parallel()
 	s := redact.NewDefaultSanitizer()
 
-	if got := s.Sanitize("before31mafter"); strings.ContainsRune(got, '') {
+	if got := s.Sanitize("before\u009b31mafter"); strings.ContainsRune(got, '\u009b') {
 		t.Errorf("C1 CSI (U+009B) survived the backstop: %q", got)
 	}
-	if got := s.Sanitize("padpad"); strings.ContainsRune(got, '') {
+	if got := s.Sanitize("pad\u0085pad"); strings.ContainsRune(got, '\u0085') {
 		t.Errorf("C1 NEL (U+0085) survived the backstop: %q", got)
 	}
 	// A raw invalid UTF-8 byte must be reported, not silently become U+FFFD.
