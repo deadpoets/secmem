@@ -38,7 +38,34 @@ mark the stability commitment.
   `examples` too, while `examples/go.mod` still asks for 0.54.0 — and CI runs
   readonly, so that is a hard error before any package loads.
 
+### Added
+
+- **`InstallTerminationWipeNoExit`** — `InstallTerminationWipe` without the
+  forced exit, for callers whose own handler owns termination. Adding exported
+  API makes the next core release a minor bump.
+
 ### Fixed
+
+- **`InstallTerminationWipe` now terminates the process on Windows instead of
+  wiping and running on.** `os.Process.Signal` there implements only `os.Kill`
+  and rejects `os.Interrupt` and SIGTERM, and the console event that triggered
+  the handler has already been consumed — so the re-raise was a guaranteed
+  no-op. Measured with a real `CTRL_C_EVENT` delivered to a child in its own
+  process group: the first Ctrl-C wiped every secret and the process kept
+  running, exiting only on a *second* one.
+
+  That left it in the one state `WipeAllSecrets` does not support. The wipe
+  deliberately leaves regions mapped so a late read returns zeros rather than
+  faulting, a trade justified entirely by imminent termination — and reads
+  still **succeed**. A surviving process therefore holds every key buffer
+  readable and full of zeros, so an application treating the signal as "begin
+  shutdown" can sign with an all-zero key or derive from zeros and be told it
+  worked. Worse than either terminating or never wiping.
+
+  secmem now exits with `0xC000013A` (`STATUS_CONTROL_C_EXIT`) — verified
+  identical to the status Windows produces for an un-intercepted Ctrl-C, so no
+  parent, batch file or CI step can tell a wrapped process from an unwrapped
+  one. Unix is unchanged: the re-raise is a real `kill(2)` and already worked.
 
 - **The emergency wipe could zero a different, live buffer without holding its
   lock.** The janitor keyed each registration by its mapping's base address.
