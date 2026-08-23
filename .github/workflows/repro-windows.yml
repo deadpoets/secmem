@@ -181,32 +181,60 @@ jobs:
         env:
           GOTRACEBACK: crash
         run: |
+          $ErrorActionPreference = 'Continue'
+          "--- WER service:"; Get-Service WerSvc | Format-List Name, Status, StartType
+          "--- WER keys:";   Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' | Format-List Disabled, DontShowUI, ForceQueue
+          "--- WER policy:"; Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting' -ErrorAction SilentlyContinue | Format-List
+          "--- LocalDumps:"; Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps' | Format-List DumpFolder, DumpType, DumpCount
+          $t0 = Get-Date
+
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\smoke" | Out-Null
+          Push-Location "$env:RUNNER_TEMP\smoke"
           @'
           package main
 
           import "runtime/debug"
 
           func main() {
-          	// An unrecovered panic ends in the same dopanic_m -> crash() path as a
-          	// runtime throw, so this exercises exactly the capture route a real
-          	// hit would take.
           	debug.SetTraceback("crash")
           	panic("repro-windows smoke: this crash is deliberate")
           }
-          '@ | Set-Content -Path "$env:RUNNER_TEMP\smoke\main.go" -Encoding utf8
-          Push-Location "$env:RUNNER_TEMP\smoke"
+          '@ | Set-Content -Path main.go -Encoding utf8
           go mod init smoke | Out-Null
           go build -race -o smoke.exe .
-          & .\smoke.exe 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
-          $code = $LASTEXITCODE
+          "--- 1. Go fatal panic under GOTRACEBACK=crash (fail-fast path):"
+          & .\smoke.exe 2>&1 | Select-Object -First 3
+          "smoke exit code: $LASTEXITCODE (0x{0:X})" -f $LASTEXITCODE
+          Start-Sleep -Seconds 15
+          $dumpsGo = @(Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue)
+          "dumps after Go crash: $($dumpsGo.Count)"
+
+          "--- 2. plain C null dereference (ordinary unhandled exception) for comparison:"
+          @'
+          int main(void) { volatile int *p = 0; *p = 1; return 0; }
+          '@ | Set-Content -Path crash.c -Encoding ascii
+          gcc -O0 -o crashc.exe crash.c
+          & .\crashc.exe
+          "crashc exit code: $LASTEXITCODE (0x{0:X})" -f $LASTEXITCODE
+          Start-Sleep -Seconds 15
+          $dumpsC = @(Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue)
+          "dumps after C crash: $($dumpsC.Count)"
+
+          "--- WER / Application Error events since the start of this step:"
+          Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$t0} -ErrorAction SilentlyContinue |
+            Where-Object { $_.ProviderName -match 'Windows Error Reporting|Application Error' } |
+            ForEach-Object { "[$($_.TimeCreated.ToString('HH:mm:ss'))] $($_.ProviderName) id=$($_.Id)`n$($_.Message)`n" }
+
+          if ($dumpsC.Count -eq 0 -or $dumpsGo.Count -eq 0) {
+            "--- 3. fallback: procdump as a non-invasive debugger"
+            Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Procdump.zip' -OutFile procdump.zip
+            Expand-Archive procdump.zip -DestinationPath pd -Force
+            & .\pd\procdump64.exe -accepteula -ma -e -x D:\dumps .\smoke.exe 2>&1 | Select-Object -Last 8
+            "procdump exit code: $LASTEXITCODE"
+          }
           Pop-Location
-          "smoke exit code: $code (0x{0:X})" -f $code
-          Start-Sleep -Seconds 5   # WER writes the dump asynchronously after the process is gone
-          $dumps = @(Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue)
-          "dumps: $($dumps.Count)"; $dumps | Format-Table Name, Length
-          if ($dumps.Count -eq 0) { Write-Host '::error title=smoke::no dump was written — capture pipeline is NOT working'; exit 1 }
-          # A red job is the expected (correct) outcome of a smoke run.
+          "--- D:\dumps:"; Get-ChildItem 'D:\dumps' -ErrorAction SilentlyContinue | Format-Table Name, Length
+          # A red job is the expected (correct) outcome of a smoke run; the log above says which route worked.
           exit 1
 
       - name: go test -race ./... (exactly as ci.yml, one fresh VM)
