@@ -1,1 +1,1 @@
-{"jobs": 200, "go_version": "1.26.6", "test_ref": "c593f01994561ecd43b0dc2d0faa277dc1095d6e"}
+{"jobs": 200, "mode": "faultstress"}

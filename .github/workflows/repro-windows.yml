@@ -101,7 +101,7 @@ jobs:
           case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
           if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
           case "$GO_VERSION" in '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, got '$GO_VERSION'"; exit 1 ;; esac
-          case "$MODE" in ci | smoke) ;; *) echo "::error::mode must be ci or smoke, got '$MODE'"; exit 1 ;; esac
+          case "$MODE" in ci | smoke | faultstress) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
           case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
           case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
           case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
@@ -260,6 +260,42 @@ jobs:
             Write-Host "::error title=HIT (sample ${{ matrix.idx }})::runtime crash — dump and binary are in the job artifact"
             New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\hit" | Out-Null
             Copy-Item "$env:RUNNER_TEMP\bin\*.test.exe" "$env:RUNNER_TEMP\hit\"
+          }
+          exit $code
+
+      - name: faultstress — deliberate faults under -race, NO secmem code
+        if: needs.plan.outputs.mode == 'faultstress'
+        shell: pwsh
+        env:
+          GOTRACEBACK: wer
+          IN_GOMAXPROCS: ${{ needs.plan.outputs.gomaxprocs }}
+        run: |
+          if ($env:IN_GOMAXPROCS) { $env:GOMAXPROCS = $env:IN_GOMAXPROCS }
+          Remove-Item Env:IN_GOMAXPROCS -ErrorAction SilentlyContinue
+          Push-Location .github/repro/faultstress
+          # -count drives many process-internal repetitions per VM; the crash is
+          # rare per test run, so each VM runs the stress many times.
+          $env:GOFLAGS = '-mod=mod'
+          go test -race -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
+          $code = $LASTEXITCODE
+          Pop-Location
+          $out = Get-Content "$env:RUNNER_TEMP\out.txt" -Raw
+          $kind = 'pass'
+          if ($code -ne 0) {
+            if     ($out -match 'fatal error: ')      { $kind = 'runtime-crash' }
+            elseif ($out -match 'WARNING: DATA RACE') { $kind = 'data-race' }
+            elseif ($out -match 'test timed out')     { $kind = 'hang' }
+            else                                      { $kind = 'test-failure' }
+          }
+          "result: $kind (exit $code)"
+          $fp = Get-Content "$env:RUNNER_TEMP\fingerprint.txt" -Raw
+          "### sample ${{ matrix.idx }} — $kind (faultstress)`n``````text`n$fp`n``````" >> $env:GITHUB_STEP_SUMMARY
+          if ($kind -eq 'runtime-crash') {
+            Write-Host "::error title=FAULTSTRESS HIT (sample ${{ matrix.idx }})::runtime corruption with NO secmem code — the mechanism is the runtime fault path"
+            $deadline = (Get-Date).AddSeconds(90)
+            while ((Get-Process WerFault -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\hit" | Out-Null
+            go test -race -c -o "$env:RUNNER_TEMP\hit\faultstress.test.exe" .github/repro/faultstress
           }
           exit $code
 
