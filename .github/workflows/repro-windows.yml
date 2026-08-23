@@ -269,9 +269,11 @@ jobs:
         env:
           GOTRACEBACK: wer
           IN_GOMAXPROCS: ${{ needs.plan.outputs.gomaxprocs }}
+          IN_GODEBUG: ${{ needs.plan.outputs.godebug }}
         run: |
           if ($env:IN_GOMAXPROCS) { $env:GOMAXPROCS = $env:IN_GOMAXPROCS }
-          Remove-Item Env:IN_GOMAXPROCS -ErrorAction SilentlyContinue
+          if ($env:IN_GODEBUG)    { $env:GODEBUG    = $env:IN_GODEBUG }
+          Remove-Item Env:IN_GOMAXPROCS, Env:IN_GODEBUG -ErrorAction SilentlyContinue
           Push-Location .github/repro/faultstress
           # Standalone module, not part of the repo go.work — GOWORK=off so the
           # workspace does not force readonly and reject a sibling module.
