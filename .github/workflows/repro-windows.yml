@@ -35,6 +35,8 @@ name: Windows Repro Matrix
 # Diagnostic only. Nothing depends on it; a red job here is a hit to analyse.
 
 on:
+  push:
+    branches: ["diag/**"]
   workflow_dispatch:
     inputs:
       jobs:
@@ -64,29 +66,53 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       indices: ${{ steps.plan.outputs.indices }}
+      go_version: ${{ steps.plan.outputs.go_version }}
+      godebug: ${{ steps.plan.outputs.godebug }}
+      gomaxprocs: ${{ steps.plan.outputs.gomaxprocs }}
+      test_ref: ${{ steps.plan.outputs.test_ref }}
+      mode: ${{ steps.plan.outputs.mode }}
     steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: plan
         env:
-          JOBS: ${{ inputs.jobs }}
-          GO_VERSION: ${{ inputs.go_version }}
-          MODE: ${{ inputs.mode }}
-          GOMAXPROCS_IN: ${{ inputs.gomaxprocs }}
-          GODEBUG_IN: ${{ inputs.godebug }}
-          TEST_REF: ${{ inputs.test_ref }}
+          EVENT: ${{ github.event_name }}
+          IN_JOBS: ${{ inputs.jobs }}
+          IN_GO_VERSION: ${{ inputs.go_version }}
+          IN_GODEBUG: ${{ inputs.godebug }}
+          IN_GOMAXPROCS: ${{ inputs.gomaxprocs }}
+          IN_TEST_REF: ${{ inputs.test_ref }}
+          IN_MODE: ${{ inputs.mode }}
         run: |
-          # Validate every input here, once, before it reaches a pwsh script on
-          # 256 runners. Same discipline as soak-windows.yml: inputs are
-          # trusted (dispatch needs write access) but never interpolated into
-          # a script unchecked.
+          # Resolve the arm: dispatch inputs, or the committed file on a push.
+          if [ "$EVENT" = "workflow_dispatch" ]; then
+            JOBS="$IN_JOBS"; GO_VERSION="$IN_GO_VERSION"; GODEBUG_IN="$IN_GODEBUG"
+            GOMAXPROCS_IN="$IN_GOMAXPROCS"; TEST_REF="$IN_TEST_REF"; MODE="$IN_MODE"
+          else
+            f=.github/repro-arm.json
+            JOBS=$(jq -r '.jobs // 100' "$f"); GO_VERSION=$(jq -r '.go_version // "1.26.6"' "$f")
+            GODEBUG_IN=$(jq -r '.godebug // ""' "$f"); GOMAXPROCS_IN=$(jq -r '.gomaxprocs // ""' "$f")
+            TEST_REF=$(jq -r '.test_ref // ""' "$f"); MODE=$(jq -r '.mode // "ci"' "$f")
+          fi
+          # Validate every value here, once, before it reaches a pwsh script on
+          # 256 runners. Same discipline as soak-windows.yml: the source is
+          # trusted (write access either way) but never interpolated unchecked.
           case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
           if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
           case "$GO_VERSION" in '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, got '$GO_VERSION'"; exit 1 ;; esac
           case "$MODE" in ci | smoke) ;; *) echo "::error::mode must be ci or smoke, got '$MODE'"; exit 1 ;; esac
           case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
+          case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
           case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
-          indices=$(seq -s, 1 "$JOBS")
-          echo "indices=[$indices]" >> "$GITHUB_OUTPUT"
-          echo "sampling $JOBS fresh VMs: go=$GO_VERSION mode=$MODE godebug='$GODEBUG_IN' gomaxprocs='$GOMAXPROCS_IN' test_ref='$TEST_REF'"
+          {
+            echo "indices=[$(seq -s, 1 "$JOBS")]"
+            echo "go_version=$GO_VERSION"
+            echo "godebug=$GODEBUG_IN"
+            echo "gomaxprocs=$GOMAXPROCS_IN"
+            echo "test_ref=$TEST_REF"
+            echo "mode=$MODE"
+          } >> "$GITHUB_OUTPUT"
+          echo "arm: $JOBS fresh VMs, go=$GO_VERSION mode=$MODE godebug='$GODEBUG_IN' gomaxprocs='$GOMAXPROCS_IN' test_ref='$TEST_REF'"
+          echo "## arm: $JOBS fresh VMs, go=$GO_VERSION mode=$MODE godebug='$GODEBUG_IN' gomaxprocs='$GOMAXPROCS_IN' test_ref='$TEST_REF'" >> "$GITHUB_STEP_SUMMARY"
 
   sample:
     needs: plan
@@ -101,10 +127,10 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: check out the tree under test
-        if: inputs.test_ref != ''
+        if: needs.plan.outputs.test_ref != ''
         shell: bash
         env:
-          TEST_REF: ${{ inputs.test_ref }}
+          TEST_REF: ${{ needs.plan.outputs.test_ref }}
         run: |
           git fetch --depth=1 origin "$TEST_REF"
           git checkout --detach "$TEST_REF"
@@ -112,7 +138,7 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ inputs.go_version }}
+          go-version: ${{ needs.plan.outputs.go_version }}
       - uses: ./.github/actions/setup-workspace
 
       - name: arm crash capture and fingerprint the VM
@@ -150,7 +176,7 @@ jobs:
           exit 0
 
       - name: smoke — prove a fatal error produces a dump
-        if: inputs.mode == 'smoke'
+        if: needs.plan.outputs.mode == 'smoke'
         shell: pwsh
         env:
           GOTRACEBACK: crash
@@ -184,12 +210,12 @@ jobs:
           exit 1
 
       - name: go test -race ./... (exactly as ci.yml, one fresh VM)
-        if: inputs.mode == 'ci'
+        if: needs.plan.outputs.mode == 'ci'
         shell: pwsh
         env:
           GOTRACEBACK: crash
-          IN_GODEBUG: ${{ inputs.godebug }}
-          IN_GOMAXPROCS: ${{ inputs.gomaxprocs }}
+          IN_GODEBUG: ${{ needs.plan.outputs.godebug }}
+          IN_GOMAXPROCS: ${{ needs.plan.outputs.gomaxprocs }}
         run: |
           # Only set what the arm asks for. An empty GODEBUG or GOMAXPROCS is
           # not quite "unset" to the runtime's env parsing, and the control arm
