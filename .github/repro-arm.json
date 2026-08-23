@@ -1,1 +1,1 @@
-{"jobs": 150, "mode": "faultstress", "go_version": "1.26.7"}
+{"jobs": 150, "mode": "faultstress", "go_version": "tip"}

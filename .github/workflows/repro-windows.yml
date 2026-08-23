@@ -106,7 +106,7 @@ jobs:
           # trusted (write access either way) but never interpolated unchecked.
           case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
           if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
-          case "$GO_VERSION" in '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, got '$GO_VERSION'"; exit 1 ;; esac
+          case "$GO_VERSION" in tip) ;; '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, or 'tip', got '$GO_VERSION'"; exit 1 ;; esac
           case "$MODE" in ci | smoke | faultstress) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
           case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
           case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
@@ -150,8 +150,16 @@ jobs:
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ needs.plan.outputs.go_version }}
+          go-version: ${{ needs.plan.outputs.go_version == 'tip' && '1.27.0' || needs.plan.outputs.go_version }}
       - uses: ./.github/actions/setup-workspace
+
+      - name: install gotip
+        if: needs.plan.outputs.go_version == 'tip'
+        shell: bash
+        run: |
+          go install golang.org/dl/gotip@latest
+          gotip download
+          gotip version
 
       - name: arm crash capture and fingerprint the VM
         shell: pwsh
@@ -293,7 +301,8 @@ jobs:
           $env:GOWORK = 'off'
           if ('${{ needs.plan.outputs.serialize }}' -eq '1') { $env:FAULT_SERIALIZE = '1' }
           $raceFlag = if ('${{ needs.plan.outputs.race }}' -eq '0') { '' } else { '-race' }
-          go test $raceFlag -vet=off -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
+          $goCmd = if ('${{ needs.plan.outputs.go_version }}' -eq 'tip') { 'gotip' } else { 'go' }
+          & $goCmd test $raceFlag -vet=off -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
           $code = $LASTEXITCODE
           Pop-Location
           $out = Get-Content "$env:RUNNER_TEMP\out.txt" -Raw
