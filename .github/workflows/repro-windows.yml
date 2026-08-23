@@ -11,9 +11,11 @@ name: Windows Repro Matrix
 # sample a fresh VM, so its count is the count that CI's rate is measured in.
 #
 # Every hit is preserved as evidence, not just a log:
-#   - GOTRACEBACK=crash makes the runtime end in RaiseFailFastException after
-#     printing the traceback, and WER LocalDumps (configured below) writes a
-#     FULL process dump of that moment;
+#   - GOTRACEBACK=wer makes the runtime end in RaiseFailFastException after
+#     printing the traceback, having first cleared SEM_NOGPFAULTERRORBOX (Go
+#     sets it at startup, and it silently suppresses all WER fault reporting;
+#     GOTRACEBACK=crash never yields a dump on Windows for that reason). WER
+#     LocalDumps, configured below, then writes a FULL process dump;
 #   - the exact test binary is re-linked from the build cache and uploaded
 #     beside the dump so every address in it can be symbolised.
 #
@@ -145,8 +147,8 @@ jobs:
         shell: pwsh
         run: |
           # WER LocalDumps: a full user-mode dump of any process that dies with
-          # an unhandled (or fail-fast) exception. GOTRACEBACK=crash makes the
-          # Go runtime die exactly that way after it has printed the traceback.
+          # an unhandled (or fail-fast) exception. GOTRACEBACK=wer makes the Go
+          # runtime die exactly that way after it has printed the traceback.
           $ErrorActionPreference = 'Stop'
           New-Item -ItemType Directory -Force -Path 'D:\dumps' | Out-Null
           $wer = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
@@ -179,61 +181,44 @@ jobs:
         if: needs.plan.outputs.mode == 'smoke'
         shell: pwsh
         env:
-          GOTRACEBACK: crash
+          GOTRACEBACK: wer
         run: |
           $ErrorActionPreference = 'Continue'
           "--- WER service:"; Get-Service WerSvc | Format-List Name, Status, StartType
-          "--- WER keys:";   Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting' | Format-List Disabled, DontShowUI, ForceQueue
-          "--- WER policy:"; Get-ItemProperty 'HKLM:\SOFTWARE\Policies\Microsoft\Windows\Windows Error Reporting' -ErrorAction SilentlyContinue | Format-List
-          "--- LocalDumps:"; Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps' | Format-List DumpFolder, DumpType, DumpCount
+          "--- LocalDumps:";  Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting\LocalDumps' | Format-List DumpFolder, DumpType, DumpCount
           $t0 = Get-Date
-
           New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\smoke" | Out-Null
           Push-Location "$env:RUNNER_TEMP\smoke"
           @'
           package main
 
-          import "runtime/debug"
-
           func main() {
-          	debug.SetTraceback("crash")
           	panic("repro-windows smoke: this crash is deliberate")
           }
           '@ | Set-Content -Path main.go -Encoding utf8
           go mod init smoke | Out-Null
           go build -race -o smoke.exe .
-          "--- 1. Go fatal panic under GOTRACEBACK=crash (fail-fast path):"
-          & .\smoke.exe 2>&1 | Select-Object -First 3
+          "--- Go fatal panic under GOTRACEBACK=wer (re-enables WER, then fail-fast):"
+          & .\smoke.exe
           "smoke exit code: $LASTEXITCODE (0x{0:X})" -f $LASTEXITCODE
-          Start-Sleep -Seconds 15
+          $deadline = (Get-Date).AddSeconds(60)
+          while ((Get-Process WerFault -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          Start-Sleep -Seconds 5
           $dumpsGo = @(Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue)
           "dumps after Go crash: $($dumpsGo.Count)"
-
-          "--- 2. plain C null dereference (ordinary unhandled exception) for comparison:"
-          @'
-          int main(void) { volatile int *p = 0; *p = 1; return 0; }
-          '@ | Set-Content -Path crash.c -Encoding ascii
-          gcc -O0 -o crashc.exe crash.c
-          & .\crashc.exe
-          "crashc exit code: $LASTEXITCODE (0x{0:X})" -f $LASTEXITCODE
-          Start-Sleep -Seconds 15
-          $dumpsC = @(Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue)
-          "dumps after C crash: $($dumpsC.Count)"
-
           "--- WER / Application Error events since the start of this step:"
           Get-WinEvent -FilterHashtable @{LogName='Application'; StartTime=$t0} -ErrorAction SilentlyContinue |
             Where-Object { $_.ProviderName -match 'Windows Error Reporting|Application Error' } |
             ForEach-Object { "[$($_.TimeCreated.ToString('HH:mm:ss'))] $($_.ProviderName) id=$($_.Id)`n$($_.Message)`n" }
-
-          if ($dumpsC.Count -eq 0 -or $dumpsGo.Count -eq 0) {
-            "--- 3. fallback: procdump as a non-invasive debugger"
+          if ($dumpsGo.Count -eq 0) {
+            "--- fallback: procdump as a non-invasive debugger"
             Invoke-WebRequest -Uri 'https://download.sysinternals.com/files/Procdump.zip' -OutFile procdump.zip
             Expand-Archive procdump.zip -DestinationPath pd -Force
             & .\pd\procdump64.exe -accepteula -ma -e -x D:\dumps .\smoke.exe 2>&1 | Select-Object -Last 8
-            "procdump exit code: $LASTEXITCODE"
           }
           Pop-Location
           "--- D:\dumps:"; Get-ChildItem 'D:\dumps' -ErrorAction SilentlyContinue | Format-Table Name, Length
+          if ($dumpsGo.Count -eq 0) { Write-Host '::error title=smoke::GOTRACEBACK=wer produced no WER dump; only procdump works' }
           # A red job is the expected (correct) outcome of a smoke run; the log above says which route worked.
           exit 1
 
@@ -241,7 +226,7 @@ jobs:
         if: needs.plan.outputs.mode == 'ci'
         shell: pwsh
         env:
-          GOTRACEBACK: crash
+          GOTRACEBACK: wer
           IN_GODEBUG: ${{ needs.plan.outputs.godebug }}
           IN_GOMAXPROCS: ${{ needs.plan.outputs.gomaxprocs }}
         run: |
