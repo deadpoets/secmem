@@ -1,0 +1,243 @@
+name: Windows Repro Matrix
+
+# Samples the windows/amd64 runtime-corruption crash the way CI actually hits
+# it: one `go test -race ./...` per FRESH hosted VM, N VMs per dispatch.
+#
+# Why a matrix and not the soak. The soak loops inside one VM. Counting every
+# iteration as a sample, 820 CI-shaped iterations with zero hits is a ~1-in-6000
+# outcome against CI's observed 2 hits in 188 jobs. The arithmetic only closes
+# if what matters is per-VM (boot-time ASLR layout, host, CPU, first-run state),
+# in which case the soak was ~5 samples, not 820. This workflow makes every
+# sample a fresh VM, so its count is the count that CI's rate is measured in.
+#
+# Every hit is preserved as evidence, not just a log:
+#   - GOTRACEBACK=crash makes the runtime end in RaiseFailFastException after
+#     printing the traceback, and WER LocalDumps (configured below) writes a
+#     FULL process dump of that moment;
+#   - the exact test binary is re-linked from the build cache and uploaded
+#     beside the dump so every address in it can be symbolised.
+#
+# Dispatch (one run per arm; each run is one N-job matrix):
+#   gh workflow run "Windows Repro Matrix" --ref diag/windows-repro-matrix \
+#     -f jobs=150 -f go_version=1.26.6
+#   gh workflow run "Windows Repro Matrix" --ref diag/windows-repro-matrix \
+#     -f jobs=150 -f go_version=1.26.5
+#   gh workflow run "Windows Repro Matrix" --ref diag/windows-repro-matrix \
+#     -f jobs=150 -f go_version=1.26.6 -f godebug=asyncpreemptoff=1
+#   gh workflow run "Windows Repro Matrix" --ref diag/windows-repro-matrix \
+#     -f jobs=150 -f go_version=1.26.6 -f gomaxprocs=4
+#
+# mode=smoke validates the capture pipeline: a deliberately fatal program runs
+# instead of the suite, and the job must come back RED with a .dmp attached.
+# Run that first. A matrix whose hits would have produced no dump is the same
+# mistake as a soak that loops a binary nobody proved was the CI binary.
+#
+# Diagnostic only. Nothing depends on it; a red job here is a hit to analyse.
+
+on:
+  workflow_dispatch:
+    inputs:
+      jobs:
+        description: "Fresh VMs to sample (1..256)"
+        default: "100"
+      go_version:
+        description: "Exact Go toolchain for this arm (CI is pinned to 1.26.6)"
+        default: "1.26.6"
+      godebug:
+        description: "GODEBUG for the test processes (empty = unset, as CI)"
+        default: ""
+      gomaxprocs:
+        description: "GOMAXPROCS for the test processes (empty = unset, as CI; the soak set 4)"
+        default: ""
+      test_ref:
+        description: "Commit to test (empty = this branch). Lets one workflow sample any tree, e.g. a sighting's head SHA"
+        default: ""
+      mode:
+        description: "ci = run the suite exactly as ci.yml does; smoke = run a deliberately fatal program to prove dump capture works"
+        default: "ci"
+
+permissions:
+  contents: read
+
+jobs:
+  plan:
+    runs-on: ubuntu-latest
+    outputs:
+      indices: ${{ steps.plan.outputs.indices }}
+    steps:
+      - id: plan
+        env:
+          JOBS: ${{ inputs.jobs }}
+          GO_VERSION: ${{ inputs.go_version }}
+          MODE: ${{ inputs.mode }}
+          GOMAXPROCS_IN: ${{ inputs.gomaxprocs }}
+          GODEBUG_IN: ${{ inputs.godebug }}
+          TEST_REF: ${{ inputs.test_ref }}
+        run: |
+          # Validate every input here, once, before it reaches a pwsh script on
+          # 256 runners. Same discipline as soak-windows.yml: inputs are
+          # trusted (dispatch needs write access) but never interpolated into
+          # a script unchecked.
+          case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
+          if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
+          case "$GO_VERSION" in '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, got '$GO_VERSION'"; exit 1 ;; esac
+          case "$MODE" in ci | smoke) ;; *) echo "::error::mode must be ci or smoke, got '$MODE'"; exit 1 ;; esac
+          case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
+          case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
+          indices=$(seq -s, 1 "$JOBS")
+          echo "indices=[$indices]" >> "$GITHUB_OUTPUT"
+          echo "sampling $JOBS fresh VMs: go=$GO_VERSION mode=$MODE godebug='$GODEBUG_IN' gomaxprocs='$GOMAXPROCS_IN' test_ref='$TEST_REF'"
+
+  sample:
+    needs: plan
+    runs-on: windows-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      max-parallel: 20
+      matrix:
+        idx: ${{ fromJSON(needs.plan.outputs.indices) }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: check out the tree under test
+        if: inputs.test_ref != ''
+        shell: bash
+        env:
+          TEST_REF: ${{ inputs.test_ref }}
+        run: |
+          git fetch --depth=1 origin "$TEST_REF"
+          git checkout --detach "$TEST_REF"
+          git log --oneline -1
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ inputs.go_version }}
+      - uses: ./.github/actions/setup-workspace
+
+      - name: arm crash capture and fingerprint the VM
+        shell: pwsh
+        run: |
+          # WER LocalDumps: a full user-mode dump of any process that dies with
+          # an unhandled (or fail-fast) exception. GOTRACEBACK=crash makes the
+          # Go runtime die exactly that way after it has printed the traceback.
+          $ErrorActionPreference = 'Stop'
+          New-Item -ItemType Directory -Force -Path 'D:\dumps' | Out-Null
+          $wer = 'HKLM:\SOFTWARE\Microsoft\Windows\Windows Error Reporting'
+          New-Item -Path $wer -Force | Out-Null
+          Set-ItemProperty -Path $wer -Name Disabled   -Type DWord -Value 0
+          Set-ItemProperty -Path $wer -Name DontShowUI -Type DWord -Value 1
+          $ld = Join-Path $wer 'LocalDumps'
+          New-Item -Path $ld -Force | Out-Null
+          Set-ItemProperty -Path $ld -Name DumpFolder -Type ExpandString -Value 'D:\dumps'
+          Set-ItemProperty -Path $ld -Name DumpType   -Type DWord -Value 2
+          Set-ItemProperty -Path $ld -Name DumpCount  -Type DWord -Value 5
+
+          # Per-VM facts a hit can be correlated against. DLL bases are
+          # randomised once per boot, so they identify the boot's layout, which
+          # is one of the things a loop inside a single VM can never vary.
+          $ErrorActionPreference = 'Continue'
+          $fp = New-Object System.Collections.Generic.List[string]
+          function Note([string]$k, $v) { $fp.Add(('{0,-16}: {1}' -f $k, $v)) }
+          Note 'ImageVersion' $env:ImageVersion
+          Note 'Runner' $env:RUNNER_NAME
+          try { $c = @(Get-CimInstance Win32_Processor)[0]; Note 'CPU' "$($c.Name.Trim()) | $($c.NumberOfLogicalProcessors) logical | rev $($c.Revision)" } catch { Note 'CPU' '<unavailable>' }
+          try { $o = Get-CimInstance Win32_OperatingSystem; Note 'OS' "$($o.Caption) build $($o.BuildNumber)"; Note 'BootedAt' $o.LastBootUpTime.ToString('o') } catch {}
+          try { $ntdll = (Get-Process -Id $PID).Modules | Where-Object { $_.ModuleName -eq 'ntdll.dll' }; Note 'ntdll base' ('0x{0:X}' -f $ntdll.BaseAddress.ToInt64()) } catch {}
+          try { $k32 = (Get-Process -Id $PID).Modules | Where-Object { $_.ModuleName -eq 'kernel32.dll' }; Note 'kernel32 base' ('0x{0:X}' -f $k32.BaseAddress.ToInt64()) } catch {}
+          Note 'Go' ((go version) -join ' ')
+          $fp -join "`n" | Tee-Object -FilePath "$env:RUNNER_TEMP\fingerprint.txt"
+          exit 0
+
+      - name: smoke — prove a fatal error produces a dump
+        if: inputs.mode == 'smoke'
+        shell: pwsh
+        env:
+          GOTRACEBACK: crash
+        run: |
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\smoke" | Out-Null
+          @'
+          package main
+
+          import "runtime/debug"
+
+          func main() {
+          	// An unrecovered panic ends in the same dopanic_m -> crash() path as a
+          	// runtime throw, so this exercises exactly the capture route a real
+          	// hit would take.
+          	debug.SetTraceback("crash")
+          	panic("repro-windows smoke: this crash is deliberate")
+          }
+          '@ | Set-Content -Path "$env:RUNNER_TEMP\smoke\main.go" -Encoding utf8
+          Push-Location "$env:RUNNER_TEMP\smoke"
+          go mod init smoke | Out-Null
+          go build -race -o smoke.exe .
+          & .\smoke.exe 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
+          $code = $LASTEXITCODE
+          Pop-Location
+          "smoke exit code: $code (0x{0:X})" -f $code
+          Start-Sleep -Seconds 5   # WER writes the dump asynchronously after the process is gone
+          $dumps = @(Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue)
+          "dumps: $($dumps.Count)"; $dumps | Format-Table Name, Length
+          if ($dumps.Count -eq 0) { Write-Host '::error title=smoke::no dump was written — capture pipeline is NOT working'; exit 1 }
+          # A red job is the expected (correct) outcome of a smoke run.
+          exit 1
+
+      - name: go test -race ./... (exactly as ci.yml, one fresh VM)
+        if: inputs.mode == 'ci'
+        shell: pwsh
+        env:
+          GOTRACEBACK: crash
+          IN_GODEBUG: ${{ inputs.godebug }}
+          IN_GOMAXPROCS: ${{ inputs.gomaxprocs }}
+        run: |
+          # Only set what the arm asks for. An empty GODEBUG or GOMAXPROCS is
+          # not quite "unset" to the runtime's env parsing, and the control arm
+          # must be byte-for-byte what ci.yml's step sees.
+          if ($env:IN_GODEBUG)    { $env:GODEBUG    = $env:IN_GODEBUG }
+          if ($env:IN_GOMAXPROCS) { $env:GOMAXPROCS = $env:IN_GOMAXPROCS }
+          Remove-Item Env:IN_GODEBUG, Env:IN_GOMAXPROCS -ErrorAction SilentlyContinue
+          go test -race ./... 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
+          $code = $LASTEXITCODE
+          $out = Get-Content "$env:RUNNER_TEMP\out.txt" -Raw
+          $kind = 'pass'
+          if ($code -ne 0) {
+            if     ($out -match 'fatal error: ')                 { $kind = 'runtime-crash' }
+            elseif ($out -match 'WARNING: DATA RACE')            { $kind = 'data-race' }
+            elseif ($out -match 'test timed out')                { $kind = 'hang' }
+            else                                                 { $kind = 'test-failure' }
+          }
+          "result: $kind (exit $code)"
+          "kind=$kind" >> $env:GITHUB_OUTPUT
+          $fp = Get-Content "$env:RUNNER_TEMP\fingerprint.txt" -Raw
+          "### sample ${{ matrix.idx }} — $kind`n``````text`n$fp`n``````" >> $env:GITHUB_STEP_SUMMARY
+          if ($kind -eq 'runtime-crash') {
+            Write-Host "::error title=HIT (sample ${{ matrix.idx }})::runtime crash — dump and binary are in the job artifact"
+            Start-Sleep -Seconds 5
+            # Same binary `go test` just ran: the link is cached, -c copies it out.
+            New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\hit" | Out-Null
+            go test -race -c -o "$env:RUNNER_TEMP\hit\secmem.test.exe" .
+          }
+          exit $code
+
+      - name: preserve evidence
+        if: failure()
+        shell: pwsh
+        run: |
+          # WerFault writes the dump after the crashed process is gone; a full
+          # dump of a race-built test process takes a few seconds.
+          $deadline = (Get-Date).AddSeconds(90)
+          while ((Get-Process WerFault -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\hit" | Out-Null
+          Copy-Item "$env:RUNNER_TEMP\out.txt", "$env:RUNNER_TEMP\fingerprint.txt" "$env:RUNNER_TEMP\hit\" -ErrorAction SilentlyContinue
+          Get-ChildItem 'D:\dumps' -Filter *.dmp -ErrorAction SilentlyContinue | Copy-Item -Destination "$env:RUNNER_TEMP\hit\"
+          Get-ChildItem "$env:RUNNER_TEMP\hit" | Format-Table Name, Length
+
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        if: failure()
+        with:
+          name: hit-${{ github.run_id }}-${{ matrix.idx }}
+          path: ${{ runner.temp }}/hit/
+          if-no-files-found: warn
+          retention-days: 30
+          compression-level: 9
