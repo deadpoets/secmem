@@ -273,10 +273,13 @@ jobs:
           if ($env:IN_GOMAXPROCS) { $env:GOMAXPROCS = $env:IN_GOMAXPROCS }
           Remove-Item Env:IN_GOMAXPROCS -ErrorAction SilentlyContinue
           Push-Location .github/repro/faultstress
-          # -count drives many process-internal repetitions per VM; the crash is
-          # rare per test run, so each VM runs the stress many times.
-          $env:GOFLAGS = '-mod=mod'
-          go test -race -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
+          # Standalone module, not part of the repo go.work — GOWORK=off so the
+          # workspace does not force readonly and reject a sibling module.
+          # -vet=off: the guard probe uses unsafe.Pointer exactly as secmem's own
+          # tests do; vet's unsafeptr false-positive here would fail the build,
+          # not the crash we are hunting. -count drives many in-process reps/VM.
+          $env:GOWORK = 'off'
+          go test -race -vet=off -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
           $code = $LASTEXITCODE
           Pop-Location
           $out = Get-Content "$env:RUNNER_TEMP\out.txt" -Raw
@@ -295,7 +298,7 @@ jobs:
             $deadline = (Get-Date).AddSeconds(90)
             while ((Get-Process WerFault -ErrorAction SilentlyContinue) -and (Get-Date) -lt $deadline) { Start-Sleep -Seconds 2 }
             New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\hit" | Out-Null
-            go test -race -c -o "$env:RUNNER_TEMP\hit\faultstress.test.exe" .github/repro/faultstress
+            go test -race -vet=off -c -o "$env:RUNNER_TEMP\hit\faultstress.test.exe" .github/repro/faultstress
           }
           exit $code
 
