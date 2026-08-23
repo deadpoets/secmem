@@ -49,8 +49,15 @@ func corruptCanary(addr uintptr) {
 	probeWrite(addr, probeRead(addr)^0xFF)
 }
 
-// faults reports whether fn causes a hardware memory fault. SetPanicOnFault
-// converts the fault into a recoverable runtime panic for this goroutine.
+// faults reports whether fn causes a hardware memory fault, converting it into a
+// recoverable panic with debug.SetPanicOnFault.
+//
+// It is used ONLY by the redact proofs (safeFormat), where a passing run never
+// actually faults — fn arms the guard defensively so that a redaction regression
+// reflecting into guarded memory becomes a clean test failure instead of killing
+// the binary. Because a passing run delivers no fault, it does not exercise the
+// windows/amd64 exception-recovery bug. The guard-page proofs, which DO deliver
+// faults on purpose, run out-of-process instead — see fault_probe_test.go.
 func faults(fn func()) (faulted bool) {
 	old := debug.SetPanicOnFault(true)
 	defer debug.SetPanicOnFault(old)
@@ -66,47 +73,40 @@ func faults(fn func()) (faulted bool) {
 // TestGuardPages_FaultOnBothEdges proves the guards are real: one byte below
 // the secret area and one byte past it must both fault, while the first and
 // last bytes of the area itself must not.
+//
+// The four probes each run in an isolated child (see fault_probe_test.go) so the
+// deliberate fault is never recovered inside this concurrent test binary.
 func TestGuardPages_FaultOnBothEdges(t *testing.T) {
+	// The guard-pages capability claim needs no fault, so check it in-process.
 	buf, err := NewEmptyBuffer(100)
 	if err != nil {
-		t.Fatalf("NewEmptyBuffer: %v", err)
+		t.Skipf("secure memory unavailable: %v", err)
 	}
-	defer func() { _ = buf.Destroy() }()
-
-	if !buf.Capabilities().GuardPages {
+	guarded := buf.Capabilities().GuardPages
+	_ = buf.Destroy()
+	if !guarded {
 		t.Fatal("Capabilities().GuardPages = false on a supported platform")
 	}
 
-	inner := buf.region.inner
-	base := uintptr(unsafe.Pointer(&inner[0]))
-	end := base + uintptr(len(inner))
-
-	if faults(func() { probeRead(base) }) {
+	if probeFaulted(t, "empty_first_byte") {
 		t.Error("first byte of the secret area faulted — mapping is broken")
 	}
-	if faults(func() { probeRead(end - 1) }) {
+	if probeFaulted(t, "empty_last_byte") {
 		t.Error("last byte of the secret area faulted — mapping is broken")
 	}
-	if !faults(func() { probeRead(base - 1) }) {
+	if !probeFaulted(t, "empty_below") {
 		t.Error("read one byte BELOW the secret area did not fault — leading guard page is not in force")
 	}
-	if !faults(func() { probeRead(end) }) {
+	if !probeFaulted(t, "empty_past") {
 		t.Error("read one byte PAST the secret area did not fault — trailing guard page is not in force")
 	}
 }
 
 // TestGuardPages_SyscallSafePath proves the no-memfd allocMapAnon path
-// produces guarded memory too.
+// produces guarded memory too. The probe runs out-of-process; see
+// fault_probe_test.go.
 func TestGuardPages_SyscallSafePath(t *testing.T) {
-	buf, err := NewSyscallSafeBuffer([]byte("guarded-ingest"))
-	if err != nil {
-		t.Fatalf("NewSyscallSafeBuffer: %v", err)
-	}
-	defer func() { _ = buf.Destroy() }()
-
-	inner := buf.region.inner
-	end := uintptr(unsafe.Pointer(&inner[0])) + uintptr(len(inner))
-	if !faults(func() { probeRead(end) }) {
+	if !probeFaulted(t, "syscallsafe_past") {
 		t.Error("allocMapAnon path: trailing guard page is not in force")
 	}
 }
