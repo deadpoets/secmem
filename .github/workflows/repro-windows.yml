@@ -236,7 +236,14 @@ jobs:
           if ($env:IN_GODEBUG)    { $env:GODEBUG    = $env:IN_GODEBUG }
           if ($env:IN_GOMAXPROCS) { $env:GOMAXPROCS = $env:IN_GOMAXPROCS }
           Remove-Item Env:IN_GODEBUG, Env:IN_GOMAXPROCS -ErrorAction SilentlyContinue
-          go test -race ./... 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
+          # -o DIR/ keeps the binaries that actually ran. Without it, go test
+          # links run-mode test binaries with -s -w (OmitDebug): the file that
+          # crashes has no symbol table or DWARF, and a later `go test -c` is a
+          # DIFFERENT link (measured: 7.0 MB vs 12.9 MB, shifted layout), so a
+          # dump could not be symbolised against it. With -o the tests still
+          # run exactly as before; only the on-disk binary gains its symbols.
+          New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\bin" | Out-Null
+          go test -race -o "$env:RUNNER_TEMP\bin\" ./... 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
           $code = $LASTEXITCODE
           $out = Get-Content "$env:RUNNER_TEMP\out.txt" -Raw
           $kind = 'pass'
@@ -247,15 +254,12 @@ jobs:
             else                                                 { $kind = 'test-failure' }
           }
           "result: $kind (exit $code)"
-          "kind=$kind" >> $env:GITHUB_OUTPUT
           $fp = Get-Content "$env:RUNNER_TEMP\fingerprint.txt" -Raw
           "### sample ${{ matrix.idx }} — $kind`n``````text`n$fp`n``````" >> $env:GITHUB_STEP_SUMMARY
           if ($kind -eq 'runtime-crash') {
             Write-Host "::error title=HIT (sample ${{ matrix.idx }})::runtime crash — dump and binary are in the job artifact"
-            Start-Sleep -Seconds 5
-            # Same binary `go test` just ran: the link is cached, -c copies it out.
             New-Item -ItemType Directory -Force -Path "$env:RUNNER_TEMP\hit" | Out-Null
-            go test -race -c -o "$env:RUNNER_TEMP\hit\secmem.test.exe" .
+            Copy-Item "$env:RUNNER_TEMP\bin\*.test.exe" "$env:RUNNER_TEMP\hit\"
           }
           exit $code
 
