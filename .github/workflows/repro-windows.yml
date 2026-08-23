@@ -74,6 +74,7 @@ jobs:
       test_ref: ${{ steps.plan.outputs.test_ref }}
       mode: ${{ steps.plan.outputs.mode }}
       race: ${{ steps.plan.outputs.race }}
+      serialize: ${{ steps.plan.outputs.serialize }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - id: plan
@@ -96,8 +97,10 @@ jobs:
             GODEBUG_IN=$(jq -r '.godebug // ""' "$f"); GOMAXPROCS_IN=$(jq -r '.gomaxprocs // ""' "$f")
             TEST_REF=$(jq -r '.test_ref // ""' "$f"); MODE=$(jq -r '.mode // "ci"' "$f")
             RACE=$(jq -r '.race // "1"' "$f")
+            SERIALIZE=$(jq -r '.serialize // "0"' "$f")
           fi
           RACE="${RACE:-1}"
+          SERIALIZE="${SERIALIZE:-0}"
           # Validate every value here, once, before it reaches a pwsh script on
           # 256 runners. Same discipline as soak-windows.yml: the source is
           # trusted (write access either way) but never interpolated unchecked.
@@ -109,6 +112,7 @@ jobs:
           case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
           case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
           case "$RACE" in 0 | 1) ;; *) echo "::error::race must be 0 or 1, got '$RACE'"; exit 1 ;; esac
+          case "$SERIALIZE" in 0 | 1) ;; *) echo "::error::serialize must be 0 or 1, got '$SERIALIZE'"; exit 1 ;; esac
           {
             echo "indices=[$(seq -s, 1 "$JOBS")]"
             echo "go_version=$GO_VERSION"
@@ -117,6 +121,7 @@ jobs:
             echo "test_ref=$TEST_REF"
             echo "mode=$MODE"
             echo "race=$RACE"
+            echo "serialize=$SERIALIZE"
           } >> "$GITHUB_OUTPUT"
           echo "arm: $JOBS fresh VMs, go=$GO_VERSION mode=$MODE godebug='$GODEBUG_IN' gomaxprocs='$GOMAXPROCS_IN' test_ref='$TEST_REF'"
           echo "## arm: $JOBS fresh VMs, go=$GO_VERSION mode=$MODE godebug='$GODEBUG_IN' gomaxprocs='$GOMAXPROCS_IN' test_ref='$TEST_REF'" >> "$GITHUB_STEP_SUMMARY"
@@ -286,6 +291,7 @@ jobs:
           # tests do; vet's unsafeptr false-positive here would fail the build,
           # not the crash we are hunting. -count drives many in-process reps/VM.
           $env:GOWORK = 'off'
+          if ('${{ needs.plan.outputs.serialize }}' -eq '1') { $env:FAULT_SERIALIZE = '1' }
           $raceFlag = if ('${{ needs.plan.outputs.race }}' -eq '0') { '' } else { '-race' }
           go test $raceFlag -vet=off -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\out.txt"
           $code = $LASTEXITCODE

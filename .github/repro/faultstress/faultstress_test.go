@@ -18,6 +18,7 @@
 package faultstress
 
 import (
+	"os"
 	"runtime"
 	"runtime/debug"
 	"sync"
@@ -25,11 +26,24 @@ import (
 	"unsafe"
 )
 
+// serializeFaults, when FAULT_SERIALIZE=1, holds one lock across every deliberate
+// fault so at most one is in flight process-wide. This is the A/B for the secmem
+// mitigation (test: serialize deliberate faults): unset reproduces the crash; set
+// should not.
+var (
+	faultMu         sync.Mutex
+	serializeFaults = os.Getenv("FAULT_SERIALIZE") == "1"
+)
+
 // faults mirrors secmem's guard_canary_test.go helper exactly: SetPanicOnFault,
 // then a read that the hardware refuses, recovered as a panic.
 //
 //go:noinline
 func faults(fn func()) (faulted bool) {
+	if serializeFaults {
+		faultMu.Lock()
+		defer faultMu.Unlock()
+	}
 	old := debug.SetPanicOnFault(true)
 	defer debug.SetPanicOnFault(old)
 	defer func() {
