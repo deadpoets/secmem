@@ -17,7 +17,6 @@ import (
 	"fmt"
 	"hash"
 	"io"
-	"math"
 
 	"golang.org/x/crypto/hkdf"
 
@@ -164,8 +163,12 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 //     any core dump or minidump taken while the derivation runs, and not
 //     registered with secmem, so [secmem.WipeAllSecrets] and the
 //     termination wipe do not cover it. The H0 input in it holds the
-//     password and Secret side by side. A locked, registered workspace is
-//     the natural next step and is not in this version.
+//     password and Secret side by side. [Argon2Workspace] runs the same
+//     derivation with the working state in a locked, registered
+//     SecureBuffer instead, and [Argon2Pool] shares several between
+//     callers; they fail at construction when the lock budget is too
+//     small rather than falling back to this path, so which posture a
+//     program has is decided where it can be seen.
 //   - On the legacy Scrub path (Windows, macOS, or any build without
 //     GOEXPERIMENT=runtimesecret) an asynchronous preemption can still
 //     interrupt a worker and copy its registers into runtime-owned
@@ -209,54 +212,20 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 // runtime/secret window, which registers 64 MiB for GC-time erasure that
 // the explicit wipe already performs.
 //
+// The heap workspace is allocated and released per call. Measured at the
+// package defaults that churn is small (the Go allocator reuses the span),
+// and a reused [Argon2Workspace] runs in the same time as this function;
+// its reason to exist is where the state lives, not speed.
+//
 // Errors, never panics, for every input this function can check: nil,
 // destroyed or empty out; Time or Threads of 0; an unknown Mode; an input
 // longer than the 32-bit length Argon2 commits to; a Memory whose matrix
 // does not fit the address space. A Memory the host cannot actually
 // allocate is fatal, as it is in x/crypto.
 func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
-	if out == nil {
-		return errors.New("secmemcrypto: nil output buffer")
-	}
-	if out.IsDestroyed() {
-		return fmt.Errorf("secmemcrypto: argon2 derive: %w", secmem.ErrDestroyed)
-	}
-	if p.Time < 1 {
-		return fmt.Errorf("secmemcrypto: argon2 derive: time (passes) must be >= 1, got %d", p.Time)
-	}
-	if p.Threads < 1 {
-		return fmt.Errorf("secmemcrypto: argon2 derive: threads (parallelism) must be >= 1, got %d", p.Threads)
-	}
-	var mode argon2.Mode
-	switch p.Mode {
-	case Argon2id:
-		mode = argon2.ModeID
-	case Argon2i:
-		mode = argon2.ModeI
-	case Argon2d:
-		mode = argon2.ModeD
-	default:
-		return fmt.Errorf("secmemcrypto: argon2 derive: unknown mode %d", p.Mode)
-	}
-	size := out.Len()
-	if size <= 0 {
-		return errors.New("secmemcrypto: empty output buffer")
-	}
-	if uint64(size) > math.MaxUint32 {
-		return fmt.Errorf("secmemcrypto: output too large: %d", size)
-	}
-	for _, in := range []struct {
-		name string
-		b    []byte
-	}{{"password", password}, {"salt", salt}, {"secret", p.Secret}, {"data", p.Data}} {
-		if uint64(len(in.b)) > math.MaxUint32 {
-			return fmt.Errorf("secmemcrypto: argon2 derive: %s too long: %d bytes", in.name, len(in.b))
-		}
-	}
-	// The matrix is Memory KiB of 1 KiB blocks; on a 32-bit platform a
-	// large request overflows int before make can refuse it.
-	if uint64(p.Memory)*1024 > math.MaxInt {
-		return fmt.Errorf("secmemcrypto: argon2 derive: memory %d KiB exceeds the address space", p.Memory)
+	mode, err := validateArgon2(password, salt, p, out)
+	if err != nil {
+		return err
 	}
 
 	// The workspace is allocated outside any Scrub window on purpose: under
@@ -265,7 +234,7 @@ func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer)
 	// below and costs sweep time. Derive scrubs the phases that need it.
 	ws := argon2.NewWorkspace(p.Memory, p.Threads)
 	defer ws.Wipe()
-	err := out.WithBytesErr(func(dst []byte) error {
+	err = out.WithBytesErr(func(dst []byte) error {
 		argon2.Derive(dst, mode, password, salt, p.Secret, p.Data, p.Time, ws)
 		return nil
 	})

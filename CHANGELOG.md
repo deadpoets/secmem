@@ -49,6 +49,31 @@ mark the stability commitment.
   Requested by secmem's second consumer; the brief and its fact-check are in
   the PR.
 
+- **`secmem-crypto`: `Argon2Workspace` and `Argon2Pool` — Argon2 with its
+  working state in locked memory, reused across calls.** `Argon2Into` wipes
+  after the call but runs on pageable, dumpable, unregistered heap during
+  it. A workspace puts the whole working set (matrix, lane scratch, H0, the
+  H0 input holding the password and pepper) in one `SecureBuffer`: locked,
+  guard-paged, dump-excluded where the platform allows, and registered so
+  `WipeAllSecrets` and the termination wipe cover it. It is reused because
+  a locked 64 MiB mapping costs more to create (14 ms) and destroy (24 ms)
+  than the derivation (29 ms); between uses it holds zeros, wiped with the
+  cache-flushing wipe whether or not the derivation succeeded. A pool holds
+  a fixed number for concurrent callers, which is also the ceiling on
+  in-flight derivations and locked memory. Neither falls back to the heap:
+  a lock budget that cannot hold them fails at construction, before the
+  first login, so a program's posture is decided where it can be seen
+  (raise the budget with `EnsureMemlockLimit` at startup). Both borrow the
+  workspace and the output in ascending `LockOrder`, the module's
+  two-buffer rule. A non-flushing wipe for the between-use pass was
+  measured (1.0 ms against 6.3 ms at 64 MiB) and not adopted: it leaves
+  old contents under cached zero lines for as long as an idle workspace
+  sits, and nothing short of a timer closes that. Measured at the package
+  defaults on a 2025 desktop: x/crypto 30 ms, `Argon2Into` 35 ms, a reused
+  workspace 35–38 ms, a workspace created and destroyed per call 68 ms
+  (`BenchmarkArgon2_HeapVsWorkspace`). The workspace buys residence, not
+  speed; reuse is what keeps it from costing double.
+
 ### Changed
 
 - **`secmem-crypto`: `Argon2IDKeyInto` and `Argon2DeriveInto` now run on

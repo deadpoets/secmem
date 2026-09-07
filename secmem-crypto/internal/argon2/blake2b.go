@@ -45,7 +45,7 @@ func (ws *Workspace) blake2bHash(out, in []byte) {
 
 	// τ > 64: V1 = H^64(τ ‖ in); V_i = H^64(V_{i-1}); 32 bytes of each are
 	// output, the last block is H^{τ-32r}(V_r) in full.
-	buffer := &ws.hashState
+	buffer := ws.hashState
 	*buffer = blake2b.Sum512(msg)
 	secmem.SecureWipe(msg)
 	copy(out, buffer[:32])

@@ -106,6 +106,21 @@ func TestEmptyInputs(t *testing.T) {
 	}
 }
 
+// TestLongInputsSpill pins the path where the H0 input does not fit the
+// workspace reserve and is hashed from a per-call heap buffer: the output
+// must still match upstream.
+func TestLongInputsSpill(t *testing.T) {
+	password := bytes.Repeat([]byte("p"), initInputReserve+100)
+	salt := []byte("0123456789abcdef")
+	ws := NewWorkspace(8, 1)
+	defer ws.Wipe()
+	got := make([]byte, 32)
+	Derive(got, ModeID, password, salt, nil, nil, 1, ws)
+	if want := upstream.IDKey(password, salt, 1, 8, 1, 32); !bytes.Equal(got, want) {
+		t.Fatalf("fork %x, upstream %x", got, want)
+	}
+}
+
 // TestWorkspaceReuse pins that a wiped Workspace derives correctly again.
 func TestWorkspaceReuse(t *testing.T) {
 	ws := NewWorkspace(64, 2)

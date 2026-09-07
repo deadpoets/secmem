@@ -55,30 +55,82 @@ type laneScratch struct {
 	addresses, in, tmp block
 }
 
-// Workspace holds every byte of working state one derivation touches. Its
-// zero value is not usable; obtain one from [NewWorkspace]. A Workspace may
-// be reused across derivations with the same memory and threads, and must
-// be [Workspace.Wipe]d between them (and after the last one) — Derive does
-// not wipe on the caller's behalf, so that a test can inspect the residue
-// (and prove it absent) after the call.
+// initInputReserve is the room a Workspace keeps for the H0 input (params ‖
+// len‖password ‖ len‖salt ‖ len‖K ‖ len‖X). Inputs that do not fit are
+// hashed from a heap buffer allocated for the call and wiped after it; a
+// 4 KiB reserve holds any realistic password plus pepper without that.
+const initInputReserve = 4096
+
+// Workspace holds every byte of working state one derivation touches, as
+// views into one contiguous region the caller supplies ([Bind]) or that
+// [NewWorkspace] allocates on the heap. Its zero value is not usable. A
+// Workspace may be reused across derivations with the same memory and
+// threads, and must be [Workspace.Wipe]d between them (and after the last
+// one) — Derive does not wipe on the caller's behalf, so that a test can
+// inspect the residue (and prove it absent) after the call.
 type Workspace struct {
 	requested uint32 // the memory parameter as given: it is what H0 commits to
 	memory    uint32 // adjusted: a multiple of syncPoints*threads, ≥ 2*syncPoints*threads
 	threads   uint32
 
-	// Heap allocations, all wiped by Wipe:
-	b     []block       // the memory-cost matrix
-	lanes []laneScratch // one per lane
+	mem []byte // the whole region; Wipe zeroes it in one pass
 
-	// Fixed-size scratch, embedded so it is part of the same allocation:
-	h0        [h0Length]byte // H0 plus the two 4-byte counters initBlocks appends
-	block0    [1024]byte     // H' output for the first two blocks, then extractKey's fold
-	hashIn    [4 + 1024]byte // H' input: 4-byte length prefix + up to one block
-	hashState [blake2b.Size]byte
+	// Views into mem, in this order:
+	b         []block             // the memory-cost matrix
+	lanes     []laneScratch       // one per lane
+	h0        *[h0Length]byte     // H0 plus the two 4-byte counters initBlocks appends
+	block0    *[1024]byte         // H' output for the first two blocks, then extractKey's fold
+	hashIn    *[4 + 1024]byte     // H' input: 4-byte length prefix + up to one block
+	hashState *[blake2b.Size]byte // H' chaining value for outputs over 64 bytes
+	initInput []byte              // initInputReserve bytes for the H0 input
+}
 
-	// H0 input (params ‖ len‖password ‖ len‖salt ‖ len‖K ‖ len‖X). Sized per
-	// call because the password length is the caller's; grown, never shrunk.
-	initInput []byte
+const fixedScratch = h0Length + 1024 + (4 + 1024) + blake2b.Size + initInputReserve
+
+// WorkspaceSize is the number of bytes [Bind] needs for the given cost
+// parameters: the adjusted matrix, the per-lane scratch and the fixed
+// scratch.
+func WorkspaceSize(memory uint32, threads uint8) int {
+	return int(adjustMemory(memory, threads))*1024 + int(threads)*int(unsafe.Sizeof(laneScratch{})) + fixedScratch
+}
+
+// Bind lays a Workspace over mem, which must be at least
+// WorkspaceSize(memory, threads) bytes, 8-byte aligned, and all zero (a
+// fresh mapping, or a region a previous Bind's Wipe left). Nothing is
+// copied: the derivation runs in mem, so a locked mapping keeps the whole
+// working state locked. threads must be at least 1 (a zero panics, as
+// upstream would).
+func Bind(mem []byte, memory uint32, threads uint8) *Workspace {
+	if threads < 1 {
+		panic("argon2: parallelism degree too low")
+	}
+	need := WorkspaceSize(memory, threads)
+	if len(mem) < need {
+		panic("argon2: workspace region too small")
+	}
+	//nolint:gosec // G103: reading the region's address for the alignment check only.
+	if uintptr(unsafe.Pointer(&mem[0]))%8 != 0 {
+		panic("argon2: workspace region not 8-byte aligned")
+	}
+	adjusted := adjustMemory(memory, threads)
+	ws := &Workspace{requested: memory, memory: adjusted, threads: uint32(threads), mem: mem[:need]}
+	off := 0
+	//nolint:gosec // G103: typed views over a caller-owned region whose size and alignment were checked above.
+	ws.b = unsafe.Slice((*block)(unsafe.Pointer(&mem[off])), adjusted)
+	off += int(adjusted) * 1024
+	//nolint:gosec // G103: as above.
+	ws.lanes = unsafe.Slice((*laneScratch)(unsafe.Pointer(&mem[off])), threads)
+	off += int(threads) * int(unsafe.Sizeof(laneScratch{}))
+	ws.h0 = (*[h0Length]byte)(mem[off : off+h0Length])
+	off += h0Length
+	ws.block0 = (*[1024]byte)(mem[off : off+1024])
+	off += 1024
+	ws.hashIn = (*[4 + 1024]byte)(mem[off : off+4+1024])
+	off += 4 + 1024
+	ws.hashState = (*[blake2b.Size]byte)(mem[off : off+blake2b.Size])
+	off += blake2b.Size
+	ws.initInput = mem[off : off+initInputReserve : off+initInputReserve]
+	return ws
 }
 
 // adjustMemory returns the memory parameter Argon2 actually uses for the
@@ -94,40 +146,22 @@ func adjustMemory(memory uint32, threads uint8) uint32 {
 	return memory
 }
 
-// NewWorkspace allocates a zeroed Workspace for the given cost parameters.
+// NewWorkspace allocates a zeroed heap Workspace for the given cost
+// parameters: [Bind] over a fresh make, which the allocator 8-byte aligns.
 // threads must be at least 1 (the caller validates; a zero here panics as
 // upstream would). memory is in KiB.
 func NewWorkspace(memory uint32, threads uint8) *Workspace {
 	if threads < 1 {
 		panic("argon2: parallelism degree too low")
 	}
-	adjusted := adjustMemory(memory, threads)
-	return &Workspace{
-		requested: memory,
-		memory:    adjusted,
-		threads:   uint32(threads),
-		b:         make([]block, adjusted),
-		lanes:     make([]laneScratch, threads),
-	}
+	return Bind(make([]byte, WorkspaceSize(memory, threads)), memory, threads)
 }
 
-// Wipe zeroes every byte of working state — the matrix, the lane scratch,
-// H0, the H' buffers and the H0 input — using secmem's non-elidable wipe,
-// so the Workspace is ready for another derivation.
+// Wipe zeroes the whole region — the matrix, the lane scratch, H0, the H'
+// buffers and the H0 input — in one pass of secmem's non-elidable,
+// cache-flushing wipe, so the Workspace is ready for another derivation.
 func (ws *Workspace) Wipe() {
-	if len(ws.b) > 0 {
-		//nolint:gosec // G103: byte view of a Go-owned []block for the wipe; audited.
-		secmem.SecureWipe(unsafe.Slice((*byte)(unsafe.Pointer(&ws.b[0])), len(ws.b)*int(unsafe.Sizeof(block{}))))
-	}
-	if len(ws.lanes) > 0 {
-		//nolint:gosec // G103: byte view of a Go-owned []laneScratch for the wipe; audited.
-		secmem.SecureWipe(unsafe.Slice((*byte)(unsafe.Pointer(&ws.lanes[0])), len(ws.lanes)*int(unsafe.Sizeof(laneScratch{}))))
-	}
-	secmem.SecureWipe(ws.h0[:])
-	secmem.SecureWipe(ws.block0[:])
-	secmem.SecureWipe(ws.hashIn[:])
-	secmem.SecureWipe(ws.hashState[:])
-	secmem.SecureWipe(ws.initInput[:cap(ws.initInput)])
+	secmem.SecureWipe(ws.mem)
 }
 
 // Derive computes an Argon2 tag of len(out) bytes into out, using the
@@ -157,10 +191,11 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	//nolint:gosec // G115: len(out) is bounded by the caller to uint32 range.
 	keyLen := uint32(len(out))
 
-	// secmem: grow the H0 input buffer before the Scrub window so that, on a
-	// runtime/secret build, the allocation is not registered for GC-time
-	// erasure (the explicit wipe below covers it, and tracking has a cost).
-	ws.reserveInitInput(len(password) + len(salt) + len(secret) + len(data))
+	// secmem: the H0 input normally lives in the workspace's reserve; an
+	// input that does not fit gets a heap buffer, allocated here, before
+	// the Scrub window, so that on a runtime/secret build it is not
+	// registered for GC-time erasure (initHash wipes it explicitly).
+	in := ws.h0Input(24 + 4*4 + len(password) + len(salt) + len(secret) + len(data))
 
 	// secmem: the parent's two phases run under secmem.Scrub so that the
 	// stack temporaries of BLAKE2b (checkSum's block copy, the returned
@@ -173,7 +208,7 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	// that holds the residue.
 	runtime.LockOSThread()
 	secmem.Scrub(func() {
-		ws.initHash(password, salt, secret, data, time, keyLen, mode)
+		ws.initHash(in, password, salt, secret, data, time, keyLen, mode)
 		ws.initBlocks()
 		clearVectorRegs()
 	})
@@ -189,22 +224,21 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	runtime.UnlockOSThread()
 }
 
-// reserveInitInput makes ws.initInput able to hold an H0 input for inputs
-// totalling n bytes.
-func (ws *Workspace) reserveInitInput(n int) {
-	need := 24 + 4*4 + n
-	if cap(ws.initInput) < need {
-		ws.initInput = make([]byte, need)
+// h0Input returns a buffer of n bytes for the H0 input: the workspace's
+// reserve when it fits, otherwise a heap buffer for this call.
+func (ws *Workspace) h0Input(n int) []byte {
+	if n <= cap(ws.initInput) {
+		return ws.initInput[:n]
 	}
+	return make([]byte, n)
 }
 
-// initHash computes H0 into ws.h0[:64]. secmem: the input is assembled in
-// ws.initInput and hashed with the stack-only blake2b.Sum512, rather than
-// streamed into a heap blake2b.New512 digest whose block buffer would keep
-// the password.
-func (ws *Workspace) initHash(password, salt, key, data []byte, time, keyLen uint32, mode Mode) {
-	ws.reserveInitInput(len(password) + len(salt) + len(key) + len(data)) // no-op after Derive's reservation
-	in := ws.initInput[:24+4*4+len(password)+len(salt)+len(key)+len(data)]
+// initHash computes H0 into ws.h0[:64] from the input assembled in `in`
+// (len(in) must be exactly the encoded size). secmem: the input is
+// assembled in caller-owned memory and hashed with the stack-only
+// blake2b.Sum512, rather than streamed into a heap blake2b.New512 digest
+// whose block buffer would keep the password, and is wiped here.
+func (ws *Workspace) initHash(in, password, salt, key, data []byte, time, keyLen uint32, mode Mode) {
 
 	binary.LittleEndian.PutUint32(in[0:4], ws.threads)
 	binary.LittleEndian.PutUint32(in[4:8], keyLen)
@@ -228,8 +262,8 @@ func (ws *Workspace) initHash(password, salt, key, data []byte, time, keyLen uin
 
 // initBlocks fills the first two blocks of every lane from H0.
 func (ws *Workspace) initBlocks() {
-	h0 := &ws.h0
-	block0 := &ws.block0
+	h0 := ws.h0
+	block0 := ws.block0
 	B := ws.b
 	memory, threads := ws.memory, ws.threads
 	for lane := uint32(0); lane < threads; lane++ {
@@ -365,7 +399,7 @@ func (ws *Workspace) extractKey(out []byte) {
 		}
 	}
 
-	block := &ws.block0
+	block := ws.block0
 	for i, v := range B[memory-1] {
 		binary.LittleEndian.PutUint64(block[i*8:], v)
 	}

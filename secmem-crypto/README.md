@@ -32,6 +32,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory |
 | `HKDFInto`, `HMACInto` | RFC 5869 / RFC 4231 derivation straight into a buffer |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state; RFC 9106 K/X inputs, §4 defaults, §5 vectors |
+| `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory |
 | `X25519Key`, `MLKEM*` | key agreement with the private scalar held in a buffer |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string |

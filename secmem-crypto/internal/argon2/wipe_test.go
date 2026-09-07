@@ -16,9 +16,7 @@ func workspaceResidue(ws *Workspace) map[string][]byte {
 		"hashState": ws.hashState[:],
 		"initInput": ws.initInput[:cap(ws.initInput)],
 	}
-	if len(ws.b) > 0 {
-		r["B"] = unsafe.Slice((*byte)(unsafe.Pointer(&ws.b[0])), len(ws.b)*int(unsafe.Sizeof(block{})))
-	}
+	r["B"] = unsafe.Slice((*byte)(unsafe.Pointer(&ws.b[0])), len(ws.b)*int(unsafe.Sizeof(block{})))
 	for i := range ws.lanes {
 		s := &ws.lanes[i]
 		r["lane.addresses"] = append(r["lane.addresses"], unsafe.Slice((*byte)(unsafe.Pointer(&s.addresses)), 1024)...)
@@ -88,7 +86,35 @@ func TestWorkspaceWipe(t *testing.T) {
 		if !isZero(unsafe.Slice((*byte)(unsafe.Pointer(&zeroBlock)), 1024)) {
 			t.Fatalf("mode %d: the shared zeroBlock was written", mode)
 		}
+		if !isZero(ws.mem) {
+			t.Errorf("mode %d: bytes of the region outside the named views hold residue after Wipe", mode)
+		}
 	}
+}
+
+// TestBind_LayoutCoversRegion pins that the views tile the region exactly:
+// every byte of mem belongs to one named view, so a residue test over the
+// views is a residue test over the region. It also pins Bind's refusals.
+func TestBind_LayoutCoversRegion(t *testing.T) {
+	ws := NewWorkspace(64, 3)
+	total := 0
+	for _, region := range workspaceResidue(ws) {
+		total += len(region)
+	}
+	if total != len(ws.mem) || len(ws.mem) != WorkspaceSize(64, 3) {
+		t.Fatalf("views cover %d bytes, region is %d, WorkspaceSize says %d", total, len(ws.mem), WorkspaceSize(64, 3))
+	}
+	mustPanic := func(name string, f func()) {
+		t.Helper()
+		defer func() {
+			if recover() == nil {
+				t.Errorf("%s: no panic", name)
+			}
+		}()
+		f()
+	}
+	mustPanic("short region", func() { Bind(make([]byte, WorkspaceSize(64, 3)-1), 64, 3) })
+	mustPanic("misaligned region", func() { Bind(make([]byte, WorkspaceSize(64, 1)+8)[1:], 64, 1) })
 }
 
 // TestInitInputWiped pins the H0 input separately: it is the one region
