@@ -117,7 +117,64 @@ mark the stability commitment.
   "api.example.com")`, is the safe one. Adding exported API makes the next
   core release a minor bump.
 
+- **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` and
+  `MarshalOpenSSHPrivateKeyWithPassphrase` — passphrase-protected OpenSSH
+  key files, in and out, on a KDF that wipes.** `ParsePrivateKey` refused
+  protected files because opening one meant x/crypto's bcrypt_pbkdf, which
+  leaves the passphrase in a heap SHA-512 digest, a 4 KiB Blowfish key
+  schedule derived from it on the heap for every one of its bcrypt steps
+  (32 of them at ssh-keygen's defaults), and the derived key and IV in a
+  slice the caller cannot wipe. The KDF is now an in-tree fork,
+  `internal/bcryptpbkdf` — x/crypto v0.56.0's `ssh/internal/bcrypt_pbkdf`
+  and the `blowfish` it needs, BSD-3-Clause, provenance in `NOTICE`, every
+  change listed in its package doc — with its whole working state in a
+  caller-owned workspace: the Blowfish schedule is re-keyed in place, the
+  SHA-512 steps are one-shots, the output goes into a caller slice. Output
+  is pinned by OpenBSD's reference vectors (upstream's own, checked to be
+  identical to upstream's), a differential test of the schedule against
+  `x/crypto/blowfish`, and an identity test against the resolved x/crypto.
+  `ParsePrivateKeyWithPassphrase` opens what ssh-keygen and x/crypto/ssh
+  write (bcrypt, aes256-ctr or aes256-cbc, up to x/crypto's cap of 2048
+  rounds): the container goes into a SecureBuffer, the private block is
+  decrypted into a second one and handed to the same per-type extraction as
+  the plain path, and the KDF workspace, the key and IV, and the cipher's
+  scratch live in a third. The AES modes are written out over one
+  `cipher.Block` rather than taken from `crypto/cipher`, whose CTR and CBC
+  objects each copy the round keys into a second unreachable heap object;
+  the one Block `crypto/aes` allocates has its schedule wiped by reflection,
+  with a tripwire test that fails on a toolchain where the fields move and a
+  call that fails closed rather than leave the schedule behind. After the
+  SHA-512 and AES steps the vector registers are cleared through the Argon2
+  fork's helper, pinned to the thread, until the module's core floor reaches
+  the release that clears them in `Scrub` itself. A wrong passphrase is
+  `x509.IncorrectPasswordError`, as in x/crypto; an unprotected file is the
+  new `ErrNotEncrypted`; chacha20-poly1305, the aes128/192 variants, PKCS#8
+  PBES2 and legacy PEM encryption are `ErrUnsupportedKey`. Tested against
+  files a real ssh-keygen wrote (every key type, CBC, the default profile;
+  fixtures in `testdata/openssh-encrypted`) and x/crypto's encryptor, with
+  a fuzz target. `MarshalOpenSSHPrivateKeyWithPassphrase` writes the profile
+  ssh-keygen uses by default (aes256-ctr, bcrypt, 16 rounds, a fresh
+  16-byte salt), assembled and encrypted in place; ssh-keygen and
+  x/crypto/ssh open the result, and the suite runs the real ssh-keygen on
+  it where installed. Both paths are proven to put nothing on the heap but
+  the AES Block, by the memory-profiler proof `ParsePrivateKey` introduced;
+  during development it caught three leaks that would otherwise have
+  shipped under this entry — CTR's keystream and counter escaping to the
+  heap through the `cipher.Block` interface, the reflection lookup
+  allocating per call, and a cipher name boxed by an error formatter. Minor
+  bump for `secmem-crypto`; no floor change.
+
 ### Changed
+
+- **`secmem-crypto`: `MarshalOpenSSHPrivateKey` assembles the file in
+  place.** It went through `ssh.MarshalPrivateKey` and `encoding/pem`, and
+  its doc named the copies that route leaves unreachable: x/crypto's marshal
+  scratch and padded key block, and base64's 1 KiB encoder window holding
+  an armoured window of the key. The container is now written straight from
+  the seed buffer into a SecureBuffer and the PEM armour into the returned
+  one, by writers that allocate nothing; the output is byte-identical in
+  layout to `encoding/pem`'s and checked as such, and ssh-keygen reads it.
+  Behaviour and API are unchanged.
 
 - **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
   in-process trips a Go runtime bug on windows/amd64 with AMX-capable CPUs

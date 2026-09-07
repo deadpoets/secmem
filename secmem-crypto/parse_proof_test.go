@@ -108,11 +108,19 @@ func memProfileByStack() map[[32]uintptr]runtime.MemProfileRecord {
 // allocates through sync (a lock's condition variable) and the profiler
 // names sync as the site.
 func parserOwnedAllocation(rec runtime.MemProfileRecord, objects int64) string {
-	const (
-		pkg        = "github.com/deadpoets/secmem/secmem-crypto."
-		core       = "github.com/deadpoets/secmem."
-		cryptobyte = "golang.org/x/crypto/cryptobyte."
-	)
+	return ownedAllocation(rec, objects,
+		map[string]bool{"parse.go": true, "parse_openssh.go": true},
+		[]string{
+			"github.com/deadpoets/secmem.",    // SecureBuffer bookkeeping; the contents are off-heap
+			"golang.org/x/crypto/cryptobyte.", // OBJECT IDENTIFIER slices: algorithm and curve names
+		})
+}
+
+// ownedAllocation is parserOwnedAllocation for any set of owning files and
+// any allowlist of function-name prefixes (parse_proof_encrypted_test.go
+// uses it for the passphrase paths).
+func ownedAllocation(rec runtime.MemProfileRecord, objects int64, files map[string]bool, allowedPrefixes []string) string {
+	const pkg = "github.com/deadpoets/secmem/secmem-crypto."
 	var site, owner runtime.Frame
 	haveSite, haveOwner, allowed := false, false, false
 	frames := runtime.CallersFrames(rec.Stack())
@@ -122,25 +130,21 @@ func parserOwnedAllocation(rec runtime.MemProfileRecord, objects int64) string {
 			site, haveSite = f, true
 		}
 		if !haveOwner {
-			switch {
-			case strings.HasPrefix(f.Function, pkg):
+			if strings.HasPrefix(f.Function, pkg) {
 				owner, haveOwner = f, true
-			case strings.HasPrefix(f.Function, core):
-				allowed = true // SecureBuffer bookkeeping; the contents are off-heap
-			case strings.HasPrefix(f.Function, cryptobyte):
-				allowed = true // OBJECT IDENTIFIER slices: algorithm and curve names
+			} else {
+				for _, prefix := range allowedPrefixes {
+					if strings.HasPrefix(f.Function, prefix) {
+						allowed = true
+					}
+				}
 			}
 		}
 		if !more {
 			break
 		}
 	}
-	if !haveOwner || allowed {
-		return ""
-	}
-	switch filepath.Base(owner.File) {
-	case "parse.go", "parse_openssh.go":
-	default:
+	if !haveOwner || allowed || !files[filepath.Base(owner.File)] {
 		return ""
 	}
 	return fmt.Sprintf("%d object(s) at %s (%s:%d), owned by %s (%s:%d)",

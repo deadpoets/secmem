@@ -1,4 +1,4 @@
-// parse.go is the ingress counterpart of MarshalOpenSSHPrivateKey: it turns a
+// parse.go is the ingress counterpart of marshal_openssh.go: it turns a
 // private-key file into one of this package's signers with the key material
 // written straight into locked memory. The common route — pem.Decode, then
 // ssh.ParseRawPrivateKey or crypto/x509 — materialises the whole key on the
@@ -29,10 +29,12 @@ import (
 // ErrEncryptedKey is returned by [ParsePrivateKey] for a passphrase-protected
 // key: an OpenSSH file with a cipher or KDF other than "none", a PKCS#8
 // "ENCRYPTED PRIVATE KEY" block, or a legacy PEM block with Proc-Type /
-// DEK-Info headers. Decrypting one needs the passphrase and a KDF whose
-// working state this package does not yet control (bcrypt_pbkdf for OpenSSH,
-// PBKDF2/scrypt for PKCS#8), so it is refused rather than done leakily.
-// Decrypt the file with ssh-keygen -p / openssl pkey first.
+// DEK-Info headers. A protected OpenSSH file opens with
+// [ParsePrivateKeyWithPassphrase]. The other two use KDFs whose working
+// state this package does not control (PBKDF2 / scrypt under PBES2, MD5
+// key stretching for the legacy form), so they are refused rather than
+// decrypted leakily; convert the file with ssh-keygen -p or openssl pkey
+// first.
 var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protected")
 
 // ErrUnsupportedKey is returned by [ParsePrivateKey] for a well-formed key of
@@ -74,8 +76,8 @@ var (
 // Where the file carries the public key as well (every OpenSSH file, SEC 1
 // and PKCS#8 v2 optionally), it is checked against the one derived from the
 // private half and a mismatch is an error. Passphrase-protected keys return
-// an error wrapping [ErrEncryptedKey]; other kinds, [ErrUnsupportedKey].
-// Errors never quote the input.
+// an error wrapping [ErrEncryptedKey] (see [ParsePrivateKeyWithPassphrase]);
+// other kinds, [ErrUnsupportedKey]. Errors never quote the input.
 //
 // What touches the heap: the PEM type, the algorithm identifiers, the public
 // key, and the returned error — none secret. The decoded key structure lives

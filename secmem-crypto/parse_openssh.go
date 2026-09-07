@@ -1,6 +1,8 @@
 // parse_openssh.go reads the OpenSSH private-key container (PROTOCOL.key in
 // openssh-portable) in place and, for RSA, assembles the PKCS#1 DER that
-// RSASigner keeps — directly into locked memory.
+// RSASigner keeps — directly into locked memory. parse_encrypted.go opens
+// the passphrase-protected form and feeds the decrypted block to the same
+// private-block parser.
 package secmemcrypto
 
 import (
@@ -38,45 +40,103 @@ func (r *sshReader) str() ([]byte, bool) {
 	return s, true
 }
 
-// parseOpenSSH reads an "openssh-key-v1" container held in blob and returns
-// the signer. blob is destroyed on every path: the seed or scalar is copied
-// out of it, and for RSA the DER is assembled into a separate buffer.
-//
-// The public-key block at the front of the file is compared field by field
-// with the private block (OpenSSH itself does this on load), so a file whose
-// halves disagree is rejected rather than yielding a signer whose Public()
-// is not what the file advertises.
+// opensshHeader is the outer container, every field aliasing the input.
+type opensshHeader struct {
+	cipher, kdf, kdfOpts []byte
+	numKeys              uint32
+	pubBlob, privBlock   []byte
+}
+
+// readOpenSSHHeader reads the "openssh-key-v1" container's outer fields
+// from b, checking only structure; whether the private block is encrypted,
+// and with what, is the caller's question.
+func readOpenSSHHeader(b []byte) (opensshHeader, error) {
+	var h opensshHeader
+	if !bytes.HasPrefix(b, opensshMagic) {
+		return h, errMalformed
+	}
+	r := sshReader{b[len(opensshMagic):]}
+	var ok1, ok2, ok3, ok4, ok5, ok6 bool
+	h.cipher, ok1 = r.str()
+	h.kdf, ok2 = r.str()
+	h.kdfOpts, ok3 = r.str() // empty for "none"; string salt | uint32 rounds for bcrypt
+	h.numKeys, ok4 = r.uint32()
+	h.pubBlob, ok5 = r.str()
+	h.privBlock, ok6 = r.str()
+	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
+		return h, errMalformed
+	}
+	return h, nil
+}
+
+// errCheckMismatch is the private block's two check integers disagreeing:
+// corruption in an unencrypted file, a wrong passphrase in an encrypted one
+// (parse_encrypted.go maps it accordingly).
+var errCheckMismatch = fmt.Errorf("%w: check integers disagree", errMalformed)
+
+// parseOpenSSH reads an unencrypted "openssh-key-v1" container held in blob
+// and returns the signer. blob is destroyed on every path: the seed or
+// scalar is copied out of it, and for RSA the DER is assembled into a
+// separate buffer.
 func parseOpenSSH(blob *secmem.SecureBuffer) (Signer, error) {
 	var (
 		s   Signer
 		der *secmem.SecureBuffer // RSA only: PKCS#1 DER built from the file's integers
 	)
 	err := blob.WithBytesErr(func(b []byte) error {
-		if !bytes.HasPrefix(b, opensshMagic) {
-			return errMalformed
+		h, err := readOpenSSHHeader(b)
+		if err != nil {
+			return err
 		}
-		r := sshReader{b[len(opensshMagic):]}
-		cipher, ok1 := r.str()
-		kdf, ok2 := r.str()
-		_, ok3 := r.str() // KDF options: empty for "none"
-		numKeys, ok4 := r.uint32()
-		pubBlob, ok5 := r.str()
-		privBlock, ok6 := r.str()
-		if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
-			return errMalformed
-		}
-		if string(cipher) != "none" || string(kdf) != "none" {
+		if string(h.cipher) != opensshCipherNone || string(h.kdf) != opensshKDFNone {
 			return ErrEncryptedKey
 		}
-		if numKeys != 1 {
-			return fmt.Errorf("%w: OpenSSH file holds %d keys, want 1", ErrUnsupportedKey, numKeys)
+		if h.numKeys != 1 {
+			return fmt.Errorf("%w: OpenSSH file holds %d keys, want 1", ErrUnsupportedKey, h.numKeys)
 		}
+		s, der, err = parseOpenSSHPrivateBlock(h.privBlock, h.pubBlob)
+		return err
+	})
+	_ = blob.Destroy()
+	if err != nil {
+		return nil, err
+	}
+	if der != nil {
+		return rsaFromDER(der)
+	}
+	return s, nil
+}
 
+// parseOpenSSHPrivateBlock reads a plaintext private block (check1, check2,
+// key type, the per-type fields, comment, padding) and builds the signer;
+// for RSA it returns the assembled PKCS#1 DER buffer instead, for the caller
+// to hand to NewRSASigner. pubBlob is the container's public-key block.
+//
+// The public-key block is compared field by field with the private block
+// (OpenSSH itself does this on load), so a file whose halves disagree is
+// rejected rather than yielding a signer whose Public() is not what the
+// file advertises.
+func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte) (Signer, *secmem.SecureBuffer, error) {
+	var (
+		s   Signer
+		der *secmem.SecureBuffer
+	)
+	err := func() error {
 		p := sshReader{privBlock}
 		check1, ok1 := p.uint32()
 		check2, ok2 := p.uint32()
+		if !ok1 || !ok2 {
+			return errMalformed
+		}
+		if check1 != check2 {
+			// Compared before anything else is read: after a wrong
+			// passphrase the rest of the block is noise whose lengths fail
+			// in arbitrary ways, and the caller must see the passphrase
+			// verdict, not one of those.
+			return errCheckMismatch
+		}
 		keyType, ok3 := p.str()
-		if !ok1 || !ok2 || !ok3 || check1 != check2 {
+		if !ok3 {
 			return errMalformed
 		}
 		pub := sshReader{pubBlob}
@@ -168,15 +228,11 @@ func parseOpenSSH(blob *secmem.SecureBuffer) (Signer, error) {
 			// keyType is the algorithm label, not secret.
 			return fmt.Errorf("%w: OpenSSH key type %q", ErrUnsupportedKey, keyType)
 		}
-	})
-	_ = blob.Destroy()
+	}()
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	if der != nil {
-		return rsaFromDER(der)
-	}
-	return s, nil
+	return s, der, nil
 }
 
 // checkOpenSSHPadding verifies the private block's trailing pad: the bytes

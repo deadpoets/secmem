@@ -241,7 +241,7 @@ jobs:
           CGO_ENABLED: "0"
         run: |
           go test -c -o /dev/null .
-          cd secmem-crypto && go test -c -o /dev/null . && go test -c -o /dev/null ./internal/argon2
+          cd secmem-crypto && go test -c -o /dev/null . && go test -c -o /dev/null ./internal/argon2 && go test -c -o /dev/null ./internal/bcryptpbkdf
 
   lint:
     runs-on: ubuntu-latest

@@ -1,21 +1,16 @@
 // ssh.go provides AsSSH, adapting this package's signers (or any
 // crypto.Signer) to golang.org/x/crypto/ssh with legacy ssh-rsa (SHA-1)
-// unreachable, and Ed25519Signer.MarshalOpenSSHPrivateKey, the matching
-// egress path for persisting a generated key as an OpenSSH private-key file.
+// unreachable. The egress path for persisting a key as an OpenSSH
+// private-key file is marshal_openssh.go.
 package secmemcrypto
 
 import (
-	"bytes"
 	"crypto"
-	"crypto/ed25519"
-	"encoding/pem"
 	"errors"
 	"fmt"
 	"io"
 
 	"golang.org/x/crypto/ssh"
-
-	"github.com/deadpoets/secmem"
 )
 
 // AsSSH adapts a crypto.Signer into an [ssh.Signer].
@@ -72,98 +67,4 @@ type rsaSHA2Signer struct {
 
 func (s rsaSHA2Signer) Sign(rand io.Reader, data []byte) (*ssh.Signature, error) {
 	return s.SignWithAlgorithm(rand, data, s.Algorithms()[0])
-}
-
-// MarshalOpenSSHPrivateKey renders s as an unencrypted OpenSSH private-key
-// PEM file (the "-----BEGIN OPENSSH PRIVATE KEY-----" format ssh-keygen and
-// authorized_keys tooling expect) and returns it in a fresh SecureBuffer —
-// the caller owns it and must call Destroy. This is the egress point for
-// persisting a generated key: writing it to disk, registering it with a
-// cloud provider's SSH-key API, or handing it to another process. AsSSH
-// covers the complementary case — signing over a live connection without
-// ever exporting key material at all; use that when you don't actually need
-// a portable file.
-//
-// The size of the output depends on comment's length, so — unlike this
-// package's *Into functions — this allocates internally rather than asking
-// the caller to pre-size a destination; the caller does not need to compute
-// anything.
-//
-// A fingerprint does not require this method: it is computed over the
-// public key alone, which is not secret — ssh.FingerprintSHA256(pub) on
-// the AsSSH-adapted signer's PublicKey() needs nothing from here.
-//
-// Returns an error wrapping [secmem.ErrDestroyed] or [secmem.ErrSealed]
-// when the seed is no longer accessible.
-func (s *Ed25519Signer) MarshalOpenSSHPrivateKey(comment string) (*secmem.SecureBuffer, error) {
-	if s == nil || s.seedBuf == nil {
-		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", secmem.ErrDestroyed)
-	}
-
-	var pemBytes []byte
-	err := secmem.ScrubErr(func() error {
-		return s.seedBuf.WithBytesErr(func(seed []byte) error {
-			// ed25519.NewKeyFromSeed's FIPS self-check panics on a mmap'd
-			// (off-heap) input — copy to an ordinary heap slice first.
-			//
-			// Every derived form this function can REACH is wiped before
-			// returning: seedCopy, priv, block.Bytes and the encoded PEM. That
-			// is not the same as "every copy of the key is wiped", which an
-			// earlier version of this comment claimed. ssh.MarshalPrivateKey
-			// builds its own intermediates around the private key — the marshal
-			// scratch and the padded key block — and hands back only the final
-			// slice, so those copies are unreachable from here and are left to
-			// the GC. Naming the limit is the honest version; the ScrubErr
-			// window above is what narrows it, and on
-			// GOEXPERIMENT=runtimesecret builds erases them once unreachable.
-			seedCopy := make([]byte, len(seed))
-			copy(seedCopy, seed) //nolint:secmem-lint // required: ed25519.NewKeyFromSeed panics on mmap'd input, wiped via defer above
-			defer secmem.SecureWipe(seedCopy)
-
-			priv := ed25519.NewKeyFromSeed(seedCopy)
-			defer secmem.SecureWipe(priv)
-
-			block, err := ssh.MarshalPrivateKey(priv, comment)
-			if err != nil {
-				return fmt.Errorf("marshal: %w", err)
-			}
-			defer secmem.SecureWipe(block.Bytes)
-
-			// pem.Encode into a pre-grown buffer rather than
-			// pem.EncodeToMemory. EncodeToMemory grows a bytes.Buffer as it
-			// writes, and every growth orphans the previous array — each one
-			// holding a prefix of the base64-encoded PRIVATE KEY, unreachable
-			// and unwiped. Sizing up front means one array, which the defer
-			// below wipes in full.
-			//
-			// The bound is deliberately loose: base64 expands by 4/3 plus a
-			// newline every 64 characters, so twice the input plus the header
-			// and footer cannot be reached, and Grow guarantees no reallocation
-			// below it.
-			var buf bytes.Buffer
-			buf.Grow(2*len(block.Bytes) + 128)
-			if err := pem.Encode(&buf, block); err != nil {
-				return fmt.Errorf("pem encode: %w", err)
-			}
-			pemBytes = buf.Bytes()
-			return nil
-		})
-	})
-	if err != nil {
-		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", err)
-	}
-	defer secmem.SecureWipe(pemBytes)
-
-	out, err := secmem.NewEmptyBuffer(len(pemBytes))
-	if err != nil {
-		return nil, fmt.Errorf("secmemcrypto: allocate openssh private key buffer: %w", err)
-	}
-	if err := out.WithBytesErr(func(dst []byte) error {
-		copy(dst, pemBytes)
-		return nil
-	}); err != nil {
-		_ = out.Destroy()
-		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", err)
-	}
-	return out, nil
 }
