@@ -445,7 +445,8 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 //  2. Acquire exclusive mu lock (waits for all in-flight callbacks to return).
 //  3. Wipe full raw region (REP STOSB + CLFLUSH on amd64).
 //  4. Madvise DONTNEED_LOCKED.
-//  5. Munlock + Munmap.
+//  5. Unmap (Linux munlocks first; Darwin deliberately does not — see
+//     mlock_darwin.go).
 //  6. Nil raw — makes IsDestroyed() = true and Destroy idempotent.
 //
 // Destroy is idempotent and goroutine-safe. A second concurrent Destroy blocks

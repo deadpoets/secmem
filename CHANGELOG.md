@@ -301,7 +301,22 @@ mark the stability commitment.
   one-shot: with `InstallTerminationWipeNoExit` on Windows, or a co-installed
   handler on Unix, the process survives the first signal — but the wipe handler
   had already exited, so a secret created afterward would not be wiped on a second
-  signal. It now re-arms when the process is left running.
+  signal. It now re-arms when the process is left running. With
+  `InstallTerminationWipeNoExit` on Windows that means a second Ctrl-C wipes
+  again rather than ending the process on the default disposition —
+  termination is the caller's, as NoExit promised.
+
+- **Darwin gets a zero-on-release backstop for the teardown that never reaches
+  the wipe.** A region released while still mlocked — the janitor's
+  release-unwiped branch, or the kernel tearing down a process that died before
+  the janitor ran — is now advised `MADV_ZERO_WIRED_PAGES` at allocation, so the
+  kernel zeroes its frames on unwire. `freeSecretMem` no longer munlocks first:
+  munmap unwires as part of deletion and is the only unwire that honours the
+  advice (an explicit munlock clears the flag without zeroing). The limits are
+  documented in the code from the XNU sources: full coverage for a writable
+  region on macOS 26+, one page per entry on older kernels, and nothing for a
+  sealed or read-only region on new kernels — no Darwin mechanism zeroes frames
+  behind a mapping the process cannot write.
 
 ## [secmem-crypto/v0.3.2] - 2026-08-16
 
