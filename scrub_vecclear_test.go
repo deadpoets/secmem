@@ -57,8 +57,8 @@ func countEqual(a, b []byte) int {
 //     positions are the footprint. After a Scrub whose fn panics, every byte
 //     outside that footprint must be zero — which is also what proves no
 //     planted byte survived, since the pattern is never zero. On the legacy
-//     path the panicking control measures the same footprint independently
-//     and the two must agree.
+//     path the panicking control measures the footprint independently and
+//     every position found here must be one the control saw the unwind write.
 //
 // Nothing between a fill and its dump is allowed to touch the vector
 // registers, so the probe calls are back to back with only the code under test
@@ -154,10 +154,16 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 		}
 	}
 	t.Logf("unwind footprint: the runtime's stack walk writes %d byte(s) to the vector file after the clear", footprintBytes)
+	// The control measured the footprint as "changed from the pattern", which
+	// also counts bytes the unwind writes as zero (the upper half of the
+	// register it copies through); this measurement can only see non-zero
+	// bytes. So the two agree when every position seen here is one the
+	// control saw change — a non-zero byte the control did not see would be
+	// residue the control missed, and fails.
 	if controlFootprint != nil {
 		for i := range got {
-			if controlFootprint[i] != unwindFootprint[i] {
-				t.Errorf("unwind footprint disagrees between the control (without the clear) and Scrub at byte %d", i)
+			if unwindFootprint[i] && !controlFootprint[i] {
+				t.Errorf("unwind footprint: byte %d is non-zero after a panicking Scrub but the control saw the unwind leave it alone", i)
 				break
 			}
 		}
