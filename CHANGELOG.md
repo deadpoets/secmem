@@ -318,6 +318,16 @@ mark the stability commitment.
   sealed or read-only region on new kernels — no Darwin mechanism zeroes frames
   behind a mapping the process cannot write.
 
+- **`secmem-crypto` fails loud where a wipe or an in-place decrypt cannot be
+  proven.** Three hardening fixes: the reflection-based ECDH-scalar wipe now
+  returns an error — and a test tripwire fails on a toolchain field rename —
+  instead of silently no-opping; diceware word selection reads the whole wordlist
+  on every draw, so the choice is no longer a secret-dependent memory access, and
+  the chosen words are written straight into a `SecureBuffer` rather than a heap
+  `[]string`; and `OpenInto` verifies the AEAD wrote in place, wiping the stray
+  heap plaintext and returning an error instead of silently succeeding with an
+  unwritten buffer when it did not.
+
 ## [secmem-crypto/v0.3.2] - 2026-08-16
 
 Retracts `secmem-crypto/v0.3.0`, and documents the module.
