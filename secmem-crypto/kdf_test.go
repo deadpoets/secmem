@@ -265,11 +265,10 @@ func TestHKDFInto_DestroyedAndSealedOut(t *testing.T) {
 
 // TestArgon2IDKeyInto_KnownVector checks against x/crypto/argon2's Argon2id
 // known-answer test (generated with the PHC reference implementation's CLI,
-// per that file's own provenance note) — the vector actually reachable
-// through the public IDKey API this package wraps. RFC 9106's headline
-// vector sets secret-key and associated-data parameters that
-// golang.org/x/crypto/argon2 does not expose, so it cannot be reproduced
-// through this (or any mainstream Go) Argon2 API.
+// per that file's own provenance note) — the vector reachable through the
+// IDKey-shaped API. RFC 9106's §5 vectors set the secret-key and
+// associated-data parameters; those run through Argon2Into in
+// argon2_public_test.go and through the fork in internal/argon2.
 func TestArgon2IDKeyInto_KnownVector(t *testing.T) {
 	t.Parallel()
 	wantHash := mustDecodeHex(t, "655ad15eac652dc59f7170a7332bf49b8469be1fdb9c28bb")

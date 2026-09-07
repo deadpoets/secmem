@@ -31,7 +31,8 @@ So each function here derives, signs, or decrypts **into or out of** a
 |---|---|
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory |
 | `HKDFInto`, `HMACInto` | RFC 5869 / RFC 4231 derivation straight into a buffer |
-| `Argon2IDKeyInto`, `Argon2DeriveInto` | RFC 9106 §4 defaults, validated costs |
+| `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state; RFC 9106 K/X inputs, §4 defaults, §5 vectors |
+| `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory |
 | `X25519Key`, `MLKEM*` | key agreement with the private scalar held in a buffer |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string |
@@ -79,5 +80,12 @@ later. See [CHANGELOG.md](../CHANGELOG.md).
 
 ## Dependencies
 
-`filippo.io/edwards25519` and `golang.org/x/crypto`, plus the core module. Pure
+`filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys` (the
+CPU-feature check for the Argon2 fork's SSE path), plus the core module. Pure
 Go, `CGO_ENABLED=0`.
+
+`internal/argon2/` is a modified copy of `golang.org/x/crypto/argon2`
+(BSD-3-Clause, licence and patent grant alongside it, provenance in `NOTICE`
+and in the package documentation). It exists because upstream Argon2 leaves
+its entire working state behind and no wrapper can reach the worker
+goroutines it spawns; the package doc lists every change.

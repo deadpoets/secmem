@@ -129,7 +129,10 @@ error; a refused mutation that you treat as done is a logic bug.
 
 ```go
 // BAD — the derived key lands on the heap; you now have to remember to wipe
-// it, and probably won't.
+// it, and probably won't. And the key is the least of it: x/crypto's Argon2
+// also leaves its whole working state behind — the 64 MiB matrix, the
+// pre-hash one step from the password, per-goroutine scratch on stacks no
+// wrapper can reach, and a BLAKE2b digest still holding the raw password.
 key, _ := argon2.IDKey(pw, salt, t, m, p, 32)
 ```
 

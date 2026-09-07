@@ -8,7 +8,7 @@ require (
 	golang.org/x/crypto v0.56.0
 )
 
-require golang.org/x/sys v0.47.0 // indirect
+require golang.org/x/sys v0.47.0
 
 // The comment attached to a retract directive is shown to users by `go get`
 // and `go list -m -retracted`, so it is kept to one actionable line. Background

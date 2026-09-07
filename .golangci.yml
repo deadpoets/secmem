@@ -38,6 +38,16 @@ linters:
         linters: [govet, gosec]
         text: "(possible misuse of unsafe.Pointer|G103|G304|unsafe)"
 
+      # Verbatim golang.org/x/crypto code carried by the Argon2 fork. The BLAMKA
+      # round (RFC 9106 §3.7.1) multiplies the low 32 bits of each 64-bit word,
+      # so the uint32 truncation IS the algorithm; BLAKE2b's finalisation widens
+      # a 1..64 digest size and a non-negative block remainder. Annotating the
+      # lines would bury the diff against upstream that the fork's provenance
+      # (and upstream_identity_test.go) rests on.
+      - path: internal/argon2/(blamka_generic|blake2b_generic)\.go
+        linters: [gosec]
+        text: "G115"
+
       # Tests legitimately exercise error paths, panics, and unsafe probes.
       - path: _test\.go
         linters: [gosec, errcheck, unparam]

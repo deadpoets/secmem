@@ -13,6 +13,82 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`secmem-crypto`: `Argon2Into` and `Argon2Params` — Argon2 that wipes its
+  working state.** `golang.org/x/crypto/argon2` leaves the whole derivation
+  footprint behind: the 64 MiB matrix on the heap, the pre-hash H0, a scratch
+  block per worker goroutine on that goroutine's stack, and a heap BLAKE2b
+  digest whose block buffer holds the raw password after `Sum` and after
+  `Reset`. No wrapper reaches it — `runtime/secret.Do` (so `secmem.Scrub`)
+  does not extend to goroutines the wrapped function spawns, and erases heap
+  only when the collector gets to it. `secmem-crypto/internal/argon2` is a
+  fork of x/crypto v0.56.0 (BSD-3, see `NOTICE`) in which every piece of
+  working state lives in one parent-owned workspace, wiped with
+  `SecureWipe` before the call returns; H0 and H' are stack-only BLAKE2b
+  for every output length (x/crypto's one-shots plus a forked portable
+  finalisation); every worker goroutine runs its segment inside a `Scrub`
+  window of its own, so a runtime/secret build erases worker stacks and
+  registers and does not preempt them mid-block; and on amd64 the vector
+  registers are cleared inside every window on the pinned thread (with an
+  empirical register-dump test, per the rule in `scrub_legacy.go`). Output
+  is byte-identical to upstream: pinned by the RFC 9106 §5 vectors for all
+  three variants, a 24-case table and a differential fuzz target against
+  x/crypto, and the forked assembly and verbatim functions are checked
+  against the resolved x/crypto so a Dependabot bump that changes them goes
+  red. The new function exposes the RFC's secret key K and associated data
+  X, and the Argon2d variant, none of which x/crypto's public API can
+  express. What is not covered is stated in `Argon2Into`'s doc: the
+  workspace is pageable, dumpable heap for the call's duration and is not
+  registered with secmem (a locked workspace is the next step), and on the
+  legacy Scrub path an asynchronous preemption's copy of a worker's
+  registers in runtime buffers is out of reach. Cost: the wipe is one
+  cache-flushing pass over the working set, 5.5 ms for 64 MiB on a 2025
+  desktop where the derivation takes 29 ms, so about a fifth more there and
+  proportionally less on slower hardware (`BenchmarkForkVsUpstream`).
+  Requested by secmem's second consumer; the brief and its fact-check are in
+  the PR.
+
+- **`secmem-crypto`: `Argon2Workspace` and `Argon2Pool` — Argon2 with its
+  working state in locked memory, reused across calls.** `Argon2Into` wipes
+  after the call but runs on pageable, dumpable, unregistered heap during
+  it. A workspace puts the whole working set (matrix, lane scratch, H0, the
+  H0 input holding the password and pepper) in one `SecureBuffer`: locked,
+  guard-paged, dump-excluded where the platform allows, and registered so
+  `WipeAllSecrets` and the termination wipe cover it. It is reused because
+  a locked 64 MiB mapping costs more to create (14 ms) and destroy (24 ms)
+  than the derivation (29 ms); between uses it holds zeros, wiped with the
+  cache-flushing wipe whether or not the derivation succeeded. A pool holds
+  a fixed number for concurrent callers, which is also the ceiling on
+  in-flight derivations and locked memory. Neither falls back to the heap:
+  a lock budget that cannot hold them fails at construction, before the
+  first login, so a program's posture is decided where it can be seen
+  (raise the budget with `EnsureMemlockLimit` at startup). Both borrow the
+  workspace and the output in ascending `LockOrder`, the module's
+  two-buffer rule. A non-flushing wipe for the between-use pass was
+  measured (1.0 ms against 6.3 ms at 64 MiB) and not adopted: it leaves
+  old contents under cached zero lines for as long as an idle workspace
+  sits, and nothing short of a timer closes that. Measured at the package
+  defaults on a 2025 desktop: x/crypto 30 ms, `Argon2Into` 35 ms, a reused
+  workspace 35–38 ms, a workspace created and destroyed per call 68 ms
+  (`BenchmarkArgon2_HeapVsWorkspace`). The workspace buys residence, not
+  speed; reuse is what keeps it from costing double.
+
+### Changed
+
+- **`secmem-crypto`: `Argon2IDKeyInto` and `Argon2DeriveInto` now run on
+  the in-tree fork.** Same signatures, same bytes out; the heap caveat in
+  their documentation is gone because the residue it described is. The
+  output buffer is now borrowed (the shared read lease of `WithBytesErr`)
+  for the whole derivation rather than for a copy at the end, since the tag
+  is computed in place: writers to it block for the derivation, and a
+  concurrent reader would see the old or a partly written tag, so do not
+  read it from another goroutine mid-derivation. Callers who wrapped the
+  call in `ScrubErr` on the old doc's advice should remove the wrapper (see
+  `Argon2Into`). `golang.org/x/sys` becomes a direct dependency of
+  `secmem-crypto` (the fork's CPU-feature check; it was already indirect
+  via x/crypto).
+
 ## [secmem-crypto/v0.4.0] - 2026-09-07
 
 The review's crypto rows, plus the floor raise to core v0.4.0 and the switch to
