@@ -69,6 +69,7 @@ that is said outright rather than dressed up.
 | An arena's Go-heap bookkeeping stays smaller than its locked slab | Arithmetic pin: per-slot `slotMeta` must be under `canaryLen+1`, the locked cost of the smallest legal slot. This is what makes `NewArena`'s slab-first allocation order protective — the allocation that can `throw` must be the smaller one | `securearena_test.go` (`TestArena_HeapMetadataStaysUnderLockedSlab`) |
 | `Scrub` erases the stack residue of a shallow call tree | Plants markers down the stack, runs `Scrub`, reads the abandoned frames back through a raw `uintptr` and requires zero. Covers both architectures with real frame assembly — amd64 and arm64 | `scrub_frame_test.go` (`TestScrub_ScrubsShallowCallTree`); `runtimesecret` integration in `securebuf_scrub_test.go`, `secretdo_active_test.go` |
 | A `Scrub` window blocks the preemption signal, so `asyncPreempt` cannot spill the register file into it | Reads `SigBlk` for the **calling thread** from `/proc/thread-self/status` — the kernel's own record — inside the window, and requires SIGURG and SIGPROF set there and the mask exactly restored after. Asserts the goroutine did not migrate (`LockOSThread`), and that a nested window restores the outer mask rather than unblocking | `scrub_window_linux_test.go` |
+| `Scrub` clears the vector registers on the thread that ran `fn`, and the clear reaches what `fn` left | A test-only assembly probe (`internal/regprobe`) plants a non-zero pattern in X0–X14 (Z16–Z31 under AVX-512; V0–V31 on arm64) inside a window and reads the file back after it: all zero after `Scrub`, `ScrubErr`, and a panicking `fn`. A control runs the window's exact exit sequence **without** the clear and requires the pattern to survive — a zero there is a failure, not a skip, because it would mean the residue had become unobservable and the clear unprovable. A panicking control measures the 16 bytes the runtime's unwinder writes after the clear, and the subject must be zero outside that footprint | `scrub_vecclear_test.go`, `scrub_vecclear_amd64_test.go`, `scrub_vecclear_arm64_test.go` |
 | Blocking that signal does not make a window unpreemptible | Eight concurrent windows against a deliberately GC-heavy workload must all complete; a window the collector could not suspend would hang rather than fail quietly | `scrub_window_linux_test.go` (`TestScrub_ConcurrentWindowsUnderGCPressure`) |
 | Constructors fail closed, never panic | Bad/overflow inputs on every constructor; `RLIMIT_MEMLOCK=0` with `CAP_IPC_LOCK` dropped; unsupported-platform stub | `negative_test.go`, `negative_mlock_linux_test.go`, `mlock_stub_test.go` |
 | Constructors wipe the caller's input on failure, not only on success | An allocation that is forced to fail must leave the input slice zeroed | `securebuf_test.go` (`TestNewBuffer_WipesInputOnFailure`), `secret_test.go` (`TestNewSecret_CopiesAndWipesInput`) |
@@ -124,16 +125,19 @@ stand-in rather than measured directly.
   inspects cache state, because Go cannot.
 - **The stack residue `Scrub` cannot reach is argued, not measured.** The frame
   wipe is proven to zero the band it reserves (above), and the preemption block
-  is proven against the kernel's own record of the mask. Three residue sources
-  remain unobservable from Go and are documented rather than tested: a GC
-  stack-shrink that frees `fn`'s segment before the deferred wipe runs
-  (`shrinkstack` is asynchronous and runtime-owned), the CPU registers at
-  `Scrub`'s return (the ABI reloads them around any call that would clear them,
-  so a Go-level register scrub cannot be verified to have reached anything), and
-  the `ucontext` the kernel writes to the signal stack on a synchronous fault.
-  The first is closed by `GOEXPERIMENT=runtimesecret`, which has runtime
-  cooperation; the other two are constraints of Go and of the OS. All three are
-  enumerated in the stack-residue section of [THREAT-MODEL.md](THREAT-MODEL.md).
+  is proven against the kernel's own record of the mask, and the vector-register
+  clear is proven by planting a pattern and reading the registers back (above).
+  Three residue sources remain unobservable from Go and are documented rather
+  than tested: a GC stack-shrink that frees `fn`'s segment before the deferred
+  wipe runs (`shrinkstack` is asynchronous and runtime-owned), the
+  general-purpose registers at `Scrub`'s return (the ABI reloads them around any
+  call that would clear them, so a Go-level clear of *those* cannot be verified
+  to have reached anything — which is exactly why the vector clear ships with a
+  proof and a general-purpose one does not exist), and the `ucontext` the kernel
+  writes to the signal stack on a synchronous fault. The first is closed by
+  `GOEXPERIMENT=runtimesecret`, which has runtime cooperation; the other two are
+  constraints of Go and of the OS. All three are enumerated in the
+  stack-residue section of [THREAT-MODEL.md](THREAT-MODEL.md).
 - **Constant-time comparison is structural, not timing-measured.**
   `ConstantTimeEqual` (buffer and `Secret`) delegates to
   `crypto/subtle.ConstantTimeCompare`; correctness of the boolean result is

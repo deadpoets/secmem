@@ -57,7 +57,10 @@
 //     callback's call tree used, via architecture assembly (amd64, arm64), and
 //     on Linux additionally blocks Go's preemption signal for the duration so
 //     runtime.asyncPreempt cannot spill the entire register file onto that stack
-//     partway through. Under GOEXPERIMENT=runtimesecret on linux/amd64 and
+//     partway through. On amd64 and arm64 it also zeroes the vector register
+//     file on the working thread as soon as the callback returns, which is
+//     where vectorised crypto leaves its state and which nothing else clears.
+//     Under GOEXPERIMENT=runtimesecret on linux/amd64 and
 //     linux/arm64, runtime/secret supersedes the frame wipe and erases the
 //     registers, stack, and heap of the whole call tree. The residue no tier
 //     reaches — and which parts of it are constraints of the Go runtime or the

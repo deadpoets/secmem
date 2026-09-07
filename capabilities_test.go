@@ -161,10 +161,50 @@ func TestCapabilities_Warnings(t *testing.T) {
 		OffHeap: true, Mlocked: true, MemfdSecret: true,
 		NoDump: true, NoFork: true,
 		FlushedWipe: true, RegisterScrub: true, GuardPages: true,
-		FrameScrub: true, AsyncPreemptSuppressed: true,
+		FrameScrub: true, AsyncPreemptSuppressed: true, VectorRegisterClear: true,
 	}
 	if w := full.Warnings(); len(w) != 0 {
 		t.Errorf("fully protected Capabilities still warned: %q", w)
+	}
+}
+
+// TestCapabilities_VectorClearWarning pins the vector-clear warning to the gap
+// it names: it fires only when neither the vector clear nor runtime/secret
+// covers the register file, since runtime/secret erases registers itself.
+func TestCapabilities_VectorClearWarning(t *testing.T) {
+	t.Parallel()
+	const want = "vector registers not cleared"
+	has := func(c Capabilities) bool {
+		for _, w := range c.Warnings() {
+			if strings.Contains(w, want) {
+				return true
+			}
+		}
+		return false
+	}
+	if !has(Capabilities{}) {
+		t.Error("no vector clear and no runtime/secret: warning missing")
+	}
+	if has(Capabilities{VectorRegisterClear: true}) {
+		t.Error("vector clear in force: warning must not fire")
+	}
+	if has(Capabilities{RegisterScrub: true}) {
+		t.Error("runtime/secret in force: warning must not fire, it erases registers itself")
+	}
+}
+
+// TestProbe_VectorClearMatchesArchitecture verifies the reported flag is the
+// build's truth: the clear is real assembly on amd64 and arm64 and a no-op
+// everywhere else, and String carries it as vector-clear.
+func TestProbe_VectorClearMatchesArchitecture(t *testing.T) {
+	t.Parallel()
+	c := Probe()
+	want := runtime.GOARCH == "amd64" || runtime.GOARCH == "arm64"
+	if c.VectorRegisterClear != want {
+		t.Errorf("Probe().VectorRegisterClear = %v on %s, want %v", c.VectorRegisterClear, runtime.GOARCH, want)
+	}
+	if !strings.Contains(c.String(), "vector-clear") {
+		t.Errorf("String() = %q does not carry the vector-clear flag", c.String())
 	}
 }
 

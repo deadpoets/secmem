@@ -85,6 +85,20 @@ type Capabilities struct {
 	// at a call boundary is unaffected. See [Scrub].
 	AsyncPreemptSuppressed bool
 
+	// VectorRegisterClear reports that [Scrub] zeroes the vector register file
+	// (X0–X15 at full YMM/ZMM width plus Z16–Z31 under AVX-512 on amd64; V0–V31
+	// on arm64) on the thread that ran its callback, as the first thing after
+	// the callback returns. Vectorised crypto keeps its working state there and
+	// nothing else in the process ever clears it. Real assembly on amd64 and
+	// arm64, proven by a register-dump test; a no-op elsewhere. When false and
+	// RegisterScrub is also false, residue in the vector file outlives the
+	// window.
+	//
+	// General-purpose registers are not covered on any architecture: the ABI
+	// keeps live values in them across the call that would clear them. Only
+	// RegisterScrub (runtime/secret) reaches those.
+	VectorRegisterClear bool
+
 	// GuardPages reports PROT_NONE guard pages bracket the mapping so a
 	// linear over/under-flow traps (SIGSEGV / access violation) instead of
 	// silently touching adjacent memory. A memory-safety bug-catcher, not a
@@ -125,6 +139,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 
 		FrameScrub:             archFrameScrub,
 		AsyncPreemptSuppressed: asyncPreemptSuppressionSupported,
+		VectorRegisterClear:    archVectorClear,
 
 		GuardPages: info.guardPages,
 		Insecure:   info.insecure,
@@ -188,6 +203,9 @@ func (c Capabilities) Warnings() []string {
 	if !c.AsyncPreemptSuppressed {
 		w = append(w, "async preemption not suppressed — the runtime may spill the register file to the stack inside a Scrub window")
 	}
+	if !c.VectorRegisterClear && !c.RegisterScrub {
+		w = append(w, "vector registers not cleared after a Scrub window — residue from vectorised crypto survives on this architecture")
+	}
 	if !c.GuardPages {
 		w = append(w, "no guard pages — buffer overflows are not trapped")
 	}
@@ -215,6 +233,7 @@ func (c Capabilities) String() string {
 	flag("register-scrub", c.RegisterScrub)
 	flag("frame-scrub", c.FrameScrub)
 	flag("preempt-suppress", c.AsyncPreemptSuppressed)
+	flag("vector-clear", c.VectorRegisterClear)
 	flag("guard-pages", c.GuardPages)
 
 	var b strings.Builder

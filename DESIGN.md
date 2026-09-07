@@ -210,6 +210,7 @@ the code makes that inspectable rather than asking for trust.
   Seal (idle)            in-process read primitives  PROT_NONE + CryptProtectMem
   ReadOnly               stray writes                PROT_READ + API flag
   wipe                   remanence in RAM/cache      asm zero + cache flush
+  Scrub vector clear     residue in XMM/YMM/ZMM, V   VZEROALL+VPXORQ / VEOR after fn
   janitor + term-wipe    unwiped-on-exit/crash       finalizer + signal handler
   redaction              logging the secret          Stringer/Marshaler sentinels
   refuse-by-default      silent heap fallback        ErrNoSecureMemory

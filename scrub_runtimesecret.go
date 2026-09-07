@@ -52,6 +52,12 @@ func Scrub(fn func()) {
 	var window preemptWindow
 	suppressAsyncPreempt(&window)
 	defer window.restore()
+	// Belt and braces: runtime/secret erases the register file on the way out
+	// of Do, so on this path the vector clear is redundant. It stays so that
+	// both Scrub implementations have the same shape and the same proof
+	// (scrub_vecclear_test.go runs here too), and so the clear does not depend
+	// on which registers a given runtime version's erasure happens to cover.
+	defer clearVectorRegs()
 	secret.Do(fn)
 }
 
@@ -65,6 +71,7 @@ func ScrubErr(fn func() error) error {
 	var window preemptWindow
 	suppressAsyncPreempt(&window)
 	defer window.restore()
+	defer clearVectorRegs() // redundant under runtime/secret; see Scrub
 	var err error
 	secret.Do(func() { err = fn() })
 	return err
