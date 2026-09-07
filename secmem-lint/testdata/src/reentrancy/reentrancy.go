@@ -44,3 +44,44 @@ func sameBufferLockingInspectors(buf *secmem.SecureBuffer) {
 		_ = buf.IsDestroyed()   // want `secmem-lint: IsDestroyed called on the same buffer`
 	})
 }
+
+// vault holds its buffer in a struct field, which is how any program larger
+// than an example holds it. The check used to require a plain identifier on
+// both ends, so every one of these was silently clean.
+type vault struct {
+	buf   *secmem.SecureBuffer
+	inner struct{ buf *secmem.SecureBuffer }
+}
+
+func (v *vault) fieldReceiver() {
+	_ = v.buf.WithBytes(func(b []byte) {
+		_ = b
+		_ = v.buf.Len() // want `secmem-lint: Len called on the same buffer`
+	})
+}
+
+func (v *vault) nestedFieldReceiver() {
+	_ = v.inner.buf.WithBytes(func(b []byte) {
+		_ = b
+		_ = v.inner.buf.IsSealed() // want `secmem-lint: IsSealed called on the same buffer`
+	})
+}
+
+// differentFieldOK: a different field is a different buffer, so the
+// decrypt-into pattern still has to survive the wider receiver matching.
+func (v *vault) differentFieldOK() {
+	_ = v.buf.WithBytes(func(b []byte) {
+		_ = b
+		_ = v.inner.buf.Len()
+	})
+}
+
+// indexedReceiverNotDecidable: bufs[i] and bufs[j] are written alike and need
+// not be the same buffer, so receivers that are index expressions are left
+// alone rather than guessed at.
+func indexedReceiverNotDecidable(bufs []*secmem.SecureBuffer) {
+	_ = bufs[0].WithBytes(func(b []byte) {
+		_ = b
+		_ = bufs[1].Len()
+	})
+}

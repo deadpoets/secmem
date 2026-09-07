@@ -38,7 +38,12 @@ jobs:
         with:
           go-version-file: go.mod
       - uses: ./.github/actions/setup-workspace
-      - uses: github/codeql-action/init@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      # init and analyze MUST be the same version. analyze's post step reloads
+      # the config init wrote and fails on a version mismatch, so a half-applied
+      # bump breaks the job rather than degrading it. Dependabot treats the two
+      # subpaths as separate dependencies and will bump them in separate PRs —
+      # dependabot.yml groups them to stop that.
+      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           languages: go
           build-mode: manual
@@ -46,6 +51,6 @@ jobs:
         run: |
           go build ./...
           cd examples && GOWORK=off go build ./...
-      - uses: github/codeql-action/analyze@ff2f1c621b7f889edc0d3c761ac2e6a3f8cdb0dd # v4.37.7
+      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
         with:
           category: "/language:go"
