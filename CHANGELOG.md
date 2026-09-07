@@ -13,40 +13,14 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
-### Added
+## [0.5.0] - 2026-09-07
 
-- **`secmem-crypto`: `ParsePrivateKey` — private-key files parsed into
-  locked memory.** The module had an egress (`MarshalOpenSSHPrivateKey`) and
-  no ingress: loading an existing key meant `pem.Decode` plus
-  `ssh.ParseRawPrivateKey` or `crypto/x509`, which materialise the whole
-  key on the heap twice — the decoded DER and the parsed `*PrivateKey` with
-  its `big.Int` limbs — where nothing can wipe either. `ParsePrivateKey`
-  accepts OpenSSH (`ssh-ed25519`, `ecdsa-sha2-nistp{256,384,521}`,
-  `ssh-rsa`), PKCS#8 (RSA, EC, Ed25519), SEC 1, and PKCS#1, PEM or raw,
-  and returns the matching `Ed25519Signer`, `ECDSASigner`, or `RSASigner`
-  behind a new `Signer` interface. The base64 body is decoded straight into
-  a `SecureBuffer`, the container is read in place with zero-copy cursors
-  (cryptobyte for ASN.1, a twelve-line reader for the SSH wire format), and
-  the secret is copied exactly once, into the buffer the signer owns; the
-  public key every OpenSSH file (and SEC 1 / PKCS#8 v2 optionally) carries
-  is checked against the one derived from the private half. Passphrase-
-  protected files return `ErrEncryptedKey` rather than a leaky decrypt —
-  bcrypt_pbkdf and PBKDF2 are KDFs whose working state this module does not
-  yet control; DSA, FIDO, certificate, X25519, and unknown-curve keys return
-  `ErrUnsupportedKey`; errors never quote the input. The one heap exception
-  is stated in the doc: an OpenSSH-format RSA key lacks the CRT exponents
-  PKCS#1 needs, so dp and dq are computed with `math/big` and wiped limb by
-  limb, with `math/big`'s own scratch left to the enclosing `ScrubErr`
-  window; the assembled DER is byte-identical to
-  `x509.MarshalPKCS1PrivateKey`'s and pinned as such. The claim that the
-  parser itself allocates nothing secret is proven, not asserted: a test
-  runs the memory profiler at rate 1 over every non-RSA-OpenSSH encoding
-  and fails on any allocation owned by the parser's files, and it was shown
-  to fail on an injected `bytes.Clone` of the seed. Round-trips are against
-  what the standard library and x/crypto write, every proper prefix of a
-  raw container is rejected, and a fuzz target requires any input that
-  parses to yield a self-consistent signer. Minor bump for `secmem-crypto`;
-  no floor change.
+Two boundary-hardening pieces: `Scrub` and `ScrubErr` clear the vector
+registers after every window, and `secmem/httpauth` injects a credential per
+request from a `SecureBuffer` instead of keeping it in an `http.Header`.
+Adds `Capabilities.VectorRegisterClear` and a package, hence minor.
+
+### Added
 
 - **`Scrub` and `ScrubErr` clear the vector registers after the callback
   returns.** Vectorised crypto keeps its working state in the vector file — an
@@ -117,6 +91,63 @@ mark the stability commitment.
   "api.example.com")`, is the safe one. Adding exported API makes the next
   core release a minor bump.
 
+### Changed
+
+- **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
+  in-process trips a Go runtime bug on windows/amd64 with AMX-capable CPUs
+  ([golang/go#81238](https://github.com/golang/go/issues/81238)): the OS
+  exception frame overruns the goroutine stack and corrupts the heap below it,
+  which is what the Windows CI job's two crashes were. Each probe now faults in
+  a re-exec'd child and is proven by the runtime's own `unexpected fault
+  address` report at the announced address, not by the child merely dying;
+  two control cases pin that. Test harness only — `SetPanicOnFault` is armed
+  nowhere in library code, so using secmem was never affected. The daily
+  Windows soak workflow, which existed to sample the crash, is retired. Scope
+  and evidence in `WINDOWS.md`.
+
+## [secmem-crypto/v0.6.0] - 2026-09-07
+
+The ingress: private-key files parsed into locked memory, unencrypted
+(`ParsePrivateKey`) and passphrase-protected (`ParsePrivateKeyWithPassphrase`,
+on an in-tree fork of OpenSSH's bcrypt_pbkdf that wipes its working state),
+with the matching encrypted egress. Minor: new API, and the core floor rises
+to v0.5.0.
+
+### Added
+
+- **`secmem-crypto`: `ParsePrivateKey` — private-key files parsed into
+  locked memory.** The module had an egress (`MarshalOpenSSHPrivateKey`) and
+  no ingress: loading an existing key meant `pem.Decode` plus
+  `ssh.ParseRawPrivateKey` or `crypto/x509`, which materialise the whole
+  key on the heap twice — the decoded DER and the parsed `*PrivateKey` with
+  its `big.Int` limbs — where nothing can wipe either. `ParsePrivateKey`
+  accepts OpenSSH (`ssh-ed25519`, `ecdsa-sha2-nistp{256,384,521}`,
+  `ssh-rsa`), PKCS#8 (RSA, EC, Ed25519), SEC 1, and PKCS#1, PEM or raw,
+  and returns the matching `Ed25519Signer`, `ECDSASigner`, or `RSASigner`
+  behind a new `Signer` interface. The base64 body is decoded straight into
+  a `SecureBuffer`, the container is read in place with zero-copy cursors
+  (cryptobyte for ASN.1, a twelve-line reader for the SSH wire format), and
+  the secret is copied exactly once, into the buffer the signer owns; the
+  public key every OpenSSH file (and SEC 1 / PKCS#8 v2 optionally) carries
+  is checked against the one derived from the private half. Passphrase-
+  protected files return `ErrEncryptedKey` rather than a leaky decrypt —
+  bcrypt_pbkdf and PBKDF2 are KDFs whose working state this module does not
+  yet control; DSA, FIDO, certificate, X25519, and unknown-curve keys return
+  `ErrUnsupportedKey`; errors never quote the input. The one heap exception
+  is stated in the doc: an OpenSSH-format RSA key lacks the CRT exponents
+  PKCS#1 needs, so dp and dq are computed with `math/big` and wiped limb by
+  limb, with `math/big`'s own scratch left to the enclosing `ScrubErr`
+  window; the assembled DER is byte-identical to
+  `x509.MarshalPKCS1PrivateKey`'s and pinned as such. The claim that the
+  parser itself allocates nothing secret is proven, not asserted: a test
+  runs the memory profiler at rate 1 over every non-RSA-OpenSSH encoding
+  and fails on any allocation owned by the parser's files, and it was shown
+  to fail on an injected `bytes.Clone` of the seed. Round-trips are against
+  what the standard library and x/crypto write, every proper prefix of a
+  raw container is rejected, and a fuzz target requires any input that
+  parses to yield a self-consistent signer. Minor bump for `secmem-crypto`;
+  no floor change.
+
 - **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` and
   `MarshalOpenSSHPrivateKeyWithPassphrase` — passphrase-protected OpenSSH
   key files, in and out, on a KDF that wipes.** `ParsePrivateKey` refused
@@ -166,6 +197,14 @@ mark the stability commitment.
 
 ### Changed
 
+- **Requires core v0.5.0.** Every `Scrub` window this module opens — the
+  signers', the KDFs', the private-key parser's and the passphrase paths' —
+  now clears the vector registers on the way out, from the core rather than
+  from this module's own helpers. The Argon2 fork's amd64 clear and the
+  passphrase path's use of it are now redundant and are removed in a
+  follow-up; nothing observable changes. A dependency-only floor raise is a
+  minor bump here, as this module's versioning note explains.
+
 - **`secmem-crypto`: `MarshalOpenSSHPrivateKey` assembles the file in
   place.** It went through `ssh.MarshalPrivateKey` and `encoding/pem`, and
   its doc named the copies that route leaves unreachable: x/crypto's marshal
@@ -175,18 +214,6 @@ mark the stability commitment.
   one, by writers that allocate nothing; the output is byte-identical in
   layout to `encoding/pem`'s and checked as such, and ssh-keygen reads it.
   Behaviour and API are unchanged.
-
-- **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
-  in-process trips a Go runtime bug on windows/amd64 with AMX-capable CPUs
-  ([golang/go#81238](https://github.com/golang/go/issues/81238)): the OS
-  exception frame overruns the goroutine stack and corrupts the heap below it,
-  which is what the Windows CI job's two crashes were. Each probe now faults in
-  a re-exec'd child and is proven by the runtime's own `unexpected fault
-  address` report at the announced address, not by the child merely dying;
-  two control cases pin that. Test harness only — `SetPanicOnFault` is armed
-  nowhere in library code, so using secmem was never affected. The daily
-  Windows soak workflow, which existed to sample the crash, is retired. Scope
-  and evidence in `WINDOWS.md`.
 
 ## [secmem-crypto/v0.5.0] - 2026-09-07
 
