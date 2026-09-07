@@ -82,7 +82,9 @@ const (
 // data X. nil for either means absent, which is the profile shared by the
 // reference CLI, libsodium and golang.org/x/crypto (whose public API cannot
 // express them at all). Both are hashed into H0 only; the derivation
-// otherwise ignores them.
+// otherwise ignores them. A pepper is a long-lived secret and belongs in a
+// [secmem.SecureBuffer] between calls; borrow it for the call and pass the
+// bytes, observing the lock-ordering note on [Argon2Into].
 type Argon2Params struct {
 	Mode    Argon2Mode
 	Time    uint32
@@ -142,36 +144,76 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 //     workspace the parent goroutine owns and wipes with [secmem.SecureWipe]
 //     before this function returns — deterministically, not at the
 //     collector's convenience;
-//   - H0 and H' are computed with BLAKE2b's stack-only one-shot functions,
-//     so no heap digest ever holds the password (upstream's does, and
-//     neither Sum nor Reset clears it);
-//   - the goroutine-free phases run under [secmem.Scrub], which covers
-//     their stack temporaries, and on amd64 the vector registers are
-//     cleared at the end of every worker and of the derivation.
+//   - H0 and H' are computed with stack-only BLAKE2b (x/crypto's one-shot
+//     functions, and a forked portable finalisation for the output lengths
+//     they do not cover), so no heap digest ever holds the password or the
+//     final block (upstream's does, and neither Sum nor Reset clears it);
+//   - the parent's hashing phases run under [secmem.Scrub], and so does
+//     each worker goroutine — a goroutine can open a window on itself even
+//     though its spawner's window does not reach it — so that on a
+//     runtime/secret build every worker's stack and registers are erased
+//     by the runtime and the worker is not asynchronously preempted while
+//     block state is in registers, and on the legacy path each worker's
+//     stack band is wiped in place; on amd64 the vector registers are
+//     additionally cleared inside every window, pinned to the thread that
+//     dirtied them.
 //
-// What remains: general-purpose registers and scheduler state on the
-// worker threads, which nothing in user space can address, and — for
-// output lengths other than 32, 48, 64 or a multiple of 64 — one small
-// BLAKE2b digest the final H' step must allocate, which is scrubbed
-// through its public interface with a tripwire test pinning the effect.
+// What remains, stated so that it can be relied on rather than guessed:
+//
+//   - During the call the workspace is ordinary Go heap: pageable, part of
+//     any core dump or minidump taken while the derivation runs, and not
+//     registered with secmem, so [secmem.WipeAllSecrets] and the
+//     termination wipe do not cover it. The H0 input in it holds the
+//     password and Secret side by side. A locked, registered workspace is
+//     the natural next step and is not in this version.
+//   - On the legacy Scrub path (Windows, macOS, or any build without
+//     GOEXPERIMENT=runtimesecret) an asynchronous preemption can still
+//     interrupt a worker and copy its registers into runtime-owned
+//     buffers this package cannot reach; the in-place stack wipe covers
+//     the copy on the goroutine's own stack, not those. A GC stack shrink
+//     during a segment frees a worker stack unwiped for the same reason
+//     any Scrub window has that limit.
+//   - Scrub reserves stack headroom on entry, which can grow the calling
+//     goroutine's stack; a password held in a stack array of the caller
+//     is copied by that growth like any other frame. Keep the password in
+//     a SecureBuffer or a heap slice you wipe, as the examples do.
+//
 // Nothing here changes what [secmem.SecureBuffer] does for the output
 // itself, which is written in place under WithBytesErr and is never a
 // heap []byte.
 //
 // # Locking and cost
 //
-// out is write-locked for the whole derivation, which at password-hashing
-// parameters is tens to hundreds of milliseconds depending on the machine;
-// other users of the same buffer block for that long. The wipe adds one
-// pass over the working set with secmem's cache-flushing wipe: about
-// 5.5 ms for 64 MiB on a 2025 desktop, where the derivation itself takes
-// about 29 ms at the package defaults, so roughly a fifth more; on the
-// slower, memory-bound hardware password hashing is usually tuned on the
-// fraction is smaller. internal/argon2's benchmarks measure both halves.
+// out is borrowed under WithBytesErr — the buffer's shared read lease — for
+// the whole derivation, which at password-hashing parameters is tens to
+// hundreds of milliseconds depending on the machine. Writers to out
+// (Destroy, Seal, CopyIn and the rest) block for that long; other readers
+// do not, and a concurrent reader sees the previous contents until the tag
+// lands, or a partly written tag for outputs over 64 bytes. Do not read
+// out from another goroutine while a derivation into it is in flight. out
+// must not be read-only: like every in-place writer in this module the
+// borrow cannot detect that state, and the first write faults. If Secret
+// or the password is borrowed from another SecureBuffer for the call, that
+// is a nested borrow of two buffers and the module's LockOrder discipline
+// applies (acquire in ascending [secmem.SecureBuffer.LockOrder]).
 //
-// Errors, never panics: nil, destroyed or empty out; Time or Threads of 0;
-// an unknown Mode; or an input longer than the 32-bit length Argon2
-// commits to.
+// The wipe adds one pass over the working set with secmem's cache-flushing
+// wipe, about 5.5 ms for 64 MiB on a 2025 desktop where the derivation
+// itself takes about 29 ms at the package defaults, so roughly a fifth
+// more there; on the slower, memory-bound hardware password hashing is
+// usually tuned on the fraction is smaller. The per-segment Scrub windows
+// and register clears are microseconds in total. internal/argon2's
+// benchmarks measure the halves separately. Callers that wrapped the
+// previous Argon2IDKeyInto in [secmem.ScrubErr] on the old doc's advice
+// should drop the wrapper: it would put the workspace allocation inside a
+// runtime/secret window, which registers 64 MiB for GC-time erasure that
+// the explicit wipe already performs.
+//
+// Errors, never panics, for every input this function can check: nil,
+// destroyed or empty out; Time or Threads of 0; an unknown Mode; an input
+// longer than the 32-bit length Argon2 commits to; a Memory whose matrix
+// does not fit the address space. A Memory the host cannot actually
+// allocate is fatal, as it is in x/crypto.
 func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
 	if out == nil {
 		return errors.New("secmemcrypto: nil output buffer")
@@ -210,6 +252,11 @@ func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer)
 		if uint64(len(in.b)) > math.MaxUint32 {
 			return fmt.Errorf("secmemcrypto: argon2 derive: %s too long: %d bytes", in.name, len(in.b))
 		}
+	}
+	// The matrix is Memory KiB of 1 KiB blocks; on a 32-bit platform a
+	// large request overflows int before make can refuse it.
+	if uint64(p.Memory)*1024 > math.MaxInt {
+		return fmt.Errorf("secmemcrypto: argon2 derive: memory %d KiB exceeds the address space", p.Memory)
 	}
 
 	// The workspace is allocated outside any Scrub window on purpose: under

@@ -23,7 +23,6 @@ func workspaceResidue(ws *Workspace) map[string][]byte {
 		s := &ws.lanes[i]
 		r["lane.addresses"] = append(r["lane.addresses"], unsafe.Slice((*byte)(unsafe.Pointer(&s.addresses)), 1024)...)
 		r["lane.in"] = append(r["lane.in"], unsafe.Slice((*byte)(unsafe.Pointer(&s.in)), 1024)...)
-		r["lane.zero"] = append(r["lane.zero"], unsafe.Slice((*byte)(unsafe.Pointer(&s.zero)), 1024)...)
 		r["lane.tmp"] = append(r["lane.tmp"], unsafe.Slice((*byte)(unsafe.Pointer(&s.tmp)), 1024)...)
 	}
 	return r
@@ -42,10 +41,10 @@ func isZero(b []byte) bool {
 // owns the Workspace, so after Derive it can look at every region the
 // algorithm used. The first half is the control: each region the algorithm
 // writes must be non-zero after Derive, or the assertion in the second half
-// would be vacuous. lane.zero is the one region that must be zero BEFORE
-// the wipe too (it is the constant zero block; if it is ever dirty the
-// derivation is wrong, not just leaky). hashState is only used for outputs
-// longer than 64 bytes, so it is exercised with a 100-byte tag.
+// would be vacuous. hashState is only used for outputs longer than 64
+// bytes, so it is exercised with a 100-byte tag. The shared constant
+// zeroBlock must still be zero afterwards: if it is ever written the
+// derivation is wrong, not just leaky.
 func TestWorkspaceWipe(t *testing.T) {
 	for _, mode := range []Mode{ModeI, ModeID, ModeD} {
 		ws := NewWorkspace(64, 2)
@@ -54,10 +53,6 @@ func TestWorkspaceWipe(t *testing.T) {
 
 		for name, region := range workspaceResidue(ws) {
 			switch name {
-			case "lane.zero":
-				if !isZero(region) {
-					t.Errorf("mode %d: lane.zero is dirty after Derive: the constant zero block was written", mode)
-				}
 			case "initInput", "hashIn", "hashState":
 				// Derive wipes these itself as soon as it is done with them;
 				// TestInitInputWiped covers the control for initInput.
@@ -89,6 +84,9 @@ func TestWorkspaceWipe(t *testing.T) {
 			if !isZero(region) {
 				t.Errorf("mode %d: %s holds residue after Wipe", mode, name)
 			}
+		}
+		if !isZero(unsafe.Slice((*byte)(unsafe.Pointer(&zeroBlock)), 1024)) {
+			t.Fatalf("mode %d: the shared zeroBlock was written", mode)
 		}
 	}
 }

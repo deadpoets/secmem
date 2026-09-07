@@ -106,8 +106,7 @@ func TestEmptyInputs(t *testing.T) {
 	}
 }
 
-// TestWorkspaceReuse pins that a wiped Workspace derives correctly again:
-// the zero-block invariant the SSE mix step relies on is restored by Wipe.
+// TestWorkspaceReuse pins that a wiped Workspace derives correctly again.
 func TestWorkspaceReuse(t *testing.T) {
 	ws := NewWorkspace(64, 2)
 	defer ws.Wipe()
@@ -122,12 +121,12 @@ func TestWorkspaceReuse(t *testing.T) {
 	}
 }
 
-func TestAdjustedMemory(t *testing.T) {
+func TestAdjustMemory(t *testing.T) {
 	for _, c := range []struct{ mem, threads, want uint32 }{
 		{64, 1, 64}, {65, 1, 64}, {7, 1, 8}, {0, 1, 8}, {37, 3, 36}, {1, 5, 40}, {1 << 16, 4, 1 << 16},
 	} {
-		if got := AdjustedMemory(c.mem, uint8(c.threads)); got != c.want {
-			t.Errorf("AdjustedMemory(%d, %d) = %d, want %d", c.mem, c.threads, got, c.want)
+		if got := adjustMemory(c.mem, uint8(c.threads)); got != c.want {
+			t.Errorf("adjustMemory(%d, %d) = %d, want %d", c.mem, c.threads, got, c.want)
 		}
 	}
 }
@@ -145,6 +144,7 @@ func TestDerivePanicsLikeUpstream(t *testing.T) {
 	ws := NewWorkspace(8, 1)
 	mustPanic("time=0", func() { Derive(make([]byte, 32), ModeID, nil, nil, nil, nil, 0, ws) })
 	mustPanic("empty out", func() { Derive(nil, ModeID, nil, nil, nil, nil, 1, ws) })
+	mustPanic("mode=3", func() { Derive(make([]byte, 32), Mode(3), nil, nil, nil, nil, 1, ws) })
 	mustPanic("nil ws", func() { Derive(make([]byte, 32), ModeID, nil, nil, nil, nil, 1, nil) })
 	mustPanic("threads=0", func() { NewWorkspace(8, 0) })
 }

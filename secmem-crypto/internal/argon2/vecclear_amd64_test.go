@@ -2,10 +2,11 @@
 
 package argon2
 
-import "testing"
+import (
+	"testing"
 
-//go:noescape
-func dumpXMM(buf *[256]byte)
+	"github.com/deadpoets/secmem/secmem-crypto/internal/argon2/regprobe"
+)
 
 // TestClearVectorRegs is the empirical check the project requires before
 // any register scrub is trusted (see the TODO in secmem's scrub_legacy.go).
@@ -13,7 +14,9 @@ func dumpXMM(buf *[256]byte)
 // requires that block state is visible there (the control), then clears
 // and requires all zero. Nothing between the calls is allowed to touch the
 // vector registers, so the calls are back to back and the block is filled
-// before the sequence starts.
+// before the sequence starts. A failed control is a failure, not a skip:
+// if a build ever makes the residue unobservable this way, the test has to
+// be rethought, not silently passed.
 func TestClearVectorRegs(t *testing.T) {
 	var s laneScratch
 	for i := range s.in {
@@ -22,17 +25,13 @@ func TestClearVectorRegs(t *testing.T) {
 	var out block
 	var before, after [256]byte
 
-	processBlock(&out, &s.in, &s.zero, &s)
-	dumpXMM(&before)
+	processBlock(&out, &s.in, &zeroBlock, &s)
+	regprobe.DumpXMM(&before)
 	clearVectorRegs()
-	dumpXMM(&after)
+	regprobe.DumpXMM(&after)
 
 	if isZero(before[:]) {
-		// The residue is real (blamka_amd64.s ends with MOVOU stores from
-		// X0–X7) but its observability depends on nothing intervening; if
-		// instrumentation (-race, coverage) breaks that, say so rather than
-		// pass a vacuous assertion.
-		t.Skip("control failed: no vector-register residue observed after blamka; cannot prove the clear reaches it under this build")
+		t.Fatal("control failed: no vector-register residue observed after blamka, so the clear cannot be shown to reach anything")
 	}
 	if !isZero(after[:]) {
 		t.Fatalf("vector registers hold residue after clearVectorRegs: %x", after)

@@ -10,6 +10,7 @@ package argon2
 
 import (
 	"encoding/binary"
+	"runtime"
 	"sync"
 	"unsafe"
 
@@ -39,17 +40,19 @@ const (
 
 type block [blockLength]uint64
 
+// zeroBlock is the constant all-zero block: the second input of the
+// data-independent address generator and, on the SSE path, the operand
+// that stands in for upstream's freshly zeroed stack temporary. It is only
+// ever read; TestWorkspaceWipe asserts it stayed zero.
+var zeroBlock block //nolint:gochecknoglobals // read-only constant, shared by all lanes
+
 // laneScratch is the per-lane working state that upstream keeps as stack
-// locals of each processSegment goroutine. secmem: hoisted here so the
-// parent owns it — a worker goroutine's stack is reachable by nothing after
-// it exits, and the runtime hands it to the next goroutine unwiped.
-//
-// zero must be all-zero on entry to every segment: it is the constant zero
-// block the data-independent address generator XORs against, and the SSE
-// mix step also uses it as its "previous t" input (upstream relied on a
-// freshly zeroed stack local for that). Wipe restores the invariant.
+// locals of each processSegment goroutine (addresses, in) plus blamka's
+// temporary (tmp). secmem: hoisted here so the parent owns it — a worker
+// goroutine's stack is reachable by nothing after it exits, and the runtime
+// hands it to the next goroutine unwiped.
 type laneScratch struct {
-	addresses, in, zero, tmp block
+	addresses, in, tmp block
 }
 
 // Workspace holds every byte of working state one derivation touches. Its
@@ -78,10 +81,11 @@ type Workspace struct {
 	initInput []byte
 }
 
-// AdjustedMemory returns the memory parameter Argon2 actually uses for the
+// adjustMemory returns the memory parameter Argon2 actually uses for the
 // given request: rounded down to a multiple of 4*threads and raised to the
-// minimum of 8*threads, exactly as upstream does.
-func AdjustedMemory(memory uint32, threads uint8) uint32 {
+// minimum of 8*threads, exactly as upstream does after hashing the
+// requested value into H0.
+func adjustMemory(memory uint32, threads uint8) uint32 {
 	p := uint32(threads)
 	memory = memory / (syncPoints * p) * (syncPoints * p)
 	if memory < 2*syncPoints*p {
@@ -92,12 +96,12 @@ func AdjustedMemory(memory uint32, threads uint8) uint32 {
 
 // NewWorkspace allocates a zeroed Workspace for the given cost parameters.
 // threads must be at least 1 (the caller validates; a zero here panics as
-// upstream would). memory is in KiB and is adjusted per [AdjustedMemory].
+// upstream would). memory is in KiB.
 func NewWorkspace(memory uint32, threads uint8) *Workspace {
 	if threads < 1 {
 		panic("argon2: parallelism degree too low")
 	}
-	adjusted := AdjustedMemory(memory, threads)
+	adjusted := adjustMemory(memory, threads)
 	return &Workspace{
 		requested: memory,
 		memory:    adjusted,
@@ -107,13 +111,9 @@ func NewWorkspace(memory uint32, threads uint8) *Workspace {
 	}
 }
 
-// Memory reports the adjusted memory cost in KiB (one block each).
-func (ws *Workspace) Memory() uint32 { return ws.memory }
-
 // Wipe zeroes every byte of working state — the matrix, the lane scratch,
-// H0, the H' buffers and the H0 input — using secmem's non-elidable wipe.
-// It restores the all-zero invariant NewWorkspace established, so the
-// Workspace is ready for another derivation.
+// H0, the H' buffers and the H0 input — using secmem's non-elidable wipe,
+// so the Workspace is ready for another derivation.
 func (ws *Workspace) Wipe() {
 	if len(ws.b) > 0 {
 		//nolint:gosec // G103: byte view of a Go-owned []block for the wipe; audited.
@@ -135,9 +135,9 @@ func (ws *Workspace) Wipe() {
 // secret (K) and data (X) are the RFC 9106 optional inputs; nil means
 // absent, which is what upstream's Key/IDKey always pass.
 //
-// Preconditions (the exported wrapper in secmemcrypto enforces them as
-// errors; here they panic exactly as upstream does): time ≥ 1, len(out) ≥ 1,
-// ws non-nil and all-zero.
+// Preconditions, all checked here and all panics (the exported wrapper in
+// secmemcrypto turns them into errors first): time ≥ 1, len(out) ≥ 1, a
+// known mode, ws non-nil and freshly allocated or wiped.
 //
 // On return every working value has been overwritten except what is in ws,
 // which the caller wipes. The output equals upstream's for the same inputs.
@@ -148,30 +148,54 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	if len(out) < 1 {
 		panic("argon2: tag length too small")
 	}
+	if mode > ModeID {
+		panic("argon2: unknown mode")
+	}
 	if ws == nil {
 		panic("argon2: nil workspace")
 	}
 	//nolint:gosec // G115: len(out) is bounded by the caller to uint32 range.
 	keyLen := uint32(len(out))
 
-	// secmem: the goroutine-free phases run under secmem.Scrub so that the
-	// stack temporaries of BLAKE2b's one-shot functions (checkSum's block
-	// copy, the returned digest values) and of this package's own helpers
-	// are erased on the way out. processBlocks is deliberately outside: it
-	// spawns goroutines, which Scrub does not reach — that is what the
-	// hoisted laneScratch is for.
+	// secmem: grow the H0 input buffer before the Scrub window so that, on a
+	// runtime/secret build, the allocation is not registered for GC-time
+	// erasure (the explicit wipe below covers it, and tracking has a cost).
+	ws.reserveInitInput(len(password) + len(salt) + len(secret) + len(data))
+
+	// secmem: the parent's two phases run under secmem.Scrub so that the
+	// stack temporaries of BLAKE2b (checkSum's block copy, the returned
+	// digest values) and of this package's own helpers are erased on the
+	// way out, and the vector registers — which BLAKE2b's AVX2 code and the
+	// memmove of the password leave dirty, and which the legacy Scrub does
+	// not clear — are cleared inside the window. The OS-thread pin is for
+	// the legacy path: runtime/secret pins for the duration of Do itself,
+	// but the legacy Scrub does not, and a clear only helps on the thread
+	// that holds the residue.
+	runtime.LockOSThread()
 	secmem.Scrub(func() {
 		ws.initHash(password, salt, secret, data, time, keyLen, mode)
 		ws.initBlocks()
+		clearVectorRegs()
 	})
+	runtime.UnlockOSThread()
+
 	ws.processBlocks(mode, time)
+
+	runtime.LockOSThread()
 	secmem.Scrub(func() {
 		ws.extractKey(out)
+		clearVectorRegs()
 	})
-	// secmem: BLAKE2b's AVX2 path and the SSE blamka leave block state in
-	// the vector registers of whichever thread ran them; the parent ran
-	// initBlocks/extractKey on this one.
-	clearVectorRegs()
+	runtime.UnlockOSThread()
+}
+
+// reserveInitInput makes ws.initInput able to hold an H0 input for inputs
+// totalling n bytes.
+func (ws *Workspace) reserveInitInput(n int) {
+	need := 24 + 4*4 + n
+	if cap(ws.initInput) < need {
+		ws.initInput = make([]byte, need)
+	}
 }
 
 // initHash computes H0 into ws.h0[:64]. secmem: the input is assembled in
@@ -179,11 +203,8 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 // streamed into a heap blake2b.New512 digest whose block buffer would keep
 // the password.
 func (ws *Workspace) initHash(password, salt, key, data []byte, time, keyLen uint32, mode Mode) {
-	need := 24 + 4*4 + len(password) + len(salt) + len(key) + len(data)
-	if cap(ws.initInput) < need {
-		ws.initInput = make([]byte, need)
-	}
-	in := ws.initInput[:need]
+	ws.reserveInitInput(len(password) + len(salt) + len(key) + len(data)) // no-op after Derive's reservation
+	in := ws.initInput[:24+4*4+len(password)+len(salt)+len(key)+len(data)]
 
 	binary.LittleEndian.PutUint32(in[0:4], ws.threads)
 	binary.LittleEndian.PutUint32(in[4:8], keyLen)
@@ -234,29 +255,50 @@ func (ws *Workspace) processBlocks(mode Mode, time uint32) {
 	lanes := memory / threads
 	segments := lanes / syncPoints
 
+	var wg sync.WaitGroup // secmem: one for the derivation; reuse after Wait is legal
 	for n := uint32(0); n < time; n++ {
 		for slice := uint32(0); slice < syncPoints; slice++ {
-			var wg sync.WaitGroup
 			for lane := uint32(0); lane < threads; lane++ {
 				wg.Add(1)
-				go ws.processSegment(mode, n, slice, lane, time, lanes, segments, &ws.lanes[lane], &wg)
+				go ws.runSegment(mode, n, slice, lane, time, lanes, segments, &ws.lanes[lane], &wg)
 			}
 			wg.Wait()
 		}
 	}
 }
 
+// runSegment is the worker goroutine's body: processSegment inside a Scrub
+// window of its own.
+//
+// secmem: runtime/secret.Do does not extend to goroutines the wrapped
+// function spawns — but a goroutine may call Do on itself, and that is
+// what this is. Inside the window, on a GOEXPERIMENT=runtimesecret build,
+// the runtime refuses to asynchronously preempt this goroutine (a
+// preemption would copy the register file, block rows included, into
+// runtime-owned buffers) and erases the goroutine's stack and registers
+// when the window closes. On the legacy path Scrub reserves and then wipes
+// a 32 KiB band of this stack in place, which covers processBlock's frame,
+// blamkaGeneric's spilled words and the frame an asynchronous preemption
+// pushes; asynchronous preemption itself is not prevented there (on Linux
+// the legacy window blocks the signal; on Windows and Darwin it cannot).
+// The vector-register clear at the end is the legacy path's supplement for
+// what runtime/secret does itself, and the OS-thread pin makes it land on
+// the thread that did the work.
+func (ws *Workspace) runSegment(mode Mode, n, slice, lane, time, lanes, segments uint32, s *laneScratch, wg *sync.WaitGroup) {
+	defer wg.Done()
+	runtime.LockOSThread()
+	defer runtime.UnlockOSThread()
+	secmem.Scrub(func() {
+		ws.processSegment(mode, n, slice, lane, time, lanes, segments, s)
+		clearVectorRegs()
+	})
+}
+
 // processSegment is upstream's closure of the same name, with its three
 // block locals (and blamka's temporary) replaced by the caller-owned
-// laneScratch s. Its only stack state is a handful of scalars.
-func (ws *Workspace) processSegment(mode Mode, n, slice, lane, time, lanes, segments uint32, s *laneScratch, wg *sync.WaitGroup) {
-	defer wg.Done()
-	// secmem: the blamka SSE code leaves block words in XMM registers on
-	// whatever thread ran this goroutine; clear them before the goroutine
-	// exits and the thread moves on. Deferred so it runs even if the loop
-	// panics (which is fatal to the process anyway, but the order is right).
-	defer clearVectorRegs()
-
+// laneScratch s; its own stack state is a handful of scalars, and what its
+// callees leave below it is covered by runSegment's window.
+func (ws *Workspace) processSegment(mode Mode, n, slice, lane, time, lanes, segments uint32, s *laneScratch) {
 	B := ws.b
 	memory, threads := ws.memory, ws.threads
 	addresses, in := &s.addresses, &s.in
@@ -282,8 +324,8 @@ func (ws *Workspace) processSegment(mode Mode, n, slice, lane, time, lanes, segm
 		index = 2 // we have already generated the first two blocks
 		if mode == ModeI || mode == ModeID {
 			in[6]++
-			processBlock(addresses, in, &s.zero, s)
-			processBlock(addresses, addresses, &s.zero, s)
+			processBlock(addresses, in, &zeroBlock, s)
+			processBlock(addresses, addresses, &zeroBlock, s)
 		}
 	}
 
@@ -297,8 +339,8 @@ func (ws *Workspace) processSegment(mode Mode, n, slice, lane, time, lanes, segm
 		if mode == ModeI || (mode == ModeID && n == 0 && slice < syncPoints/2) {
 			if index%blockLength == 0 {
 				in[6]++
-				processBlock(addresses, in, &s.zero, s)
-				processBlock(addresses, addresses, &s.zero, s)
+				processBlock(addresses, in, &zeroBlock, s)
+				processBlock(addresses, addresses, &zeroBlock, s)
 			}
 			random = addresses[index%blockLength]
 		} else {

@@ -25,15 +25,24 @@ mark the stability commitment.
   only when the collector gets to it. `secmem-crypto/internal/argon2` is a
   fork of x/crypto v0.56.0 (BSD-3, see `NOTICE`) in which every piece of
   working state lives in one parent-owned workspace, wiped with
-  `SecureWipe` before the call returns; H0 and H' use BLAKE2b's stack-only
-  one-shot functions; the goroutine-free phases run under `Scrub`; and on
-  amd64 the vector registers are cleared at the end of every worker and of
-  the derivation (with an empirical register-dump test, per the rule in
-  `scrub_legacy.go`). Output is byte-identical to upstream: pinned by the
-  RFC 9106 §5 vectors for all three variants, a 24-case table and a
-  differential fuzz target against x/crypto. The new function exposes the
-  RFC's secret key K and associated data X, and the Argon2d variant, none
-  of which x/crypto's public API can express. Cost: the wipe is one
+  `SecureWipe` before the call returns; H0 and H' are stack-only BLAKE2b
+  for every output length (x/crypto's one-shots plus a forked portable
+  finalisation); every worker goroutine runs its segment inside a `Scrub`
+  window of its own, so a runtime/secret build erases worker stacks and
+  registers and does not preempt them mid-block; and on amd64 the vector
+  registers are cleared inside every window on the pinned thread (with an
+  empirical register-dump test, per the rule in `scrub_legacy.go`). Output
+  is byte-identical to upstream: pinned by the RFC 9106 §5 vectors for all
+  three variants, a 24-case table and a differential fuzz target against
+  x/crypto, and the forked assembly and verbatim functions are checked
+  against the resolved x/crypto so a Dependabot bump that changes them goes
+  red. The new function exposes the RFC's secret key K and associated data
+  X, and the Argon2d variant, none of which x/crypto's public API can
+  express. What is not covered is stated in `Argon2Into`'s doc: the
+  workspace is pageable, dumpable heap for the call's duration and is not
+  registered with secmem (a locked workspace is the next step), and on the
+  legacy Scrub path an asynchronous preemption's copy of a worker's
+  registers in runtime buffers is out of reach. Cost: the wipe is one
   cache-flushing pass over the working set, 5.5 ms for 64 MiB on a 2025
   desktop where the derivation takes 29 ms, so about a fifth more there and
   proportionally less on slower hardware (`BenchmarkForkVsUpstream`).
@@ -45,10 +54,15 @@ mark the stability commitment.
 - **`secmem-crypto`: `Argon2IDKeyInto` and `Argon2DeriveInto` now run on
   the in-tree fork.** Same signatures, same bytes out; the heap caveat in
   their documentation is gone because the residue it described is. The
-  output buffer is now write-locked for the whole derivation rather than for
-  a copy at the end, since the tag is computed in place. `golang.org/x/sys`
-  becomes a direct dependency of `secmem-crypto` (the fork's CPU-feature
-  check; it was already indirect via x/crypto).
+  output buffer is now borrowed (the shared read lease of `WithBytesErr`)
+  for the whole derivation rather than for a copy at the end, since the tag
+  is computed in place: writers to it block for the derivation, and a
+  concurrent reader would see the old or a partly written tag, so do not
+  read it from another goroutine mid-derivation. Callers who wrapped the
+  call in `ScrubErr` on the old doc's advice should remove the wrapper (see
+  `Argon2Into`). `golang.org/x/sys` becomes a direct dependency of
+  `secmem-crypto` (the fork's CPU-feature check; it was already indirect
+  via x/crypto).
 
 ## [secmem-crypto/v0.4.0] - 2026-09-07
 

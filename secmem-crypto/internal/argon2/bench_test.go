@@ -15,11 +15,13 @@ import (
 // there were any.
 //
 // Measured 2026-09-07 on an Intel Core Ultra 7 265KF, Go 1.26.5, windows/
-// amd64, -benchtime=5x -count=3: t3/64 MiB/p4 fork 33.8-35.9 ms vs upstream
-// 28.6-28.8 ms; t2 fork 25.0-25.6 ms vs 20.3-20.9 ms; 8 MiB/p1 fork
-// 3.7-4.1 ms vs 3.1-3.2 ms; BenchmarkWipeOnly 5.5 ms for 64 MiB (12 GB/s,
-// cache-flushing). The difference is the wipe pass, to within a
-// millisecond; the fork allocates slightly less than upstream.
+// amd64 (legacy Scrub path), -benchtime=5x -count=3: t3/64 MiB/p4 fork
+// 33.2-34.5 ms vs upstream 28.8-30.2 ms; t2 fork 24.9-26.0 ms vs
+// 20.9-21.5 ms; 8 MiB/p1 fork 3.6-3.7 ms vs 3.0-3.3 ms; BenchmarkWipeOnly
+// 5.4 ms for 64 MiB (12 GB/s, cache-flushing). The difference is the wipe
+// pass, to within a millisecond; the 48 per-segment Scrub windows do not
+// register, and the fork allocates less than upstream (one WaitGroup, no
+// per-slice closure).
 func BenchmarkForkVsUpstream(b *testing.B) {
 	password := []byte("correct horse battery staple")
 	salt := []byte("0123456789abcdef")
@@ -53,7 +55,7 @@ func BenchmarkForkVsUpstream(b *testing.B) {
 // BenchmarkWipeOnly isolates the wipe itself at the 64 MiB profile.
 func BenchmarkWipeOnly(b *testing.B) {
 	ws := NewWorkspace(64*1024, 4)
-	b.SetBytes(int64(ws.Memory()) * 1024)
+	b.SetBytes(int64(len(ws.b)) * 1024)
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		ws.Wipe()

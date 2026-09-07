@@ -58,7 +58,9 @@ that is said outright rather than dressed up.
 | ECDSA deterministic mode matches RFC 6979 | Six appendix vectors (P-256/384/521, SHA-256), byte-identical differential vs `crypto/ecdsa`, differential fuzz | `ecdsa_test.go`, `fuzz_block3_test.go` |
 | X25519 matches RFC 7748 | §6.1 vectors both directions, differential fuzz vs `curve25519`, low-order-point rejection | `x25519_test.go`, `fuzz_block2_test.go` |
 | HKDF matches RFC 5869 | Test cases 1–3 (SHA-256), differential vs `x/crypto/hkdf`, hash agility | `kdf_test.go` |
-| Argon2id is the standard parameter profile | The `x/crypto/argon2` reference KAT (see note below re: RFC 9106) | `kdf_test.go` |
+| Argon2 is the standard function | RFC 9106 §5 vectors for Argon2d/i/id (K and X set), the `x/crypto/argon2` reference KAT, and a differential table plus fuzz target against `x/crypto` | `secmem-crypto/argon2_public_test.go`, `secmem-crypto/kdf_test.go`, `secmem-crypto/internal/argon2/argon2_test.go` |
+| Argon2's working state is wiped | The test owns the workspace and asserts every region is non-zero after the derivation (control) and zero after the wipe; the vector-register clear is checked by dumping X0–X15 before and after | `secmem-crypto/internal/argon2/wipe_test.go`, `vecclear_amd64_test.go` |
+| The Argon2 fork matches its upstream where it claims to | `blamka_amd64.s` byte-identical and the verbatim functions text-identical to the resolved `golang.org/x/crypto` | `secmem-crypto/internal/argon2/upstream_identity_test.go` |
 | **ML-KEM-768 keygen and decap agree with the standard library's FIPS 203 implementation** | Accumulated known-answer test: 100 deterministic rounds — keygen and both decapsulations through `MLKEM768Key`, encapsulation via the stdlib derandomized test helper — folded into a SHAKE128 digest matched byte-for-byte to `crypto/mlkem`'s own accumulated value. Conformance to the reference implementation (itself NIST-validated), not an independent NIST vector; a wrapper plumbing regression breaks the digest | `kat_test.go` |
 | The AEAD wrapper preserves the cipher contract | A published AES-256-GCM vector threaded through `SealFrom` and `OpenInto` byte-for-byte | `kat_test.go`, `aead_test.go` |
 | `OpenInto` lands plaintext in the buffer with no heap intermediate | `testing.AllocsPerRun` gate asserts 0 allocs | `alloc_test.go` |
@@ -123,11 +125,11 @@ stand-in rather than measured directly.
   with the standard library's FIPS 203 implementation; the zeroization
   discipline mirrors the FIPS "zeroization of CSPs" requirement. No CMVP
   validation has been performed and none is claimed.
-- **Argon2id is pinned to the reference-implementation KAT, not RFC 9106's
-  headline vector.** That vector sets a secret key and associated data which
-  `golang.org/x/crypto/argon2` does not expose, so it cannot be reproduced
-  through this API; the pinned value is the parameter profile shared by the
-  reference CLI and the mainstream bindings.
+- **Argon2 is pinned to RFC 9106's §5 vectors and to `x/crypto`.** The RFC
+  vectors set a secret key and associated data, which `Argon2Into` exposes
+  (`golang.org/x/crypto/argon2` does not); the in-tree fork is additionally
+  checked byte-for-byte against `x/crypto` on the no-K/no-X profile the
+  mainstream bindings share, by a fixed table and a differential fuzz target.
 
 ## Benchmarks: what they are for, and how to report them
 

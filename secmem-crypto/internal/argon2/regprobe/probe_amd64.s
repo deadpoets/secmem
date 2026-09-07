@@ -2,8 +2,8 @@
 
 #include "textflag.h"
 
-// func dumpXMM(buf *[256]byte)
-TEXT ·dumpXMM(SB), NOSPLIT, $0-8
+// func DumpXMM(buf *[256]byte)
+TEXT ·DumpXMM(SB), NOSPLIT, $0-8
 	MOVQ  buf+0(FP), AX
 	MOVOU X0, 0(AX)
 	MOVOU X1, 16(AX)
