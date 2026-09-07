@@ -34,12 +34,13 @@ var reentrantUnsafe = map[string]bool{ //nolint:gochecknoglobals // immutable lo
 // checkReentrancy flags an access method called on the SAME buffer inside its own
 // borrowing closure. A DIFFERENT buffer (the documented decrypt-into pattern) is
 // resolved by object identity and is not flagged.
+//
+// Receivers are compared as identity chains, so a buffer held in a struct field
+// is covered. Requiring a plain identifier on both ends — which is all this
+// check used to do — silently disabled it for s.buf.WithBytes(...), and holding
+// the buffer in a struct is how most programs of any size hold it.
 func checkReentrancy(pass *analysis.Pass, acc accessor, sup *suppressor) {
-	if acc.recv == nil {
-		return
-	}
-	recvObj := pass.TypesInfo.ObjectOf(acc.recv)
-	if recvObj == nil {
+	if len(acc.recv) == 0 {
 		return
 	}
 	ast.Inspect(acc.fn.Body, func(n ast.Node) bool {
@@ -51,8 +52,8 @@ func checkReentrancy(pass *analysis.Pass, acc accessor, sup *suppressor) {
 		if !ok || !reentrantUnsafe[sel.Sel.Name] {
 			return true
 		}
-		inner, ok := sel.X.(*ast.Ident)
-		if !ok || pass.TypesInfo.ObjectOf(inner) != recvObj {
+		inner, ok := receiverKey(pass, sel.X)
+		if !ok || !sameReceiver(acc.recv, inner) {
 			return true
 		}
 		if !sup.suppressed(pass, call.Pos()) {
