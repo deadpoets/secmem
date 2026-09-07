@@ -68,7 +68,9 @@ type SecureBuffer struct {
 	// janitorKey identifies this buffer's raw mapping in emergencyJanitor.
 	janitorKey uintptr
 
-	// sealed is true when the buffer's mmap region has been set to PROT_NONE.
+	// sealed is true when the buffer's mmap region has been set to PROT_NONE,
+	// or when Seal encrypted the contents and could then neither protect the
+	// page nor decrypt them again — an unsealed buffer is never ciphertext.
 	// All access methods return ErrSealed while sealed is true.
 	// Protected by mu (same lock used for all state changes).
 	sealed bool
@@ -433,6 +435,15 @@ func (s *SecureBuffer) ReadWrite() error {
 // protection is preserved across the seal cycle.
 //
 // Seal is idempotent: calling it on an already-sealed buffer is a no-op.
+//
+// On Windows the contents are encrypted before the page protection is applied.
+// If the protection then fails and the encryption cannot be rolled back either,
+// Seal returns the error but leaves the buffer sealed anyway: the contents are
+// ciphertext, and an unsealed buffer would hand them out as the secret. The
+// accessors return [ErrSealed] and [SecureBuffer.Unseal] decrypts and recovers
+// it; Unseal then Seal again retries the page protection. Off Windows there is
+// no cipher, and a failed Seal leaves the buffer unsealed with its contents
+// intact.
 func (s *SecureBuffer) Seal() error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.Seal: nil receiver")
@@ -447,6 +458,15 @@ func (s *SecureBuffer) Seal() error {
 	}
 	if s.sealed {
 		return nil // idempotent
+	}
+	if s.sealCipher.Load() {
+		// Unreachable: the rollback below leaves the buffer sealed whenever
+		// the contents stay ciphertext. Kept because the cost of being wrong
+		// is a second cipher pass that one Unseal cannot reverse — the secret
+		// would be gone for good. Close the accessors over what is already
+		// ciphertext and let Unseal recover it.
+		s.sealed = true
+		return errors.New("secmem.SecureBuffer.Seal: contents are already seal-cipher ciphertext; buffer left sealed, Unseal decrypts it")
 	}
 	// The seal cipher encrypts in place (Windows: CryptProtectMemory), so the
 	// region must be writable during Seal. If the caller had set it read-only,
@@ -469,18 +489,33 @@ func (s *SecureBuffer) Seal() error {
 	if applied {
 		s.sealCipher.Store(true)
 	}
-	if err := mprotectSecretMem(s.region, 0 /*PROT_NONE*/); err != nil {
+	if err := sealProtect(s.region); err != nil {
 		// Roll the cipher back so the buffer stays usable plaintext.
 		if applied {
-			if derr := sealDecrypt(s.region); derr == nil {
-				s.sealCipher.Store(false)
+			if derr := sealDecrypt(s.region); derr != nil {
+				// The contents are ciphertext with no page protection. Every
+				// accessor gates on sealed, so returning unsealed would hand
+				// the ciphertext out as the secret; sealed is the one state
+				// whose invariants still hold, and Unseal's decrypt path is
+				// the recovery.
+				s.sealed = true
+				s.reapplyReadOnly()
+				return fmt.Errorf("secmem.SecureBuffer.Seal: %w; rolling the cipher back failed too: %w (buffer left sealed, Unseal decrypts it)", err, derr)
 			}
+			s.sealCipher.Store(false)
 		}
 		s.reapplyReadOnly()
 		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 	}
 	s.sealed = true
 	return nil
+}
+
+// sealProtect is Seal's PROT_NONE step. A package var, not an inline call,
+// solely so a test can make it fail on demand together with sealDecrypt and
+// drive the rollback path above; production always runs the value here.
+var sealProtect = func(region secRegion) error {
+	return mprotectSecretMem(region, 0 /*PROT_NONE*/)
 }
 
 // reapplyReadOnly re-applies PROT_READ when the buffer is flagged read-only.
