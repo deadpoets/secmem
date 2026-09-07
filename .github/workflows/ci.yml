@@ -138,8 +138,10 @@ jobs:
         working-directory: secmem-crypto
 
   # secmem-lint: the borrowing-closure analyzer (its own module, x/tools only).
-  # Runs its analysistest suite, then dogfoods it — the library must pass its own
-  # analyzer, with the intentional egresses carrying //nolint:secmem-lint.
+  # Runs its analysistest suite, then dogfoods it — the library AND the examples
+  # (the code people copy) must pass its own analyzer, with the intentional
+  # egresses carrying //nolint:secmem-lint. examples/ is outside the workspace
+  # setup-workspace writes, so it is vetted with GOWORK=off like its own job.
   secmem-lint:
     runs-on: ubuntu-latest
     steps:
@@ -158,6 +160,11 @@ jobs:
         run: go vet -vettool="$RUNNER_TEMP/secmem-lint" ./...
       - name: dogfood secmem-crypto
         working-directory: secmem-crypto
+        run: go vet -vettool="$RUNNER_TEMP/secmem-lint" ./...
+      - name: dogfood examples
+        working-directory: examples
+        env:
+          GOWORK: "off"
         run: go vet -vettool="$RUNNER_TEMP/secmem-lint" ./...
 
   # The runnable examples (examples/) — the illustrative module. It resolves core

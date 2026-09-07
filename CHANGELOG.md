@@ -15,6 +15,62 @@ mark the stability commitment.
 
 ### Changed
 
+- **`secmem-crypto`, `examples`: `golang.org/x/crypto` 0.54.0 → 0.56.0.**
+  Maintenance, not a fix: the `vuln` job was green against 0.54.0, so nothing
+  outstanding was reachable. Recorded because a `require` change in
+  `secmem-crypto` raises the floor for everyone importing it, which is the same
+  reason `secmem-crypto/v0.3.1` was a dependency-only release with an entry of
+  its own.
+
+  0.56.0 declares `go 1.26.0`, so both go directives moved with it. The two
+  modules have to move together. `examples` pins `secmem-crypto` with a
+  `replace`, but a replace does not exempt the `require` line from minimum
+  version selection: bumping only `secmem-crypto` makes MVS select 0.55.0 for
+  `examples` too, while `examples/go.mod` still asks for 0.54.0 — and CI runs
+  readonly, so that is a hard error before any package loads.
+
+### Fixed
+
+- **`X25519Key.ConstantTimeEqual` no longer deadlocks on a reversed comparison.**
+  The same defect as the core's `Secret.ConstantTimeEqual`: both read locks were
+  taken in argument order. It now acquires in a fixed global order by
+  `SecureBuffer.LockOrder`, the process-unique ordinal the core exports as of
+  v0.4.0 — which is why this module's floor rises with it.
+
+- **`HKDFInto` now performs the Extract step inside its scrub window.**
+  `hkdf.New` computes the PRK — `HMAC(salt, secret)`, key-equivalent for every
+  byte Expand goes on to produce — and it was called *outside* the
+  `secmem.ScrubErr` window the doc says wraps the derivation. The single most
+  sensitive intermediate was the one value the window did not cover.
+
+- **`MarshalOpenSSHPrivateKey` no longer claims to wipe copies it cannot
+  reach.** The comment said "this copy, and every derived form below, is wiped";
+  in fact only the forms this package holds a reference to are —
+  `ssh.MarshalPrivateKey` builds its own intermediates around the private key
+  and returns only the final slice. The claim now names its limit. The PEM step
+  also encodes into a pre-grown buffer instead of `pem.EncodeToMemory`, whose
+  growing `bytes.Buffer` orphaned an unwiped array holding a prefix of the
+  base64-encoded private key on every reallocation.
+
+- **`secmem-crypto` fails loud where a wipe or an in-place decrypt cannot be
+  proven.** Three hardening fixes: the reflection-based ECDH-scalar wipe now
+  returns an error — and a test tripwire fails on a toolchain field rename —
+  instead of silently no-opping; diceware word selection reads the whole wordlist
+  on every draw, so the choice is no longer a secret-dependent memory access, and
+  the chosen words are written straight into a `SecureBuffer` rather than a heap
+  `[]string`; and `OpenInto` verifies the AEAD wrote in place, wiping the stray
+  heap plaintext and returning an error instead of silently succeeding with an
+  unwritten buffer when it did not.
+
+## [0.4.0] - 2026-09-07
+
+The external security review, closed. Its one HIGH and every MEDIUM landed in
+the train PRs; this release also carries the long tail of LOW and INFO findings,
+each fix paired with a regression test shown to fail against the unfixed code.
+Adds `InstallTerminationWipeNoExit` and `SecureBuffer.LockOrder`, hence minor.
+
+### Changed
+
 - **`release.sh` now refuses a stale in-repo dependency instead of passing it.**
   The ordering check only asked whether the required version was *published*.
   The failure it exists to prevent — the permanently inert
@@ -24,19 +80,6 @@ mark the stability commitment.
   written to catch. It now also requires that version to be the newest published
   one, fails closed when the proxy cannot be reached, and honours
   `SECMEM_ALLOW_STALE_DEP=1` for a deliberately older floor.
-
-- **`secmem-crypto`, `examples`: `golang.org/x/crypto` 0.54.0 → 0.55.0.**
-  Maintenance, not a fix: the `vuln` job was green against 0.54.0, so nothing
-  outstanding was reachable. Recorded because a `require` change in
-  `secmem-crypto` raises the floor for everyone importing it, which is the same
-  reason `secmem-crypto/v0.3.1` was a dependency-only release with an entry of
-  its own.
-
-  The two modules have to move together. `examples` pins `secmem-crypto` with a
-  `replace`, but a replace does not exempt the `require` line from minimum
-  version selection: bumping only `secmem-crypto` makes MVS select 0.55.0 for
-  `examples` too, while `examples/go.mod` still asks for 0.54.0 — and CI runs
-  readonly, so that is a hard error before any package loads.
 
 - **Nightly fuzzing covers every package and preserves failing inputs.** Targets
   were listed in the module root only, so `redact.FuzzSanitize` never ran, and a
@@ -60,21 +103,14 @@ mark the stability commitment.
 
 ### Fixed
 
-- **`Secret.ConstantTimeEqual` and `X25519Key.ConstantTimeEqual` no longer
-  deadlock on a reversed comparison.** Both took their two read locks in
-  argument order, so `a.ConstantTimeEqual(b)` and `b.ConstantTimeEqual(a)`
-  running concurrently acquired them in opposite directions. Read locks are
-  shared, so the cycle needs a writer queued on each buffer — which a
-  writer-preferring lock makes routine, since a `Destroy` or an emergency wipe
-  is enough. Once wedged, both buffers are unreachable for `Destroy` and
-  `WipeAllSecrets` too.
-
-  Both now acquire in a fixed global order. The core orders by `janitorKey`, a
-  process-unique counter that assumes nothing about object placement;
-  `secmem-crypto` orders by buffer address, because that counter is unexported
-  and the module builds against a released core tag — using it would have meant
-  a core release plus a floor raise before the deadlock could be fixed at all.
-  Address ordering is sound while the Go GC does not relocate heap objects.
+- **`Secret.ConstantTimeEqual` no longer deadlocks on a reversed comparison.**
+  It took its two read locks in argument order, so `a.ConstantTimeEqual(b)` and
+  `b.ConstantTimeEqual(a)` running concurrently acquired them in opposite
+  directions; the writer-preferring lock makes the cycle routine (a `Destroy` or
+  an emergency wipe queues a writer), and once wedged both buffers are
+  unreachable for `Destroy` and `WipeAllSecrets` too. It now acquires in a fixed
+  global order by `janitorKey`, a process-unique counter that assumes nothing
+  about object placement — the ordinal `SecureBuffer.LockOrder` now exports.
 
 - **Constructors now wipe the caller's input on failure, not only on success.**
   `NewBuffer`, `NewSyscallSafeBuffer` and `NewSecret` warn that the input is
@@ -85,21 +121,6 @@ mark the stability commitment.
   it. A retry after `ErrNoSecureMemory` therefore has nothing left to copy, and
   does not need one: that error depends only on the platform and on
   `WithInsecureFallback`, both knowable up front via `Probe`.
-
-- **`HKDFInto` now performs the Extract step inside its scrub window.**
-  `hkdf.New` computes the PRK — `HMAC(salt, secret)`, key-equivalent for every
-  byte Expand goes on to produce — and it was called *outside* the
-  `secmem.ScrubErr` window the doc says wraps the derivation. The single most
-  sensitive intermediate was the one value the window did not cover.
-
-- **`MarshalOpenSSHPrivateKey` no longer claims to wipe copies it cannot
-  reach.** The comment said "this copy, and every derived form below, is wiped";
-  in fact only the forms this package holds a reference to are —
-  `ssh.MarshalPrivateKey` builds its own intermediates around the private key
-  and returns only the final slice. The claim now names its limit. The PEM step
-  also encodes into a pre-grown buffer instead of `pem.EncodeToMemory`, whose
-  growing `bytes.Buffer` orphaned an unwiped array holding a prefix of the
-  base64-encoded private key on every reallocation.
 
 - **`Scrub`'s "nothing sensitive is on the abandoned copy" was false.** The entry
   wipe orders the stack growth, but `morestack` copies the *whole* stack, so the
@@ -170,42 +191,6 @@ mark the stability commitment.
   the platform limit is documented. The behaviour is deliberately not escalated
   to a forced `os.Exit`, because the installer promises never to take the exit
   away from a co-installed graceful shutdown.
-
-- **`secmem-lint` no longer certifies code it never examined.** Eight
-  false-negative classes, every one of which reported clean rather than
-  reporting a limitation:
-
-  - Assignment escapes matched only a bare identifier, so `s.field = b`,
-    `m[k] = b`, `out[i] = b` and `*p = b` were all silently clean — stashing a
-    borrowed slice in a struct field being the most natural way to leak one.
-    Targets are now classified by shape, with a local struct or array value
-    still correctly treated as staying inside the lease.
-  - Logging **methods** could never match. The sink table is keyed by
-    `import/path.Func`, so `sl.Info(b)`, `l.Printf("%s", b)` and
-    `slog.Default().Warn(…, b)` all resolved their receiver to a variable or a
-    call result rather than to a package name. Now matched by receiver type, so
-    an unrelated `Info` method is still not swept in.
-  - `append(dst, b[:n]...)` escaped unflagged, because only a bare identifier
-    was matched where the rest of the file already used `refersToParam`.
-  - `panic(b)` was not flagged, though the value lands in the runtime traceback
-    and in any `recover()`.
-  - Sink table omissions: `log.Panicln` (both its siblings were present),
-    `log/slog.Log`, `log/slog.LogAttrs`, `fmt.Append`, `fmt.Appendf`,
-    `fmt.Appendln`.
-  - The reentrancy set omitted `SetByteAt`, which takes the **exclusive** lock
-    and is therefore an unconditional self-deadlock, and the `rLock`
-    inspectors `Len`, `MappedLen`, `IsSealed`, `IsDestroyed` — a nested read
-    acquire deadlocks as soon as a writer queues between the two, because the
-    lock is writer-preferring.
-
-  All fifteen new fixture cases were verified to fail against the previous
-  analyzer, so none of them is a vacuous assertion.
-
-  The improved analyzer immediately caught a real instance in this repo's own
-  shipped example: `ExampleScope` called `buf.Len()` from inside
-  `buf.WithBytesErr`, taking the read lock a second time from within the borrow.
-  Fixed to use `len(b)`, which the borrowed slice already carries and which
-  needs no lock — the pattern the example should have been demonstrating.
 
 - **`redact` credential rules missed the shape structured logs actually emit.**
   The Tier-1 patterns were `field[=:]\s*\S+`, which requires the separator to
@@ -318,15 +303,55 @@ mark the stability commitment.
   sealed or read-only region on new kernels — no Darwin mechanism zeroes frames
   behind a mapping the process cannot write.
 
-- **`secmem-crypto` fails loud where a wipe or an in-place decrypt cannot be
-  proven.** Three hardening fixes: the reflection-based ECDH-scalar wipe now
-  returns an error — and a test tripwire fails on a toolchain field rename —
-  instead of silently no-opping; diceware word selection reads the whole wordlist
-  on every draw, so the choice is no longer a secret-dependent memory access, and
-  the chosen words are written straight into a `SecureBuffer` rather than a heap
-  `[]string`; and `OpenInto` verifies the AEAD wrote in place, wiping the stray
-  heap plaintext and returning an error instead of silently succeeding with an
-  unwritten buffer when it did not.
+## [secmem-lint/v0.2.0] - 2026-09-07
+
+The analyzer stopped certifying code it never examined: eight false-negative
+classes closed, and receivers and parameters matched by object rather than by
+name. Minor: analyzer behaviour changed.
+
+### Fixed
+
+- **`secmem-lint` no longer certifies code it never examined.** Eight
+  false-negative classes, every one of which reported clean rather than
+  reporting a limitation:
+
+  - Assignment escapes matched only a bare identifier, so `s.field = b`,
+    `m[k] = b`, `out[i] = b` and `*p = b` were all silently clean — stashing a
+    borrowed slice in a struct field being the most natural way to leak one.
+    Targets are now classified by shape, with a local struct or array value
+    still correctly treated as staying inside the lease.
+  - Logging **methods** could never match. The sink table is keyed by
+    `import/path.Func`, so `sl.Info(b)`, `l.Printf("%s", b)` and
+    `slog.Default().Warn(…, b)` all resolved their receiver to a variable or a
+    call result rather than to a package name. Now matched by receiver type, so
+    an unrelated `Info` method is still not swept in.
+  - `append(dst, b[:n]...)` escaped unflagged, because only a bare identifier
+    was matched where the rest of the file already used `refersToParam`.
+  - `panic(b)` was not flagged, though the value lands in the runtime traceback
+    and in any `recover()`.
+  - Sink table omissions: `log.Panicln` (both its siblings were present),
+    `log/slog.Log`, `log/slog.LogAttrs`, `fmt.Append`, `fmt.Appendf`,
+    `fmt.Appendln`.
+  - The reentrancy set omitted `SetByteAt`, which takes the **exclusive** lock
+    and is therefore an unconditional self-deadlock, and the `rLock`
+    inspectors `Len`, `MappedLen`, `IsSealed`, `IsDestroyed` — a nested read
+    acquire deadlocks as soon as a writer queues between the two, because the
+    lock is writer-preferring.
+
+  All fifteen new fixture cases were verified to fail against the previous
+  analyzer, so none of them is a vacuous assertion.
+
+  The improved analyzer immediately caught a real instance in this repo's own
+  shipped example: `ExampleScope` called `buf.Len()` from inside
+  `buf.WithBytesErr`, taking the read lock a second time from within the borrow.
+  Fixed to use `len(b)`, which the borrowed slice already carries and which
+  needs no lock — the pattern the example should have been demonstrating.
+
+- **`secmem-lint` matches receivers and parameters by object, not by name.**
+  The reentrancy check silently did nothing when the buffer lived in a struct
+  field or any non-identifier receiver, and the goroutine-capture check flagged
+  shadowed variables that merely shared a parameter's name. Both were one
+  defect — matching AST shape instead of `types.Object` — and are fixed together.
 
 ## [secmem-crypto/v0.3.2] - 2026-08-16
 

@@ -109,9 +109,11 @@ func register(user string, password *secmem.SecureBuffer) error {
 
 	// The stored record is salt + derivation — designed to be safe at
 	// rest, so borrowing it out for persistence is correct, not a leak.
+	// secmem-lint flags the hex encoding as a heap copy of borrowed bytes,
+	// which it is; the copy is the verifier this function exists to write.
 	var record string
 	err = derived.WithBytesErr(func(d []byte) error {
-		record = hex.EncodeToString(salt) + ":" + hex.EncodeToString(d) + "\n"
+		record = hex.EncodeToString(salt) + ":" + hex.EncodeToString(d) + "\n" //nolint:secmem-lint // the derivation is the stored verifier; persisting it is the point
 		return nil
 	})
 	if err != nil {
