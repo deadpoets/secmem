@@ -5,7 +5,9 @@ environment it runs in: the process **privilege** (does it hold
 `CAP_IPC_LOCK`?), the **`RLIMIT_MEMLOCK`** budget, and the kernel's
 **`CONFIG_SECRETMEM`**. This document records how secmem behaves across those
 axes, and — per the honesty contract — marks what was measured on real hardware
-versus what is reasoned from it.
+versus what is reasoned from it. It is a Linux document; the Windows
+equivalent of the memlock budget (the process working-set minimum) is
+covered in [WINDOWS.md](WINDOWS.md).
 
 The one invariant across every environment: **secmem never silently degrades.**
 If it cannot obtain locked, off-heap memory it returns `ErrNoSecureMemory`

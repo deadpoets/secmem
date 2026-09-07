@@ -128,6 +128,12 @@
 // to the hard limit needs no privilege; raising the hard limit needs
 // CAP_SYS_RESOURCE. Over-budget allocations return an error — they never panic.
 //
+// Windows has no RLIMIT_MEMLOCK; VirtualLock is bounded by the process
+// minimum working-set size instead, and the default is small (a 1 MiB
+// buffer was refused on a stock Windows 11 workstation until the budget was
+// raised). EnsureMemlockLimit raises that budget on Windows as well
+// (SetProcessWorkingSetSizeEx).
+//
 // # Reachability
 //
 // Secret bytes are outside the Go heap, so the garbage collector never scans,

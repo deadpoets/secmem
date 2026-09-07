@@ -18,15 +18,32 @@ that is said outright rather than dressed up.
   an option.
 - **`GOEXPERIMENT=runtimesecret` variant** (Linux amd64 + arm64) — runs the
   build-tag-gated integration tests for the register/stack/heap erasure layer,
-  which are otherwise dark in automation.
+  which are otherwise dark in automation, including the Argon2 fork's proof
+  that every worker goroutine's segment runs inside a real `secret.Do` window.
 - **Executed on 32-bit x86** (`GOARCH=386`), not merely compiled — the wipe
   helpers manipulate `big.Word` limbs whose width differs on 386. Runs without
-  `-race` (the detector needs 64-bit), which is also where the allocation gates
-  run, since allocation counts are not meaningful under race instrumentation.
+  `-race` (the detector needs 64-bit).
+- **The no-heap-escape gates run where the deployed code runs.** The
+  `testing.AllocsPerRun` gates are `//go:build !race`, so the race jobs skip
+  them; dedicated `test-noescape` jobs run them on linux/amd64 and
+  linux/arm64 (where `OpenInto`'s GCM path is assembly), and the 386 job runs
+  them on the generic path.
+- **Locked-workspace tests cannot skip silently.** A step on each execution
+  runner re-runs the Argon2 workspace, pool, vector-register-clear and
+  upstream-identity tests verbosely and fails on any `--- SKIP`; on Linux it
+  first raises `RLIMIT_MEMLOCK` with `prlimit`, because the hosted runners'
+  hard limit is below the 64 MiB the package-default workspace needs.
 - **Cross-compiled** for linux/arm64, darwin/arm64, darwin/amd64, windows/arm64
-  (build + test-binary compile) so the whole matrix at least builds.
-- **Fuzz seed corpora** run as ordinary tests in CI; active fuzzing
-  (`-fuzztime`) is a local/manual step via the Makefile.
+  and windows/386 (build + test-binary compile) so the whole matrix at least
+  builds.
+- **Fuzz seed corpora** run as ordinary tests in CI on every PR. Active,
+  coverage-guided fuzzing runs nightly (`fuzz.yml`): every `Fuzz*` target in
+  every package of the core and `secmem-crypto` modules, three minutes each by
+  default, with any new failing input uploaded as an artifact so a finding
+  survives the runner. The Makefile's `fuzz` target is the local equivalent.
+- **Scheduled soaks and analysis.** `soak-windows.yml` repeats the Windows
+  `go test -race ./...` invocation many times a day to sample rare
+  non-deterministic failures, and CodeQL runs on every push and PR.
 
 ## Core memory hardening
 
@@ -46,6 +63,10 @@ that is said outright rather than dressed up.
 | A `Scrub` window blocks the preemption signal, so `asyncPreempt` cannot spill the register file into it | Reads `SigBlk` for the **calling thread** from `/proc/thread-self/status` — the kernel's own record — inside the window, and requires SIGURG and SIGPROF set there and the mask exactly restored after. Asserts the goroutine did not migrate (`LockOSThread`), and that a nested window restores the outer mask rather than unblocking | `scrub_window_linux_test.go` |
 | Blocking that signal does not make a window unpreemptible | Eight concurrent windows against a deliberately GC-heavy workload must all complete; a window the collector could not suspend would hang rather than fail quietly | `scrub_window_linux_test.go` (`TestScrub_ConcurrentWindowsUnderGCPressure`) |
 | Constructors fail closed, never panic | Bad/overflow inputs on every constructor; `RLIMIT_MEMLOCK=0` with `CAP_IPC_LOCK` dropped; unsupported-platform stub | `negative_test.go`, `negative_mlock_linux_test.go`, `mlock_stub_test.go` |
+| Constructors wipe the caller's input on failure, not only on success | An allocation that is forced to fail must leave the input slice zeroed | `securebuf_test.go` (`TestNewBuffer_WipesInputOnFailure`), `secret_test.go` (`TestNewSecret_CopiesAndWipesInput`) |
+| A reversed `ConstantTimeEqual` cannot deadlock | The two read locks are shown to be taken in `LockOrder` order regardless of argument order, under a forced interleaving | `secret_test.go` (`TestSecret_ConstantTimeEqual_AcquiresInKeyOrder`), `securebuf_lockorder_test.go` |
+| The emergency wipe never zeroes a buffer whose lock it does not hold | A registration re-handed the same base address after a destroy-during-wait is refused rather than wiped | `registry_emergency_test.go` (`TestWipeInPlace_RefusesAliasedRegistration`) |
+| The termination wipe ends the process, and stays armed when it does not | Where the signal cannot be re-raised the exit status equals the un-intercepted one (`STATUS_CONTROL_C_EXIT` on Windows, checked against a real console Ctrl-C); a handler that leaves the process running re-arms for the next signal | `terminationwipe_exit_test.go`, `terminationwipe_rearm_*_test.go` |
 | Borrow/copy/compare paths do not allocate (no heap escape) | `testing.AllocsPerRun` gate asserts 0 allocs on `WithBytes`/`ByteAt`/`CopyOut`/`CopyIn`/`ConstantTimeEqual`/… | `alloc_test.go` |
 | A sealed buffer holds ciphertext at rest (Windows) | Peeks the raw mapping while sealed and asserts the plaintext is absent (and not all-zero) | `sealcipher_windows_test.go` |
 | `Secret` / `redact` never emit the plaintext | Formatting/marshalling/slog routed through `any` so the verb can't be folded; adversarial and fuzzed inputs | `secret_test.go`, `negative_test.go`, `redact/*_test.go` |
@@ -60,11 +81,15 @@ that is said outright rather than dressed up.
 | HKDF matches RFC 5869 | Test cases 1–3 (SHA-256), differential vs `x/crypto/hkdf`, hash agility | `kdf_test.go` |
 | Argon2 is the standard function | RFC 9106 §5 vectors for Argon2d/i/id (K and X set), the `x/crypto/argon2` reference KAT, and a differential table plus fuzz target against `x/crypto` | `secmem-crypto/argon2_public_test.go`, `secmem-crypto/kdf_test.go`, `secmem-crypto/internal/argon2/argon2_test.go` |
 | Argon2's working state is wiped | The test owns the workspace and asserts every region is non-zero after the derivation (control) and zero after the wipe, and that the named views tile the region exactly; the vector-register clear is checked by dumping X0–X15 before and after | `secmem-crypto/internal/argon2/wipe_test.go`, `vecclear_amd64_test.go` |
-| A locked Argon2 workspace derives the same bytes, in either lock order, and is zero between uses | `Argon2Workspace.Derive` against `Argon2Into` and `x/crypto` with the output buffer registered before and after the workspace; the region read back after a derivation; a pool shared by eight goroutines; Derive after Destroy errors | `secmem-crypto/argon2_workspace_test.go` |
+| Each Argon2 worker's segment runs inside a `runtime/secret` window | Under `GOEXPERIMENT=runtimesecret` a test hook (nil in production) asks the runtime from inside every segment whether it is in `secret.Do`, with a plain-goroutine control that must answer no | `secmem-crypto/internal/argon2/runtimesecret_test.go` (`TestWorkersRunInsideSecretDo`) |
+| A locked Argon2 workspace derives the same bytes, in either lock order, and is zero between uses | `Argon2Workspace.Derive` against `Argon2Into` and `x/crypto` with the output buffer registered before and after the workspace; the region read back after a derivation; a pool shared by eight goroutines; Derive after Destroy errors. These tests skip when the lock budget cannot hold the workspace, so CI re-runs them verbosely and fails on a skip (see above) | `secmem-crypto/argon2_workspace_test.go` |
 | The Argon2 fork matches its upstream where it claims to | `blamka_amd64.s` byte-identical and the verbatim functions text-identical to the resolved `golang.org/x/crypto` | `secmem-crypto/internal/argon2/upstream_identity_test.go` |
 | **ML-KEM-768 keygen and decap agree with the standard library's FIPS 203 implementation** | Accumulated known-answer test: 100 deterministic rounds — keygen and both decapsulations through `MLKEM768Key`, encapsulation via the stdlib derandomized test helper — folded into a SHAKE128 digest matched byte-for-byte to `crypto/mlkem`'s own accumulated value. Conformance to the reference implementation (itself NIST-validated), not an independent NIST vector; a wrapper plumbing regression breaks the digest | `kat_test.go` |
 | The AEAD wrapper preserves the cipher contract | A published AES-256-GCM vector threaded through `SealFrom` and `OpenInto` byte-for-byte | `kat_test.go`, `aead_test.go` |
 | `OpenInto` lands plaintext in the buffer with no heap intermediate | `testing.AllocsPerRun` gate asserts 0 allocs | `alloc_test.go` |
+| `OpenInto` fails loud when the AEAD did not write in place | An AEAD stub that returns a fresh slice makes the call error, with the stray heap plaintext wiped, instead of reporting success over an unwritten buffer | `aead_openinto_test.go` (`TestOpenInto_RejectsAEADThatDoesNotWriteInPlace`) |
+| The reflection-based ECDH scalar wipe cannot silently no-op | A tripwire fails the suite if the standard library renames the field the wipe resolves, and an unresolvable field is reported as an error rather than ignored | `rsa_wipe_tripwire_test.go` |
+| Diceware word selection is not a secret-dependent memory access | Every draw is shown to read every wordlist entry regardless of the index chosen, and the result matches a direct index for every entry | `passphrase_ct_test.go` |
 | Sign wipes the exported limbs of the transient key it materializes | The wipe var is wrapped to alias the live transient's `big.Int` limbs during `Sign`; they are asserted zero afterward, and a `fired` guard fails if the deferred wipe is ever dropped. The stdlib FIPS-form copy and modular-arithmetic scratch are unreachable — see the note below | `livewipe_test.go`, `wipehelpers_block3_test.go` |
 | Every borrow path is safe when sealed/destroyed/nil | Each type's borrow methods return `ErrSealed`/`ErrDestroyed` and recover after `Unseal` | `sealed_block2_test.go`, `sealed_block3_test.go` |
 | Concurrent Sign is safe | 8×25 concurrent signs and Sign-vs-Destroy races under `-race` | `ed25519_test.go`, `ecdsa_test.go`, `rsa_test.go` |
@@ -126,6 +151,17 @@ stand-in rather than measured directly.
   with the standard library's FIPS 203 implementation; the zeroization
   discipline mirrors the FIPS "zeroization of CSPs" requirement. No CMVP
   validation has been performed and none is claimed.
+- **`memfd_secret`'s close-on-exec flag is asserted structurally, not
+  observed.** The descriptor exists only between the `memfd_secret` call and
+  the `MAP_FIXED` that maps it, and is closed before the constructor returns,
+  so no test can inspect the flag from outside; the `EINVAL` fallback that
+  sets it with `fcntl` is likewise unexercised on the kernels the suite has
+  run on. The flag is passed at creation in `mlock_linux.go`, and that is the
+  extent of the evidence.
+- **That `HKDFInto`'s Extract step runs inside its scrub window is a code
+  property, not a measured one.** The v0.4.0 fix moved the `hkdf.New` call
+  under `secmem.ScrubErr`; nothing observes from outside which code ran
+  inside the window, so the ordering is reviewed, not tested.
 - **Argon2 is pinned to RFC 9106's §5 vectors and to `x/crypto`.** The RFC
   vectors set a secret key and associated data, which `Argon2Into` exposes
   (`golang.org/x/crypto/argon2` does not); the in-tree fork is additionally

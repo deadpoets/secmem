@@ -45,7 +45,7 @@ plus a locked, reusable workspace for it. Minor: new API, no floor change.
   X, and the Argon2d variant, none of which x/crypto's public API can
   express. What is not covered is stated in `Argon2Into`'s doc: the
   workspace is pageable, dumpable heap for the call's duration and is not
-  registered with secmem (a locked workspace is the next step), and on the
+  registered with secmem (`Argon2Workspace`, below, is the locked form), and on the
   legacy Scrub path an asynchronous preemption's copy of a worker's
   registers in runtime buffers is out of reach. Cost: the wipe is one
   cache-flushing pass over the working set, 5.5 ms for 64 MiB on a 2025

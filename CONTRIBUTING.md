@@ -51,9 +51,10 @@ its own memory guarantees.
    git config gpg.format ssh                        # or leave unset for GPG
    git config user.signingkey ~/.ssh/your_key.pub    # SSH signing key
    ```
-   GitHub's own squash-merge signs the final commit on `main` regardless, so
-   an unsigned PR branch doesn't block merging — but CI does check signatures
-   on the commits you push, and a clean signed history makes review easier.
+   The signature requirement is enforced by branch protection on `main`,
+   and GitHub's own squash-merge signs the commit it lands there. An
+   unsigned PR branch therefore does not block merging; a signed one makes
+   the history easier to audit.
 5. Open the PR against `main`. Fill in the template — it's short on purpose.
 6. Address review feedback as new commits (don't force-push mid-review;
    squash happens automatically at merge).
@@ -75,7 +76,9 @@ to contributions:
 - **New kernel/OS coverage goes in [`KERNELS.md`](KERNELS.md)** — only real
   hardware or a real VM, never cross-compiled-and-assumed.
 - No new dependencies without discussion first — the whole point of `secmem`
-  is a minimal, auditable surface (`golang.org/x/sys` only, today).
+  is a minimal, auditable surface. The core depends on `golang.org/x/sys`
+  only; `secmem-crypto` adds `filippo.io/edwards25519`, `golang.org/x/crypto`
+  and `golang.org/x/sys`; `secmem-lint` depends on `golang.org/x/tools` only.
 
 ## Reporting a security issue
 

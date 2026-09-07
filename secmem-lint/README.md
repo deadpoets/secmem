@@ -40,13 +40,16 @@ Default (always on) — the borrowed slice, tracked inside the closure:
 |---|---|
 | E1 | `string(borrowed)` — copies the secret to a heap string |
 | E2 | `append(dst, borrowed...)` — spreads it into an escaping slice |
-| E3 | `copy`, channel send, goroutine capture, or assignment to a variable declared outside the closure |
-| E4 | borrowed bytes passed to a heap-copying or logging stdlib sink (`fmt`, `encoding/json`, `encoding/hex`, `encoding/base64`, `log`, `log/slog`, `crypto/ed25519.Sign`, `crypto/hmac.New`, `bytes`/`slices.Clone`) — the message names a secmem-native alternative where one exists |
-| R1 | a secmem access method called on the **same** buffer inside its own closure (the accessors take the buffer lock and are not reentrant) |
+| E3 | `copy`, channel send, goroutine capture, `panic`, or assignment to anything outside the closure — a variable declared outside it, a struct field, a map or slice element, or a pointer target |
+| E4 | borrowed bytes passed to a heap-copying or logging stdlib sink: `fmt`'s print, format and append functions, `encoding/json`, `encoding/hex`, `encoding/base64`, `log` and `log/slog` (package functions and `*log.Logger` / `*slog.Logger` methods alike), `crypto/ed25519.Sign` and `NewKeyFromSeed`, `crypto/hmac.New`, `bytes`/`slices.Clone` — the message names a secmem-native alternative where one exists |
+| R1 | a secmem access method called on the **same** buffer inside its own closure. The borrowing and mutating methods take the buffer lock and are not reentrant; the read-only inspectors (`Len`, `MappedLen`, `IsSealed`, `IsDestroyed`) also deadlock once a writer is queued, because the lock is writer-preferring |
 
 Matching is **type-aware**: a check fires only when the method is declared on a
 secmem / secmem-crypto type, so an unrelated `WithBytes` elsewhere is untouched.
-The decrypt-into pattern (nesting a **different** buffer) is allowed.
+Receivers and parameters are matched by their resolved object, not by name, so
+a buffer held in a struct field is tracked and a shadowed variable that merely
+shares a parameter's name is not. The decrypt-into pattern (nesting a
+**different** buffer) is allowed.
 
 Strict (`-strict`, opt-in — heuristic and higher-noise):
 

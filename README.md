@@ -81,7 +81,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion | ✗ |
 | Not inherited across fork | ⚠ MADV_DONTFORK | ⚠ MADV_DONTFORK | ✗ | n/a | ✗ |
 | No THP/KSM secret copies | ✓ madvise | ✓ madvise | n/a | n/a | ✗ |
-| Guaranteed wipe on destroy | ✓ asm + cache flush | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64) | ⚠ barriered store loop, no flush |
+| Guaranteed wipe on destroy | ✓ asm + cache flush | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64/arm64) | ⚠ barriered store loop, no flush |
 | Guard pages + overflow canary | ✓ | ✓ | ✓ | ✓ | ✗ (heap fallback) |
 | Stack-frame scrub inside [`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub) | ✓ asm | ✓ asm on amd64/arm64; ✗ stub elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ stub |
 | No async register dump into the window (preemption signal blocked) | ✓ SIGURG+SIGPROF | ✓ SIGURG+SIGPROF | ✗ no `pthread_sigmask` binding | ✗ unmaskable (`SetThreadContext`) | ✗ |

@@ -1,8 +1,10 @@
 # hardened-ssh-agent
 
-A working SSH agent, ~700 lines, whose private keys **never exist on the Go
-heap** — and are unreadable by anything, including this process itself,
-except during the microseconds of an actual signature.
+A working SSH agent, about a thousand lines, whose private keys **never
+exist on the Go heap** — and are unreadable by a stray read inside this
+process, or by a passive reader of its memory where the platform allows,
+except during the microseconds of an actual signature. The limits are in
+the threat-model section below.
 
 It speaks the standard agent protocol over `SSH_AUTH_SOCK`. Real `ssh`,
 `ssh-add`, `scp`, and `git` work against it unmodified:
@@ -120,5 +122,8 @@ order of effort:
 4. **Windows**: swap the unix socket for the `\\.\pipe\openssh-ssh-agent`
    named pipe; secmem's Windows backend (VirtualLock, `CryptProtectMemory`
    sealing, WER exclusion) already covers the memory side.
-5. **Persistence**: load keys at boot from OpenSSH key files via
-   `secmem-crypto`'s OpenSSH import/export instead of requiring `ssh-add`.
+5. **Persistence**: load keys at boot from OpenSSH key files instead of
+   requiring `ssh-add`. `secmem-crypto` exports an Ed25519 key in OpenSSH
+   format (`MarshalOpenSSHPrivateKey`); the import side — parsing the file
+   into a `SecureBuffer` without a heap copy of the seed — is not written yet
+   and would be the first piece of this step.
