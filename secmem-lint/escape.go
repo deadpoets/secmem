@@ -17,11 +17,11 @@ func checkCallbackEscapes(pass *analysis.Pass, acc accessor, sup *suppressor) {
 		case *ast.CallExpr:
 			checkCallEscape(pass, acc, node, sup)
 		case *ast.SendStmt:
-			if refersToParam(node.Value, acc.params) && !sup.suppressed(pass, node.Pos()) {
+			if refersToParam(pass, node.Value, acc.params) && !sup.suppressed(pass, node.Pos()) {
 				report(pass, node.Pos(), "borrowed secret bytes sent to a channel; they can outlive the closure")
 			}
 		case *ast.GoStmt:
-			if goStmtLeaksParam(node.Call, acc.params) && !sup.suppressed(pass, node.Pos()) {
+			if goStmtLeaksParam(pass, node.Call, acc.params) && !sup.suppressed(pass, node.Pos()) {
 				report(pass, node.Pos(), "borrowed secret bytes handed to a goroutine; they can outlive the closure")
 			}
 		case *ast.AssignStmt:
@@ -37,7 +37,7 @@ func checkCallEscape(pass *analysis.Pass, acc accessor, call *ast.CallExpr, sup 
 	if id, ok := call.Fun.(*ast.Ident); ok {
 		switch id.Name {
 		case "string":
-			if len(call.Args) == 1 && refersToParam(call.Args[0], acc.params) && !sup.suppressed(pass, call.Pos()) {
+			if len(call.Args) == 1 && refersToParam(pass, call.Args[0], acc.params) && !sup.suppressed(pass, call.Pos()) {
 				report(pass, call.Pos(), "string() copies borrowed secret bytes into a heap string")
 			}
 			return
@@ -46,7 +46,7 @@ func checkCallEscape(pass *analysis.Pass, acc accessor, call *ast.CallExpr, sup 
 			// the same escape written with a slice expression, and matching
 			// only the identifier let it through.
 			if call.Ellipsis.IsValid() && len(call.Args) >= 2 {
-				if refersToParam(call.Args[len(call.Args)-1], acc.params) && !sup.suppressed(pass, call.Pos()) {
+				if refersToParam(pass, call.Args[len(call.Args)-1], acc.params) && !sup.suppressed(pass, call.Pos()) {
 					report(pass, call.Pos(), "append(dst, borrowed...) copies borrowed secret bytes into an escaping slice")
 				}
 			}
@@ -54,12 +54,12 @@ func checkCallEscape(pass *analysis.Pass, acc accessor, call *ast.CallExpr, sup 
 		case "panic":
 			// The value is formatted into the runtime traceback and handed to
 			// any recover() up the stack, both well outside the lease.
-			if len(call.Args) == 1 && refersToParam(call.Args[0], acc.params) && !sup.suppressed(pass, call.Pos()) {
+			if len(call.Args) == 1 && refersToParam(pass, call.Args[0], acc.params) && !sup.suppressed(pass, call.Pos()) {
 				report(pass, call.Pos(), "panic() puts borrowed secret bytes in the traceback and in any recover()")
 			}
 			return
 		case "copy":
-			if len(call.Args) == 2 && refersToParam(call.Args[1], acc.params) && !sup.suppressed(pass, call.Pos()) {
+			if len(call.Args) == 2 && refersToParam(pass, call.Args[1], acc.params) && !sup.suppressed(pass, call.Pos()) {
 				report(pass, call.Pos(), "copy() moves borrowed secret bytes out of the closure")
 			}
 			return
@@ -76,7 +76,7 @@ func checkAssignEscape(pass *analysis.Pass, acc accessor, stmt *ast.AssignStmt, 
 		return
 	}
 	for i, rhs := range stmt.Rhs {
-		if i >= len(stmt.Lhs) || !refersToParam(rhs, acc.params) {
+		if i >= len(stmt.Lhs) || !refersToParam(pass, rhs, acc.params) {
 			continue
 		}
 		where, escapes := assignTargetEscapes(pass, stmt.Lhs[i], acc)
@@ -183,7 +183,7 @@ func checkSink(pass *analysis.Pass, acc accessor, call *ast.CallExpr, sup *suppr
 		return
 	}
 	for _, arg := range call.Args {
-		if refersToParam(arg, acc.params) {
+		if refersToParam(pass, arg, acc.params) {
 			if !sup.suppressed(pass, call.Pos()) {
 				report(pass, call.Pos(), fmt.Sprintf("borrowed secret bytes passed to %s; %s", name, reason))
 			}

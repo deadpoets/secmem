@@ -54,10 +54,15 @@ func run(pass *analysis.Pass) (any, error) {
 
 // accessor is a recognized secmem borrowing-closure call:
 // recv.Method(func(p []byte) { ... }).
+//
+// Both fields identify things by types.Object rather than by name or AST shape.
+// Names are the wrong key twice over: a receiver written as a field selector
+// (s.buf) is not an identifier at all, and a borrowed parameter's name can be
+// shadowed by an unrelated variable that happens to match.
 type accessor struct {
-	recv   *ast.Ident      // receiver identifier, or nil if not a plain identifier
-	fn     *ast.FuncLit    // the borrowing closure
-	params map[string]bool // names of its []byte parameters (the borrowed slices)
+	recv   []types.Object        // receiver identity chain, nil if undecidable
+	fn     *ast.FuncLit          // the borrowing closure
+	params map[types.Object]bool // its []byte parameters (the borrowed slices)
 }
 
 // borrowAccessor reports whether call is a secmem borrowing accessor and, if so,
@@ -87,12 +92,66 @@ func borrowAccessor(pass *analysis.Pass, call *ast.CallExpr) (accessor, bool) {
 	if lit == nil {
 		return accessor{}, false
 	}
-	params := byteSliceParams(lit)
+	params := byteSliceParams(pass, lit)
 	if len(params) == 0 {
 		return accessor{}, false
 	}
-	recv, _ := sel.X.(*ast.Ident)
+	recv, _ := receiverKey(pass, sel.X)
 	return accessor{recv: recv, fn: lit, params: params}, true
+}
+
+// receiverKey builds a comparison key for a receiver expression: the chain of
+// objects from the root identifier through any field selections, so buf and
+// s.buf and s.inner.buf each get a key that can be compared for identity.
+//
+// It reports false for shapes whose identity cannot be decided statically —
+// index expressions, calls, type assertions. bufs[i] and bufs[j] are written
+// alike and need not be the same buffer, and getBuf() twice need not return the
+// same one, so treating them as equal would be a false positive on a linter
+// whose findings block a build.
+func receiverKey(pass *analysis.Pass, expr ast.Expr) ([]types.Object, bool) {
+	switch e := expr.(type) {
+	case *ast.Ident:
+		obj := pass.TypesInfo.ObjectOf(e)
+		if obj == nil {
+			return nil, false
+		}
+		return []types.Object{obj}, true
+
+	case *ast.ParenExpr:
+		return receiverKey(pass, e.X)
+
+	case *ast.StarExpr:
+		// (*p).WithBytes(...) names the same buffer as p.WithBytes(...).
+		return receiverKey(pass, e.X)
+
+	case *ast.SelectorExpr:
+		base, ok := receiverKey(pass, e.X)
+		if !ok {
+			return nil, false
+		}
+		field := pass.TypesInfo.ObjectOf(e.Sel)
+		if field == nil {
+			return nil, false
+		}
+		key := make([]types.Object, 0, len(base)+1)
+		key = append(key, base...)
+		return append(key, field), true
+	}
+	return nil, false
+}
+
+// sameReceiver reports whether two receiver keys name the same buffer.
+func sameReceiver(a, b []types.Object) bool {
+	if len(a) == 0 || len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func isBorrowMethod(pkgPath, method string) bool {
@@ -105,24 +164,27 @@ func isBorrowMethod(pkgPath, method string) bool {
 	return false
 }
 
-// byteSliceParams returns the names of the closure's []byte parameters — the
-// borrowed slices whose escape the checks track.
-func byteSliceParams(fn *ast.FuncLit) map[string]bool {
-	names := make(map[string]bool)
+// byteSliceParams returns the closure's []byte parameters — the borrowed slices
+// whose escape the checks track.
+func byteSliceParams(pass *analysis.Pass, fn *ast.FuncLit) map[types.Object]bool {
+	objs := make(map[types.Object]bool)
 	if fn.Type == nil || fn.Type.Params == nil {
-		return names
+		return objs
 	}
 	for _, field := range fn.Type.Params.List {
 		if !isByteSlice(field.Type) {
 			continue
 		}
 		for _, n := range field.Names {
-			if n.Name != "_" {
-				names[n.Name] = true
+			if n.Name == "_" {
+				continue
+			}
+			if obj := pass.TypesInfo.ObjectOf(n); obj != nil {
+				objs[obj] = true
 			}
 		}
 	}
-	return names
+	return objs
 }
 
 func isByteSlice(expr ast.Expr) bool {
@@ -196,26 +258,31 @@ func nolintApplies(comment string) bool {
 // refersToParam reports whether expr is (a paren/slice around) a borrowed param.
 // It deliberately does not recurse into calls, so len(p) or f(p) is not itself a
 // direct reference to the borrowed slice.
-func refersToParam(expr ast.Expr, params map[string]bool) bool {
+func refersToParam(pass *analysis.Pass, expr ast.Expr, params map[types.Object]bool) bool {
 	switch e := expr.(type) {
 	case *ast.Ident:
-		return params[e.Name]
+		return params[pass.TypesInfo.ObjectOf(e)]
 	case *ast.ParenExpr:
-		return refersToParam(e.X, params)
+		return refersToParam(pass, e.X, params)
 	case *ast.SliceExpr:
-		return refersToParam(e.X, params)
+		return refersToParam(pass, e.X, params)
 	}
 	return false
 }
 
 // goStmtLeaksParam reports whether a go statement hands a borrowed param to the
 // new goroutine — captured by a closure body or passed as an argument.
-func goStmtLeaksParam(call *ast.CallExpr, params map[string]bool) bool {
+//
+// The capture scan resolves each identifier to its object rather than comparing
+// names. A goroutine that declares its own b, or ranges over one, is not
+// touching the borrowed slice at all, and matching on the name alone reported it
+// as a leak.
+func goStmtLeaksParam(pass *analysis.Pass, call *ast.CallExpr, params map[types.Object]bool) bool {
 	if call == nil {
 		return false
 	}
 	for _, arg := range call.Args {
-		if refersToParam(arg, params) {
+		if refersToParam(pass, arg, params) {
 			return true
 		}
 	}
@@ -228,7 +295,7 @@ func goStmtLeaksParam(call *ast.CallExpr, params map[string]bool) bool {
 		if leaked {
 			return false
 		}
-		if id, ok := n.(*ast.Ident); ok && params[id.Name] {
+		if id, ok := n.(*ast.Ident); ok && params[pass.TypesInfo.ObjectOf(id)] {
 			leaked = true
 		}
 		return !leaked

@@ -83,3 +83,17 @@ func cleanInnerAggregate(buf *secmem.SecureBuffer) {
 		_ = local
 	})
 }
+
+// shadowedNameInGoroutineOK: the goroutine declares its own b. The capture scan
+// used to match on the identifier's NAME, so this unrelated variable was
+// reported as a leak of the borrowed slice.
+func shadowedNameInGoroutineOK(buf *secmem.SecureBuffer, other [][]byte) {
+	_ = buf.WithBytes(func(b []byte) {
+		_ = b
+		go func() {
+			for _, b := range other {
+				_ = len(b)
+			}
+		}()
+	})
+}
