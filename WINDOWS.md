@@ -12,20 +12,12 @@ suite ran on real hardware or a real VM, never cross-compiled-and-assumed.
 | Date | Edition | Build | Arch | Environment | Suite | Proofs |
 |---|---|---|---|---|---|---|
 | 2026-07-12 | Windows 11 Pro (Insider Preview) | 10.0.26220 | amd64 | Real workstation hardware | PASS | guard-fault ✓ · canary ✓ · WER exclusion ✓ · seal/`CryptProtectMemory` ✓ · process hardening ✓ |
-| (every CI run) | Windows Server 2025 | GitHub-hosted runner (`windows-2025-vs2026`) | amd64 | `windows-latest` GitHub Actions VM | PASS † | full suite via `go test -race`, run on every push/PR |
-
-† On the pool's AMX-capable hosts the job can die of a Go runtime bug that
-secmem's fault proofs trigger; see [the section below](#go-runtime-fault-recovery-bug-golanggo81238).
-A re-run on another host passes. No assertion in the suite has failed on
-Windows.
+| (every CI run) | Windows Server 2025 | GitHub-hosted runner (`windows-2025-vs2026`) | amd64 | `windows-latest` GitHub Actions VM | PASS | full suite via `go test -race`, run on every push/PR |
 
 CI's `test (windows-latest)` job **executes** the suite on a real (if
 virtualized) Windows Server VM — it is not a cross-compile-only check, unlike
 the `windows/arm64` row in `cross-compile`, which only builds and
-test-compiles (no arm64 Windows runner exists to execute on). A scheduled
-workflow (`soak-windows.yml`) repeats the same `go test -race ./...`
-invocation on `windows-latest` many times a day, to sample rare
-non-deterministic failures that one run per PR would miss.
+test-compiles (no arm64 Windows runner exists to execute on).
 
 ## Behaviour that differs from Linux
 
@@ -128,18 +120,23 @@ fault, so an application that arms `SetPanicOnFault` itself and then touches
 a guard page or a sealed buffer on an AMX Windows host takes the affected
 path — that is the runtime bug behaving as described, not an additional
 exposure created by secmem, but it is where such a program would meet it.
-Second, the `-race` Windows CI job in this repository can still die of the
-bug when it lands on an AMX host; a re-run that lands elsewhere passes. That
-is a crash of the test process, not a suite failure, and the log shows the
-runtime messages above rather than a failing assertion.
+Second, the `-race` Windows CI job in this repository used to die of the
+bug when it landed on an AMX host — twice in its history — which is why the
+fault proofs now run out-of-process (below).
 
-**Status of the mitigation.** The fix on secmem's side is to run the
-guard-page proofs out-of-process, so a probe's fault and any collateral
-damage die in a child that does nothing else. That change exists on the
-`fix/isolate-fault-proofs` branch (0 crashes in 250 CI-shaped runs, 28 of
-them on AMX hosts) and is **not yet merged**; on `main` the proofs still
-fault in-process. Until it lands, the daily `soak-windows.yml` keeps sampling
-the same job.
+**Mitigation, in place.** The guard-page proofs now run out-of-process
+(`fault_probe_test.go`): each probe re-execs the test binary, announces the
+address it will read, reads it, and lets the runtime kill the child. The
+parent counts a "must fault" case as proven only when the child exited with
+the runtime's throw status and its `unexpected fault address` line names the
+announced address; a child that dies any other way is reported as
+inconclusive, and two control cases pin that. Nothing in the suite recovers a
+fault in-process on the affected path any more — the remaining
+`SetPanicOnFault` guard, in the redaction tests, never fires in a passing run.
+The out-of-process form measured 0 crashes in 250 CI-shaped runs, 28 of them
+on AMX hosts. The daily soak workflow was retired with this change; it
+existed to sample a crash that is now understood. Fold the probes back
+in-process once the upstream fix is in the Go release CI pins.
 
 ## Reproducing a run
 

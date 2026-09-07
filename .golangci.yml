@@ -34,7 +34,7 @@ linters:
       # Guard-page and dead-stack proof tests deliberately read addresses that
       # are outside any Go object (a fault is the thing under test), which
       # unsafeptr cannot distinguish from a bug.
-      - path: (guard_canary_test|scrub_amd64_test)\.go
+      - path: (guard_canary_test|fault_probe_test|scrub_amd64_test)\.go
         linters: [govet, gosec]
         text: "(possible misuse of unsafe.Pointer|G103|G304|unsafe)"
 

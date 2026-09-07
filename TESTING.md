@@ -41,19 +41,17 @@ that is said outright rather than dressed up.
   every package of the core and `secmem-crypto` modules, three minutes each by
   default, with any new failing input uploaded as an artifact so a finding
   survives the runner. The Makefile's `fuzz` target is the local equivalent.
-- **Scheduled soaks and analysis.** `soak-windows.yml` repeats the Windows
-  `go test -race ./...` invocation many times a day to sample a Go runtime
-  bug the suite triggers on AMX hosts (below), and CodeQL runs on every push
-  and PR.
-- **The guard-page fault proofs fault in-process, and on windows/amd64 that
-  trips a Go runtime bug.** `faults()` in `guard_canary_test.go` recovers a
-  real hardware fault with `debug.SetPanicOnFault`; on AMX-capable hosts the
-  OS exception frame overruns the goroutine stack and corrupts the heap
-  ([golang/go#81238](https://github.com/golang/go/issues/81238)), so the
-  Windows job can die with a runtime fatal error in an unrelated frame. It is
-  a crash of the test process on that class of host, not a failed assertion;
-  a re-run elsewhere passes. Moving the proofs out-of-process is on an
-  unmerged branch. Details and numbers in [`WINDOWS.md`](WINDOWS.md).
+- **CodeQL** runs on every push and PR.
+- **The guard-page fault proofs run out-of-process.** Recovering a hardware
+  fault in-process with `debug.SetPanicOnFault` trips a Go runtime bug on
+  windows/amd64 with AMX-capable CPUs
+  ([golang/go#81238](https://github.com/golang/go/issues/81238)), so each
+  probe re-execs the test binary, announces the address it will read, and
+  lets the runtime kill the child. A "must fault" case is proven only by the
+  runtime's own `unexpected fault address` report naming that address plus
+  its throw exit status; any other death is inconclusive, and two control
+  cases (a plain exit, a nil-dereference panic) pin that. Test harness only;
+  no library path recovers faults. Details in [`WINDOWS.md`](WINDOWS.md).
 
 ## Core memory hardening
 
@@ -65,7 +63,7 @@ that is said outright rather than dressed up.
 | A **separate process** cannot extract a `SecureBuffer` | A victim subprocess holds the secret only in a `memfd_secret` buffer and a twin control marker on the heap; its parent scans the victim's whole address space via both `/proc/<pid>/mem` **and** `process_vm_readv(2)` — the control marker is recovered every time, the secret never. Skips (never fails) when `memfd_secret` or ptrace is unavailable. The root/`CAP_SYS_PTRACE` and `gcore` core-dump variants are recorded as manual runs in [KERNELS.md](KERNELS.md) | `extraction_linux_test.go` |
 | `Destroy` deterministically zeroes the secret | A slab slot is written `0xFF`, released (running the production wipe on the mapped region), re-acquired, and read back as zero | `securearena_test.go` (`TestArena_ReleaseWipesSlot`) |
 | The wipe is exact and not compiler-elided | Assembly (`REP STOSB` / `DC CIVAC`) is inherently un-elidable. The generic fallback takes its zero byte from a package-level atomic (so the stored value is not a compile-time constant), reads every byte back into an accumulator, and publishes the accumulator to a second atomic, so the stores are provably observed; `//go:noinline` stops a caller re-deriving what the body cannot. Confirmed in the GOARCH=386 disassembly — both loops and both atomics survive. The readback tests above would fail if a store were dropped | `wipe_unaligned_test.go`, `wipe_arm64.s`/`wipe_amd64.s`, `wipe_generic.go` |
-| Guard pages trap a linear over/under-flow | Deliberately reads one byte past each edge under `SetPanicOnFault`, requires a fault; in-region bytes must not fault | `guard_canary_test.go` |
+| Guard pages trap a linear over/under-flow | Reads one byte past each edge in a re-exec'd child and requires the runtime's fault report at that address; in-region bytes must not fault (clean child exit) | `guard_canary_test.go`, `fault_probe_test.go` |
 | An in-mapping overflow too small to reach a guard is caught | Corrupts the canary slack, requires `ErrCanaryViolation` on Destroy/Release | `guard_canary_test.go`, `securearena_test.go` |
 | No two live `ArenaSlot` handles ever address the same slot | Walks the intrusive free list directly after every acquire/release and asserts it terminates, revisits nothing, and agrees with the parity-encoded generations and the live counter; plus a concurrent double-`Release` stress that must not splice an index onto the list twice. The drain loop is bounded on purpose — a list cycle would otherwise hang the suite instead of reporting it | `securearena_freelist_test.go` |
 | An arena's Go-heap bookkeeping stays smaller than its locked slab | Arithmetic pin: per-slot `slotMeta` must be under `canaryLen+1`, the locked cost of the smallest legal slot. This is what makes `NewArena`'s slab-first allocation order protective — the allocation that can `throw` must be the smaller one | `securearena_test.go` (`TestArena_HeapMetadataStaysUnderLockedSlab`) |
