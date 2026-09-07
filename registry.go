@@ -479,7 +479,9 @@ func (j *janitor) wipeAllInPlace() error {
 //     deliberately left mapped so a late access does not fault — but every
 //     mutating method returns [ErrWiped] (which wraps [ErrDestroyed]), and
 //     [SecureArena.Acquire] refuses. This is a one-way emergency wipe, not a
-//     reusable clear.
+//     reusable clear. Teardown is not a mutation: [ArenaSlot.Release] on a
+//     slot acquired before the wipe still succeeds, and reports no canary
+//     violation for the strips the wipe zeroed.
 //
 //     One gap, stated rather than papered over: an [ArenaSlot] acquired BEFORE
 //     the wipe still hands out a writable slice, because WithBytes returns one
