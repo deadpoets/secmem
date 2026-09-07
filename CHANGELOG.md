@@ -13,6 +13,11 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [secmem-crypto/v0.5.0] - 2026-09-07
+
+Argon2 that wipes its working state, on an in-tree fork of `x/crypto/argon2`,
+plus a locked, reusable workspace for it. Minor: new API, no floor change.
+
 ### Added
 
 - **`secmem-crypto`: `Argon2Into` and `Argon2Params` — Argon2 that wipes its
