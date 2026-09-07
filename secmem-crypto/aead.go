@@ -31,8 +31,13 @@ import (
 // ciphertext never leaves plaintext, or partial plaintext, in out for any
 // AEAD. The in-place, no-heap-allocation decrypt holds for any AEAD that
 // writes its output into the provided dst[:0] (true of the stdlib and
-// x/crypto AEADs). The decryption runs inside [secmem.ScrubErr] so
-// block-cipher residue on the stack/registers is erased on
+// x/crypto AEADs). That precondition is checked, not assumed: if Open
+// returns a slice that is not exactly the buffer's own backing array —
+// an AEAD that allocated its output instead of appending into dst —
+// OpenInto wipes that stray heap copy, zeroes out, and returns an error
+// naming the AEAD, rather than reporting success for plaintext that never
+// entered protected memory. The decryption runs inside [secmem.ScrubErr]
+// so block-cipher residue on the stack/registers is erased on
 // GOEXPERIMENT=runtimesecret builds.
 func OpenInto(out *secmem.SecureBuffer, aead cipher.AEAD, nonce, ciphertext, additionalData []byte) error {
 	if aead == nil {
@@ -61,13 +66,25 @@ func OpenInto(out *secmem.SecureBuffer, aead cipher.AEAD, nonce, ciphertext, add
 			// zero-length slice with exactly ptLen capacity: it writes the
 			// plaintext in place with no heap allocation (verified against
 			// the stdlib gcm sliceForAppend fast path).
-			_, oerr := aead.Open(dst[:0], nonce, ciphertext, additionalData)
+			pt, oerr := aead.Open(dst[:0], nonce, ciphertext, additionalData)
 			if oerr != nil {
 				// Guarantee no unauthenticated plaintext survives, even for
 				// an AEAD that overwrites-but-does-not-zero dst on failure.
 				secmem.SecureWipe(dst)
+				return oerr
 			}
-			return oerr
+			// The returned slice is the only evidence of where the plaintext
+			// went. Nothing enforces cipher.AEAD's append contract, and an
+			// implementation that returns a fresh allocation leaves dst
+			// unwritten and the real plaintext on the GC heap. Fail closed:
+			// copying it in would make the buffer correct while hiding the
+			// heap exposure the caller chose OpenInto to avoid.
+			if len(pt) != ptLen || (ptLen > 0 && &pt[0] != &dst[0]) {
+				secmem.SecureWipe(pt) // best-effort: the stray copy is the AEAD's, on the heap
+				secmem.SecureWipe(dst)
+				return fmt.Errorf("%T did not decrypt in place (returned a %d-byte slice that is not the output buffer, want %d bytes written into it): the plaintext reached the heap; it and the buffer have been wiped", aead, len(pt), ptLen)
+			}
+			return nil
 		})
 	})
 	if err != nil {
