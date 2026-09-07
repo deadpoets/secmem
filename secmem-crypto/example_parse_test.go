@@ -54,3 +54,47 @@ func ExampleParsePrivateKey() {
 	fmt.Println(sshSigner.PublicKey().Type())
 	// Output: ssh-ed25519
 }
+
+// ExampleParsePrivateKeyWithPassphrase writes a passphrase-protected key
+// file and reads it back: the format ssh-keygen produces for every key type
+// when a passphrase is given. The passphrase and the file both come from
+// SecureBuffers; nothing secret goes through the heap on either side.
+func ExampleParsePrivateKeyWithPassphrase() {
+	signer, err := secmemcrypto.GenerateEd25519Signer()
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer signer.Destroy()
+
+	passphrase, err := secmem.NewBuffer([]byte("correct horse battery staple"))
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer passphrase.Destroy()
+
+	// Stand-in for the file on disk.
+	var file *secmem.SecureBuffer
+	if err := passphrase.WithBytesErr(func(p []byte) error {
+		var merr error
+		file, merr = signer.MarshalOpenSSHPrivateKeyWithPassphrase("laptop", p)
+		return merr
+	}); err != nil {
+		log.Fatal(err)
+	}
+	defer file.Destroy()
+
+	var loaded secmemcrypto.Signer
+	if err := file.WithBytesErr(func(f []byte) error {
+		return passphrase.WithBytesErr(func(p []byte) error {
+			var perr error
+			loaded, perr = secmemcrypto.ParsePrivateKeyWithPassphrase(f, p)
+			return perr
+		})
+	}); err != nil {
+		log.Fatal(err)
+	}
+	defer loaded.Destroy()
+
+	fmt.Println(loaded.Public().(ed25519.PublicKey).Equal(signer.Public()))
+	// Output: true
+}

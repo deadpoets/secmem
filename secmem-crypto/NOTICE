@@ -33,3 +33,22 @@ blamka_amd64.s is byte-identical to upstream.
 
 The fork is not a distribution of golang.org/x/crypto and does not use the
 Go name or the Go Authors' names to endorse this project.
+
+internal/bcryptpbkdf/
+----------------------
+A modified copy of the Go package golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
+together with golang.org/x/crypto/blowfish (cipher.go, block.go and const.go),
+both taken from golang.org/x/crypto v0.56.0. Copyright 2010 and 2014 The Go
+Authors. All rights reserved.
+
+Licensed under the BSD-3-Clause licence in internal/bcryptpbkdf/LICENSE, with
+the additional patent grant in internal/bcryptpbkdf/PATENTS; both files are
+copied unmodified from the golang.org/x/crypto module root and govern every
+file in that directory. Each forked source file keeps the original copyright
+header and states that it was modified; the modifications, all made for
+secmem-crypto, are listed in internal/bcryptpbkdf/doc.go. const.go is
+identical to upstream below its package clause; the golden test vectors are
+upstream's, byte for byte.
+
+As above, the fork is not a distribution of golang.org/x/crypto and does not
+use the Go name or the Go Authors' names to endorse this project.

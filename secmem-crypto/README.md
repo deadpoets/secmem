@@ -31,8 +31,8 @@ So each function here derives, signs, or decrypts **into or out of** a
 |---|---|
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below) |
 | `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes the transient it can reach; the copies it cannot reach are named in the type docs |
-| `AsSSH`, `MarshalOpenSSHPrivateKey` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, into a buffer |
-| `ParsePrivateKey` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; the file's public key is checked against the derived one; passphrase-protected files are refused |
+| `AsSSH`, `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, unencrypted or passphrase-protected, assembled and encrypted in place into a buffer |
+| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files (bcrypt, aes256-ctr/cbc — what ssh-keygen writes) open through the bcrypt_pbkdf fork below, with the AES round keys wiped by reflection; PKCS#8 PBES2 and legacy PEM encryption are refused |
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 4231 derivation straight into a buffer |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
@@ -44,9 +44,9 @@ So each function here derives, signs, or decrypts **into or out of** a
 
 ## The parts that should make you look twice
 
-Two pieces of this module do what a security reviewer is right to be
-suspicious of: one reimplements a signature scheme, the other forks a
-cryptographic library. Both reasons are stated here, up front.
+Three pieces of this module do what a security reviewer is right to be
+suspicious of: one reimplements a signature scheme, two fork cryptographic
+libraries. Each reason is stated here, up front.
 
 ### An in-place Ed25519 signer
 
@@ -96,6 +96,26 @@ If you would rather not depend on a fork, `golang.org/x/crypto/argon2` still
 works with a `SecureBuffer` output via a copy; what you give up is the wipe
 of the working state, which is what the fork exists for.
 
+### A fork of `golang.org/x/crypto/ssh/internal/bcrypt_pbkdf` (and `blowfish`)
+
+`internal/bcryptpbkdf/` is a modified copy of x/crypto v0.56.0's
+bcrypt_pbkdf — the KDF that protects OpenSSH private-key files — together
+with the Blowfish it is built on (same licence, provenance and change list
+as above). Upstream is an internal package nothing can reach, and it leaves
+the passphrase in a heap SHA-512 digest, a 4 KiB Blowfish key schedule
+derived from it on the heap for every bcrypt step, and the derived key and
+IV in a slice the caller cannot wipe. The fork keeps all of that in one
+caller-owned workspace — a `SecureBuffer` in this module — re-keys the
+schedule in place, hashes with one-shots, and writes into the caller's
+slice. It is about 550 lines; the Feistel round, key schedule and constant
+tables are verbatim and identity-tested against the resolved x/crypto, and
+the output is pinned by OpenBSD's reference vectors, a differential test
+against `x/crypto/blowfish`, and interop both ways with ssh-keygen and
+x/crypto/ssh. What the fork cannot fix is the AES key schedule, which
+`crypto/aes` allocates itself; that is wiped by reflection through the
+type's unexported fields, with a tripwire test and a call that fails closed
+when the layout it expects is not there.
+
 ## Pure Ed25519 only
 
 Ed25519ph and Ed25519ctx requests are **refused**, not silently signed as pure
@@ -117,4 +137,4 @@ later. See [CHANGELOG.md](../CHANGELOG.md).
 `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys` (the
 CPU-feature check for the Argon2 fork's SSE path), plus the core module. Pure
 Go, `CGO_ENABLED=0`. Third-party material embedded under other licences (the
-EFF wordlist, the Argon2 fork) is itemised in `NOTICE`.
+EFF wordlist, the Argon2 and bcrypt_pbkdf forks) is itemised in `NOTICE`.

@@ -48,6 +48,13 @@ linters:
         linters: [gosec]
         text: "G115"
 
+      # Verbatim golang.org/x/crypto/blowfish carried by the bcrypt_pbkdf fork:
+      # the Feistel round indexes the S-boxes by the bytes of a uint32 and the
+      # block is split back into bytes the same way. Same reasoning as above.
+      - path: internal/bcryptpbkdf/blowfish\.go
+        linters: [gosec]
+        text: "G115"
+
       # Tests legitimately exercise error paths, panics, and unsafe probes.
       - path: _test\.go
         linters: [gosec, errcheck, unparam]
