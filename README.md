@@ -147,8 +147,9 @@ independently, so neither adds anything to the core's dependency graph:
   rather than copying it out first. Includes an in-place RFC 8032 Ed25519
   signer, because `crypto/ed25519`'s FIPS-140 cache panics on mmap'd memory —
   the reasoning is set out in that module's README, up front, since "rolled
-  their own Ed25519" is a claim that deserves scrutiny. Adds
-  `filippo.io/edwards25519` and `golang.org/x/crypto`.
+  their own Ed25519" is a claim that deserves scrutiny. Carries a wiping
+  fork of `golang.org/x/crypto/argon2` for the same kind of reason. Adds
+  `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys`.
 - **[`secmem-lint`](secmem-lint/)** — a `go/analysis` analyzer (and
   `go vet -vettool` binary) that enforces the borrowing-closure discipline at
   compile time: the slice handed to `WithBytes` must not escape the closure.

@@ -38,6 +38,14 @@ linters:
         linters: [govet, gosec]
         text: "(possible misuse of unsafe.Pointer|G103|G304|unsafe)"
 
+      # The BLAMKA round function (RFC 9106 §3.7.1) multiplies the low 32 bits
+      # of each 64-bit word: the uint32 truncation IS the algorithm. The file is
+      # verbatim golang.org/x/crypto/argon2; annotating 48 lines of it would
+      # bury the diff against upstream that the fork's provenance rests on.
+      - path: internal/argon2/blamka_generic\.go
+        linters: [gosec]
+        text: "G115"
+
       # Tests legitimately exercise error paths, panics, and unsafe probes.
       - path: _test\.go
         linters: [gosec, errcheck, unparam]

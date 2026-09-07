@@ -1,5 +1,6 @@
-This module embeds one third-party data file under a license other than
-this project's own Apache-2.0.
+This module embeds third-party material under licences other than this
+project's own Apache-2.0. Each item below is self-contained: the licence
+text that governs it ships next to it.
 
 eff_large_wordlist.txt
 -----------------------
@@ -13,3 +14,20 @@ Licensed under the Creative Commons Attribution 3.0 Unported License
 
 The file is embedded byte-for-byte as distributed by the EFF, so it can be
 diffed against the source URL above to verify it is unmodified.
+
+internal/argon2/
+-----------------
+A modified copy of the Go package golang.org/x/crypto/argon2, taken from
+golang.org/x/crypto v0.56.0. Copyright 2017 The Go Authors. All rights
+reserved.
+
+Licensed under the BSD-3-Clause licence in internal/argon2/LICENSE, with
+the additional patent grant in internal/argon2/PATENTS; both files are
+copied unmodified from the golang.org/x/crypto module root and govern every
+file in that directory. Each forked source file keeps the original
+copyright header and states that it was modified; the modifications, all
+made for secmem-crypto, are listed in internal/argon2/doc.go.
+blamka_amd64.s is byte-identical to upstream.
+
+The fork is not a distribution of golang.org/x/crypto and does not use the
+Go name or the Go Authors' names to endorse this project.

@@ -1,0 +1,24 @@
+//go:build amd64 && gc && !purego
+
+#include "textflag.h"
+
+// func dumpXMM(buf *[256]byte)
+TEXT ·dumpXMM(SB), NOSPLIT, $0-8
+	MOVQ  buf+0(FP), AX
+	MOVOU X0, 0(AX)
+	MOVOU X1, 16(AX)
+	MOVOU X2, 32(AX)
+	MOVOU X3, 48(AX)
+	MOVOU X4, 64(AX)
+	MOVOU X5, 80(AX)
+	MOVOU X6, 96(AX)
+	MOVOU X7, 112(AX)
+	MOVOU X8, 128(AX)
+	MOVOU X9, 144(AX)
+	MOVOU X10, 160(AX)
+	MOVOU X11, 176(AX)
+	MOVOU X12, 192(AX)
+	MOVOU X13, 208(AX)
+	MOVOU X14, 224(AX)
+	MOVOU X15, 240(AX)
+	RET

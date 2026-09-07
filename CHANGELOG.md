@@ -13,6 +13,43 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`secmem-crypto`: `Argon2Into` and `Argon2Params` — Argon2 that wipes its
+  working state.** `golang.org/x/crypto/argon2` leaves the whole derivation
+  footprint behind: the 64 MiB matrix on the heap, the pre-hash H0, a scratch
+  block per worker goroutine on that goroutine's stack, and a heap BLAKE2b
+  digest whose block buffer holds the raw password after `Sum` and after
+  `Reset`. No wrapper reaches it — `runtime/secret.Do` (so `secmem.Scrub`)
+  does not extend to goroutines the wrapped function spawns, and erases heap
+  only when the collector gets to it. `secmem-crypto/internal/argon2` is a
+  fork of x/crypto v0.56.0 (BSD-3, see `NOTICE`) in which every piece of
+  working state lives in one parent-owned workspace, wiped with
+  `SecureWipe` before the call returns; H0 and H' use BLAKE2b's stack-only
+  one-shot functions; the goroutine-free phases run under `Scrub`; and on
+  amd64 the vector registers are cleared at the end of every worker and of
+  the derivation (with an empirical register-dump test, per the rule in
+  `scrub_legacy.go`). Output is byte-identical to upstream: pinned by the
+  RFC 9106 §5 vectors for all three variants, a 24-case table and a
+  differential fuzz target against x/crypto. The new function exposes the
+  RFC's secret key K and associated data X, and the Argon2d variant, none
+  of which x/crypto's public API can express. Cost: the wipe is one
+  cache-flushing pass over the working set, 5.5 ms for 64 MiB on a 2025
+  desktop where the derivation takes 29 ms, so about a fifth more there and
+  proportionally less on slower hardware (`BenchmarkForkVsUpstream`).
+  Requested by secmem's second consumer; the brief and its fact-check are in
+  the PR.
+
+### Changed
+
+- **`secmem-crypto`: `Argon2IDKeyInto` and `Argon2DeriveInto` now run on
+  the in-tree fork.** Same signatures, same bytes out; the heap caveat in
+  their documentation is gone because the residue it described is. The
+  output buffer is now write-locked for the whole derivation rather than for
+  a copy at the end, since the tag is computed in place. `golang.org/x/sys`
+  becomes a direct dependency of `secmem-crypto` (the fork's CPU-feature
+  check; it was already indirect via x/crypto).
+
 ## [secmem-crypto/v0.4.0] - 2026-09-07
 
 The review's crypto rows, plus the floor raise to core v0.4.0 and the switch to

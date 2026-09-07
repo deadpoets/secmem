@@ -2,10 +2,12 @@
 // key material is never returned as a plain heap-backed []byte a caller
 // could forget to wipe.
 //
-// Neither derivation is fully off-heap end-to-end — see the caveat on each
-// function. Both are hardened at the boundary that matters most in
-// practice: the derived key, once these functions return, lives only in
-// SecureBuffer, not in a slice the caller has to remember to wipe.
+// Argon2 runs on an in-tree fork of golang.org/x/crypto/argon2 that wipes
+// its whole working state (see [Argon2Into]). The HKDF and HMAC paths are
+// not fully off-heap end-to-end — see the caveat on each function. All are
+// hardened at the boundary that matters most in practice: the derived key,
+// once these functions return, lives only in SecureBuffer, not in a slice
+// the caller has to remember to wipe.
 package secmemcrypto
 
 import (
@@ -17,10 +19,10 @@ import (
 	"io"
 	"math"
 
-	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/hkdf"
 
 	"github.com/deadpoets/secmem"
+	"github.com/deadpoets/secmem/secmem-crypto/internal/argon2"
 )
 
 // Argon2id default cost parameters: the SECOND RECOMMENDED option of
@@ -32,12 +34,63 @@ import (
 // silently change every consumer's derived keys. They will never be
 // altered; if a different profile is ever warranted it will be a new
 // symbol, not a new value here. Callers with their own cost policy should
-// use [Argon2IDKeyInto] directly.
+// use [Argon2IDKeyInto] or [Argon2Into] directly.
 const (
 	Argon2Time    = 3
 	Argon2Memory  = 64 * 1024 // KiB — 64 MiB
 	Argon2Threads = 4
 )
+
+// Argon2Mode selects the Argon2 variant for [Argon2Into]. The zero value is
+// Argon2id.
+type Argon2Mode uint8
+
+const (
+	// Argon2id is the hybrid variant RFC 9106 §4 recommends for password
+	// hashing and password-based key derivation: data-independent memory
+	// access for the first half of the first pass, data-dependent after.
+	// The zero value, and what [Argon2IDKeyInto] uses.
+	Argon2id Argon2Mode = iota
+	// Argon2i uses data-independent memory access throughout. It is the
+	// side-channel-resistant variant and needs more passes than Argon2id
+	// for the same resistance to time-memory trade-offs (RFC 9106 §7.3
+	// recommends t=3 or more).
+	Argon2i
+	// Argon2d uses data-dependent memory access throughout: the strongest
+	// trade-off resistance and the fastest, but its memory access pattern
+	// depends on the password, so it is unsuitable wherever an observer
+	// can share a cache with the derivation (RFC 9106 §4 scopes it to
+	// cryptocurrencies and backend servers with no side-channel threat).
+	// golang.org/x/crypto/argon2 does not expose it; it is exposed here
+	// because it is part of the standard and its RFC vector is one of the
+	// three that pin this implementation.
+	Argon2d
+)
+
+// Argon2Params is the full RFC 9106 parameter set for [Argon2Into].
+//
+// Time (passes), Memory (KiB) and Threads (lanes) are the cost parameters;
+// Time and Threads must be at least 1, and a Memory below the algorithm's
+// minimum of 8*Threads KiB is raised to it (and otherwise rounded down to a
+// multiple of 4*Threads), exactly as golang.org/x/crypto/argon2 does. The
+// requested value is what the derivation commits to, so two callers must
+// agree on the value before rounding.
+//
+// Secret is the optional secret value K (a "pepper": a key stored apart
+// from the password hashes so that a leaked hash database alone is not
+// enough to mount an offline attack) and Data the optional associated
+// data X. nil for either means absent, which is the profile shared by the
+// reference CLI, libsodium and golang.org/x/crypto (whose public API cannot
+// express them at all). Both are hashed into H0 only; the derivation
+// otherwise ignores them.
+type Argon2Params struct {
+	Mode    Argon2Mode
+	Time    uint32
+	Memory  uint32 // KiB
+	Threads uint8
+	Secret  []byte // K, optional
+	Data    []byte // X, optional
+}
 
 // Argon2DeriveInto derives out.Len() bytes from password and salt using
 // Argon2id with the RFC 9106 §4 recommended parameters
@@ -50,43 +103,98 @@ func Argon2DeriveInto(password, salt []byte, out *secmem.SecureBuffer) error {
 
 // Argon2IDKeyInto derives out.Len() bytes from password and salt using
 // Argon2id with explicit cost parameters, writing the result directly into
-// out. memory is in KiB (see [Argon2Memory]'s doc for the default). time and
-// threads must be at least 1 (returned as errors, never panics); a
-// too-small memory value is raised to the algorithm's minimum by
-// golang.org/x/crypto/argon2 itself.
-//
-// Interoperability: the output equals Argon2id with an empty secret-key
-// (K) and empty associated-data (X) — the parameter profile shared by the
-// reference implementation's CLI, libsodium, and essentially every
-// mainstream binding. golang.org/x/crypto/argon2 does not expose K or X at
-// all (an upstream API boundary this library cannot reach around), so
-// RFC 9106 configurations that set them cannot be expressed here. The raw
-// derived bytes are also not a PHC-encoded string: password-verification
-// storage (which embeds parameters alongside the hash) is out of scope
-// for this function.
-//
-// Heap caveat: golang.org/x/crypto/argon2 has no in-place variant — IDKey
-// allocates and returns the derived key on the Go heap before this
-// function copies it into out and wipes the heap copy. That intermediate
-// exists for the duration of one call and is explicitly zeroed immediately
-// after the copy. This function deliberately does NOT wrap the derivation
-// in [secmem.Scrub]: Argon2's working set (the full memory-cost buffer,
-// 64 MiB at the package defaults) and its internal worker goroutines
-// conflict with Scrub's allocation-light, single-goroutine constraints.
-// Callers who want stack/register hygiene around the call can wrap it in
-// [secmem.ScrubErr] themselves.
+// out. memory is in KiB (see [Argon2Memory]'s doc for the default). It is
+// [Argon2Into] with Mode Argon2id and no Secret or Data — the profile
+// golang.org/x/crypto/argon2.IDKey computes, byte for byte.
 func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, out *secmem.SecureBuffer) error {
+	return Argon2Into(password, salt, Argon2Params{Time: time, Memory: memory, Threads: threads}, out)
+}
+
+// Argon2Into derives out.Len() bytes from password and salt with the Argon2
+// variant and parameters in p, writing the result directly into out, and
+// wipes every byte of the derivation's working state before returning.
+//
+// # Output
+//
+// For the same inputs the output is byte-identical to the reference
+// implementation and to golang.org/x/crypto/argon2 (whose IDKey and Key are
+// Argon2Into with Mode Argon2id/Argon2i and no Secret or Data); the
+// RFC 9106 §5 vectors and a differential fuzz target against x/crypto pin
+// that. The raw derived bytes are not a PHC-encoded string: password-
+// verification storage, which embeds the parameters alongside the hash, is
+// out of scope for this function.
+//
+// # What is wiped, and what is not
+//
+// Argon2 is a memory-hard function: the point of it is a large working
+// state (p.Memory KiB — 64 MiB at this package's defaults) that every
+// intermediate value passes through, plus the pre-hash H0 one BLAKE2b step
+// from the password. golang.org/x/crypto/argon2 leaves all of it behind on
+// the heap and on the stacks of the worker goroutines it spawns, where no
+// wrapper can reach it: runtime/secret.Do (and so [secmem.Scrub]) does not
+// extend to goroutines the wrapped function creates, and erases heap only
+// when the collector gets to it. This function therefore runs an in-tree
+// fork (internal/argon2; see its package documentation for the full list
+// of changes and the licence) in which:
+//
+//   - the matrix, every worker's scratch, H0, the H' scratch and the H0
+//     input (the one buffer holding the raw password) live in one
+//     workspace the parent goroutine owns and wipes with [secmem.SecureWipe]
+//     before this function returns — deterministically, not at the
+//     collector's convenience;
+//   - H0 and H' are computed with BLAKE2b's stack-only one-shot functions,
+//     so no heap digest ever holds the password (upstream's does, and
+//     neither Sum nor Reset clears it);
+//   - the goroutine-free phases run under [secmem.Scrub], which covers
+//     their stack temporaries, and on amd64 the vector registers are
+//     cleared at the end of every worker and of the derivation.
+//
+// What remains: general-purpose registers and scheduler state on the
+// worker threads, which nothing in user space can address, and — for
+// output lengths other than 32, 48, 64 or a multiple of 64 — one small
+// BLAKE2b digest the final H' step must allocate, which is scrubbed
+// through its public interface with a tripwire test pinning the effect.
+// Nothing here changes what [secmem.SecureBuffer] does for the output
+// itself, which is written in place under WithBytesErr and is never a
+// heap []byte.
+//
+// # Locking and cost
+//
+// out is write-locked for the whole derivation, which at password-hashing
+// parameters is tens to hundreds of milliseconds depending on the machine;
+// other users of the same buffer block for that long. The wipe adds one
+// pass over the working set with secmem's cache-flushing wipe: about
+// 5.5 ms for 64 MiB on a 2025 desktop, where the derivation itself takes
+// about 29 ms at the package defaults, so roughly a fifth more; on the
+// slower, memory-bound hardware password hashing is usually tuned on the
+// fraction is smaller. internal/argon2's benchmarks measure both halves.
+//
+// Errors, never panics: nil, destroyed or empty out; Time or Threads of 0;
+// an unknown Mode; or an input longer than the 32-bit length Argon2
+// commits to.
+func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
 	if out == nil {
 		return errors.New("secmemcrypto: nil output buffer")
 	}
 	if out.IsDestroyed() {
 		return fmt.Errorf("secmemcrypto: argon2 derive: %w", secmem.ErrDestroyed)
 	}
-	if time < 1 {
-		return fmt.Errorf("secmemcrypto: argon2 derive: time (passes) must be >= 1, got %d", time)
+	if p.Time < 1 {
+		return fmt.Errorf("secmemcrypto: argon2 derive: time (passes) must be >= 1, got %d", p.Time)
 	}
-	if threads < 1 {
-		return fmt.Errorf("secmemcrypto: argon2 derive: threads (parallelism) must be >= 1, got %d", threads)
+	if p.Threads < 1 {
+		return fmt.Errorf("secmemcrypto: argon2 derive: threads (parallelism) must be >= 1, got %d", p.Threads)
+	}
+	var mode argon2.Mode
+	switch p.Mode {
+	case Argon2id:
+		mode = argon2.ModeID
+	case Argon2i:
+		mode = argon2.ModeI
+	case Argon2d:
+		mode = argon2.ModeD
+	default:
+		return fmt.Errorf("secmemcrypto: argon2 derive: unknown mode %d", p.Mode)
 	}
 	size := out.Len()
 	if size <= 0 {
@@ -95,14 +203,25 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 	if uint64(size) > math.MaxUint32 {
 		return fmt.Errorf("secmemcrypto: output too large: %d", size)
 	}
+	for _, in := range []struct {
+		name string
+		b    []byte
+	}{{"password", password}, {"salt", salt}, {"secret", p.Secret}, {"data", p.Data}} {
+		if uint64(len(in.b)) > math.MaxUint32 {
+			return fmt.Errorf("secmemcrypto: argon2 derive: %s too long: %d bytes", in.name, len(in.b))
+		}
+	}
 
-	//nolint:gosec // size is bounds-checked above against math.MaxUint32
-	derived := argon2.IDKey(password, salt, time, memory, threads, uint32(size))
+	// The workspace is allocated outside any Scrub window on purpose: under
+	// runtime/secret a 64 MiB allocation inside Do would be tracked for
+	// erasure at the next GC, which is redundant with the explicit wipe
+	// below and costs sweep time. Derive scrubs the phases that need it.
+	ws := argon2.NewWorkspace(p.Memory, p.Threads)
+	defer ws.Wipe()
 	err := out.WithBytesErr(func(dst []byte) error {
-		copy(dst, derived)
+		argon2.Derive(dst, mode, password, salt, p.Secret, p.Data, p.Time, ws)
 		return nil
 	})
-	secmem.SecureWipe(derived)
 	if err != nil {
 		return fmt.Errorf("secmemcrypto: argon2 derive: %w", err)
 	}
