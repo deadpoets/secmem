@@ -32,6 +32,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below) |
 | `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes the transient it can reach; the copies it cannot reach are named in the type docs |
 | `AsSSH`, `MarshalOpenSSHPrivateKey` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, into a buffer |
+| `ParsePrivateKey` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; the file's public key is checked against the derived one; passphrase-protected files are refused |
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 4231 derivation straight into a buffer |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
