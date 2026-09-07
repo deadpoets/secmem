@@ -1,7 +1,26 @@
 // Package secmemcrypto adapts secmem's hardened memory primitives to the
-// standard library's crypto interfaces — an [Ed25519Signer] satisfying crypto.Signer
-// with its key material living in a [secmem.SecureBuffer], never a plain
-// heap-backed key.
+// standard library's crypto interfaces, so key material stays inside a
+// [secmem.SecureBuffer] for the whole of an operation rather than being
+// copied out first.
+//
+// Signers: [Ed25519Signer] (RFC 8032, signs in place), [ECDSASigner] and
+// [RSASigner] (custody at rest; each Sign re-materialises the key through
+// the standard library and wipes what it can reach — see their docs).
+// [AsSSH] adapts any of them to an ssh.Signer without ever offering SHA-1
+// ssh-rsa, and [Ed25519Signer.MarshalOpenSSHPrivateKey] exports into a
+// buffer.
+//
+// Derivation into a buffer: [HKDFInto] and [HMACInto], and Argon2 on an
+// in-tree fork of golang.org/x/crypto/argon2 that wipes its working state
+// ([Argon2Into], [Argon2Workspace], [Argon2Pool]).
+//
+// AEAD: [OpenInto] and [SealFrom]. Key agreement: [X25519Key]; ML-KEM-768
+// via [MLKEM768Key] and [Encapsulate]. Passphrases:
+// [GenerateDicewarePassphrase].
+//
+// Every type states in its own documentation what it does not cover — the
+// heap transients the standard library makes that no wipe here can reach.
+// The module README and THREAT-MODEL.md in the repository root collect them.
 package secmemcrypto
 
 import (

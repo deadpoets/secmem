@@ -29,16 +29,25 @@ So each function here derives, signs, or decrypts **into or out of** a
 
 | | |
 |---|---|
-| `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory |
-| `HKDFInto`, `HMACInto` | RFC 5869 / RFC 4231 derivation straight into a buffer |
-| `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state; RFC 9106 K/X inputs, §4 defaults, §5 vectors |
+| `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below) |
+| `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes the transient it can reach; the copies it cannot reach are named in the type docs |
+| `AsSSH`, `MarshalOpenSSHPrivateKey` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, into a buffer |
+| `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 4231 derivation straight into a buffer |
+| `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
-| `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory |
-| `X25519Key`, `MLKEM*` | key agreement with the private scalar held in a buffer |
-| `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string |
+| `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place |
+| `X25519Key` | key agreement with the private scalar in a buffer; the shared secret comes back in one |
+| `MLKEM768Key`, `Encapsulate` | ML-KEM-768 with the 64-byte seed in a buffer; the expanded decapsulation key transits the heap per operation, as the type doc states |
+| `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string; every draw reads the whole wordlist |
 | `WipeEd25519Scalar` | reaches `edwards25519.Scalar`'s unexported fields |
 
-## The part that should make you look twice
+## The parts that should make you look twice
+
+Two pieces of this module do what a security reviewer is right to be
+suspicious of: one reimplements a signature scheme, the other forks a
+cryptographic library. Both reasons are stated here, up front.
+
+### An in-place Ed25519 signer
 
 `ed25519direct.go` implements RFC 8032 signing **in place** rather than calling
 `crypto/ed25519.Sign`. Rolling your own Ed25519 is normally the wrong answer and
@@ -62,6 +71,30 @@ If that trade is not one you want to make, use `crypto/ed25519` with an ordinary
 key and accept the heap copy. That is a legitimate choice and this module does
 not pretend otherwise.
 
+### A fork of `golang.org/x/crypto/argon2`
+
+`internal/argon2/` is a modified copy of x/crypto v0.56.0's Argon2
+(BSD-3-Clause; licence and patent grant alongside it, provenance in `NOTICE`,
+every change listed in the package doc). Upstream leaves its whole working
+state behind — the 64 MiB matrix, the pre-hash H0, a scratch block on each
+worker goroutine's stack, and a BLAKE2b digest holding the raw password —
+and no wrapper can reach it: `runtime/secret.Do` does not extend to
+goroutines the wrapped function spawns. The fork keeps every piece of that
+state in one workspace, wipes it before returning, computes the BLAKE2b
+steps on the stack, and runs each worker inside its own `Scrub` window.
+
+The output is byte-identical to upstream. That is pinned by the RFC 9106 §5
+vectors for all three variants, a differential table and fuzz target against
+x/crypto, and an identity test that compares the forked assembly and the
+verbatim-copied functions against the resolved x/crypto module, so a
+dependency bump that changes them fails CI. The changes were not proposed
+upstream: they depend on secmem's wipe and scrub windows, and the upstream
+issues asking for K/X and a caller-supplied buffer are closed or on hold.
+
+If you would rather not depend on a fork, `golang.org/x/crypto/argon2` still
+works with a `SecureBuffer` output via a copy; what you give up is the wipe
+of the working state, which is what the fork exists for.
+
 ## Pure Ed25519 only
 
 Ed25519ph and Ed25519ctx requests are **refused**, not silently signed as pure
@@ -82,10 +115,5 @@ later. See [CHANGELOG.md](../CHANGELOG.md).
 
 `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys` (the
 CPU-feature check for the Argon2 fork's SSE path), plus the core module. Pure
-Go, `CGO_ENABLED=0`.
-
-`internal/argon2/` is a modified copy of `golang.org/x/crypto/argon2`
-(BSD-3-Clause, licence and patent grant alongside it, provenance in `NOTICE`
-and in the package documentation). It exists because upstream Argon2 leaves
-its entire working state behind and no wrapper can reach the worker
-goroutines it spawns; the package doc lists every change.
+Go, `CGO_ENABLED=0`. Third-party material embedded under other licences (the
+EFF wordlist, the Argon2 fork) is itemised in `NOTICE`.

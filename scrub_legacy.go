@@ -20,7 +20,8 @@ package secmem
 // # Why the wipe runs twice
 //
 // wipeScratchFrameFull zeroes a 32 KiB region by allocating it as its own
-// (non-inlined) stack frame. Goroutines start with an 8 KiB stack, so on a
+// (non-inlined) stack frame. Goroutines start on a small stack (2 KiB on
+// Linux and macOS, 8 KiB on Windows; adaptive since Go 1.19), so on a
 // shallow call that allocation triggers a stack copy (morestack): a single
 // deferred wipe would then run on the RELOCATED stack, zeroing the fresh copy
 // while fn's real residue sits on the old segment the runtime just freed —

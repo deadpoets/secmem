@@ -14,13 +14,23 @@
 //
 //   - string(borrowed): converting the borrowed slice to a heap string.
 //   - append(dst, borrowed...): spreading it into an escaping slice.
-//   - copy, channel send, goroutine capture, or assignment to a variable
-//     declared outside the closure: moving it out of the lease.
+//   - copy, channel send, goroutine capture, panic, or assignment to anything
+//     outside the closure — a variable declared outside it, a struct field, a
+//     map or slice element, or a pointer target: moving it out of the lease.
 //   - borrowed bytes passed to a heap-copying or logging standard-library sink
-//     (fmt, encoding/json, encoding/hex, encoding/base64, log, log/slog,
-//     crypto/ed25519.Sign, crypto/hmac.New, bytes/slices.Clone).
-//   - a secmem access method called on the SAME buffer inside its own closure
-//     (the accessors take the buffer lock and are not reentrant — they deadlock).
+//     (fmt's print, format and append functions, encoding/json, encoding/hex,
+//     encoding/base64, log and log/slog — package functions and Logger methods
+//     alike — crypto/ed25519.Sign and NewKeyFromSeed, crypto/hmac.New,
+//     bytes/slices.Clone).
+//   - a secmem access method called on the SAME buffer inside its own closure.
+//     The borrowing and mutating methods take the buffer lock and are not
+//     reentrant; the read-only inspectors (Len, MappedLen, IsSealed,
+//     IsDestroyed) deadlock too once a writer is queued, because the lock is
+//     writer-preferring.
+//
+// Receivers and parameters are matched by their resolved types.Object, not by
+// name, so a buffer held in a struct field is tracked and a shadowed variable
+// that merely shares a parameter's name is not.
 //
 // # Strict mode
 //

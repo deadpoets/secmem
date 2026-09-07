@@ -122,7 +122,9 @@ heap keeps one address for its whole life, so there is no hidden second copy of
 it to hunt down. The goroutine *stack* is the exception — the runtime copies it
 at moments your code does not choose:
 
-- **Growth.** A goroutine starts on 8 KiB. When a call needs more, `morestack`
+- **Growth.** A goroutine starts small — 2 KiB on Linux and macOS, 8 KiB on
+  Windows, and since Go 1.19 the runtime can raise the starting size toward
+  the observed average. When a call needs more, `morestack`
   allocates a larger stack, copies the old one into it, and frees the old
   segment. Whatever was on that segment stays there, unwiped, until the runtime
   reuses the memory for something else.
@@ -217,11 +219,74 @@ A deliberate omission, stated as one rather than dressed up as a platform limit:
   reported violation. They do nothing against an attacker who can already read
   the mapping.
 
+- **On windows/amd64 with AMX, a *recovered* fault can corrupt the heap — a Go
+  runtime bug, not a secmem one.** The runtime reserves 4 KiB below each
+  goroutine stack for the OS exception frame, and on AMX-capable Xeons that
+  frame is about 11.7 KiB ([golang/go#81238](https://github.com/golang/go/issues/81238),
+  open; a fix is under review). secmem never recovers a fault and never arms
+  `debug.SetPanicOnFault`, so it adds no such path. But its guard pages and
+  `Seal` turn stray accesses into faults by design, so an application that
+  arms `SetPanicOnFault` itself and then strays into one on such a host meets
+  the bug there. Availability and integrity, not confidentiality; the
+  measurements are in [WINDOWS.md](WINDOWS.md).
+
 - **The insecure fallback is exactly that.** `WithInsecureFallback()` places
   secrets on the unprotected Go heap on platforms with no lockable off-heap
   memory. `Capabilities.Insecure` is then true, `Warnings()` leads with the
   exposure, and a one-time warning is logged. Use it only when you have
   accepted the risk.
+
+## Derivation working state: Argon2
+
+A key-derivation function's working state is key material too. Argon2's is
+large — a 64 MiB matrix at the package defaults — and `golang.org/x/crypto/argon2`
+leaves all of it behind: the matrix on the heap, the pre-hash H0 (one step
+from the password), a scratch block on each worker goroutine's stack, and a
+BLAKE2b digest whose block buffer still holds the raw password. No wrapper
+reaches it, because `runtime/secret.Do` (so `Scrub`) does not extend to
+goroutines the wrapped function spawns and erases heap only when the
+collector gets to it. `secmem-crypto` therefore runs Argon2 on an in-tree
+fork of x/crypto (BSD-3; provenance in its `NOTICE`) in which every piece of
+working state lives in one workspace that is wiped before the call returns,
+H0 and H' are computed on the stack, and each worker runs its segment inside
+a `Scrub` window of its own.
+
+What that leaves, stated per entry point:
+
+- **`Argon2Into` (and `Argon2IDKeyInto`, `Argon2DeriveInto`) runs on the
+  heap.** The workspace is pageable, dumpable, and not registered with secmem
+  for the duration of the call; it is wiped, with the cache-flushing wipe,
+  before return. A crash dump or a swap-out during those tens of milliseconds
+  contains it. Use `Argon2Workspace` where that window matters.
+- **`Argon2Workspace` and `Argon2Pool` keep the working set in a
+  `SecureBuffer`** — locked, guard-paged, dump-excluded where the platform
+  allows, and registered so `WipeAllSecrets` covers it — and hold zeros
+  between uses. Neither falls back to the heap: a lock budget too small for
+  the workspace fails at construction. Reuse is the point; a locked 64 MiB
+  mapping costs more to create and destroy than the derivation itself.
+- **The caller's inputs are the caller's.** `password`, `salt`, and the
+  optional secret K and associated data X arrive as plain slices and are not
+  wiped by the derivation. Keep a password or pepper in a `SecureBuffer` and
+  borrow it for the call.
+- **The output buffer is borrowed for the whole derivation**, under the
+  shared read lease: the tag is computed in place, so a concurrent reader of
+  `out` sees an old or partly written value. Do not read it from another
+  goroutine mid-derivation.
+- **Stack residue follows the `Scrub` rules above.** On the legacy path a
+  worker's registers are wiped with its frame band, but an asynchronous
+  preemption's copy of them in runtime buffers is out of reach (on Linux the
+  window blocks the signal; on Windows it cannot). Under
+  `GOEXPERIMENT=runtimesecret` the runtime erases each worker's stack and
+  registers on exit. The heap workspace is deliberately allocated outside
+  any window, so it is not on the collector's erasure list: the explicit
+  wipe already covers it, and a wrapper `Scrub` around the call would only
+  add 64 MiB of sweep work.
+- **The fork covers calls through this module only.** Another dependency in
+  the same binary calling `golang.org/x/crypto/argon2` directly leaves its
+  footprint exactly as before.
+- **Argon2d's data-dependent access pattern is the algorithm's** (RFC 9106
+  §4 scopes it to settings with no cache-timing adversary). Exposing the
+  variant does not change that; `Argon2id` is the default for a reason.
 
 ## Post-quantum posture
 
