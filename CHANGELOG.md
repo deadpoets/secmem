@@ -38,11 +38,25 @@ mark the stability commitment.
   `examples` too, while `examples/go.mod` still asks for 0.54.0 — and CI runs
   readonly, so that is a hard error before any package loads.
 
+- **Nightly fuzzing covers every package and preserves failing inputs.** Targets
+  were listed in the module root only, so `redact.FuzzSanitize` never ran, and a
+  crash or hang input died with the runner — the reason a 2026-09-04
+  `FuzzArgon2Params` timeout could not be diagnosed. The workflow now walks all
+  packages and uploads any new `testdata/fuzz` input as an artifact.
+  `staticcheck` is pinned to `2026.2.1` rather than tracking `latest`.
+
 ### Added
 
 - **`InstallTerminationWipeNoExit`** — `InstallTerminationWipe` without the
   forced exit, for callers whose own handler owns termination. Adding exported
   API makes the next core release a minor bump.
+
+- **`SecureBuffer.LockOrder`** — a process-unique, lifetime-stable ordinal.
+  A caller that must hold two buffers' locks at once (a constant-time comparison
+  of two secrets) can acquire them in ascending ordinal and never deadlock
+  regardless of argument order. It lets `secmem-crypto` retire its address-based
+  lock ordering, and the "sound while the GC does not relocate heap objects"
+  caveat with it, at its next floor raise.
 
 ### Fixed
 
@@ -236,6 +250,58 @@ mark the stability commitment.
   landed, and reachable on any `WipeAllSecrets` call — including from
   `InstallTerminationWipe` — whenever a second buffer was in use at the moment
   the wipe began.
+
+- **`ArenaSlot.Release` no longer reports a spurious canary violation after an
+  emergency wipe.** `WipeAllSecrets` zeroes the whole slab, canary strips
+  included, and leaves it mapped; `Release` re-verified the strip without
+  checking the arena's wiped flag, so every release after an emergency wipe
+  returned `ErrCanaryViolation` — documented as a memory-safety bug report — for
+  an overflow that never happened. It now skips the check (not the wipe) once the
+  arena is wiped, as the janitor side already did.
+
+- **`Seal` fails closed when the cipher rollback also fails (Windows).** On an
+  mprotect failure Seal rolled the in-place cipher back; if that decrypt also
+  failed it returned unsealed with the contents still ciphertext, so accessors
+  handed out ciphertext as the secret and a retried Seal double-encrypted. It now
+  stays sealed — the only state whose invariants still hold, and `Unseal`
+  recovers it — and never runs the cipher over already-encrypted contents.
+
+- **`EnsureMemlockLimit` no longer truncates the request or lowers a raised
+  limit.** On windows/386 a request above 4 GiB wrapped through `uintptr` and was
+  still reported as met; and two concurrent callers could each read the old limit
+  and have the smaller one clobber the larger raise. The request is now bounds-
+  checked against `uintptr`, the value returned is what was actually set, and the
+  read-check-set is serialized.
+
+- **The Linux frame-release step is no longer inert.** `madviseBeforeFree`
+  advised `MADV_DONTNEED` on a still-mlocked region, which the kernel refuses
+  with `EINVAL`, so the documented "release frames" step — and the
+  unwiped-release fallback that leaned on it — did nothing. It now uses
+  `MADV_DONTNEED_LOCKED`, accepted on both the anonymous and `memfd_secret`
+  tiers; the per-tier guarantee is documented, and a failure on the
+  unwiped-release path is surfaced rather than swallowed.
+
+- **`scrubframe_arm64.s` carries the build constraint its amd64 counterpart
+  has**, so `go vet` no longer fails on the linux/arm64 `runtimesecret`
+  configuration, where the assembly was compiled without its Go declaration.
+
+- **CPU feature detection checks the maximum CPUID leaf before querying leaf 7.**
+  On a processor whose maximum basic leaf is below 7 the unguarded query returned
+  another leaf's data, which could be read as a false `CLFLUSHOPT` flag and
+  select a wipe path the CPU does not support.
+
+- **The preempt window refuses to restore on the wrong OS thread.** If the
+  scrubbed `fn` unbalanced `runtime.LockOSThread`, the goroutine could migrate
+  mid-window and the restore would unmask signals on the wrong thread, leaving the
+  original thread's `SIGURG`/`SIGPROF` blocked for the process lifetime — no
+  async preemption, invisible to the profiler. The contract is now documented and
+  a violation is detected rather than silently leaking.
+
+- **The termination-wipe handler stays installed after a survived signal.** It was
+  one-shot: with `InstallTerminationWipeNoExit` on Windows, or a co-installed
+  handler on Unix, the process survives the first signal — but the wipe handler
+  had already exited, so a secret created afterward would not be wiped on a second
+  signal. It now re-arms when the process is left running.
 
 ## [secmem-crypto/v0.3.2] - 2026-08-16
 
