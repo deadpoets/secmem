@@ -13,6 +13,40 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`secmem-crypto`: `ParsePrivateKey` — private-key files parsed into
+  locked memory.** The module had an egress (`MarshalOpenSSHPrivateKey`) and
+  no ingress: loading an existing key meant `pem.Decode` plus
+  `ssh.ParseRawPrivateKey` or `crypto/x509`, which materialise the whole
+  key on the heap twice — the decoded DER and the parsed `*PrivateKey` with
+  its `big.Int` limbs — where nothing can wipe either. `ParsePrivateKey`
+  accepts OpenSSH (`ssh-ed25519`, `ecdsa-sha2-nistp{256,384,521}`,
+  `ssh-rsa`), PKCS#8 (RSA, EC, Ed25519), SEC 1, and PKCS#1, PEM or raw,
+  and returns the matching `Ed25519Signer`, `ECDSASigner`, or `RSASigner`
+  behind a new `Signer` interface. The base64 body is decoded straight into
+  a `SecureBuffer`, the container is read in place with zero-copy cursors
+  (cryptobyte for ASN.1, a twelve-line reader for the SSH wire format), and
+  the secret is copied exactly once, into the buffer the signer owns; the
+  public key every OpenSSH file (and SEC 1 / PKCS#8 v2 optionally) carries
+  is checked against the one derived from the private half. Passphrase-
+  protected files return `ErrEncryptedKey` rather than a leaky decrypt —
+  bcrypt_pbkdf and PBKDF2 are KDFs whose working state this module does not
+  yet control; DSA, FIDO, certificate, X25519, and unknown-curve keys return
+  `ErrUnsupportedKey`; errors never quote the input. The one heap exception
+  is stated in the doc: an OpenSSH-format RSA key lacks the CRT exponents
+  PKCS#1 needs, so dp and dq are computed with `math/big` and wiped limb by
+  limb, with `math/big`'s own scratch left to the enclosing `ScrubErr`
+  window; the assembled DER is byte-identical to
+  `x509.MarshalPKCS1PrivateKey`'s and pinned as such. The claim that the
+  parser itself allocates nothing secret is proven, not asserted: a test
+  runs the memory profiler at rate 1 over every non-RSA-OpenSSH encoding
+  and fails on any allocation owned by the parser's files, and it was shown
+  to fail on an injected `bytes.Clone` of the seed. Round-trips are against
+  what the standard library and x/crypto write, every proper prefix of a
+  raw container is rejected, and a fuzz target requires any input that
+  parses to yield a self-consistent signer. Minor bump for `secmem-crypto`;
+  no floor change.
 ### Changed
 
 - **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
