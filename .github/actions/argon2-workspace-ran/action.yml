@@ -12,6 +12,14 @@ runs:
     - shell: bash
       working-directory: secmem-crypto
       run: |
+        # The hosted Linux runners cap RLIMIT_MEMLOCK below the 64 MiB the
+        # full-profile test needs, and EnsureMemlockLimit cannot raise a hard
+        # limit without privilege. The runner user has sudo, so lift it for
+        # this shell (children inherit); elsewhere the default suffices.
+        if [ "$(uname -s)" = Linux ] && command -v sudo >/dev/null; then
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited || true
+        fi
+        echo "memlock soft/hard: $(ulimit -Sl) / $(ulimit -Hl)"
         out=$(go test -race -count=1 -v -run 'Argon2Workspace|Argon2Pool|ClearVectorRegs|UpstreamIdentity' ./... 2>&1) || { echo "$out"; exit 1; }
         echo "$out" | grep -E '^(--- |ok|FAIL)'
         if echo "$out" | grep -q -- '--- SKIP'; then
