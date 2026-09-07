@@ -11,6 +11,7 @@ package secmem
 import (
 	"errors"
 	"fmt"
+	"math/bits"
 	"os"
 	"unsafe"
 
@@ -97,6 +98,12 @@ const quotaLimitsSoft = 0x2 | 0x8 // HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE
 // working-set size minus a small kernel overhead; 8 pages of headroom are
 // added to cover it).
 func ensureMemlockLimit(bytes uint64) (uint64, error) {
+	// Get/SetProcessWorkingSetSizeEx is a read-check-write against
+	// process-global state; without the lock a smaller concurrent request
+	// can write its absolute value over a larger one's raise (see memlockMu).
+	memlockMu.Lock()
+	defer memlockMu.Unlock()
+
 	h := windows.CurrentProcess()
 	page := uintptr(os.Getpagesize())
 	overhead := 8 * page
@@ -105,18 +112,46 @@ func ensureMemlockLimit(bytes uint64) (uint64, error) {
 	var flags uint32
 	windows.GetProcessWorkingSetSizeEx(h, &curMin, &curMax, &flags)
 
+	// The budget in force: the minimum less the headroom this function
+	// adds. Every path that leaves the working set untouched reports this,
+	// not the raw minimum and not the request.
+	var inForce uint64
+	if curMin > overhead {
+		inForce = uint64(curMin - overhead)
+	}
+
+	// SetProcessWorkingSetSizeEx takes SIZE_T, so the request plus the
+	// headroom added below (overhead on the minimum, overhead again on the
+	// maximum) has to fit uintptr. On windows/386 that is 32 bits: a 4 GiB
+	// request would otherwise truncate to 0 and be reported as already met,
+	// 6 GiB would set 2 GiB and be reported as 6, and a request within a few
+	// pages of 2^64 wraps the same way on amd64. A lock budget beyond the
+	// address space is unsatisfiable, so refuse it and report the budget
+	// actually in force — the contract is the achieved value, never the ask.
+	if bytes > uint64(^uintptr(0))-2*uint64(overhead) {
+		return inForce, fmt.Errorf(
+			"secmem.EnsureMemlockLimit: requested %d bytes does not fit a %d-bit working-set size; achieved %d",
+			bytes, bits.UintSize, inForce)
+	}
+
 	newMin := uintptr(bytes) + overhead
 	if newMin <= curMin {
 		// Never LOWER an existing budget.
-		return uint64(curMin - overhead), nil
+		return inForce, nil
 	}
 	newMax := curMax
 	if newMax < newMin+overhead {
 		newMax = newMin + overhead
 	}
 
-	if err := windows.SetProcessWorkingSetSizeEx(h, newMin, newMax, quotaLimitsSoft); err != nil {
-		return uint64(curMin), fmt.Errorf("secmem.EnsureMemlockLimit: SetProcessWorkingSetSizeEx(min=%d): %w", newMin, err)
+	if memlockTestHook != nil {
+		memlockTestHook()
 	}
-	return bytes, nil
+
+	if err := windows.SetProcessWorkingSetSizeEx(h, newMin, newMax, quotaLimitsSoft); err != nil {
+		return inForce, fmt.Errorf("secmem.EnsureMemlockLimit: SetProcessWorkingSetSizeEx(min=%d): %w", newMin, err)
+	}
+	// Report what was set, not what was asked for. The bound check above
+	// makes the two agree; the contract is still the achieved value.
+	return uint64(newMin - overhead), nil
 }
