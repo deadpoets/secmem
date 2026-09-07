@@ -1,0 +1,482 @@
+diff --git a/src/internal/runtime/syscall/windows/defs_windows_386.go b/src/internal/runtime/syscall/windows/defs_windows_386.go
+index 6c2271ef..051a9616 100644
+--- a/src/internal/runtime/syscall/windows/defs_windows_386.go
++++ b/src/internal/runtime/syscall/windows/defs_windows_386.go
+@@ -9,7 +9,11 @@ import (
+ 	"unsafe"
+ )
+ 
+-const CONTEXT_CONTROL = 0x10001
++const (
++	CONTEXT_CONTROL = 0x10001
++	CONTEXT_ALL     = 0x1003f // CONTROL | INTEGER | SEGMENTS | FLOATING_POINT | DEBUG_REGISTERS | EXTENDED_REGISTERS
++	CONTEXT_XSTATE  = 0x10040
++)
+ 
+ type FloatingSaveArea struct {
+ 	ControlWord   uint32
+diff --git a/src/internal/runtime/syscall/windows/defs_windows_amd64.go b/src/internal/runtime/syscall/windows/defs_windows_amd64.go
+index 01812448..0b120b4a 100644
+--- a/src/internal/runtime/syscall/windows/defs_windows_amd64.go
++++ b/src/internal/runtime/syscall/windows/defs_windows_amd64.go
+@@ -9,7 +9,11 @@ import (
+ 	"unsafe"
+ )
+ 
+-const CONTEXT_CONTROL = 0x100001
++const (
++	CONTEXT_CONTROL = 0x100001
++	CONTEXT_ALL     = 0x10001f // CONTROL | INTEGER | SEGMENTS | FLOATING_POINT | DEBUG_REGISTERS
++	CONTEXT_XSTATE  = 0x100040
++)
+ 
+ type M128 struct {
+ 	Low  uint64
+diff --git a/src/internal/runtime/syscall/windows/defs_windows_arm64.go b/src/internal/runtime/syscall/windows/defs_windows_arm64.go
+index c05573a5..f1fcba9c 100644
+--- a/src/internal/runtime/syscall/windows/defs_windows_arm64.go
++++ b/src/internal/runtime/syscall/windows/defs_windows_arm64.go
+@@ -15,7 +15,11 @@ import (
+ // Without LR, we skip over the next-to-bottom function in profiles
+ // when the bottom function is frameless.
+ // So we set both here, to make a working CONTEXT_CONTROL.
+-const CONTEXT_CONTROL = 0x400003
++const (
++	CONTEXT_CONTROL = 0x400003
++	CONTEXT_ALL     = 0x40001f // CONTROL | INTEGER | FLOATING_POINT | DEBUG_REGISTERS | X18
++	CONTEXT_XSTATE  = 0x400040 // SVE state; rejected by older kernels, which the caller tolerates
++)
+ 
+ type Neon128 struct {
+ 	Low  uint64
+diff --git a/src/runtime/asm_386.s b/src/runtime/asm_386.s
+index 52ae50f1..3030faf7 100644
+--- a/src/runtime/asm_386.s
++++ b/src/runtime/asm_386.s
+@@ -155,7 +155,7 @@ nocpuinfo:
+ 	// update stackguard after _cgo_init
+ 	MOVL	$runtime·g0(SB), CX
+ 	MOVL	(g_stack+stack_lo)(CX), AX
+-	ADDL	$const_stackGuard, AX
++	ADDL	$const_stackGuardMin, AX
+ 	MOVL	AX, g_stackguard0(CX)
+ 	MOVL	AX, g_stackguard1(CX)
+ 
+diff --git a/src/runtime/asm_amd64.s b/src/runtime/asm_amd64.s
+index 5f99d25d..3b9b3e19 100644
+--- a/src/runtime/asm_amd64.s
++++ b/src/runtime/asm_amd64.s
+@@ -213,7 +213,7 @@ nocpuinfo:
+ 	// update stackguard after _cgo_init
+ 	MOVQ	$runtime·g0(SB), CX
+ 	MOVQ	(g_stack+stack_lo)(CX), AX
+-	ADDQ	$const_stackGuard, AX
++	ADDQ	$const_stackGuardMin, AX
+ 	MOVQ	AX, g_stackguard0(CX)
+ 	MOVQ	AX, g_stackguard1(CX)
+ 
+diff --git a/src/runtime/asm_arm.s b/src/runtime/asm_arm.s
+index 8d5d6664..8b685d21 100644
+--- a/src/runtime/asm_arm.s
++++ b/src/runtime/asm_arm.s
+@@ -135,7 +135,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|NOFRAME|TOPFRAME,$0
+ 
+ 	// update stackguard after _cgo_init
+ 	MOVW	(g_stack+stack_lo)(g), R0
+-	ADD	$const_stackGuard, R0
++	ADD	$const_stackGuardMin, R0
+ 	MOVW	R0, g_stackguard0(g)
+ 	MOVW	R0, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_arm64.s b/src/runtime/asm_arm64.s
+index d8b91b27..00cbc67d 100644
+--- a/src/runtime/asm_arm64.s
++++ b/src/runtime/asm_arm64.s
+@@ -141,7 +141,7 @@ nocgo:
+ 	BL	runtime·save_g(SB)
+ 	// update stackguard after _cgo_init
+ 	MOVD	(g_stack+stack_lo)(g), R0
+-	ADD	$const_stackGuard, R0
++	ADD	$const_stackGuardMin, R0
+ 	MOVD	R0, g_stackguard0(g)
+ 	MOVD	R0, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_loong64.s b/src/runtime/asm_loong64.s
+index 698d491c..aaf9caa7 100644
+--- a/src/runtime/asm_loong64.s
++++ b/src/runtime/asm_loong64.s
+@@ -73,7 +73,7 @@ nocgo:
+ 	JAL	runtime·save_g(SB)
+ 	// update stackguard after _cgo_init
+ 	MOVV	(g_stack+stack_lo)(g), R19
+-	ADDV	$const_stackGuard, R19
++	ADDV	$const_stackGuardMin, R19
+ 	MOVV	R19, g_stackguard0(g)
+ 	MOVV	R19, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_mips64x.s b/src/runtime/asm_mips64x.s
+index eda94732..e190f86c 100644
+--- a/src/runtime/asm_mips64x.s
++++ b/src/runtime/asm_mips64x.s
+@@ -41,7 +41,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
+ nocgo:
+ 	// update stackguard after _cgo_init
+ 	MOVV	(g_stack+stack_lo)(g), R1
+-	ADDV	$const_stackGuard, R1
++	ADDV	$const_stackGuardMin, R1
+ 	MOVV	R1, g_stackguard0(g)
+ 	MOVV	R1, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_mipsx.s b/src/runtime/asm_mipsx.s
+index 603f5add..cae4b537 100644
+--- a/src/runtime/asm_mipsx.s
++++ b/src/runtime/asm_mipsx.s
+@@ -42,7 +42,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
+ nocgo:
+ 	// update stackguard after _cgo_init
+ 	MOVW	(g_stack+stack_lo)(g), R1
+-	ADD	$const_stackGuard, R1
++	ADD	$const_stackGuardMin, R1
+ 	MOVW	R1, g_stackguard0(g)
+ 	MOVW	R1, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_ppc64x.s b/src/runtime/asm_ppc64x.s
+index bad15ecf..317d2e0b 100644
+--- a/src/runtime/asm_ppc64x.s
++++ b/src/runtime/asm_ppc64x.s
+@@ -120,7 +120,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
+ nocgo:
+ 	// update stackguard after _cgo_init
+ 	MOVD	(g_stack+stack_lo)(g), R3
+-	ADD	$const_stackGuard, R3
++	ADD	$const_stackGuardMin, R3
+ 	MOVD	R3, g_stackguard0(g)
+ 	MOVD	R3, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_riscv64.s b/src/runtime/asm_riscv64.s
+index 2308debf..2dc3cf3d 100644
+--- a/src/runtime/asm_riscv64.s
++++ b/src/runtime/asm_riscv64.s
+@@ -73,7 +73,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
+ nocgo:
+ 	// update stackguard after _cgo_init
+ 	MOV	(g_stack+stack_lo)(g), T0
+-	ADD	$const_stackGuard, T0
++	ADD	$const_stackGuardMin, T0
+ 	MOV	T0, g_stackguard0(g)
+ 	MOV	T0, g_stackguard1(g)
+ 
+diff --git a/src/runtime/asm_s390x.s b/src/runtime/asm_s390x.s
+index c5522368..c99d8c85 100644
+--- a/src/runtime/asm_s390x.s
++++ b/src/runtime/asm_s390x.s
+@@ -110,7 +110,7 @@ TEXT runtime·rt0_go(SB),NOSPLIT|TOPFRAME,$0
+ nocgo:
+ 	// update stackguard after _cgo_init
+ 	MOVD	(g_stack+stack_lo)(g), R2
+-	ADD	$const_stackGuard, R2
++	ADD	$const_stackGuardMin, R2
+ 	MOVD	R2, g_stackguard0(g)
+ 	MOVD	R2, g_stackguard1(g)
+ 
+diff --git a/src/runtime/export_windows_test.go b/src/runtime/export_windows_test.go
+index f44e24bb..2e0cb0cc 100644
+--- a/src/runtime/export_windows_test.go
++++ b/src/runtime/export_windows_test.go
+@@ -25,3 +25,10 @@ func NumberOfProcessors() int32 {
+ func GetCallerFp() uintptr {
+ 	return getcallerfp()
+ }
++
++func StackSystemReserve() uintptr { return stackSystemReserve }
++func StackGuard() uintptr         { return stackGuard }
++func StackMinAlloc() uintptr      { return uintptr(stackMinAlloc) }
++func ExceptionStackReserve() uintptr {
++	return exceptionStackReserve()
++}
+diff --git a/src/runtime/os_windows.go b/src/runtime/os_windows.go
+index 73e2b213..eb306594 100644
+--- a/src/runtime/os_windows.go
++++ b/src/runtime/os_windows.go
+@@ -39,6 +39,7 @@ const (
+ //go:cgo_import_dynamic runtime._GetSystemDirectoryA GetSystemDirectoryA%2 "kernel32.dll"
+ //go:cgo_import_dynamic runtime._GetSystemInfo GetSystemInfo%1 "kernel32.dll"
+ //go:cgo_import_dynamic runtime._GetThreadContext GetThreadContext%2 "kernel32.dll"
++//go:cgo_import_dynamic runtime._InitializeContext InitializeContext%4 "kernel32.dll"
+ //go:cgo_import_dynamic runtime._IsProcessorFeaturePresent IsProcessorFeaturePresent%1 "kernel32.dll"
+ //go:cgo_import_dynamic runtime._SetThreadContext SetThreadContext%2 "kernel32.dll"
+ //go:cgo_import_dynamic runtime._LoadLibraryExW LoadLibraryExW%3 "kernel32.dll"
+@@ -97,6 +98,7 @@ var (
+ 	_GetSystemDirectoryA,
+ 	_GetSystemInfo,
+ 	_GetThreadContext,
++	_InitializeContext,
+ 	_IsProcessorFeaturePresent,
+ 	_SetThreadContext,
+ 	_LoadLibraryExW,
+@@ -474,6 +476,7 @@ func osinit() {
+ 	preventErrorDialogs()
+ 
+ 	initExceptionHandler()
++	setStackSystemReserve(exceptionStackReserve())
+ 
+ 	initHighResTimer()
+ 	timeBeginPeriodRetValue = osRelax(false)
+@@ -492,6 +495,41 @@ func osinit() {
+ 	stdcall(_SetProcessPriorityBoost, windows.CurrentProcess, 1)
+ }
+ 
++// exceptionStackReserve reports how many bytes below a goroutine's stack
++// pointer Windows may write while dispatching an exception on it.
++//
++// Windows has no alternate signal stack. The kernel pushes an EXCEPTION_RECORD
++// and a CONTEXT onto the faulting thread's stack, and ntdll's dispatcher and
++// the runtime's vectored handler (sigtramp) then run on that same stack until
++// sigtrampgo switches to g0. The CONTEXT is not a fixed size: it carries the
++// extended register state (XSTATE) of every CPU feature the OS has enabled,
++// which is under 2 KiB on a typical client CPU but over 11 KiB on Intel Xeons
++// with AMX, whose 8 KiB tile state is laid out even for threads that never
++// use it. stackSystem's 4 KiB floor was sized for the former. See #81238.
++func exceptionStackReserve() uintptr {
++	// Everything the kernel and ntdll put between the faulting SP and the
++	// CONTEXT, plus the frames below it that run before the switch to g0:
++	// EXCEPTION_RECORD (152 bytes on amd64), alignment padding, and the
++	// KiUserExceptionDispatcher, RtlDispatchException, RtlpCallVectoredHandlers
++	// and sigtramp frames. Measured at 1,336 bytes on Windows Server 2025
++	// amd64; rounded up for headroom.
++	const dispatchOverhead = 1536
++
++	// With a nil buffer InitializeContext fails with ERROR_INSUFFICIENT_BUFFER
++	// and stores the size the current CPU's full context needs, XSTATE
++	// included. That is the size the kernel will push. Fall back to the
++	// legacy flags where CONTEXT_XSTATE is not accepted.
++	var n uint32
++	stdcall(_InitializeContext, 0, windows.CONTEXT_ALL|windows.CONTEXT_XSTATE, 0, uintptr(unsafe.Pointer(&n)))
++	if n == 0 {
++		stdcall(_InitializeContext, 0, windows.CONTEXT_ALL, 0, uintptr(unsafe.Pointer(&n)))
++	}
++	if n == 0 {
++		return 0 // keep the compile-time floor
++	}
++	return uintptr(n) + dispatchOverhead
++}
++
+ //go:nosplit
+ func readRandom(r []byte) int {
+ 	n := 0
+diff --git a/src/runtime/proc.go b/src/runtime/proc.go
+index 79f82c2e..852dd214 100644
+--- a/src/runtime/proc.go
++++ b/src/runtime/proc.go
+@@ -5313,7 +5313,7 @@ func syscall_runtime_AfterExec() {
+ func malg(stacksize int32) *g {
+ 	newg := new(g)
+ 	if stacksize >= 0 {
+-		stacksize = round2(stackSystem + stacksize)
++		stacksize = round2(int32(stackSystemReserve) + stacksize)
+ 		systemstack(func() {
+ 			newg.stack = stackalloc(uint32(stacksize))
+ 			if valgrindenabled {
+diff --git a/src/runtime/signal_windows_test.go b/src/runtime/signal_windows_test.go
+index 7a9afcce..f2766ae5 100644
+--- a/src/runtime/signal_windows_test.go
++++ b/src/runtime/signal_windows_test.go
+@@ -15,6 +15,7 @@ import (
+ 	"strings"
+ 	"syscall"
+ 	"testing"
++	"unsafe"
+ )
+ 
+ func TestVectoredHandlerExceptionInNonGoThread(t *testing.T) {
+@@ -314,3 +315,42 @@ func TestIssue59213(t *testing.T) {
+ 		t.Fatalf("failed: %s\n%s", err, out)
+ 	}
+ }
++
++// TestExceptionStackReserve checks that the per-stack OS reserve covers the
++// CONTEXT the kernel pushes when it dispatches an exception on a goroutine
++// stack, and that the stack guard and minimum stack allocation moved with it.
++// See issue 81238.
++func TestExceptionStackReserve(t *testing.T) {
++	kernel32, err := syscall.LoadDLL("kernel32.dll")
++	if err != nil {
++		t.Fatal(err)
++	}
++	initializeContext, err := kernel32.FindProc("InitializeContext")
++	if err != nil {
++		t.Fatal(err)
++	}
++	const contextAllXState = 0x10005f // CONTEXT_ALL | CONTEXT_XSTATE, amd64
++	var n uint32
++	initializeContext.Call(0, contextAllXState, 0, uintptr(unsafe.Pointer(&n)))
++	if runtime.GOARCH != "amd64" {
++		// The flag values above are amd64's; elsewhere just check the
++		// invariants below.
++		n = 0
++	}
++	const exceptionRecord = 152
++	reserve := runtime.StackSystemReserve()
++	t.Logf("InitializeContext(CONTEXT_ALL|CONTEXT_XSTATE) = %d bytes; reserve = %d, guard = %d, minimum stack = %d",
++		n, reserve, runtime.StackGuard(), runtime.StackMinAlloc())
++	if n != 0 && reserve < uintptr(n)+exceptionRecord {
++		t.Errorf("stack reserve %d cannot hold a %d-byte CONTEXT plus a %d-byte EXCEPTION_RECORD", reserve, n, exceptionRecord)
++	}
++	if got := runtime.ExceptionStackReserve(); got != 0 && got != reserve && reserve < got {
++		t.Errorf("reserve %d is below the measured need %d", reserve, got)
++	}
++	if runtime.StackGuard() < reserve {
++		t.Errorf("stack guard %d is below the reserve %d", runtime.StackGuard(), reserve)
++	}
++	if min := runtime.StackMinAlloc(); min <= runtime.StackGuard() {
++		t.Errorf("minimum stack %d leaves no room above the guard %d", min, runtime.StackGuard())
++	}
++}
+diff --git a/src/runtime/stack.go b/src/runtime/stack.go
+index 83809006..ea625309 100644
+--- a/src/runtime/stack.go
++++ b/src/runtime/stack.go
+@@ -93,15 +93,48 @@ const (
+ 	// This arithmetic must match that in cmd/internal/objabi/stack.go:StackNosplit.
+ 	stackNosplit = abi.StackNosplitBase * sys.StackGuardMultiplier
+ 
+-	// The stack guard is a pointer this many bytes above the
+-	// bottom of the stack.
++	// stackGuardMin is the smallest distance between the bottom of a
++	// stack and its guard pointer.
+ 	//
+ 	// The guard leaves enough room for a stackNosplit chain of NOSPLIT calls
+ 	// plus one stackSmall frame plus stackSystem bytes for the OS.
+ 	// This arithmetic must match that in cmd/internal/objabi/stack.go:StackLimit.
+-	stackGuard = stackNosplit + stackSystem + abi.StackSmall
++	stackGuardMin = stackNosplit + stackSystem + abi.StackSmall
+ )
+ 
++// The OS reserve, stack guard and minimum stack allocation in force.
++//
++// They start at their compile-time floors and may be raised once, before any
++// goroutine stack is allocated, by setStackSystemReserve: some systems need
++// more room below a goroutine's stack than stackSystem grants, and how much
++// is only known at run time. Windows is one: the kernel dispatches every
++// exception on the faulting goroutine's own stack, pushing a CONTEXT whose
++// size depends on the CPU's extended register state (see os_windows.go).
++//
++// The linker's nosplit check assumes only the floor, which stays valid
++// because the guard never shrinks below it.
++var (
++	stackSystemReserve uintptr = stackSystem
++	stackGuard         uintptr = stackGuardMin
++	stackMinAlloc      uint32  = fixedStack
++)
++
++// setStackSystemReserve raises the per-stack OS reserve to n bytes, and with
++// it the stack guard and the minimum stack allocation. It must be called from
++// osinit, before the first goroutine stack is allocated, and only raises.
++func setStackSystemReserve(n uintptr) {
++	n = alignUp(n, 16)
++	if n <= stackSystemReserve {
++		return
++	}
++	stackSystemReserve = n
++	stackGuard = stackNosplit + n + abi.StackSmall
++	// Same shape as fixedStack: the smallest power of two that holds the
++	// reserve plus stackMin bytes of Go frames.
++	stackMinAlloc = uint32(round2(int32(stackMin + n)))
++	startingStackSize = stackMinAlloc
++}
++
+ const (
+ 	// stackDebug == 0: no logging
+ 	//            == 1: logging of per-stack operations
+@@ -1314,7 +1347,7 @@ func shrinkstack(gp *g) {
+ 	newsize := oldsize / 2
+ 	// Don't shrink the allocation below the minimum-sized stack
+ 	// allocation.
+-	if newsize < fixedStack {
++	if newsize < uintptr(stackMinAlloc) {
+ 		return
+ 	}
+ 	// Compute how much of the stack is currently in use and only
+@@ -1413,7 +1446,7 @@ func morestackc() {
+ }
+ 
+ // startingStackSize is the amount of stack that new goroutines start with.
+-// It is a power of 2, and between fixedStack and maxstacksize, inclusive.
++// It is a power of 2, and between stackMinAlloc and maxstacksize, inclusive.
+ // startingStackSize is updated every GC by tracking the average size of
+ // stacks scanned during the GC.
+ var startingStackSize uint32 = fixedStack
+@@ -1442,17 +1475,17 @@ func gcComputeStartingStackSize() {
+ 		p.scannedStacks = 0
+ 	}
+ 	if scannedStacks == 0 {
+-		startingStackSize = fixedStack
++		startingStackSize = stackMinAlloc
+ 		return
+ 	}
+-	avg := scannedStackSize/scannedStacks + stackGuard
++	avg := scannedStackSize/scannedStacks + uint64(stackGuard)
+ 	// Note: we add stackGuard to ensure that a goroutine that
+ 	// uses the average space will not trigger a growth.
+ 	if avg > uint64(maxstacksize) {
+ 		avg = uint64(maxstacksize)
+ 	}
+-	if avg < fixedStack {
+-		avg = fixedStack
++	if avg < uint64(stackMinAlloc) {
++		avg = uint64(stackMinAlloc)
+ 	}
+ 	// Note: maxstacksize fits in 30 bits, so avg also does.
+ 	startingStackSize = uint32(round2(int32(avg)))
+diff --git a/src/runtime/sys_aix_ppc64.s b/src/runtime/sys_aix_ppc64.s
+index 41a4fa33..54678d79 100644
+--- a/src/runtime/sys_aix_ppc64.s
++++ b/src/runtime/sys_aix_ppc64.s
+@@ -219,7 +219,7 @@ TEXT tstart<>(SB),NOSPLIT,$0
+ 	MOVD	R3, (g_stack+stack_hi)(g)
+ 	SUB	$(const_threadStackSize), R3		// stack size
+ 	MOVD	R3, (g_stack+stack_lo)(g)
+-	ADD	$const_stackGuard, R3
++	ADD	$const_stackGuardMin, R3
+ 	MOVD	R3, g_stackguard0(g)
+ 	MOVD	R3, g_stackguard1(g)
+ 
+diff --git a/src/runtime/sys_solaris_amd64.s b/src/runtime/sys_solaris_amd64.s
+index 9235cad3..2892edd3 100644
+--- a/src/runtime/sys_solaris_amd64.s
++++ b/src/runtime/sys_solaris_amd64.s
+@@ -105,7 +105,7 @@ TEXT runtime·tstart_sysvicall(SB),NOSPLIT,$0
+ 	MOVQ	AX, (g_stack+stack_hi)(DX)
+ 	SUBQ	$(0x100000), AX		// stack size
+ 	MOVQ	AX, (g_stack+stack_lo)(DX)
+-	ADDQ	$const_stackGuard, AX
++	ADDQ	$const_stackGuardMin, AX
+ 	MOVQ	AX, g_stackguard0(DX)
+ 	MOVQ	AX, g_stackguard1(DX)
+ 
+diff --git a/src/runtime/sys_windows_386.s b/src/runtime/sys_windows_386.s
+index 4030e4c3..74df3b96 100644
+--- a/src/runtime/sys_windows_386.s
++++ b/src/runtime/sys_windows_386.s
+@@ -148,7 +148,7 @@ TEXT tstart<>(SB),NOSPLIT,$8-4
+ 	MOVL	AX, (g_stack+stack_hi)(DX)
+ 	SUBL	$(64*1024), AX		// initial stack size (adjusted later)
+ 	MOVL	AX, (g_stack+stack_lo)(DX)
+-	ADDL	$const_stackGuard, AX
++	ADDL	$const_stackGuardMin, AX
+ 	MOVL	AX, g_stackguard0(DX)
+ 	MOVL	AX, g_stackguard1(DX)
+ 
+diff --git a/src/runtime/sys_windows_amd64.s b/src/runtime/sys_windows_amd64.s
+index cd0a4950..733b046a 100644
+--- a/src/runtime/sys_windows_amd64.s
++++ b/src/runtime/sys_windows_amd64.s
+@@ -180,7 +180,7 @@ TEXT runtime·tstart_stdcall(SB),NOSPLIT|NOFRAME,$0
+ 	MOVQ	AX, (g_stack+stack_hi)(DX)
+ 	SUBQ	$(64*1024), AX		// initial stack size (adjusted later)
+ 	MOVQ	AX, (g_stack+stack_lo)(DX)
+-	ADDQ	$const_stackGuard, AX
++	ADDQ	$const_stackGuardMin, AX
+ 	MOVQ	AX, g_stackguard0(DX)
+ 	MOVQ	AX, g_stackguard1(DX)
+ 

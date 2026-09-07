@@ -107,7 +107,7 @@ jobs:
           case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
           if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
           case "$GO_VERSION" in tip) ;; '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, or 'tip', got '$GO_VERSION'"; exit 1 ;; esac
-          case "$MODE" in ci | smoke | faultstress | xstate) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
+          case "$MODE" in ci | smoke | faultstress | xstate | tipab) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
           case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
           case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
           case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
@@ -129,7 +129,7 @@ jobs:
   sample:
     needs: plan
     runs-on: windows-latest
-    timeout-minutes: 20
+    timeout-minutes: 45
     strategy:
       fail-fast: false
       max-parallel: 20
@@ -361,6 +361,66 @@ jobs:
           )
           $lines
           "### sample ${{ matrix.idx }} — xstate`n``````text`n$($lines -join "`n")`n``````" >> $env:GITHUB_STEP_SUMMARY
+
+      - name: tipab — stock tip vs patched tip (dynamic OS stack reserve), same VM
+        if: needs.plan.outputs.mode == 'tipab'
+        shell: pwsh
+        env:
+          GOTRACEBACK: none
+          TIP_COMMIT: 38d1265e1a015add1d0b8651f5c2ea3f06199765
+        run: |
+          # A/B on one VM: build Go at the pinned tip commit (has CL 824724's
+          # throw), run faultstress; apply the dynamic-reserve patch, rebuild
+          # the runtime, run faultstress again. On an AMX host stock tip must
+          # die with "exception dispatched below goroutine stack bottom";
+          # patched tip must pass.
+          $ErrorActionPreference = 'Continue'
+          $cpu = (Get-CimInstance Win32_Processor)[0].Name.Trim()
+          "CPU: $cpu"
+          $env:GOTOOLCHAIN = 'local'; $bootstrap = (go env GOROOT)
+          $src = Join-Path $env:RUNNER_TEMP 'gosrc'
+          git init -q $src; Push-Location $src
+          git fetch -q --depth 1 https://go.googlesource.com/go $env:TIP_COMMIT
+          git checkout -q FETCH_HEAD
+          git log --oneline -1
+          Push-Location src
+          $env:GOROOT_BOOTSTRAP = $bootstrap
+          cmd /c make.bat 2>&1 | Select-Object -Last 2
+          Pop-Location
+          $tipgo = Join-Path $src 'bin\go.exe'
+          & $tipgo version
+          Pop-Location
+
+          $fs = Join-Path $env:GITHUB_WORKSPACE '.github\repro\faultstress'
+          $env:GOWORK = 'off'; $env:GOTOOLCHAIN = 'local'
+          Push-Location $fs
+          "--- STOCK tip: faultstress"
+          & $tipgo test -vet=off -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\stock.txt" | Select-Object -Last 4
+          $stock = $LASTEXITCODE
+          Pop-Location
+
+          Push-Location $src
+          git apply --check "$env:GITHUB_WORKSPACE\.github\repro\gotip-exception-stack-reserve.patch"
+          git apply "$env:GITHUB_WORKSPACE\.github\repro\gotip-exception-stack-reserve.patch"
+          git diff --stat
+          Push-Location src
+          cmd /c make.bat 2>&1 | Select-Object -Last 2
+          Pop-Location
+          Pop-Location
+
+          Push-Location $fs
+          "--- PATCHED tip: faultstress"
+          & $tipgo test -vet=off -count=200 -timeout 600s . 2>&1 | Tee-Object -FilePath "$env:RUNNER_TEMP\patched.txt" | Select-Object -Last 4
+          $patched = $LASTEXITCODE
+          Pop-Location
+
+          $stockSig = (Select-String -Path "$env:RUNNER_TEMP\stock.txt" -Pattern 'fatal error: [^\r\n]+' | Select-Object -First 1).Matches.Value
+          $patchedSig = (Select-String -Path "$env:RUNNER_TEMP\patched.txt" -Pattern 'fatal error: [^\r\n]+' | Select-Object -First 1).Matches.Value
+          $line = "CPU: $cpu | stock exit=$stock [$stockSig] | patched exit=$patched [$patchedSig]"
+          "RESULT: $line"
+          "### sample ${{ matrix.idx }} — tipab`n``````text`n$line`n``````" >> $env:GITHUB_STEP_SUMMARY
+          if ($patched -ne 0) { Write-Host "::error title=PATCHED TIP FAILED (sample ${{ matrix.idx }})::$line"; exit 1 }
+          exit 0
 
       - name: preserve evidence
         if: failure()
