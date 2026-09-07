@@ -29,6 +29,16 @@ import "runtime/secret"
 // and goroutine-free, and erasure does NOT extend to globals written by fn or
 // to goroutines fn spawns. Panics from fn propagate (as if from Scrub).
 //
+// One constraint of Scrub's own: fn must leave runtime.LockOSThread balanced.
+// Scrub pins the goroutine to its OS thread for the window and blocks the
+// preemption and profiling signals on that thread; an UnlockOSThread inside fn
+// that fn did not itself pair with a LockOSThread unpins the goroutine
+// mid-window, and if it is rescheduled onto another thread before the mask is
+// restored, the original thread keeps SIGURG and SIGPROF blocked for the rest of
+// the process. Scrub detects the case it can observe (the goroutine has already
+// moved) and panics rather than restore the wrong thread's mask; the leak itself
+// is not repairable. See scrub_window_unix.go.
+//
 // Scrub(nil) is a no-op.
 func Scrub(fn func()) {
 	if fn == nil {

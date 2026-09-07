@@ -24,6 +24,12 @@ func disableCoreDumps() error {
 // hard limit too when privilege allows. Returns the soft limit actually in
 // force; err is non-nil whenever that is below the request.
 func ensureMemlockLimit(bytes uint64) (uint64, error) {
+	// getrlimit/setrlimit is a read-check-write against process-global
+	// state; without the lock a smaller concurrent request can write its
+	// absolute value over a larger one's raise (see memlockMu).
+	memlockMu.Lock()
+	defer memlockMu.Unlock()
+
 	var rl unix.Rlimit
 	if err := unix.Getrlimit(unix.RLIMIT_MEMLOCK, &rl); err != nil {
 		return 0, fmt.Errorf("secmem.EnsureMemlockLimit: getrlimit: %w", err)
@@ -32,6 +38,10 @@ func ensureMemlockLimit(bytes uint64) (uint64, error) {
 	// Already sufficient — never LOWER an existing budget.
 	if rl.Cur >= bytes {
 		return rl.Cur, nil
+	}
+
+	if memlockTestHook != nil {
+		memlockTestHook()
 	}
 
 	// Within the hard limit: raising the soft limit needs no privilege.

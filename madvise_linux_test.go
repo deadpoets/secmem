@@ -15,9 +15,10 @@ import (
 	"unsafe"
 )
 
-// vmFlagsFor returns the VmFlags line of the /proc/self/smaps entry whose
-// range starts at addr, or an error if the mapping is not found.
-func vmFlagsFor(addr uintptr) (string, error) {
+// smapsLineFor returns the line beginning with field (e.g. "VmFlags:" or
+// "Rss:") of the /proc/self/smaps entry whose range starts at addr, or an
+// error if the mapping or the field is not found.
+func smapsLineFor(addr uintptr, field string) (string, error) {
 	f, err := os.Open("/proc/self/smaps")
 	if err != nil {
 		return "", err
@@ -32,14 +33,20 @@ func vmFlagsFor(addr uintptr) (string, error) {
 		if !strings.HasPrefix(line, " ") && strings.Contains(line, "-") {
 			inTarget = strings.HasPrefix(line, prefix)
 		}
-		if inTarget && strings.HasPrefix(line, "VmFlags:") {
+		if inTarget && strings.HasPrefix(line, field) {
 			return line, nil
 		}
 	}
 	if err := sc.Err(); err != nil {
 		return "", err
 	}
-	return "", fmt.Errorf("mapping at %x not found in smaps", addr)
+	return "", fmt.Errorf("mapping at %x (field %q) not found in smaps", addr, field)
+}
+
+// vmFlagsFor returns the VmFlags line of the /proc/self/smaps entry whose
+// range starts at addr.
+func vmFlagsFor(addr uintptr) (string, error) {
+	return smapsLineFor(addr, "VmFlags:")
 }
 
 // TestMadvise_NoHugepageInForce verifies the kernel recorded MADV_NOHUGEPAGE

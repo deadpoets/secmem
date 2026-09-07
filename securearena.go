@@ -444,8 +444,9 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 //  1. Mark arena destroyed (atomic; new Acquire and borrows fail fast).
 //  2. Acquire exclusive mu lock (waits for all in-flight callbacks to return).
 //  3. Wipe full raw region (REP STOSB + CLFLUSH on amd64).
-//  4. Madvise DONTNEED.
-//  5. Munlock + Munmap.
+//  4. Madvise DONTNEED_LOCKED.
+//  5. Unmap (Linux munlocks first; Darwin deliberately does not — see
+//     mlock_darwin.go).
 //  6. Nil raw — makes IsDestroyed() = true and Destroy idempotent.
 //
 // Destroy is idempotent and goroutine-safe. A second concurrent Destroy blocks
@@ -679,6 +680,13 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 // of the strip, and the return of the slot to the pool all complete
 // regardless; the error is a bug report, not a refusal.
 //
+// After [WipeAllSecrets] the arena is dead but a slot acquired before the
+// wipe is still held. Release is teardown, not reuse, so it is not refused
+// with [ErrWiped]: it wipes the slot, returns it to the pool (which
+// [SecureArena.Acquire] refuses to draw from anyway) and returns nil. The
+// canary strip is not verified — the wipe zeroed it along with the secrets,
+// so there is no pattern left to check.
+//
 // If the arena is read-only ([SecureArena.ReadOnly]), Release returns
 // [ErrReadOnly] without wiping — the wipe is a write the PROT_READ slab would
 // fault on. The slot stays in use; call [SecureArena.ReadWrite] first, or let
@@ -716,13 +724,25 @@ func (s *ArenaSlot) Release() error {
 		}
 		start := int(s.idx) * s.arena.stride
 		end := start + s.arena.slotSize
-		strip := s.arena.region.inner[end : start+s.arena.stride]
-		if !canaryIntact(strip) {
-			violated = true
-			// Re-arm the strip so a later overflow of the recycled slot is
-			// still detectable. fillCanary cannot fail here: the pattern was
-			// already initialized when the arena armed it at construction.
-			_ = fillCanary(strip)
+		// After an emergency wipe the strip holds zeros, not the pattern:
+		// WipeAllSecrets zeroed the whole slab, strips included, and the
+		// janitor cleared its own layout for the same reason (retainWiped).
+		// Verifying here would report an overflow that never happened on
+		// every slot released after the wipe. The flag is set under the
+		// exclusive lock, after the wipe, and read here under rLock, so it
+		// cannot be observed mid-wipe. Only the check is skipped: the slot
+		// wipe below still runs, because a write through this pre-wipe
+		// handle is a live secret until something zeroes it.
+		if !s.arena.wiped.Load() {
+			strip := s.arena.region.inner[end : start+s.arena.stride]
+			if !canaryIntact(strip) {
+				violated = true
+				// Re-arm the strip so a later overflow of the recycled slot
+				// is still detectable. fillCanary cannot fail here: the
+				// pattern was already initialized when the arena armed it at
+				// construction.
+				_ = fillCanary(strip)
+			}
 		}
 		secureWipeSlice(s.arena.region.inner[start:end])
 	}

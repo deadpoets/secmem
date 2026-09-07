@@ -1,3 +1,5 @@
+//go:build (!goexperiment.runtimesecret || !(linux && (amd64 || arm64))) && arm64
+
 // scrubframe_arm64.s — ARM64 stack-frame scrub for the legacy Scrub path.
 //
 // The amd64 counterpart (scrubframe_amd64.s) has existed since the first

@@ -70,7 +70,14 @@ func sealCipherCall(proc *windows.LazyProc, region secRegion) error {
 // sealEncrypt encrypts the secret area in place with the kernel-held per-boot
 // process key. Returns applied=true on success so the caller can record that
 // the contents are ciphertext (the janitor must not canary-check ciphertext).
-func sealEncrypt(region secRegion) (applied bool, err error) {
+//
+// sealEncrypt and sealDecrypt are package vars, not plain funcs, solely so a
+// test can wrap them — make the decrypt fail on demand, count the encrypts.
+// Seal's rollback state machine only runs when VirtualProtect refuses a
+// committed region and CryptUnprotectMemory then refuses too, which no real
+// environment produces to order. Production always runs the values defined
+// here.
+var sealEncrypt = func(region secRegion) (applied bool, err error) {
 	if err := sealCipherCall(procCryptProtectMemory, region); err != nil {
 		return false, err
 	}
@@ -79,6 +86,6 @@ func sealEncrypt(region secRegion) (applied bool, err error) {
 
 // sealDecrypt reverses sealEncrypt, restoring the plaintext and the canary
 // slack bit-exactly.
-func sealDecrypt(region secRegion) error {
+var sealDecrypt = func(region secRegion) error {
 	return sealCipherCall(procCryptUnprotectMemory, region)
 }

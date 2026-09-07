@@ -187,7 +187,7 @@ jobs:
       - name: staticcheck (examples)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
         with:
-          version: latest
+          version: 2026.2.1
           install-go: false
           working-directory: examples
           cache-key: examples
@@ -272,12 +272,12 @@ jobs:
       - name: staticcheck (core)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
         with:
-          version: latest
+          version: 2026.2.1
           install-go: false
       - name: staticcheck (secmem-crypto)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
         with:
-          version: latest
+          version: 2026.2.1
           install-go: false
           working-directory: secmem-crypto
           cache-key: secmem-crypto
@@ -288,7 +288,7 @@ jobs:
       - name: staticcheck (secmem-lint)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
         with:
-          version: latest
+          version: 2026.2.1
           install-go: false
           working-directory: secmem-lint
           cache-key: secmem-lint

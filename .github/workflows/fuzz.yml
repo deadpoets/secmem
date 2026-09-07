@@ -3,15 +3,19 @@ name: Nightly Fuzz
 # Active, coverage-guided fuzzing on a schedule. The seed corpus (f.Add seeds
 # plus the committed testdata/fuzz/<Target>/ inputs) runs in the normal CI test
 # jobs on every PR; THIS workflow hunts for NEW failing inputs over a longer
-# budget. Targets are discovered at run time (go test -list), so a new FuzzXxx
-# is picked up without editing this file.
+# budget. Targets are discovered at run time, per PACKAGE, so a new FuzzXxx
+# anywhere in the module - not only its root package - is picked up without
+# editing this file.
 #
-# On a crash, Go writes the minimized failing input to testdata/fuzz/<Target>/
-# and prints it plus a `go test -run=<Target>/<hash>` reproduction line; the job
-# goes red. Commit that file to turn the crash into a permanent regression seed.
+# On a crash or hang, Go writes the minimized failing input to
+# <pkg>/testdata/fuzz/<Target>/<hash> and prints a `go test -run=<Target>/<hash>`
+# reproduction line; the job goes red. Every NEW file under testdata/fuzz is
+# then uploaded as a workflow artifact, so a nightly finding survives the
+# ephemeral runner instead of dying with it. Commit that file to turn the
+# finding into a permanent regression seed.
 #
 # Runs against the sibling core tree at this commit (setup-workspace), so a core
-# change is fuzzed against secmem-crypto before it is tagged — same as CI.
+# change is fuzzed against secmem-crypto before it is tagged - same as CI.
 
 on:
   schedule:
@@ -26,7 +30,7 @@ permissions:
   contents: read
 
 env:
-  # Exact patch, kept in step with ci.yml — see the reasoning on GO_VERSION
+  # Exact patch, kept in step with ci.yml - see the reasoning on GO_VERSION
   # there. Fuzzing findings are only meaningful against a known toolchain.
   GO_VERSION: "1.26.6"
 
@@ -43,20 +47,45 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
-      - name: fuzz each target
+      - name: fuzz each target in each package
         working-directory: ${{ matrix.module }}
         env:
           FUZZTIME: ${{ github.event.inputs.fuzztime || '3m' }}
         run: |
-          set -euo pipefail
-          mapfile -t targets < <(go test -list '^Fuzz' . | grep '^Fuzz' || true)
-          if [ ${#targets[@]} -eq 0 ]; then
-            echo "no fuzz targets in ${{ matrix.module }}"
-            exit 0
-          fi
-          echo "fuzzing ${#targets[@]} target(s) for $FUZZTIME each: ${targets[*]}"
-          for t in "${targets[@]}"; do
-            echo "::group::fuzz $t"
-            go test -run '^$' -fuzz "^${t}$" -fuzztime "$FUZZTIME" .
-            echo "::endgroup::"
+          set -uo pipefail
+          failed=0
+          ran=0
+          # `go test -fuzz` accepts exactly one package, and `-list` over a
+          # multi-package pattern drops the package boundary, so walk packages.
+          for pkg in $(go list ./...); do
+            mapfile -t targets < <(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true)
+            for t in "${targets[@]}"; do
+              ran=$((ran + 1))
+              echo "::group::fuzz $t in $pkg for $FUZZTIME"
+              if ! go test -run '^$' -fuzz "^${t}$" -fuzztime "$FUZZTIME" "$pkg"; then
+                echo "::error::fuzz target $t in $pkg failed"
+                failed=1
+              fi
+              echo "::endgroup::"
+            done
           done
+          if [ "$ran" -eq 0 ]; then
+            echo "no fuzz targets in ${{ matrix.module }}"
+          fi
+          # Stage every NEW file under testdata/fuzz. Committed seeds are
+          # tracked, so the untracked set is exactly the inputs Go just wrote.
+          stage="$RUNNER_TEMP/fuzz-failures"
+          mkdir -p "$stage"
+          git ls-files --others -z -- ':(glob)**/testdata/fuzz/**' | while IFS= read -r -d '' f; do
+            mkdir -p "$stage/$(dirname "$f")"
+            cp "$f" "$stage/$f"
+          done
+          exit "$failed"
+      - name: keep the failing inputs
+        if: failure()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-failures-${{ matrix.module == '.' && 'core' || matrix.module }}
+          path: ${{ runner.temp }}/fuzz-failures
+          if-no-files-found: warn
+          retention-days: 30

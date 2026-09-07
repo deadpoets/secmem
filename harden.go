@@ -1,6 +1,9 @@
 package secmem
 
-import "context"
+import (
+	"context"
+	"sync"
+)
 
 // HardenLevel is a bitmask describing which hardening mitigations were applied.
 type HardenLevel int
@@ -99,3 +102,19 @@ func DisableCoreDumps() error {
 func EnsureMemlockLimit(bytes uint64) (achieved uint64, err error) {
 	return ensureMemlockLimit(bytes)
 }
+
+// memlockMu serializes ensureMemlockLimit on every platform that implements
+// it. The budget it manages — RLIMIT_MEMLOCK, or the working-set minimum on
+// Windows — is process-global, and the platform APIs offer only a get and an
+// absolute set, so "never lower an existing budget" is a read-check-write.
+// Unserialized, two callers can both read the old value, the larger request
+// writes its raise, and the smaller one then writes its own absolute value
+// over it: the budget ends up LOWER than one caller was told it achieved.
+// A process-global lock is the honest granularity for process-global state.
+var memlockMu sync.Mutex //nolint:gochecknoglobals // guards a process-global budget.
+
+// memlockTestHook, when non-nil, runs inside ensureMemlockLimit between the
+// read of the current budget and the write that raises it, with memlockMu
+// held. It is the seam the regression test uses to force a competing caller
+// into exactly that window instead of racing for it. Nil outside tests.
+var memlockTestHook func() //nolint:gochecknoglobals // test seam, nil in production.
