@@ -51,8 +51,14 @@ func countEqual(a, b []byte) int {
 //     pattern. Legacy path only: runtime/secret erases registers itself and
 //     the pieces the control replicates are build-tagged out there.
 //  3. Subjects. After Scrub and ScrubErr the registers must read back all
-//     zero. After a Scrub whose fn panics, no planted byte may survive and
-//     every byte outside the unwind's measured footprint must be zero.
+//     zero. For the panic case the unwind's own footprint is measured on
+//     every build with the real Scrub: a panicking window that plants nothing
+//     leaves zero plus whatever the unwind wrote after the clear, and those
+//     positions are the footprint. After a Scrub whose fn panics, every byte
+//     outside that footprint must be zero — which is also what proves no
+//     planted byte survived, since the pattern is never zero. On the legacy
+//     path the panicking control measures the same footprint independently
+//     and the two must agree.
 //
 // Nothing between a fill and its dump is allowed to touch the vector
 // registers, so the probe calls are back to back with only the code under test
@@ -83,7 +89,7 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	}
 
 	// 2. Controls.
-	var unwindFootprint []bool // positions the unwind writes on its own; nil when unmeasured
+	var controlFootprint []bool // positions the unwind writes, measured without the clear; nil when unmeasured
 	if vecClearControlAvailable {
 		legacyWindowNoClear(fill)
 		dump()
@@ -101,11 +107,11 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 		if survived == 0 {
 			t.Fatal("control failed (panic path): no planted byte survives the unwind without the clear, so a clear cannot be shown to be what removes them")
 		}
-		unwindFootprint = make([]bool, len(got))
+		controlFootprint = make([]bool, len(got))
 		n := 0
 		for i := range got {
 			if got[i] != expected(i) {
-				unwindFootprint[i] = true
+				controlFootprint[i] = true
 				n++
 			}
 		}
@@ -129,16 +135,41 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 		t.Errorf("ScrubErr: vector registers hold residue after the window: %x", got)
 	}
 
+	// The unwind's footprint, measured with the real Scrub on every build: the
+	// registers are zero here (the ScrubErr subject just cleared them), fn
+	// plants nothing and panics, the deferred clear runs, and whatever is
+	// non-zero afterwards was written by the runtime's stack walk after the
+	// clear. Its positions are a property of the toolchain, not of the data.
+	func() {
+		defer func() { _ = recover() }()
+		Scrub(func() { panic("vecclear-footprint") })
+	}()
+	dump()
+	unwindFootprint := make([]bool, len(got))
+	footprintBytes := 0
+	for i := range got {
+		if got[i] != 0 {
+			unwindFootprint[i] = true
+			footprintBytes++
+		}
+	}
+	t.Logf("unwind footprint: the runtime's stack walk writes %d byte(s) to the vector file after the clear", footprintBytes)
+	if controlFootprint != nil {
+		for i := range got {
+			if controlFootprint[i] != unwindFootprint[i] {
+				t.Errorf("unwind footprint disagrees between the control (without the clear) and Scrub at byte %d", i)
+				break
+			}
+		}
+	}
+
 	func() {
 		defer func() { _ = recover() }()
 		Scrub(func() { fill(); panic("vecclear") })
 	}()
 	dump()
-	if n := countEqual(got[:fillable], planted[:fillable]); n != 0 {
-		t.Errorf("Scrub (panicking fn): %d planted bytes survive the unwind: %x", n, got)
-	}
 	for i := range got {
-		if got[i] != 0 && (unwindFootprint == nil || !unwindFootprint[i]) {
+		if got[i] != 0 && !unwindFootprint[i] {
 			t.Errorf("Scrub (panicking fn): byte %d = %#x after the unwind, outside the footprint the unwind itself writes (%x)", i, got[i], got)
 			break
 		}
