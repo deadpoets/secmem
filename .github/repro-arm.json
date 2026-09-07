@@ -1,1 +1,1 @@
-{"jobs": 250, "mode": "ci", "go_version": "1.26.6", "test_ref": "f673e69cfa94a603acdb503aa1975bdc098b3b6a"}
+{"jobs": 40, "mode": "xstate"}

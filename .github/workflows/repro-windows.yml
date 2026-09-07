@@ -107,7 +107,7 @@ jobs:
           case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
           if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
           case "$GO_VERSION" in tip) ;; '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, or 'tip', got '$GO_VERSION'"; exit 1 ;; esac
-          case "$MODE" in ci | smoke | faultstress) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
+          case "$MODE" in ci | smoke | faultstress | xstate) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
           case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
           case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
           case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
@@ -324,6 +324,43 @@ jobs:
             go test -race -vet=off -c -o "$env:RUNNER_TEMP\hit\faultstress.test.exe" .github/repro/faultstress
           }
           exit $code
+
+      - name: xstate — measure the OS exception-context size on this CPU
+        if: needs.plan.outputs.mode == 'xstate'
+        shell: pwsh
+        run: |
+          # The Windows kernel pushes a CONTEXT (+CONTEXT_EX +XSTATE area
+          # +EXCEPTION_RECORD) on the faulting thread's stack. Go reserves 4096
+          # bytes for it (runtime.stackSystem). Measure what this CPU needs, and
+          # whether the layout counts optional features (AMX) that this process
+          # never enabled.
+          $src = @'
+          using System; using System.Runtime.InteropServices;
+          public static class X {
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool InitializeContext(IntPtr b, uint f, out IntPtr c, ref uint n);
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool InitializeContext2(IntPtr b, uint f, out IntPtr c, ref uint n, ulong compact);
+            [DllImport("kernel32.dll")] public static extern ulong GetEnabledXStateFeatures();
+            [DllImport("kernel32.dll", SetLastError=true)] public static extern bool GetThreadEnabledXStateFeatures(IntPtr t, out ulong m);
+            [DllImport("kernel32.dll")] public static extern IntPtr GetCurrentThread();
+            public static uint Len(uint f) { uint n = 0; IntPtr c; InitializeContext(IntPtr.Zero, f, out c, ref n); return n; }
+            public static uint Len2(uint f, ulong m) { uint n = 0; IntPtr c; InitializeContext2(IntPtr.Zero, f, out c, ref n, m); return n; }
+          }
+          '@
+          Add-Type -TypeDefinition $src
+          $cpu = (Get-CimInstance Win32_Processor)[0].Name.Trim()
+          $pm = [X]::GetEnabledXStateFeatures()
+          $tm = [uint64]0; $ok = $false
+          try { $ok = [X]::GetThreadEnabledXStateFeatures([X]::GetCurrentThread(), [ref]$tm) } catch { $ok = $false }
+          $lines = @(
+            ("CPU: {0}" -f $cpu),
+            ("process EnabledXStateFeatures: 0x{0:x}  (AMX bits 17,18 = 0x60000)" -f $pm),
+            ("thread  EnabledXStateFeatures: {0}" -f $(if ($ok) { '0x{0:x}' -f $tm } else { 'n/a' })),
+            ("InitializeContext  CONTEXT_ALL|XSTATE (0x10005f): {0}" -f [X]::Len(0x10005f)),
+            ("InitializeContext  CONTEXT_ALL         (0x10001f): {0}" -f [X]::Len(0x10001f)),
+            ("InitializeContext2 CONTEXT_ALL|XSTATE compact=all: {0}" -f [X]::Len2(0x10005f, [uint64]::MaxValue))
+          )
+          $lines
+          "### sample ${{ matrix.idx }} — xstate`n``````text`n$($lines -join "`n")`n``````" >> $env:GITHUB_STEP_SUMMARY
 
       - name: preserve evidence
         if: failure()
