@@ -145,7 +145,7 @@ func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err 
 }
 
 // madviseBeforeFree is a no-op on Windows — there is no equivalent to MADV_DONTNEED.
-func madviseBeforeFree(_ secRegion) {}
+func madviseBeforeFree(_ secRegion) error { return nil }
 
 // freeSecretMem unlocks the committed middle and releases the ENTIRE
 // reservation. VirtualFree(MEM_RELEASE) must receive the RESERVATION base

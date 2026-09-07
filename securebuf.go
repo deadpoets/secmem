@@ -251,7 +251,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 //  1. Stop the AddCleanup fallback (prevents double-free).
 //  2. Mprotect(RW) — ensure the page is writable before wiping.
 //  3. secureWipeSlice — zero + CLFLUSH/CLFLUSHOPT + SFENCE/LFENCE.
-//  4. Madvise(DONTNEED) — release physical frames immediately.
+//  4. Madvise(DONTNEED_LOCKED) — release physical frames immediately.
 //  5. freeSecretMem — Munlock + Munmap / VirtualUnlock + VirtualFree.
 //  6. Nil out data and raw — makes Destroy idempotent.
 //  7. runtime.KeepAlive(s) — ensures the GC does not run the cleanup

@@ -241,11 +241,20 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 		if !unmap {
 			return werr
 		}
-		// MADV_DONTNEED needs no write access and, on a private anonymous
-		// mapping, drops the frames outright — a partial wipe by other means
-		// where the platform supports it.
-		madviseBeforeFree(region.region)
-		return errors.Join(werr, freeSecretMem(region.region))
+		// The advice needs no write access, so it is the one step that can
+		// still run. Be precise about what it is worth, per tier: on an anon
+		// mapping it drops the frames now instead of at the munmap below,
+		// which is NOT a wipe — the free list keeps their contents until the
+		// kernel zeroes them for the next user. On memfd_secret it only zaps
+		// the page tables; the kernel zeroes the folios itself when the
+		// munmap drops the mapping (see madviseBeforeFree). Its result is
+		// reported rather than assumed: a refusal here means the region went
+		// back with nothing done to it at all, and the caller should know.
+		var aerr error
+		if err := madviseBeforeFree(region.region); err != nil {
+			aerr = fmt.Errorf("secmem: janitor: releasing frames of unwiped region failed: %w", err)
+		}
+		return errors.Join(werr, aerr, freeSecretMem(region.region))
 	}
 
 	// Ciphertext (Windows sealed state) cannot be canary-verified — skip the
@@ -274,7 +283,10 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 		return canaryErr
 	}
 
-	madviseBeforeFree(region.region)
+	// The region holds zeros, and the munmap frees its frames whether or not
+	// the advice was taken (it is refused on kernels older than 5.18) — so a
+	// refusal here changes nothing worth reporting.
+	_ = madviseBeforeFree(region.region)
 	return errors.Join(canaryErr, freeSecretMem(region.region))
 }
 

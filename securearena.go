@@ -444,7 +444,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 //  1. Mark arena destroyed (atomic; new Acquire and borrows fail fast).
 //  2. Acquire exclusive mu lock (waits for all in-flight callbacks to return).
 //  3. Wipe full raw region (REP STOSB + CLFLUSH on amd64).
-//  4. Madvise DONTNEED.
+//  4. Madvise DONTNEED_LOCKED.
 //  5. Munlock + Munmap.
 //  6. Nil raw — makes IsDestroyed() = true and Destroy idempotent.
 //

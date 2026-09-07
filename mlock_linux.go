@@ -286,11 +286,39 @@ func freeSecretMem(region secRegion) error {
 	return unix.Munmap(region.outer)
 }
 
-// madviseBeforeFree advises the kernel to release the secret area's physical
-// frames immediately. Called by Destroy before freeSecretMem as
-// defense-in-depth. Guards have no frames to release.
-func madviseBeforeFree(region secRegion) {
-	_ = unix.Madvise(region.inner, unix.MADV_DONTNEED)
+// madviseBeforeFree asks the kernel to drop the secret area's physical frames
+// ahead of the munmap in freeSecretMem, as defense-in-depth. Guards have no
+// frames to drop.
+//
+// The area is still mlocked here — freeSecretMem does the munlock — and
+// madvise(2) refuses plain MADV_DONTNEED on a range with locked pages
+// (EINVAL), on both tiers: the anon tier via our own mlock, the memfd_secret
+// tier because secretmem marks its VMA VM_LOCKED itself. The advice therefore
+// has to be MADV_DONTNEED_LOCKED (Linux 5.18+), which discards without the
+// pages being unlocked first. Unlocking first is not an alternative: munlock
+// cannot clear VM_LOCKED on a secretmem VMA (mlock_fixup skips it), and on the
+// anon tier it would leave the frames swappable for the instant before the
+// advice — harmless after a wipe, not on the release-unwiped path. On a kernel
+// older than 5.18 the advice is unknown, the call fails with EINVAL and the
+// frames are simply released by the munmap that follows.
+//
+// What the advice buys differs per tier, and wipeAndFree's comments rely on
+// exactly this:
+//   - anon (L3): the frames are dropped now rather than at the munmap a few
+//     instructions later; a later touch refaults a zero page. That is NOT a
+//     wipe: the freed frames keep their contents on the free list until the
+//     kernel zeroes them for their next user (or init_on_free does it sooner).
+//   - memfd_secret (L4): only the page tables are zapped. The mapping is
+//     MAP_SHARED, so the folios stay in the secretmem inode and hold the
+//     secret until munmap drops the last reference, at which point the kernel
+//     zeroes them itself (secretmem_free_folio). That, not this call, is the
+//     backstop on this tier.
+//
+// The result is returned so the release-unwiped path can report it instead of
+// assuming; the normal path discards it, because by then the area holds zeros
+// and the munmap frees the frames either way.
+func madviseBeforeFree(region secRegion) error {
+	return unix.Madvise(region.inner, unix.MADV_DONTNEED_LOCKED)
 }
 
 // mprotectSecretMem applies prot to the secret area ONLY. The guards are

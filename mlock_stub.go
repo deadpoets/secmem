@@ -61,7 +61,7 @@ func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err 
 }
 
 // madviseBeforeFree is a no-op on platforms without madvise.
-func madviseBeforeFree(_ secRegion) {}
+func madviseBeforeFree(_ secRegion) error { return nil }
 
 // freeSecretMem is a no-op on platforms without mmap — the heap slice is
 // reclaimed by the GC after the wipe.

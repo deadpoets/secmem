@@ -75,7 +75,7 @@ func freeSecretMem(region secRegion) error {
 
 // madviseBeforeFree is a no-op on Darwin — MADV_DONTNEED behaviour differs
 // from Linux and is not relied upon.
-func madviseBeforeFree(_ secRegion) {}
+func madviseBeforeFree(_ secRegion) error { return nil }
 
 // mprotectSecretMem applies prot to the secret area ONLY. The guards are
 // permanently PROT_NONE and never touched.
