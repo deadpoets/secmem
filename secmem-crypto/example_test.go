@@ -245,3 +245,32 @@ func ExampleAsSSH_hostKey() {
 	fmt.Println(ssh.FingerprintSHA256(sshSigner.PublicKey()) != "")
 	// Output: true
 }
+
+// A login service keeps a fixed number of locked Argon2 workspaces and
+// derives into them; the pool size caps concurrent derivations and locked
+// memory, and a lock budget that cannot hold it fails here, at startup.
+func ExampleArgon2Pool() {
+	if _, err := secmem.EnsureMemlockLimit(256 << 20); err != nil {
+		panic(err) // raise the budget once, before the first allocation
+	}
+	pool, err := secmemcrypto.NewArgon2Pool(2, secmemcrypto.Argon2Memory, secmemcrypto.Argon2Threads)
+	if err != nil {
+		panic(err)
+	}
+	defer pool.Destroy()
+
+	key, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		panic(err)
+	}
+	defer key.Destroy()
+
+	params := secmemcrypto.Argon2Params{
+		Time: secmemcrypto.Argon2Time, Memory: secmemcrypto.Argon2Memory, Threads: secmemcrypto.Argon2Threads,
+	}
+	if err := pool.Derive([]byte("correct horse battery staple"), []byte("16-byte-salt-xxx"), params, key); err != nil {
+		panic(err)
+	}
+	// key now holds the tag, in locked memory; the pool's working state is
+	// zero again and locked for the next call.
+}

@@ -323,10 +323,21 @@ func (ws *Workspace) runSegment(mode Mode, n, slice, lane, time, lanes, segments
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
 	secmem.Scrub(func() {
+		if segmentProbe != nil {
+			segmentProbe()
+		}
 		ws.processSegment(mode, n, slice, lane, time, lanes, segments, s)
 		clearVectorRegs()
 	})
 }
+
+// segmentProbe, when non-nil, is called inside every worker's Scrub window
+// before the segment runs. It exists for one test: proving, on a
+// runtime/secret build, that the window a worker opens on itself is real
+// (secret.Enabled() is true there), which is the claim the whole worker
+// design rests on and which nothing outside the window can observe. nil in
+// production; the check is one predictable branch per segment.
+var segmentProbe func() //nolint:gochecknoglobals // test hook, nil outside tests
 
 // processSegment is upstream's closure of the same name, with its three
 // block locals (and blamka's temporary) replaced by the caller-owned
