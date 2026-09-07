@@ -56,6 +56,7 @@ jobs:
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
+      - uses: ./.github/actions/argon2-workspace-ran
 
   test-arm64-linux:
     runs-on: ubuntu-24.04-arm
@@ -68,6 +69,7 @@ jobs:
       - run: go test -race ./...
       - run: go test -race ./...
         working-directory: secmem-crypto
+      - uses: ./.github/actions/argon2-workspace-ran
 
   # Exercise the GOEXPERIMENT=runtimesecret build. The register/stack/heap
   # erasure layer's integration tests are build-tag-gated to this experiment;

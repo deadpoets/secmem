@@ -6,9 +6,10 @@ import (
 	"sync"
 	"testing"
 
-	"golang.org/x/crypto/argon2"
+	xargon2 "golang.org/x/crypto/argon2"
 
 	"github.com/deadpoets/secmem"
+	"github.com/deadpoets/secmem/secmem-crypto/internal/argon2"
 )
 
 // Small profile for the tests: 64 KiB of matrix keeps them inside the
@@ -51,7 +52,7 @@ func TestArgon2Workspace_MatchesArgon2IntoAndXCrypto(t *testing.T) {
 			t.Errorf("case %d: workspace %x != Argon2Into %x", i, got, want)
 		}
 		if p.Mode == Argon2id && p.Secret == nil && p.Data == nil {
-			if want := argon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, 32); !bytes.Equal(got, want) {
+			if want := xargon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, 32); !bytes.Equal(got, want) {
 				t.Errorf("case %d: workspace %x != x/crypto %x", i, got, want)
 			}
 		}
@@ -99,10 +100,13 @@ func TestArgon2Workspace_Errors(t *testing.T) {
 	}
 }
 
-// TestArgon2Workspace_WipedBetweenUses pins that a derivation whose output
-// buffer is destroyed mid-way (so Derive fails) still leaves the region
-// zero: the wipe is deferred, not on the success path.
-func TestArgon2Workspace_WipedAfterFailure(t *testing.T) {
+// TestArgon2Workspace_WipedAfterDerive reads the locked region back after a
+// derivation and requires it to be all zero: the between-use wipe is what
+// makes an idle workspace carry nothing. (The wipe is deferred, so the
+// failure path is the same code; a mid-derivation failure cannot be forced
+// deterministically from outside, and the deferral is the reviewable
+// proof for it.)
+func TestArgon2Workspace_WipedAfterDerive(t *testing.T) {
 	ws := newWorkspaceOrSkip(t, wsTestMemory, wsTestThreads)
 	out := newTestBuffer(t, 32)
 	p := Argon2Params{Time: 1, Memory: wsTestMemory, Threads: wsTestThreads}
@@ -127,9 +131,13 @@ func TestArgon2Workspace_WipedAfterFailure(t *testing.T) {
 func TestArgon2Pool_ConcurrentDerivationsAgree(t *testing.T) {
 	// Two workspaces plus eight page-granular output buffers exceed the
 	// default lock quota on Windows; raising it is what a program using a
-	// pool does at startup, so the test does the same and skips if refused.
-	if _, err := secmem.EnsureMemlockLimit(32 << 20); err != nil {
-		t.Skipf("EnsureMemlockLimit: %v", err)
+	// pool does at startup, so the test does the same. EnsureMemlockLimit
+	// returns what it achieved alongside any error, so the test skips only
+	// when that is short of what it needs, not on a hard limit below the
+	// generous figure it asked for.
+	needLocked := uint64(2*argon2.WorkspaceSize(wsTestMemory, wsTestThreads)) + 8*64<<10
+	if achieved, err := secmem.EnsureMemlockLimit(32 << 20); achieved < needLocked {
+		t.Skipf("lock budget %d bytes, need %d: %v", achieved, needLocked, err)
 	}
 	pool, err := NewArgon2Pool(2, wsTestMemory, wsTestThreads)
 	if err != nil {
@@ -141,7 +149,7 @@ func TestArgon2Pool_ConcurrentDerivationsAgree(t *testing.T) {
 	}
 	password, salt := []byte("password"), []byte("0123456789abcdef")
 	p := Argon2Params{Time: 1, Memory: wsTestMemory, Threads: wsTestThreads}
-	want := argon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, 32)
+	want := xargon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, 32)
 
 	const callers = 8
 	outs := make([]*secmem.SecureBuffer, callers)
@@ -191,8 +199,9 @@ func TestArgon2Workspace_FullProfile(t *testing.T) {
 	if testing.Short() {
 		t.Skip("short")
 	}
-	if _, err := secmem.EnsureMemlockLimit(256 << 20); err != nil {
-		t.Skipf("EnsureMemlockLimit: %v", err)
+	needLocked := uint64(argon2.WorkspaceSize(Argon2Memory, Argon2Threads)) + 1<<20
+	if achieved, err := secmem.EnsureMemlockLimit(256 << 20); achieved < needLocked {
+		t.Skipf("lock budget %d bytes, need %d: %v", achieved, needLocked, err)
 	}
 	ws := newWorkspaceOrSkip(t, Argon2Memory, Argon2Threads)
 	out := newTestBuffer(t, 32)
@@ -201,7 +210,7 @@ func TestArgon2Workspace_FullProfile(t *testing.T) {
 	if err := ws.Derive(password, salt, p, out); err != nil {
 		t.Fatal(err)
 	}
-	if want := argon2.IDKey(password, salt, Argon2Time, Argon2Memory, Argon2Threads, 32); !bytes.Equal(readBuf(t, out), want) {
+	if want := xargon2.IDKey(password, salt, Argon2Time, Argon2Memory, Argon2Threads, 32); !bytes.Equal(readBuf(t, out), want) {
 		t.Fatal("full-profile derivation differs from x/crypto")
 	}
 }
@@ -261,7 +270,7 @@ func BenchmarkArgon2_HeapVsWorkspace(b *testing.B) {
 	})
 	b.Run("x/crypto/IDKey", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
-			_ = argon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, 32)
+			_ = xargon2.IDKey(password, salt, p.Time, p.Memory, p.Threads, 32)
 		}
 	})
 }

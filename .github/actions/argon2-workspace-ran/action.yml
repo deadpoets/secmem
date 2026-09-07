@@ -1,0 +1,28 @@
+name: argon2-workspace tests ran
+description: >-
+  A skipped test is invisible in a plain `go test` run, and the locked
+  Argon2 workspace tests skip on lock refusal by convention (an environment
+  condition, per TESTING.md). On a hosted runner that can lock memory a skip
+  is therefore a finding, not noise: it means the runner's lock budget or the
+  allocator changed and the workspace path silently stopped being tested.
+  This step re-runs just those tests verbosely and fails on any SKIP.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      working-directory: secmem-crypto
+      run: |
+        # The hosted Linux runners cap RLIMIT_MEMLOCK below the 64 MiB the
+        # full-profile test needs, and EnsureMemlockLimit cannot raise a hard
+        # limit without privilege. The runner user has sudo, so lift it for
+        # this shell (children inherit); elsewhere the default suffices.
+        if [ "$(uname -s)" = Linux ] && command -v sudo >/dev/null; then
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited || true
+        fi
+        echo "memlock soft/hard: $(ulimit -Sl) / $(ulimit -Hl)"
+        out=$(go test -race -count=1 -v -run 'Argon2Workspace|Argon2Pool|ClearVectorRegs|UpstreamIdentity' ./... 2>&1) || { echo "$out"; exit 1; }
+        echo "$out" | grep -E '^(--- |ok|FAIL)'
+        if echo "$out" | grep -q -- '--- SKIP'; then
+          echo "::error::an Argon2 workspace/register/identity test skipped on this runner; see the lines above"
+          exit 1
+        fi
