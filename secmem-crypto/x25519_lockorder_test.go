@@ -5,17 +5,16 @@ import (
 	"sync"
 	"testing"
 	"time"
-	"unsafe"
 
 	"golang.org/x/crypto/curve25519"
 
 	"github.com/deadpoets/secmem"
 )
 
-// bufAddr is the ordering key ConstantTimeEqual uses. Kept in one place so the
+// lockKey is the ordering key ConstantTimeEqual uses. Kept in one place so the
 // test cannot drift from the implementation by ordering a different way.
-func bufAddr(b *secmem.SecureBuffer) uintptr {
-	return uintptr(unsafe.Pointer(b))
+func lockKey(b *secmem.SecureBuffer) uint64 {
+	return b.LockOrder()
 }
 
 // newLockOrderKey builds a key whose scalar buffer this test manipulates
@@ -55,7 +54,7 @@ func readsPark(buf *secmem.SecureBuffer, d time.Duration, wg *sync.WaitGroup) bo
 	}
 }
 
-// TestX25519Key_ConstantTimeEqual_AcquiresInAddressOrder pins the acquisition
+// TestX25519Key_ConstantTimeEqual_AcquiresInLockOrder pins the acquisition
 // ORDER, which is the property that makes the ABBA deadlock impossible.
 //
 // Taking the two read locks in argument order deadlocks:
@@ -74,31 +73,31 @@ func readsPark(buf *secmem.SecureBuffer, d time.Duration, wg *sync.WaitGroup) bo
 // core's internals the way core's own version of this test does. It rigs the
 // buffers through exported API instead:
 //
-//   - the HIGHER-addressed buffer gets a held reader plus a queued writer, so
+//   - the higher-ordinal buffer gets a held reader plus a queued writer, so
 //     every new read acquire on it parks (writer preference);
-//   - the LOWER-addressed buffer is sealed, so a read acquire on it returns
+//   - the lower-ordinal buffer is sealed, so a read acquire on it returns
 //     ErrSealed immediately and never runs the nested callback.
 //
-// Then ConstantTimeEqual is called with the HIGHER-addressed key as the
-// RECEIVER, so argument order and address order disagree:
+// Then ConstantTimeEqual is called with the higher-ordinal key as the
+// RECEIVER, so argument order and LockOrder order disagree:
 //
-//   - ordered (fixed): the lower-addressed buffer is taken first, fails fast on
-//     ErrSealed, and the higher-addressed buffer is never touched — the call
+//   - ordered (fixed): the lower-ordinal buffer is taken first, fails fast on
+//     ErrSealed, and the higher-ordinal buffer is never touched — the call
 //     returns.
 //   - argument order (unfixed): the receiver is read-locked first, which parks
 //     behind the queued writer — the call never returns.
 //
 // So "the call returns at all" is exactly the fixed ordering.
-func TestX25519Key_ConstantTimeEqual_AcquiresInAddressOrder(t *testing.T) {
+func TestX25519Key_ConstantTimeEqual_AcquiresInLockOrder(t *testing.T) {
 	k1 := newLockOrderKey(t, 0x11)
 	k2 := newLockOrderKey(t, 0x22)
 
 	lo, hi := k1, k2
-	if bufAddr(lo.scalarBuf) > bufAddr(hi.scalarBuf) {
+	if lockKey(lo.scalarBuf) > lockKey(hi.scalarBuf) {
 		lo, hi = hi, lo
 	}
 
-	// Hold a reader on the higher-addressed buffer, then queue a writer behind
+	// Hold a reader on the higher-ordinal buffer, then queue a writer behind
 	// it. The writer cannot proceed until the reader leaves, and while it waits
 	// the lock's writer preference parks every new reader.
 	var probes sync.WaitGroup
@@ -144,16 +143,16 @@ func TestX25519Key_ConstantTimeEqual_AcquiresInAddressOrder(t *testing.T) {
 	deadline := time.Now().Add(5 * time.Second)
 	for !readsPark(hi.scalarBuf, 50*time.Millisecond, &probes) {
 		if time.Now().After(deadline) {
-			t.Fatal("queued writer never took effect: reads on the higher-addressed buffer still complete")
+			t.Fatal("queued writer never took effect: reads on the higher-ordinal buffer still complete")
 		}
 	}
 
 	if err := lo.scalarBuf.Seal(); err != nil {
-		t.Skipf("Seal (needed to make the lower-addressed acquire fail fast): %v", err)
+		t.Skipf("Seal (needed to make the lower-ordinal acquire fail fast): %v", err)
 	}
 
 	returned := make(chan bool, 1)
-	go func() { returned <- hi.ConstantTimeEqual(lo) }() // receiver is the HIGHER address
+	go func() { returned <- hi.ConstantTimeEqual(lo) }() // receiver is the higher ordinal
 
 	select {
 	case equal := <-returned:
@@ -163,7 +162,7 @@ func TestX25519Key_ConstantTimeEqual_AcquiresInAddressOrder(t *testing.T) {
 	case <-time.After(5 * time.Second):
 		cleanup() // unwedge before failing, so the deferred Destroy cannot hang
 		<-returned
-		t.Fatal("ConstantTimeEqual blocked on the higher-addressed buffer: it acquires in " +
+		t.Fatal("ConstantTimeEqual blocked on the higher-ordinal buffer: it acquires in " +
 			"argument order, so a concurrent reversed comparison deadlocks (ABBA)")
 	}
 }

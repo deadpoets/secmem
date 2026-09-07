@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"unsafe"
 
 	"golang.org/x/crypto/curve25519"
 
@@ -178,19 +177,14 @@ func (k *X25519Key) ConstantTimeEqual(other *X25519Key) bool {
 	// blocks behind any queued writer — each goroutine then holds one and waits
 	// forever for the other, wedging Destroy and WipeAllSecrets with them.
 	//
-	// Ordered by buffer ADDRESS, which is not the mechanism the core uses
-	// internally: it orders by a process-unique counter, which is strictly
-	// better because it assumes nothing about object placement. That counter is
-	// not exported, and this module builds against a RELEASED core tag, so
-	// reaching for it would mean a core release plus a floor raise before this
-	// deadlock could be fixed at all. Address ordering is sound while the Go GC
-	// does not relocate heap objects, which it has never done; switch to an
-	// exported identity if one ever lands.
+	// Ordered by LockOrder, the buffer's process-unique registration ordinal:
+	// stable for the buffer's lifetime and independent of object placement, so
+	// unlike an address it needs no assumption about GC behaviour. The core
+	// orders Secret.ConstantTimeEqual by the same ordinal.
 	//
 	// Swapping the operands is safe because equality is symmetric.
 	first, second := k.scalarBuf, other.scalarBuf
-	//nolint:gosec // G103: ordering two locks by address; the pointers are never dereferenced through the uintptr.
-	if uintptr(unsafe.Pointer(first)) > uintptr(unsafe.Pointer(second)) {
+	if first.LockOrder() > second.LockOrder() {
 		first, second = second, first
 	}
 	var equal bool
