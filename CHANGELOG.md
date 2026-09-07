@@ -13,6 +13,20 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Changed
+
+- **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
+  in-process trips a Go runtime bug on windows/amd64 with AMX-capable CPUs
+  ([golang/go#81238](https://github.com/golang/go/issues/81238)): the OS
+  exception frame overruns the goroutine stack and corrupts the heap below it,
+  which is what the Windows CI job's two crashes were. Each probe now faults in
+  a re-exec'd child and is proven by the runtime's own `unexpected fault
+  address` report at the announced address, not by the child merely dying;
+  two control cases pin that. Test harness only — `SetPanicOnFault` is armed
+  nowhere in library code, so using secmem was never affected. The daily
+  Windows soak workflow, which existed to sample the crash, is retired. Scope
+  and evidence in `WINDOWS.md`.
+
 ## [secmem-crypto/v0.5.0] - 2026-09-07
 
 Argon2 that wipes its working state, on an in-tree fork of `x/crypto/argon2`,
