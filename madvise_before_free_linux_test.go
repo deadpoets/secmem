@@ -48,11 +48,11 @@ func kernelAtLeast(major, minor int) bool {
 	if err := unix.Uname(&u); err != nil {
 		return true
 	}
-	var maj, min int
-	if _, err := fmt.Sscanf(unix.ByteSliceToString(u.Release[:]), "%d.%d", &maj, &min); err != nil {
+	var gotMajor, gotMinor int
+	if _, err := fmt.Sscanf(unix.ByteSliceToString(u.Release[:]), "%d.%d", &gotMajor, &gotMinor); err != nil {
 		return true
 	}
-	return maj > major || (maj == major && min >= minor)
+	return gotMajor > major || (gotMajor == major && gotMinor >= minor)
 }
 
 // requireAdviceTaken asserts madviseBeforeFree succeeded, or skips on a kernel
