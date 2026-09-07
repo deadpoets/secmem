@@ -166,6 +166,30 @@ Why it matters: authentication comparisons on secret material must not reveal
 match length through timing. `SecureBuffer.ConstantTimeEqual` (and
 `Secret.ConstantTimeEqual`) compare in constant time.
 
+## 8. Handing a token to an HTTP client as a string
+
+```go
+// BAD — the token is now a heap string held by the client for the life of
+// the process: unlocked, unwiped, in every core dump.
+token, _ := buf.ExposeString()
+client := api.NewClient(token)
+```
+
+```go
+// GOOD — inject per request from the SecureBuffer; the string exists for
+// one request and the transport drops it as soon as the request completes.
+client := &http.Client{Transport: httpauth.NewBearer(buf, nil, "api.example.com")}
+```
+
+Why it matters: every SDK takes the token as a `string` and keeps it, which
+is pitfall 2 with the longest possible lifetime. `httpauth` bounds the copy to
+one request, builds it inside a `Scrub` window, and wipes the scratch it was
+assembled from. The per-request string is still a string — that residual is
+stated in the package doc, not hidden. Always pass the API's host: the
+transport sits below `http.Client`, so the Client's rule of dropping
+`Authorization` on a cross-domain redirect does not cover what is injected
+here, and with no host filter the credential follows the redirect.
+
 ---
 
 Run `go vet ./...` and the `secmem-lint` analyzer in CI. The linter catches

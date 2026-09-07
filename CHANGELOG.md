@@ -93,6 +93,30 @@ mark the stability commitment.
   Argon2 fork carries its own copy of the amd64 clear from before this
   landed; it can drop it once it requires the core release that includes it.
 
+- **`secmem/httpauth` — an `http.RoundTripper` that injects the credential
+  per request from a `SecureBuffer`.** Every cloud SDK and API client takes
+  its token as a `string` and keeps it for the client's lifetime, which puts
+  the secret on the GC heap — unlocked, unwiped, dumpable — for the life of
+  the process. `httpauth.Transport` holds the token in a `SecureBuffer` and
+  builds the header value on each request: `NewBearer` for `Authorization:
+  Bearer`, `NewHeader` for any header and prefix (`X-API-Key`), `NewBasic`
+  for RFC 7617 with the password never becoming a string of its own. The
+  value is assembled in wiped scratch inside a `ScrubErr` window, so on a
+  runtime/secret build the runtime erases it once unreachable, and the
+  header is deleted from the sent request as soon as the base transport
+  returns, whether it succeeded or not. The caller's request is never
+  modified. The residual, stated in the package doc as plainly as
+  `ExposeString` states its own: the per-request string is unavoidable and
+  cannot be wiped, only made unreachable early; the bytes in the connection's
+  write buffer and TLS records are out of reach. Also documented, and tested
+  in both directions: the transport sits below `http.Client`, so the Client's
+  rule of dropping `Authorization` on a cross-domain redirect does not cover
+  what is injected here — with no host filter the credential follows a
+  redirect to the other host. `Hosts` is the answer; the constructors take it
+  as their trailing argument so the example form, `NewBearer(tok, nil,
+  "api.example.com")`, is the safe one. Adding exported API makes the next
+  core release a minor bump.
+
 ### Changed
 
 - **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
