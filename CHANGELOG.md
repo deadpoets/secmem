@@ -13,7 +13,15 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [secmem-crypto/v0.4.0] - 2026-09-07
+
+The review's crypto rows, plus the floor raise to core v0.4.0 and the switch to
+`SecureBuffer.LockOrder` for lock ordering. Minor: the dependency floor moved.
+
 ### Changed
+
+- **Requires core `secmem` v0.4.0.** The floor rises for `SecureBuffer.LockOrder`,
+  which `X25519Key.ConstantTimeEqual` now orders its locks by (see Fixed).
 
 - **`secmem-crypto`, `examples`: `golang.org/x/crypto` 0.54.0 → 0.56.0.**
   Maintenance, not a fix: the `vuln` job was green against 0.54.0, so nothing
@@ -25,9 +33,9 @@ mark the stability commitment.
   0.56.0 declares `go 1.26.0`, so both go directives moved with it. The two
   modules have to move together. `examples` pins `secmem-crypto` with a
   `replace`, but a replace does not exempt the `require` line from minimum
-  version selection: bumping only `secmem-crypto` makes MVS select 0.55.0 for
-  `examples` too, while `examples/go.mod` still asks for 0.54.0 — and CI runs
-  readonly, so that is a hard error before any package loads.
+  version selection: bumping only `secmem-crypto` makes MVS select the newer
+  version for `examples` too, while `examples/go.mod` still asks for the old
+  one — and CI runs readonly, so that is a hard error before any package loads.
 
 ### Fixed
 
