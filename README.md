@@ -143,6 +143,9 @@ detailed in the godoc and the threat model.
   only on `golang.org/x/sys`.
 - **`secmem/redact`** — `Sanitizer` and an `slog.Handler` for boundary-level
   log scrubbing. Standard library only.
+- **`secmem/httpauth`** — an `http.RoundTripper` that injects a credential
+  header per request from a `SecureBuffer`, so an HTTP client never holds the
+  token as a long-lived string. Standard library only.
 
 Two further modules live in this repository and are versioned and tagged
 independently, so neither adds anything to the core's dependency graph:
