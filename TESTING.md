@@ -42,8 +42,18 @@ that is said outright rather than dressed up.
   default, with any new failing input uploaded as an artifact so a finding
   survives the runner. The Makefile's `fuzz` target is the local equivalent.
 - **Scheduled soaks and analysis.** `soak-windows.yml` repeats the Windows
-  `go test -race ./...` invocation many times a day to sample rare
-  non-deterministic failures, and CodeQL runs on every push and PR.
+  `go test -race ./...` invocation many times a day to sample a Go runtime
+  bug the suite triggers on AMX hosts (below), and CodeQL runs on every push
+  and PR.
+- **The guard-page fault proofs fault in-process, and on windows/amd64 that
+  trips a Go runtime bug.** `faults()` in `guard_canary_test.go` recovers a
+  real hardware fault with `debug.SetPanicOnFault`; on AMX-capable hosts the
+  OS exception frame overruns the goroutine stack and corrupts the heap
+  ([golang/go#81238](https://github.com/golang/go/issues/81238)), so the
+  Windows job can die with a runtime fatal error in an unrelated frame. It is
+  a crash of the test process on that class of host, not a failed assertion;
+  a re-run elsewhere passes. Moving the proofs out-of-process is on an
+  unmerged branch. Details and numbers in [`WINDOWS.md`](WINDOWS.md).
 
 ## Core memory hardening
 

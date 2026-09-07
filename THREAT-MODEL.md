@@ -219,6 +219,17 @@ A deliberate omission, stated as one rather than dressed up as a platform limit:
   reported violation. They do nothing against an attacker who can already read
   the mapping.
 
+- **On windows/amd64 with AMX, a *recovered* fault can corrupt the heap — a Go
+  runtime bug, not a secmem one.** The runtime reserves 4 KiB below each
+  goroutine stack for the OS exception frame, and on AMX-capable Xeons that
+  frame is about 11.7 KiB ([golang/go#81238](https://github.com/golang/go/issues/81238),
+  open; a fix is under review). secmem never recovers a fault and never arms
+  `debug.SetPanicOnFault`, so it adds no such path. But its guard pages and
+  `Seal` turn stray accesses into faults by design, so an application that
+  arms `SetPanicOnFault` itself and then strays into one on such a host meets
+  the bug there. Availability and integrity, not confidentiality; the
+  measurements are in [WINDOWS.md](WINDOWS.md).
+
 - **The insecure fallback is exactly that.** `WithInsecureFallback()` places
   secrets on the unprotected Go heap on platforms with no lockable off-heap
   memory. `Capabilities.Insecure` is then true, `Warnings()` leads with the

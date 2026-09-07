@@ -1,5 +1,14 @@
 name: Windows Race Soak
 
+# STATUS (2026-09-07): understood. It is a Go runtime bug on windows/amd64 with
+# AMX-capable CPUs — the OS exception frame overruns the 4 KiB reserve below a
+# goroutine stack when a fault is recovered — golang/go#81238, with a fix under
+# review (https://go.dev/cl/828724). secmem's guard-page proofs trigger it by
+# recovering deliberate faults in-process; moving them out-of-process is on
+# branch fix/isolate-fault-proofs, not yet merged. See WINDOWS.md. This
+# workflow stays as a sampler until that lands; the history below is kept as
+# the record of how it was found.
+#
 # Hunts a rare runtime-state corruption that CI has seen exactly once and this
 # project cannot reproduce locally.
 #
@@ -12,8 +21,8 @@ name: Windows Race Soak
 #
 # The runtime found a cached goroutine on its free list whose stack size is not
 # a power of two — i.e. runtime state that something corrupted. A re-run of the
-# same job passed, ~500 local processes never reproduced it, and no upstream Go
-# issue matches. For a library whose entire purpose is writing to memory the
+# same job passed, ~500 local processes never reproduced it, and at the time no
+# upstream Go issue matched. For a library whose entire purpose is writing to memory the
 # runtime does not manage, "we saw it once and it went away" is not a conclusion
 # anyone should accept.
 #

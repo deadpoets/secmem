@@ -155,7 +155,11 @@ The review's crypto rows, plus the floor raise to core v0.4.0 and the switch to
 
 The external security review, closed. Its one HIGH and every MEDIUM landed in
 the train PRs; this release also carries the long tail of LOW and INFO findings,
-each fix paired with a regression test shown to fail against the unfixed code.
+each fix paired with a regression test shown to fail against the unfixed code —
+except two where nothing observable from Go exists to test: the `memfd_secret`
+close-on-exec flag (the descriptor is closed before the constructor returns)
+and the placement of HKDF's Extract step inside its scrub window. Both are
+listed under "Deliberately not proven" in `TESTING.md`.
 Adds `InstallTerminationWipeNoExit` and `SecureBuffer.LockOrder`, hence minor.
 
 ### Changed
