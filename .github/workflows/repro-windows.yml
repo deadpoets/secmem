@@ -107,7 +107,7 @@ jobs:
           case "$JOBS" in '' | *[!0-9]*) echo "::error::jobs must be an integer 1..256, got '$JOBS'"; exit 1 ;; esac
           if [ "$JOBS" -lt 1 ] || [ "$JOBS" -gt 256 ]; then echo "::error::jobs must be 1..256, got $JOBS"; exit 1; fi
           case "$GO_VERSION" in tip) ;; '' | *[!0-9.]*) echo "::error::go_version must be an exact version like 1.26.6, or 'tip', got '$GO_VERSION'"; exit 1 ;; esac
-          case "$MODE" in ci | smoke | faultstress | xstate | tipab) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
+          case "$MODE" in ci | smoke | faultstress | xstate | tipab | xstate2) ;; *) echo "::error::mode must be ci, smoke, or faultstress, got '$MODE'"; exit 1 ;; esac
           case "$GOMAXPROCS_IN" in *[!0-9]*) echo "::error::gomaxprocs must be empty or an integer, got '$GOMAXPROCS_IN'"; exit 1 ;; esac
           case "$GODEBUG_IN" in *[!0-9A-Za-z=,]*) echo "::error::godebug must be empty or name=value pairs, got '$GODEBUG_IN'"; exit 1 ;; esac
           case "$TEST_REF" in *[!0-9a-fA-F]*) echo "::error::test_ref must be empty or a hex commit SHA, got '$TEST_REF'"; exit 1 ;; esac
@@ -421,6 +421,21 @@ jobs:
           "### sample ${{ matrix.idx }} — tipab`n``````text`n$line`n``````" >> $env:GITHUB_STEP_SUMMARY
           if ($patched -ne 0) { Write-Host "::error title=PATCHED TIP FAILED (sample ${{ matrix.idx }})::$line"; exit 1 }
           exit 0
+
+      - name: xstate2 — does the kernel exception CONTEXT grow after opting into AMX?
+        if: needs.plan.outputs.mode == 'xstate2'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Continue'
+          $cpu = (Get-CimInstance Win32_Processor)[0].Name.Trim()
+          Push-Location .github/repro/xstate2
+          gcc --version | Select-Object -First 1
+          gcc -O1 -o xstate2.exe xstate2.c
+          $out = & .\xstate2.exe 2>&1
+          Pop-Location
+          $lines = @("CPU: $cpu") + $out
+          $lines
+          "### sample ${{ matrix.idx }} — xstate2`n``````text`n$($lines -join "`n")`n``````" >> $env:GITHUB_STEP_SUMMARY
 
       - name: preserve evidence
         if: failure()
