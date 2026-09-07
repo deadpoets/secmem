@@ -266,29 +266,66 @@ func parseRSAPrivateKey(der []byte, pkcs8 bool) (*rsa.PrivateKey, error) {
 		secmem.SecureWipe(k)
 		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
 	case *ecdh.PrivateKey:
-		wipeECDHPrivateKey(k)
-		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
+		err := errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
+		// The wipe is reflection-based. If it could not locate the scalar,
+		// say so in the rejection rather than imply the parsed key was
+		// cleaned up.
+		if werr := wipeECDHPrivateKey(k); werr != nil {
+			err = errors.Join(err, werr)
+		}
+		return nil, err
 	default:
 		return nil, fmt.Errorf("secmemcrypto: PKCS#8 DER holds a %T, not an RSA key", keyAny)
 	}
 }
 
-// wipeECDHPrivateKey best-effort zeroes the scalar inside a parsed
-// *ecdh.PrivateKey. crypto/ecdh exposes no in-place zeroization and Bytes()
-// returns a copy, so the parsed key's own scalar is reachable only through its
-// unexported field — the same hardened-wipe approach the package uses for
-// edwards25519 scalars. Name-based and defensive: a no-op if that field's shape
-// ever changes, so it can never panic.
-func wipeECDHPrivateKey(k *ecdh.PrivateKey) {
+// ecdhScalarField names the unexported []byte field of crypto/ecdh.PrivateKey
+// holding the parsed scalar ("privateKey []byte" in go1.26's ecdh.go).
+// crypto/ecdh exposes no in-place zeroization and Bytes() returns a copy, so
+// the parsed key's own scalar is reachable only through this field.
+// TestWipeECDHPrivateKey_Tripwire fails on any toolchain where the name or
+// shape stops resolving, so a crypto/ecdh refactor shows up as a red test
+// run, not as a wipe that quietly stopped wiping.
+const ecdhScalarField = "privateKey"
+
+// ecdhScalar returns the scalar held in k's unexported field named field,
+// aliasing the parsed key's own backing array (no copy). It fails — never
+// returns a detached or empty slice — when the field is missing or is not a
+// []byte, the two ways a stdlib refactor would break the lookup. The name is
+// a parameter only so the tripwire test can drive that failure path on a
+// real key.
+func ecdhScalar(k *ecdh.PrivateKey, field string) ([]byte, error) {
+	f := reflect.ValueOf(k).Elem().FieldByName(field)
+	if !f.IsValid() {
+		return nil, fmt.Errorf("secmemcrypto: wipe ecdh key: crypto/ecdh.PrivateKey has no field %q on %s; the parsed scalar was NOT wiped", field, runtime.Version())
+	}
+	if f.Kind() != reflect.Slice || f.Type().Elem().Kind() != reflect.Uint8 {
+		return nil, fmt.Errorf("secmemcrypto: wipe ecdh key: crypto/ecdh.PrivateKey.%s is %s on %s, want []byte; the parsed scalar was NOT wiped", field, f.Type(), runtime.Version())
+	}
+	//nolint:gosec // G103: audited — aliasing the parsed key's own addressable scalar field in place; no foreign memory is dereferenced.
+	return reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Bytes(), nil
+}
+
+// wipeECDHPrivateKey zeroes the scalar inside a parsed *ecdh.PrivateKey
+// through [ecdhScalar]. When the scalar cannot be located it returns an
+// error instead of silently doing nothing: the only caller is a rejection
+// path, which folds the error into the rejection, so no caller is told a
+// key was discarded cleanly while its scalar is still live on the heap.
+//
+// Like [wipeECDSAPrivateKey] it is a package var so a test can wrap it to
+// prove the reject path fires the wipe on the live transient; production
+// always runs the value defined here.
+var wipeECDHPrivateKey = func(k *ecdh.PrivateKey) error {
 	if k == nil {
-		return
+		return nil
 	}
-	f := reflect.ValueOf(k).Elem().FieldByName("privateKey")
-	if !f.IsValid() || f.Kind() != reflect.Slice || f.Type().Elem().Kind() != reflect.Uint8 {
-		return
+	scalar, err := ecdhScalar(k, ecdhScalarField)
+	if err != nil {
+		return err
 	}
-	//nolint:gosec // G103: audited — zeroing the parsed key's own addressable scalar field in place; no foreign memory is dereferenced.
-	secmem.SecureWipe(reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Bytes())
+	secmem.SecureWipe(scalar)
+	runtime.KeepAlive(k)
+	return nil
 }
 
 // wipeRSAPrivateKey zeroes the secret limbs of a transiently materialized
