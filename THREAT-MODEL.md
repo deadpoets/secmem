@@ -152,6 +152,20 @@ unpinned goroutine can migrate to a thread where the mask was never set). That
 removes the asynchronous register dump rather than trying to erase it after the
 fact. Reported as `Capabilities.AsyncPreemptSuppressed`.
 
+On amd64 and arm64 the window also zeroes the **vector register file** — X0–X15
+at full YMM/ZMM width plus Z16–Z31 under AVX-512, or V0–V31 — as the first
+thing that happens after `fn` returns, normal return or panic unwind alike, on
+the thread that ran `fn`. Vectorised crypto keeps its working state there and
+nothing in the Go runtime ever clears it. The Go ABI treats vector registers as
+caller-saved scratch and does not reload them around a call, so the clear
+destroys nothing live and reaches what `fn` left; that reach is *measured*, not
+argued — `scrub_vecclear_test.go` plants a pattern in the registers inside a
+window and reads them back zero after it, with a control that repeats the
+window's exit sequence without the clear and requires the pattern to survive.
+The clear needs the goroutine on the thread that holds the residue, so the
+window now pins it with `runtime.LockOSThread` on every platform, not only
+where it masks a signal. Reported as `Capabilities.VectorRegisterClear`.
+
 Blocking the preemption signal does **not** stall the collector: `suspendG` sets
 the cooperative request (`gp.preempt`, `gp.stackguard0 = stackPreempt`) *before*
 it signals, so any ordinary function call inside the window still yields. The
@@ -178,11 +192,24 @@ Constraints of the Go runtime, not defects in this library:
   descheduled at a call boundary and have its stack scanned, and possibly
   copied. Suppressing the signal removes the arbitrary-instruction register
   dump, not every stack copy.
-- **The registers themselves at `Scrub`'s return.** A Go-level "clear the
-  registers" step cannot be trusted, because the ABI reloads registers around
-  the very call that would do the clearing. An unverifiable scrub is worse than
-  none, so the legacy path does not pretend to one; `runtime/secret` does it
-  properly, with the runtime's cooperation.
+- **The general-purpose registers at `Scrub`'s return.** The ABI keeps live
+  values in them across the very call that would do the clearing, so a Go-level
+  clear cannot be shown to reach anything, and an unverifiable scrub is worse
+  than none; the legacy path does not pretend to one. Vector registers are the
+  exception and are cleared (above) because their reach *can* be shown;
+  `runtime/secret` erases both classes properly, with the runtime's
+  cooperation.
+- **A preemption that lands inside the window where it cannot be masked.** On
+  Windows and Darwin the vector clear runs on the working thread, but a
+  preemption before it can still copy the live register file into runtime
+  buffers; the clear removes what is in the registers, not that copy. On Linux
+  the signal block closes this.
+- **The unwind's own register use after a panic.** When `fn` panics the clear
+  runs first, but the runtime's stack walk to the next frame with defers
+  (`runtime.(*unwinder).initAt`) then copies its own bookkeeping through a
+  vector register before any caller code runs, so the registers are not all
+  zero at the recovering frame. What they hold is the runtime's, not `fn`'s;
+  the proof test measures that footprint and requires zero outside it.
 
 Constraints of the OS:
 

@@ -85,6 +85,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Guard pages + overflow canary | ✓ | ✓ | ✓ | ✓ | ✗ (heap fallback) |
 | Stack-frame scrub inside [`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub) | ✓ asm | ✓ asm on amd64/arm64; ✗ stub elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ stub |
 | No async register dump into the window (preemption signal blocked) | ✓ SIGURG+SIGPROF | ✓ SIGURG+SIGPROF | ✗ no `pthread_sigmask` binding | ✗ unmaskable (`SetThreadContext`) | ✗ |
+| Vector registers cleared after the window, on the working thread | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
 | Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
 | Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
@@ -96,18 +97,22 @@ spanning kernels 5.10 through 7.x (see [`KERNELS.md`](KERNELS.md)). On arm64
 `/proc/self/mem` isolation proof, and the architecture-specific wipe assembly
 all pass.
 
-The three `Scrub` rows are separate because they degrade separately, and the
-middle one is the newest: on Linux the window blocks Go's preemption signal for
-its duration, so `runtime.asyncPreempt` cannot spill the whole register file
-onto the stack partway through a cipher round. What that reaches — and the
-residue that is a constraint of the Go runtime or the OS rather than something
-this library can fix — is set out in
+The four `Scrub` rows are separate because they degrade separately. On Linux
+the window blocks Go's preemption signal for its duration, so
+`runtime.asyncPreempt` cannot spill the whole register file onto the stack
+partway through a cipher round; on amd64 and arm64 it then zeroes the vector
+register file — where vectorised crypto keeps its working state, and which
+nothing in the Go runtime clears — before the window closes. What each reaches
+— and the residue that is a constraint of the Go runtime or the OS rather than
+something this library can fix — is set out in
 [THREAT-MODEL.md](THREAT-MODEL.md#stack-residue-what-scrub-reaches-and-what-it-does-not).
 The stack-frame scrub is asserted by planting markers down the stack and reading
 the abandoned frames back as zero, on linux/amd64 and linux/arm64; the signal
 block is asserted against the kernel's own `SigBlk` for the calling thread, on
 linux/arm64 (Tegra 234, kernel 6.8.12; RK3328, kernel 6.18.35) and linux/amd64
-(kernel 7.0.0).
+(kernel 7.0.0); the vector clear is asserted by planting a pattern in the
+registers inside a window and reading them back zero after it, with a control
+that must show the pattern surviving when the clear is left out.
 
 † Whether `memfd_secret` is live is **not** decided by the kernel version, and
 not even by `CONFIG_SECRETMEM` alone. It needs the kernel to be able to split

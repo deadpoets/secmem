@@ -38,6 +38,19 @@ package secmem
 // behind on the old one, which returns to the stack pool unwiped. Scrub cannot
 // reach it, because the runtime owns the abandoned segment and does not name it.
 //
+// # Vector registers
+//
+// On amd64 and arm64 the window also zeroes the vector register file — X0–X15
+// at full YMM/ZMM width plus Z16–Z31 where AVX-512 is present, or V0–V31 — on
+// the thread that ran fn, as the first thing that happens after fn returns.
+// Vectorised crypto keeps its working state there and nothing in the Go
+// runtime ever clears it. The Go ABI treats vector registers as caller-saved
+// scratch, so the clear destroys nothing live, and because the ABI does not
+// reload them around a call the clear really reaches what fn left; that is
+// proven, not assumed, by scrub_vecclear_test.go, which is the empirical test
+// the project requires of any register scrub. Reported as
+// Capabilities.VectorRegisterClear. See vecclear_amd64.go.
+//
 // # Best-effort limits (stated honestly)
 //
 // Even with headroom reserved, this scrubs only the 32 KiB band below fn's
@@ -48,7 +61,10 @@ package secmem
 //     runtime-owned, and unreachable from Go);
 //   - the stack segment abandoned by the entry wipe's own growth, which carries
 //     a copy of whatever the CALLER already had on its stack (see above);
-//   - CPU or vector registers.
+//   - general-purpose registers: the ABI keeps live values in them across the
+//     very call that would clear them, so no Go-level clear can be shown to
+//     reach anything. Vector registers are cleared on amd64 and arm64 (above)
+//     and on no other architecture.
 //
 // None of these are fixable in pure Go without runtime support — the
 // runtime/secret path handles them, which is why it is the primary path. Keep
@@ -64,18 +80,20 @@ package secmem
 // the one shape of fn that would. Elsewhere it is unsupported and reported as
 // such by Capabilities.AsyncPreemptSuppressed.
 //
-// That window pins the goroutine to its OS thread with runtime.LockOSThread,
-// because the signal mask is a property of the thread. fn must leave that pin
-// balanced: a runtime.UnlockOSThread inside fn that fn did not itself pair with
-// a LockOSThread unpins the goroutine mid-window, and if it is then rescheduled
-// onto another thread before the mask is restored, the original thread keeps
-// SIGURG and SIGPROF blocked for the rest of the process — unpreemptible and
-// invisible to the CPU profiler, with nothing to say so. On Linux, Scrub detects
-// the case it can observe (the goroutine has already moved) and panics rather
-// than restore the wrong thread's mask; the leak itself is not repairable.
+// The window pins the goroutine to its OS thread with runtime.LockOSThread on
+// every platform: on Linux because the signal mask is a property of the thread,
+// and everywhere because the vector-register clear must run on the thread that
+// holds the residue. fn must leave that pin balanced: a runtime.UnlockOSThread
+// inside fn that fn did not itself pair with a LockOSThread unpins the goroutine
+// mid-window, and if it is then rescheduled onto another thread before the mask
+// is restored, the original thread keeps SIGURG and SIGPROF blocked for the
+// rest of the process — unpreemptible and invisible to the CPU profiler, with
+// nothing to say so. On Linux, Scrub detects the case it can observe (the
+// goroutine has already moved) and panics rather than restore the wrong
+// thread's mask; the leak itself is not repairable.
 //
-// Panics propagate; the frame is still scrubbed during unwind via the deferred
-// wipe. Scrub(nil) is a no-op.
+// Panics propagate; the registers are still cleared and the frame still
+// scrubbed during unwind via the deferred calls. Scrub(nil) is a no-op.
 func Scrub(fn func()) {
 	if fn == nil {
 		return
@@ -91,10 +109,11 @@ func Scrub(fn func()) {
 
 	wipeScratchFrameFull()       // reserve headroom + pre-clean, before secrets exist
 	defer wipeScratchFrameFull() // now guaranteed to wipe in place
-	// TODO(secmem): a register/vector scrub here could cover residue the frame
-	// wipe misses, but only if proven to actually reach it — the Go ABI reloads
-	// registers around this call. Do not add it without an empirical test; see
-	// the deleted 2 KiB wipe for why an unverified scrub is worse than none.
+	// Registered last so it runs FIRST on the way out, normal return or panic
+	// unwind alike: the vector file is cleared on the thread that ran fn, before
+	// the frame wipe and before the pin is released. Proven to reach fn's
+	// residue by scrub_vecclear_test.go — the rule for any register scrub here.
+	defer clearVectorRegs()
 	fn()
 }
 
@@ -110,6 +129,7 @@ func ScrubErr(fn func() error) (err error) {
 
 	wipeScratchFrameFull()
 	defer wipeScratchFrameFull()
+	defer clearVectorRegs() // first on the way out; see Scrub
 	return fn()
 }
 

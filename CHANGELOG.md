@@ -47,6 +47,52 @@ mark the stability commitment.
   raw container is rejected, and a fuzz target requires any input that
   parses to yield a self-consistent signer. Minor bump for `secmem-crypto`;
   no floor change.
+
+- **`Scrub` and `ScrubErr` clear the vector registers after the callback
+  returns.** Vectorised crypto keeps its working state in the vector file — an
+  AES round key in XMM, a BLAKE2b or ChaCha state in YMM, an Argon2 block row
+  in X0–X7 — and nothing in the Go runtime ever clears it, so on the legacy
+  path the last values a window computed stayed readable in the registers of
+  whichever thread ran it until something else happened to overwrite them. The
+  frame wipe cannot reach registers, and `scrub_legacy.go` carried a TODO
+  refusing any register scrub without an empirical test that it reaches the
+  residue, because the ABI reloads general-purpose registers around the call
+  that would clear them. Vector registers are different: the Go ABI treats
+  every one as caller-saved scratch (X15 is a fixed zero, and re-zeroing it is
+  harmless) and reloads none of them around a call, so a clear destroys
+  nothing live and does reach what the callback left. Both `Scrub` paths now
+  run one as the first deferred call after `fn` — normal return and panic
+  unwind alike, before the frame wipe and before the thread pin is released:
+  `VZEROALL` on amd64 (sixteen `PXOR`s without AVX) plus `VPXORQ` over
+  Z16–Z31 where AVX-512 is present, since `VZEROALL` does not reach them, and
+  `VEOR` over V0–V31 on arm64. On the `runtime/secret` path it is redundant
+  belt-and-braces and says so. The clear needs the goroutine on the thread
+  that holds the residue, so the window now pins with `runtime.LockOSThread`
+  on Windows and Darwin as well, where before nothing was pinned; the pin is
+  not a suppression and `AsyncPreemptSuppressed` stays false there — a
+  preemption landing before the clear can still copy the register file into
+  runtime buffers, which the clear does not reach. Proven, per the TODO's
+  rule, by `scrub_vecclear_test.go` with a test-only `internal/regprobe`
+  package (its own package because a `_test.s` is assembled into the
+  production package): a non-zero pattern is planted in the registers inside
+  a window and read back all zero after `Scrub`, `ScrubErr`, and a `Scrub`
+  whose `fn` panics; a control that runs the window's exact exit sequence
+  without the clear must show the pattern surviving, and a zero there is a
+  failure, not a skip. The panic case is bounded honestly: after the clear
+  the runtime's own stack walk to the next frame with defers copies its
+  bookkeeping through one vector register (`runtime.(*unwinder).initAt`, 16
+  bytes of X14 on go1.26), so the proof measures that footprint with a
+  panicking control and requires zero everywhere outside it. Executed on
+  windows/amd64 with AVX (no AVX-512, so the Z16–Z31 proof skipped there and
+  runs on the CI runners that have it); the arm64 clear is compile-checked
+  locally and proven only by the CI arm64 job. Not covered, unchanged:
+  general-purpose registers on the legacy path. Reported as
+  `Capabilities.VectorRegisterClear` (`vector-clear` in `String`), with a
+  warning when neither it nor `RegisterScrub` is in force. Adding a field is
+  exported API, so the next core release is a minor bump. `secmem-crypto`'s
+  Argon2 fork carries its own copy of the amd64 clear from before this
+  landed; it can drop it once it requires the core release that includes it.
+
 ### Changed
 
 - **Guard-page fault proofs run out-of-process.** Recovering a hardware fault
