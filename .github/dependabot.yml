@@ -1,11 +1,23 @@
 version: 2
 updates:
-  # Keeps the SHA-pinned actions in ci.yml current — Dependabot understands
-  # the "@<sha> # vN" comment convention and updates both together.
+  # Keeps the SHA-pinned actions current — Dependabot understands the
+  # "@<sha> # vN" comment convention and rewrites both the SHA and the comment.
+  # It does NOT infer that two pins of the same action must match; see the
+  # codeql-action group below.
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+    groups:
+      # github/codeql-action/init and .../analyze are one action, but each
+      # subpath is a separate dependency to Dependabot, so it raised a PR per
+      # subpath and each one landed a version mismatch: analyze's post step
+      # reloads the config init wrote and refuses to run against a different
+      # version. Every CodeQL release produced two PRs, both red. Grouping puts
+      # them in one PR that moves them together.
+      codeql-action:
+        patterns:
+          - "github/codeql-action*"
 
   # All four Go modules. Dependabot's gomod ecosystem does not recurse into
   # nested modules, so each needs its own directory entry. secmem-lint and
