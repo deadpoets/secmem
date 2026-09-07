@@ -63,6 +63,16 @@ package secmem
 // the one shape of fn that would. Elsewhere it is unsupported and reported as
 // such by Capabilities.AsyncPreemptSuppressed.
 //
+// That window pins the goroutine to its OS thread with runtime.LockOSThread,
+// because the signal mask is a property of the thread. fn must leave that pin
+// balanced: a runtime.UnlockOSThread inside fn that fn did not itself pair with
+// a LockOSThread unpins the goroutine mid-window, and if it is then rescheduled
+// onto another thread before the mask is restored, the original thread keeps
+// SIGURG and SIGPROF blocked for the rest of the process — unpreemptible and
+// invisible to the CPU profiler, with nothing to say so. On Linux, Scrub detects
+// the case it can observe (the goroutine has already moved) and panics rather
+// than restore the wrong thread's mask; the leak itself is not repairable.
+//
 // Panics propagate; the frame is still scrubbed during unwind via the deferred
 // wipe. Scrub(nil) is a no-op.
 func Scrub(fn func()) {

@@ -51,10 +51,32 @@
 // runtime.LockOSThread is mandatory, not incidental: pthread_sigmask sets the
 // mask of the CURRENT THREAD, and an unpinned goroutine can migrate to another
 // thread mid-window, where the mask was never set.
+//
+// # fn must leave the pin alone
+//
+// LockOSThread is counted per goroutine, and the window's call is one count. An
+// UnlockOSThread inside fn that fn did not itself pair with a LockOSThread pays
+// off the WINDOW's count: the goroutine is unpinned mid-window and can be
+// rescheduled onto another thread before restore runs. The saved mask belongs
+// to the thread it left, and no syscall sets another thread's mask, so that
+// thread keeps SIGURG and SIGPROF blocked for the rest of the process — never
+// async-preempted, invisible to the CPU profiler — and nothing reports it:
+// UnlockOSThread on a zero count is a documented no-op.
+//
+// restore therefore compares the thread it runs on with the one the mask was
+// taken from, and on a mismatch panics instead of writing a stranger's mask.
+// That is a tripwire for the misuse, not a repair of it: once the goroutine has
+// moved, the leak is permanent. And it catches only what it can observe. A
+// goroutine fn unpinned that is still, by luck, on its entry thread passes the
+// check and restores correctly (nothing leaked), and the check is not atomic
+// with the write that follows it — a cooperative yield at that call boundary
+// could still move an unpinned goroutine in between. Both are misuse; the
+// contract is the fix, the check is the alarm.
 
 package secmem
 
 import (
+	"fmt"
 	"runtime"
 
 	"golang.org/x/sys/unix"
@@ -100,6 +122,17 @@ type preemptWindow struct {
 	// passed the same way and staying on the stack.
 	prev unix.Sigset_t
 
+	// tid is the kernel thread the mask was taken from, recorded once the pin
+	// is in place so it cannot be stale. restore refuses to run anywhere else:
+	// the mask is that thread's property and restoring it on another would fix
+	// nothing and clobber a stranger. See the file header.
+	//
+	// The price is two gettid calls per window — raw syscalls, no scheduler
+	// involvement, no allocation. Measured on a 20-core Azure VM with go1.26.5:
+	// about 100 ns per Scrub on an empty fn (406 to 510 ns on the legacy path,
+	// 197 to 300 ns under runtimesecret), allocations unchanged at zero.
+	tid int
+
 	// active records that the mask was actually changed, so restore on a failed
 	// or never-suppressed window is a no-op rather than an unbalanced
 	// UnlockOSThread.
@@ -115,6 +148,9 @@ type preemptWindow struct {
 // caller then runs the window unhardened rather than not at all.
 func suppressAsyncPreempt(w *preemptWindow) bool {
 	runtime.LockOSThread()
+	// After the pin, not before: an unpinned goroutine could move between
+	// asking and locking, and the record would name a thread it never masked.
+	w.tid = unix.Gettid()
 
 	var block unix.Sigset_t
 	for _, sig := range preemptSignals {
@@ -134,11 +170,24 @@ func suppressAsyncPreempt(w *preemptWindow) bool {
 
 // restore puts the thread's signal mask back and unpins the goroutine. It is
 // idempotent and safe on a window that was never suppressed.
+//
+// It panics if it finds itself on a thread other than the one the mask was
+// taken from — fn unbalanced LockOSThread and the goroutine migrated. The entry
+// thread is already leaked by then (see the file header); what restore can
+// still do is refuse to make it worse and refuse to be silent about it.
 func (w *preemptWindow) restore() {
 	if !w.active {
 		return
 	}
 	w.active = false
+	// Gettid is a raw syscall with no scheduler round trip, so it cannot itself
+	// move the goroutine between this check and the write below.
+	if tid := unix.Gettid(); tid != w.tid {
+		panic(fmt.Sprintf("secmem: Scrub window opened on OS thread %d but ended on thread %d: "+
+			"fn called runtime.UnlockOSThread without a LockOSThread of its own to match, "+
+			"unpinning the goroutine mid-window; thread %d is left with SIGURG and SIGPROF "+
+			"blocked for the rest of the process", w.tid, tid, w.tid))
+	}
 	// Restore the exact prior mask rather than unblocking unconditionally: the
 	// caller may itself have had these blocked for its own reasons.
 	_ = unix.PthreadSigmask(unix.SIG_SETMASK, &w.prev, nil)

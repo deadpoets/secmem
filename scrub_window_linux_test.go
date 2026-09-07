@@ -28,9 +28,18 @@ import (
 // enough threads that it does not, which is exactly how it was caught.
 func sigBlkMask(t *testing.T) uint64 {
 	t.Helper()
-	f, err := os.Open("/proc/thread-self/status")
+	return sigBlkMaskAt(t, "/proc/thread-self/status")
+}
+
+// sigBlkMaskAt is sigBlkMask for an arbitrary procfs status file, so a test can
+// ask about a thread OTHER than the calling one via /proc/self/task/<tid>/status
+// — the only way to observe a mask left behind on a thread the goroutine has
+// already migrated away from.
+func sigBlkMaskAt(t *testing.T, path string) uint64 {
+	t.Helper()
+	f, err := os.Open(path)
 	if err != nil {
-		t.Skipf("cannot read /proc/thread-self/status: %v", err)
+		t.Skipf("cannot read %s: %v", path, err)
 	}
 	defer func() { _ = f.Close() }()
 
@@ -50,7 +59,7 @@ func sigBlkMask(t *testing.T) uint64 {
 		}
 		return m
 	}
-	t.Skip("no SigBlk line in /proc/thread-self/status")
+	t.Skipf("no SigBlk line in %s", path)
 	return 0
 }
 

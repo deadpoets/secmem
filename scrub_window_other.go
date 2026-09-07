@@ -24,6 +24,11 @@ type preemptWindow struct{}
 // suppressAsyncPreempt is a no-op reporting false: Scrub still runs, still
 // pre-grows the stack, and still burns its frame — it just cannot also close
 // the asynchronous register-dump window.
+//
+// Nothing is pinned here, so a fn that unbalances runtime.LockOSThread leaks
+// nothing on this platform and trips no check. The documented contract is the
+// same everywhere regardless: code that honours it on Windows keeps working
+// when it is built for Linux.
 func suppressAsyncPreempt(*preemptWindow) bool { return false }
 
 // restore is a no-op: nothing was suppressed.
