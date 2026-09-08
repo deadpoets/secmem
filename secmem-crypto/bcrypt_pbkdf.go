@@ -19,8 +19,8 @@ import (
 
 // MaxBcryptPBKDFKeyLen is the largest output bcrypt_pbkdf produces, and so
 // the largest out this package will derive into. It is upstream's limit,
-// not a choice made here.
-const MaxBcryptPBKDFKeyLen = 1024
+// stated once in the fork and only named here.
+const MaxBcryptPBKDFKeyLen = bcryptpbkdf.MaxKeyLen
 
 // BcryptPBKDFInto computes bcrypt_pbkdf(password, salt, rounds) into out,
 // writing out.Len() bytes — OpenSSH's password-based KDF, the one
@@ -62,57 +62,55 @@ const MaxBcryptPBKDFKeyLen = 1024
 // derivation wipes; salts are not secret, and OpenSSH's is 16 bytes.
 //
 // Because that workspace is locked memory, a host whose lock budget cannot
-// hold about 4.5 KiB more fails here rather than falling back to the heap.
-// That is the module's rule, and at this size it is reachable only on a
-// budget already exhausted; see [secmem.EnsureMemlockLimit].
+// hold it fails here rather than falling back to the heap. The workspace is
+// a little over 4 KiB, and the budget is charged in whole pages (the
+// formula in ADOPTION.md §4): two 4 KiB pages per call in flight, or one
+// larger page where the kernel uses them, on top of out itself. That is the
+// module's rule, and at this size it is reachable only on a budget already
+// exhausted; see [secmem.EnsureMemlockLimit].
 //
 // # Locking
 //
-// out is borrowed for the whole derivation, so writers to it (Destroy,
-// Seal, CopyIn) block for that long; other readers do not, and one that
-// races the call sees the previous contents until the derived bytes land.
-// The call also allocates and borrows its own workspace, taking the two in
-// ascending [secmem.SecureBuffer.LockOrder] as every two-buffer operation
-// here does. That workspace is created inside the call, so its ordinal is
-// above anything the caller already holds and it can never invert the
-// caller's nesting. The caller's own nesting is the caller's: if password
-// is borrowed from another SecureBuffer around this call, that buffer's
-// ordinal must be below out's, which is the module's ascending-LockOrder
-// rule. password and salt are only read — neither is wiped nor retained.
+// out is borrowed under WithBytesErr — the buffer's shared read lease — for
+// the whole derivation, so writers to it (Destroy, Seal, CopyIn) block for
+// that long. Other readers do not block, and the lease does not make the
+// write atomic: the derived bytes land block by block, interleaved across
+// out, so a reader that races the call can see a mixture of old and new
+// bytes. Do not read out, or derive into it twice, from another goroutine
+// while a call is in flight. out must not be read-only: like every in-place
+// writer in this module the borrow cannot detect that state, and the first
+// write faults.
 //
-// Errors, never panics: nil, destroyed or empty out; out larger than
-// [MaxBcryptPBKDFKeyLen]; rounds below 1; an empty password; an empty or
-// oversized salt; and a workspace that cannot be allocated or locked.
+// The workspace is created inside the call and borrowed after out, so its
+// [secmem.SecureBuffer.LockOrder] ordinal is above out's and that nesting
+// is ascending by construction. What the caller nests around the call is
+// the caller's: if password or salt is borrowed from another SecureBuffer,
+// that buffer must have been created before out — the module's
+// ascending-LockOrder rule, which the example observes by allocating the
+// passphrase first. password and salt are only read — neither is wiped nor
+// retained.
+//
+// Errors, never panics, the read-only case above excepted: nil, destroyed
+// or sealed out; out larger than [MaxBcryptPBKDFKeyLen]; rounds below 1; an
+// empty password; an empty or oversized salt; and a workspace that cannot
+// be allocated or locked. The input bounds are checked before the workspace
+// is allocated, by the same function the fork checks them with, so a
+// rejected call costs nothing and leaves out untouched.
 func BcryptPBKDFInto(password, salt []byte, rounds int, out *secmem.SecureBuffer) error {
 	if out == nil {
-		return errors.New("secmemcrypto: nil output buffer")
+		return errors.New("secmemcrypto: bcrypt_pbkdf derive: nil output buffer")
 	}
 	if out.IsDestroyed() {
 		return fmt.Errorf("secmemcrypto: bcrypt_pbkdf derive: %w", secmem.ErrDestroyed)
 	}
-	// The length checks Derive would make are made here too, against
-	// out.Len(), so the caller is told which input was wrong before a
-	// workspace is allocated for a call that cannot succeed.
-	switch size := out.Len(); {
-	case size <= 0:
-		return errors.New("secmemcrypto: empty output buffer")
-	case size > MaxBcryptPBKDFKeyLen:
-		return fmt.Errorf("secmemcrypto: bcrypt_pbkdf derive: output buffer is %d bytes, want at most %d", size, MaxBcryptPBKDFKeyLen)
+	if err := bcryptpbkdf.Check(out.Len(), password, salt, rounds); err != nil {
+		return fmt.Errorf("secmemcrypto: bcrypt_pbkdf derive: %w", err)
 	}
-	if rounds < 1 {
-		return fmt.Errorf("secmemcrypto: bcrypt_pbkdf derive: rounds must be >= 1, got %d", rounds)
-	}
-
-	ws, err := secmem.NewEmptyBuffer(bcryptpbkdf.Size)
-	if err != nil {
-		return fmt.Errorf("secmemcrypto: bcrypt_pbkdf derive: allocate workspace: %w", err)
-	}
-	defer func() { _ = ws.Destroy() }()
-
-	err = secmem.ScrubErr(func() error {
-		return borrowOrdered(ws, out, func(mem, dst []byte) error {
-			defer secmem.SecureWipe(mem)
-			return bcryptpbkdf.Derive(dst, password, salt, rounds, bcryptpbkdf.Bind(mem))
+	err := secmem.ScrubErr(func() error {
+		return out.WithBytesErr(func(dst []byte) error {
+			return withScratch(bcryptpbkdf.Size, func(mem []byte) error {
+				return bcryptpbkdf.Derive(dst, password, salt, rounds, bcryptpbkdf.Bind(mem))
+			})
 		})
 	})
 	if err != nil {

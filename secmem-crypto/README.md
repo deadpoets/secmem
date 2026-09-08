@@ -145,8 +145,11 @@ file is not a service to whoever holds it — keeping it openable is what lets
 it stay unconverted. `ssh-keygen -p -f key` and `openssl pkey -in key -out
 key` both rewrite one into a format this package reads, and the error says so.
 
-The same reasoning is why `AsSSH` never offers SHA-1 `ssh-rsa` and why
-Ed25519ph and Ed25519ctx are refused above.
+Two other refusals are decisions of the same kind but do not carry the
+marker, because there is no file to convert and nothing to wait for: `AsSSH`
+never offers SHA-1 `ssh-rsa`, and `Sign` returns a plain error for Ed25519ph
+and Ed25519ctx (above). `ErrRetiredAlgorithm` is for input this package
+refuses to read; those two are things it refuses to produce.
 
 What is **not** in this category, and may yet arrive: PKCS#8 PBES2
 (PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, and the aes128 and aes192

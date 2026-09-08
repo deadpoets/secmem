@@ -64,11 +64,7 @@ var bcryptGolden = []struct {
 func TestBcryptPBKDFInto_Golden(t *testing.T) {
 	for _, g := range bcryptGolden {
 		t.Run(g.name, func(t *testing.T) {
-			out, err := secmem.NewEmptyBuffer(len(g.result))
-			if err != nil {
-				t.Skipf("NewEmptyBuffer: %v", err)
-			}
-			defer func() { _ = out.Destroy() }()
+			out := newTestBuffer(t, len(g.result))
 			if err := BcryptPBKDFInto(g.password, g.salt, g.rounds, out); err != nil {
 				t.Fatal(err)
 			}
@@ -100,18 +96,9 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			if !bytes.Equal(h.cipher, []byte("aes256-ctr")) {
 				t.Fatalf("fixture cipher is %q, this test decrypts aes256-ctr", h.cipher)
 			}
-			o := sshReader{h.kdfOpts}
-			salt, ok1 := o.str()
-			rounds, ok2 := o.uint32()
-			if !ok1 || !ok2 {
-				t.Fatal("could not read the bcrypt KDF options")
-			}
+			salt, rounds := kdfOptsOf(t, raw)
 
-			kiv, err := secmem.NewEmptyBuffer(opensshKeyIVLen)
-			if err != nil {
-				t.Skipf("NewEmptyBuffer: %v", err)
-			}
-			defer func() { _ = kiv.Destroy() }()
+			kiv := newTestBuffer(t, opensshKeyIVLen)
 			if err := BcryptPBKDFInto([]byte(testPassphrase), salt, int(rounds), kiv); err != nil {
 				t.Fatal(err)
 			}
@@ -131,11 +118,7 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			// A negative control: the same derivation at a different cost
 			// must NOT open the file, or the check above would pass on
 			// anything.
-			other, err := secmem.NewEmptyBuffer(opensshKeyIVLen)
-			if err != nil {
-				t.Skipf("NewEmptyBuffer: %v", err)
-			}
-			defer func() { _ = other.Destroy() }()
+			other := newTestBuffer(t, opensshKeyIVLen)
 			if err := BcryptPBKDFInto([]byte(testPassphrase), salt, int(rounds)+1, other); err != nil {
 				t.Fatal(err)
 			}
@@ -190,24 +173,22 @@ func TestBcryptPBKDFInto_OutputLengthIsAnInput(t *testing.T) {
 	}
 }
 
+// TestBcryptPBKDFInto_Errors pins the refusals the doc enumerates. The
+// input bounds come from the fork's own Check, so their wording is the
+// fork's; what this test adds is that every one arrives prefixed, and that
+// the buffer states only the wrapper can see — nil, destroyed, sealed —
+// are refused too.
 func TestBcryptPBKDFInto_Errors(t *testing.T) {
-	destroyed, err := secmem.NewEmptyBuffer(32)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
-	}
+	destroyed := newTestBuffer(t, 32)
 	if err := destroyed.Destroy(); err != nil {
 		t.Fatal(err)
 	}
-	tooLong, err := secmem.NewEmptyBuffer(MaxBcryptPBKDFKeyLen + 1)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
+	sealed := newTestBuffer(t, 32)
+	if err := sealed.Seal(); err != nil {
+		t.Fatal(err)
 	}
-	defer func() { _ = tooLong.Destroy() }()
-	ok, err := secmem.NewEmptyBuffer(32)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
-	}
-	defer func() { _ = ok.Destroy() }()
+	tooLong := newTestBuffer(t, MaxBcryptPBKDFKeyLen+1)
+	ok := newTestBuffer(t, 32)
 
 	cases := []struct {
 		name           string
@@ -217,10 +198,11 @@ func TestBcryptPBKDFInto_Errors(t *testing.T) {
 		want           string
 	}{
 		{"nil out", []byte("p"), []byte("s"), 8, nil, "nil output buffer"},
-		{"destroyed out", []byte("p"), []byte("s"), 8, destroyed, "destroyed"},
-		{"out too large", []byte("p"), []byte("s"), 8, tooLong, "want at most 1024"},
-		{"zero rounds", []byte("p"), []byte("s"), 0, ok, "rounds must be >= 1"},
-		{"negative rounds", []byte("p"), []byte("s"), -1, ok, "rounds must be >= 1"},
+		{"destroyed out", []byte("p"), []byte("s"), 8, destroyed, secmem.ErrDestroyed.Error()},
+		{"sealed out", []byte("p"), []byte("s"), 8, sealed, secmem.ErrSealed.Error()},
+		{"out too large", []byte("p"), []byte("s"), 8, tooLong, "keyLen is too large"},
+		{"zero rounds", []byte("p"), []byte("s"), 0, ok, "number of rounds is too small"},
+		{"negative rounds", []byte("p"), []byte("s"), -1, ok, "number of rounds is too small"},
 		{"empty password", nil, []byte("s"), 8, ok, "empty password"},
 		{"empty salt", []byte("p"), nil, 8, ok, "bad salt length"},
 		{"salt too long", []byte("p"), make([]byte, 1<<20+1), 8, ok, "bad salt length"},
@@ -245,11 +227,7 @@ func TestBcryptPBKDFInto_Errors(t *testing.T) {
 // leave out as it found it, so a caller that ignores the error does not
 // silently use half a key.
 func TestBcryptPBKDFInto_LeavesOutputIntactOnError(t *testing.T) {
-	out, err := secmem.NewEmptyBuffer(32)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
-	}
-	defer func() { _ = out.Destroy() }()
+	out := newTestBuffer(t, 32)
 	if _, err := out.CopyIn(bytes.Repeat([]byte{0xAB}, 32), 0); err != nil {
 		t.Fatal(err)
 	}
@@ -262,14 +240,10 @@ func TestBcryptPBKDFInto_LeavesOutputIntactOnError(t *testing.T) {
 }
 
 // deriveBcrypt derives n bytes and returns them as a plain slice for the
-// test to compare; the buffer is destroyed before it returns.
+// test to compare; the buffer is destroyed at cleanup.
 func deriveBcrypt(t *testing.T, password, salt []byte, rounds, n int) []byte {
 	t.Helper()
-	out, err := secmem.NewEmptyBuffer(n)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
-	}
-	defer func() { _ = out.Destroy() }()
+	out := newTestBuffer(t, n)
 	if err := BcryptPBKDFInto(password, salt, rounds, out); err != nil {
 		t.Fatal(err)
 	}

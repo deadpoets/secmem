@@ -74,14 +74,7 @@ func (s *Ed25519Signer) MarshalOpenSSHPrivateKey(comment string) (*secmem.Secure
 // returned file, being ciphertext, is safe to write anywhere, though it is
 // handed back in a SecureBuffer like the unencrypted form.
 func (s *Ed25519Signer) MarshalOpenSSHPrivateKeyWithPassphrase(comment string, passphrase []byte) (*secmem.SecureBuffer, error) {
-	if len(passphrase) == 0 {
-		return nil, errors.New("secmemcrypto: marshal openssh private key: empty passphrase (use MarshalOpenSSHPrivateKey for an unencrypted file)")
-	}
-	out, err := s.marshalOpenSSH(comment, passphrase, OpenSSHKDFRounds)
-	if err != nil {
-		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: %w", err)
-	}
-	return out, nil
+	return s.MarshalOpenSSHPrivateKeyWithPassphraseParams(comment, passphrase, OpenSSHPassphraseParams{Rounds: OpenSSHKDFRounds})
 }
 
 // OpenSSH bcrypt_pbkdf cost, as the file format and its readers bound it.
@@ -127,7 +120,8 @@ type OpenSSHPassphraseParams struct {
 // [Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphrase] with the KDF cost
 // chosen by the caller — the equivalent of ssh-keygen's -a. Everything else
 // is identical, including the format, the cipher, the fresh random salt and
-// what does and does not touch the heap.
+// what does and does not touch the heap: the convenience method is this one
+// called with [OpenSSHKDFRounds].
 //
 // p.Rounds must be between 1 and [MaxOpenSSHKDFRounds]; see
 // [OpenSSHPassphraseParams] for why the upper bound is there and what a
@@ -135,9 +129,6 @@ type OpenSSHPassphraseParams struct {
 func (s *Ed25519Signer) MarshalOpenSSHPrivateKeyWithPassphraseParams(comment string, passphrase []byte, p OpenSSHPassphraseParams) (*secmem.SecureBuffer, error) {
 	if len(passphrase) == 0 {
 		return nil, errors.New("secmemcrypto: marshal openssh private key: empty passphrase (use MarshalOpenSSHPrivateKey for an unencrypted file)")
-	}
-	if p.Rounds < 1 || p.Rounds > MaxOpenSSHKDFRounds {
-		return nil, fmt.Errorf("secmemcrypto: marshal openssh private key: rounds must be between 1 and %d, got %d", MaxOpenSSHKDFRounds, p.Rounds)
 	}
 	out, err := s.marshalOpenSSH(comment, passphrase, p.Rounds)
 	if err != nil {
@@ -148,13 +139,17 @@ func (s *Ed25519Signer) MarshalOpenSSHPrivateKeyWithPassphraseParams(comment str
 
 // marshalOpenSSH writes the container for s into a SecureBuffer, encrypts
 // the private block in place when a passphrase is given, and PEM-encodes
-// the container into the returned buffer. rounds is the bcrypt_pbkdf cost,
-// already validated by the exported caller and ignored without a
-// passphrase. Sizes are computed up front so every write is bounds-checked
-// against an exact layout.
+// the container into the returned buffer. rounds is the bcrypt_pbkdf cost;
+// it is range-checked here, where the count is written into the header,
+// rather than by each exported caller, and ignored without a passphrase.
+// Sizes are computed up front so every write is bounds-checked against an
+// exact layout.
 func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds int) (*secmem.SecureBuffer, error) {
 	if s == nil || s.seedBuf == nil {
 		return nil, secmem.ErrDestroyed
+	}
+	if len(passphrase) > 0 && (rounds < 1 || rounds > MaxOpenSSHKDFRounds) {
+		return nil, fmt.Errorf("rounds must be between 1 and %d, got %d", MaxOpenSSHKDFRounds, rounds)
 	}
 	encrypted := len(passphrase) > 0
 
@@ -169,7 +164,7 @@ func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds
 			return nil, fmt.Errorf("salt: %w", err)
 		}
 		w.n += opensshSaltLen
-		w.uint32(uint32(rounds)) //nolint:gosec // G115: 1..MaxOpenSSHKDFRounds, checked by the exported callers.
+		w.uint32(uint32(rounds)) //nolint:gosec // G115: 1..MaxOpenSSHKDFRounds, checked above.
 		kdfOptsLen = w.n
 	}
 	var check [4]byte // the check integer, random as OpenSSH writes it
@@ -268,13 +263,7 @@ const (
 // way out, on the thread that ran it (vecclear_amd64_test.go proves the
 // clear reaches this function's residue).
 func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
-	scratch, err := secmem.NewEmptyBuffer(scratchSize)
-	if err != nil {
-		return fmt.Errorf("allocate kdf workspace: %w", err)
-	}
-	defer func() { _ = scratch.Destroy() }()
-	return scratch.WithBytesErr(func(mem []byte) (err error) {
-		defer secmem.SecureWipe(mem)
+	return withScratch(scratchSize, func(mem []byte) (err error) {
 		ws := bcryptpbkdf.Bind(mem[:bcryptpbkdf.Size])
 		kiv := mem[scratchKIV:scratchCipher]
 		cipherMem := mem[scratchCipher:scratchSize]

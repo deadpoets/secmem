@@ -3,6 +3,7 @@ package secmemcrypto
 import (
 	"encoding/base64"
 	"encoding/binary"
+	"fmt"
 
 	"github.com/deadpoets/secmem"
 )
@@ -139,5 +140,25 @@ func borrowOrdered(a, b *secmem.SecureBuffer, fn func(a, b []byte) error) error 
 			}
 			return fn(y, x)
 		})
+	})
+}
+
+// withScratch allocates a locked scratch buffer of size bytes for one call,
+// hands its mapping to fn, and wipes and frees it afterwards whatever fn
+// returned — the wipe runs inside the borrow, before the lock is released.
+// The buffer is created inside the call, so its LockOrder ordinal is above
+// every buffer the caller already holds, and borrowing it last is the
+// module's ascending-order rule by construction: that is why both KDF paths
+// — opensshCrypt inside a container borrow, BcryptPBKDFInto inside a borrow
+// of out — take it without borrowOrdered.
+func withScratch(size int, fn func(mem []byte) error) error {
+	scratch, err := secmem.NewEmptyBuffer(size)
+	if err != nil {
+		return fmt.Errorf("allocate kdf workspace: %w", err)
+	}
+	defer func() { _ = scratch.Destroy() }()
+	return scratch.WithBytesErr(func(mem []byte) error {
+		defer secmem.SecureWipe(mem)
+		return fn(mem)
 	})
 }

@@ -63,6 +63,13 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // able to tell the two apart.
 var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
 
+// errLegacyPEM is the one refusal that carries ErrRetiredAlgorithm today.
+// It is built once, with the remedy in it, so that both entry points say
+// the same thing: ParsePrivateKey wraps it in ErrEncryptedKey and
+// ParsePrivateKeyWithPassphrase in ErrUnsupportedKey, each keeping the
+// sentinel it always returned.
+var errLegacyPEM = fmt.Errorf("%w: legacy PEM encryption (Proc-Type / DEK-Info headers); re-encrypt it with ssh-keygen -p or openssl pkey", ErrRetiredAlgorithm)
+
 // ErrUnsupportedKey is returned by [ParsePrivateKey] for a well-formed key of
 // a kind this package has no signer for: DSA, FIDO (sk-*) keys, certificates,
 // X25519/X448 (agreement keys, not signers — see [NewX25519Key]), RSA-PSS
@@ -265,7 +272,7 @@ func pemBlock(data []byte) (typ, body []byte, err error) {
 	if encrypted {
 		// Proc-Type / DEK-Info is the legacy form, and it is refused as a
 		// policy rather than as a gap; see ErrRetiredAlgorithm.
-		return nil, nil, fmt.Errorf("%w: %w: legacy PEM encryption (Proc-Type / DEK-Info headers)", ErrEncryptedKey, ErrRetiredAlgorithm)
+		return nil, nil, fmt.Errorf("%w: %w", ErrEncryptedKey, errLegacyPEM)
 	}
 	if headers > 0 {
 		return nil, nil, fmt.Errorf("%w: PEM headers", ErrUnsupportedKey)

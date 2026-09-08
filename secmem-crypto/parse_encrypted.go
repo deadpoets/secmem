@@ -95,8 +95,7 @@ func parseEncryptedPrivateKey(data, passphrase []byte) (Signer, error) {
 		if errors.Is(perr, ErrEncryptedKey) {
 			// The legacy form: refused permanently, not pending. The
 			// passphrase is not even looked at. See ErrRetiredAlgorithm.
-			return nil, fmt.Errorf("%w: %w: legacy PEM encryption (Proc-Type / DEK-Info headers); re-encrypt it with ssh-keygen -p or openssl pkey",
-				ErrUnsupportedKey, ErrRetiredAlgorithm)
+			return nil, fmt.Errorf("%w: %w", ErrUnsupportedKey, errLegacyPEM)
 		}
 		if perr != nil {
 			return nil, perr

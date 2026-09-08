@@ -26,6 +26,9 @@ func ExampleBcryptPBKDFInto() {
 	salt := []byte("0123456789abcdef")
 	const rounds = 16 // ssh-keygen's default; its -a flag sets it
 
+	// Created after the passphrase buffer on purpose: the passphrase is
+	// borrowed around the call below, and nested borrows must run
+	// oldest-first (see SecureBuffer.LockOrder).
 	keyAndIV, err := secmem.NewEmptyBuffer(48) // 32-byte AES-256 key || 16-byte IV
 	if err != nil {
 		log.Fatal(err)

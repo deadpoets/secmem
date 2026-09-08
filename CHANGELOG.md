@@ -22,7 +22,8 @@ mark the stability commitment.
   protection by hand, or matching a derivation performed elsewhere — had to
   vendor it. This module already carries a wiping fork for its own passphrase
   paths; the new function is that fork behind the same `*Into` shape the rest
-  of the KDFs use, deriving `out.Len()` bytes into a `SecureBuffer`. Nothing
+  of the KDFs use, deriving `out.Len()` bytes — up to `MaxBcryptPBKDFKeyLen`,
+  upstream's 1024 — into a `SecureBuffer`. Nothing
   holding secret state touches the heap: the whole working set is one locked
   workspace allocated for the call and wiped before it returns. The doc says
   plainly that this is an interoperability primitive and not the password KDF
@@ -46,15 +47,14 @@ mark the stability commitment.
   for a release", and the only way to tell was to read the message. Legacy
   PEM encryption (the `Proc-Type` / `DEK-Info` headers, whatever cipher they
   name) now wraps this marker as well as the sentinel it already wrapped, and
-  the error says which command rewrites the file. It will not gain support:
+  the error from either entry point says which command rewrites the file. It
+  will not gain support:
   the key comes from one pass of MD5 over the passphrase and an 8-byte salt,
   so there is no cost to raise, and the ciphertext is unauthenticated CBC.
   Keeping such a file openable is what lets it stay unconverted. Refusals
   that are only unimplemented — PBES2, `chacha20-poly1305@openssh.com`,
   aes128/192 — deliberately do not wrap it, and a test enforces that
   distinction so the marker cannot decay into a synonym.
-
-### Added
 
 - **`ADOPTION.md`, and two more pitfalls.** An adoption guide for putting the
   library into an existing service: inventory the secrets, classify each as
@@ -68,6 +68,15 @@ mark the stability commitment.
   caches inside a `Scrub` window. Documentation only.
 
 ### Changed
+
+- **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
+  wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
+  used to return `ErrEncryptedKey` itself; it now returns an error that wraps
+  it, together with `ErrRetiredAlgorithm` and the conversion hint. `errors.Is`
+  keeps working. A caller comparing with `==` stops matching for this one
+  input — the other encrypted forms still return the bare sentinel — which
+  is recorded here because no signature changed and `gorelease` cannot see
+  it.
 
 - **`secmem-crypto`: the Argon2 fork's own vector-register clear is gone, and
   so is the passphrase path's use of it.** The follow-up the v0.6.0 floor

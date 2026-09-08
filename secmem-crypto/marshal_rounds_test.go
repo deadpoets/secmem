@@ -6,6 +6,7 @@ import (
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"fmt"
 	"regexp"
 	"strconv"
 	"strings"
@@ -31,25 +32,6 @@ func containerOf(t *testing.T, buf *secmem.SecureBuffer) []byte {
 	return block.Bytes
 }
 
-// roundsInFile reads back the bcrypt cost a marshalled file records. The
-// count is public: it has to be, since whoever opens the file needs it.
-func roundsInFile(t *testing.T, container []byte) uint32 {
-	t.Helper()
-	h, err := readOpenSSHHeader(container)
-	if err != nil {
-		t.Fatal(err)
-	}
-	o := sshReader{h.kdfOpts}
-	if _, ok := o.str(); !ok {
-		t.Fatal("could not read the salt")
-	}
-	rounds, ok := o.uint32()
-	if !ok {
-		t.Fatal("could not read the rounds")
-	}
-	return rounds
-}
-
 // TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured is the core
 // of the feature: the cost the caller asks for is the cost recorded in the
 // file, and the file still opens — here, with the parser in this package and
@@ -65,7 +47,9 @@ func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 	}
 	defer signer.Destroy()
 
-	for _, rounds := range []int{1, 4, OpenSSHKDFRounds, 64} {
+	// One above the default is the case that shows the count is not
+	// clamped to it; a higher count proves nothing more and costs linearly.
+	for _, rounds := range []int{1, 4, OpenSSHKDFRounds, OpenSSHKDFRounds + 1} {
 		t.Run(strconv.Itoa(rounds), func(t *testing.T) {
 			file, err := signer.MarshalOpenSSHPrivateKeyWithPassphraseParams(
 				"a comment", []byte(testPassphrase), OpenSSHPassphraseParams{Rounds: rounds})
@@ -75,7 +59,7 @@ func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 			defer func() { _ = file.Destroy() }()
 
 			container := containerOf(t, file)
-			if got := roundsInFile(t, container); got != uint32(rounds) {
+			if _, got := kdfOptsOf(t, container); got != uint32(rounds) {
 				t.Errorf("file records %d rounds, asked for %d", got, rounds)
 			}
 
@@ -257,15 +241,16 @@ func TestMarshalWithPassphraseParams_Errors(t *testing.T) {
 	}
 	defer signer.Destroy()
 
+	wantRange := fmt.Sprintf("rounds must be between 1 and %d", MaxOpenSSHKDFRounds)
 	cases := []struct {
 		name       string
 		passphrase []byte
 		rounds     int
 		want       string
 	}{
-		{"zero rounds", []byte(testPassphrase), 0, "rounds must be between 1 and 2048"},
-		{"negative rounds", []byte(testPassphrase), -1, "rounds must be between 1 and 2048"},
-		{"above the cap", []byte(testPassphrase), MaxOpenSSHKDFRounds + 1, "rounds must be between 1 and 2048"},
+		{"zero rounds", []byte(testPassphrase), 0, wantRange},
+		{"negative rounds", []byte(testPassphrase), -1, wantRange},
+		{"above the cap", []byte(testPassphrase), MaxOpenSSHKDFRounds + 1, wantRange},
 		{"empty passphrase", nil, OpenSSHKDFRounds, "empty passphrase"},
 	}
 	for _, c := range cases {
@@ -299,7 +284,7 @@ func TestMarshalWithPassphrase_UsesTheDocumentedDefault(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Destroy() }()
-	if got := roundsInFile(t, containerOf(t, file)); got != OpenSSHKDFRounds {
+	if _, got := kdfOptsOf(t, bufferBytes(t, file)); got != OpenSSHKDFRounds {
 		t.Errorf("the default marshal wrote %d rounds, want OpenSSHKDFRounds (%d)", got, OpenSSHKDFRounds)
 	}
 	if OpenSSHKDFRounds != 16 {
@@ -323,7 +308,7 @@ func TestMarshalWithPassphraseParams_SSHKeygenOpensNonDefaultRounds(t *testing.T
 	}
 	want := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
 
-	for _, rounds := range []int{1, 64} {
+	for _, rounds := range []int{1, OpenSSHKDFRounds + 1} {
 		t.Run(strconv.Itoa(rounds), func(t *testing.T) {
 			file, err := signer.MarshalOpenSSHPrivateKeyWithPassphraseParams(
 				"interop", []byte(testPassphrase), OpenSSHPassphraseParams{Rounds: rounds})
