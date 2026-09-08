@@ -29,6 +29,17 @@ mark the stability commitment.
   to choose fresh — bcrypt_pbkdf's working set is a 4 KiB Blowfish schedule
   whatever cost you ask for, so `Argon2Into` is the memory-hard answer.
 
+- **`secmem-crypto`: the OpenSSH passphrase cost is configurable.**
+  `Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphraseParams` takes
+  `OpenSSHPassphraseParams{Rounds}` — ssh-keygen's `-a` — where the existing
+  method always wrote ssh-keygen's default of 16, now exported as
+  `OpenSSHKDFRounds`. Rounds are capped at `MaxOpenSSHKDFRounds` (2048), and
+  the cap is there for one reason: `x/crypto/ssh` and this package's own
+  parser both refuse a file above it, so writing higher would produce a file
+  nothing could open. A test anchors that constant to x/crypto's own maximum
+  rather than to itself, so the two cannot drift apart unnoticed. A higher
+  cost buys time-hardness only, which the doc says plainly.
+
 ### Added
 
 - **`ADOPTION.md`, and two more pitfalls.** An adoption guide for putting the
