@@ -15,10 +15,8 @@ import (
 	"crypto/rand"
 	"errors"
 	"fmt"
-	"runtime"
 
 	"github.com/deadpoets/secmem"
-	"github.com/deadpoets/secmem/secmem-crypto/internal/argon2"
 	"github.com/deadpoets/secmem/secmem-crypto/internal/bcryptpbkdf"
 )
 
@@ -198,9 +196,11 @@ const (
 // for the call — the KDF workspace, the key and IV, the cipher's keystream
 // and chaining blocks — and is wiped before return; the AES round keys,
 // which crypto/aes puts on the heap, are wiped through aeswipe.go, whose
-// failure is this function's failure. The goroutine is pinned to its
-// thread for the vector-register clear that follows the SHA-512 and AES
-// steps.
+// failure is this function's failure. What SHA-512's and AES's assembly
+// leave in the vector registers is not cleared here: both callers run this
+// inside a [secmem.ScrubErr] window, which clears the vector file on the
+// way out, on the thread that ran it (vecclear_amd64_test.go proves the
+// clear reaches this function's residue).
 func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
 	scratch, err := secmem.NewEmptyBuffer(scratchSize)
 	if err != nil {
@@ -208,9 +208,6 @@ func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCip
 	}
 	defer func() { _ = scratch.Destroy() }()
 	return scratch.WithBytesErr(func(mem []byte) (err error) {
-		runtime.LockOSThread()
-		defer runtime.UnlockOSThread()
-		defer argon2.ClearVectorRegs()
 		defer secmem.SecureWipe(mem)
 		ws := bcryptpbkdf.Bind(mem[:bcryptpbkdf.Size])
 		kiv := mem[scratchKIV:scratchCipher]

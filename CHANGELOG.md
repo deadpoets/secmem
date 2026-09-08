@@ -13,6 +13,24 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Changed
+
+- **`secmem-crypto`: the Argon2 fork's own vector-register clear is gone, and
+  so is the passphrase path's use of it.** The follow-up the v0.6.0 floor
+  raise promised. Since core v0.5.0 every `Scrub` and `ScrubErr` window pins
+  its goroutine and clears the vector file on the way out, so the fork's
+  amd64 `VZEROALL`/`PXOR` helper, the `runtime.LockOSThread` pairs around
+  its three windows and the temporary `argon2.ClearVectorRegs` export that
+  `opensshCrypt` deferred were all a second copy of what the window already
+  does. Nothing observable changes: the same registers are cleared at the
+  same point, on the same thread, by the core's proven routine instead of
+  the module's. The tests move with it — `scrubclear_amd64_test.go` shows
+  the core's clear reaches what blamka and a whole `Derive` leave, and
+  `vecclear_amd64_test.go` shows the same for the passphrase path inside
+  the window its callers use, each with a bare-run control that must show
+  residue. The test-only register probe moves to `internal/regprobe` so both
+  packages can use it.
+
 ## [0.5.0] - 2026-09-07
 
 Two boundary-hardening pieces: `Scrub` and `ScrubErr` clear the vector

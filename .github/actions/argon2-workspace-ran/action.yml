@@ -20,7 +20,7 @@ runs:
           sudo prlimit --pid $$ --memlock=unlimited:unlimited || true
         fi
         echo "memlock soft/hard: $(ulimit -Sl) / $(ulimit -Hl)"
-        out=$(go test -race -count=1 -v -run 'Argon2Workspace|Argon2Pool|ClearVectorRegs|UpstreamIdentity' ./... 2>&1) || { echo "$out"; exit 1; }
+        out=$(go test -race -count=1 -v -run 'Argon2Workspace|Argon2Pool|ScrubClearsVectorRegs|UpstreamIdentity' ./... 2>&1) || { echo "$out"; exit 1; }
         echo "$out" | grep -E '^(--- |ok|FAIL)'
         if echo "$out" | grep -q -- '--- SKIP'; then
           echo "::error::an Argon2 workspace/register/identity test skipped on this runner; see the lines above"

@@ -41,10 +41,11 @@
 //     has a one-shot function, and a forked portable finalisation
 //     (blake2b_generic.go) for the other lengths, instead of blake2b.New,
 //     so no heap digest ever holds the password or the final block.
-//   - On amd64 the vector registers are cleared inside every window (the
-//     SSE blamka and BLAKE2b's AVX2 code leave block state in XMM/YMM),
-//     with the goroutine pinned to its OS thread so the clear lands where
-//     the residue is.
+//   - Every window is a secmem.Scrub window, so on amd64 and arm64 the
+//     vector registers (where the SSE blamka and BLAKE2b's AVX2 code leave
+//     block state) are cleared on the way out by the core, on the thread
+//     that ran the window; scrubclear_amd64_test.go proves that clear
+//     reaches what this package's windows leave.
 //   - The secret-key (K) and associated-data (X) inputs deriveKey already
 //     took are exposed, so RFC 9106 §5 vectors run as-is.
 //

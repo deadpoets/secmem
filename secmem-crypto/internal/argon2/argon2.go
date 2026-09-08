@@ -10,7 +10,6 @@ package argon2
 
 import (
 	"encoding/binary"
-	"runtime"
 	"sync"
 	"unsafe"
 
@@ -201,27 +200,21 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	// stack temporaries of BLAKE2b (checkSum's block copy, the returned
 	// digest values) and of this package's own helpers are erased on the
 	// way out, and the vector registers — which BLAKE2b's AVX2 code and the
-	// memmove of the password leave dirty, and which the legacy Scrub does
-	// not clear — are cleared inside the window. The OS-thread pin is for
-	// the legacy path: runtime/secret pins for the duration of Do itself,
-	// but the legacy Scrub does not, and a clear only helps on the thread
-	// that holds the residue.
-	runtime.LockOSThread()
+	// memmove of the password leave dirty — are cleared by the window
+	// itself, on the thread that ran it: Scrub pins the goroutine to its OS
+	// thread for the window and clears the vector file first thing on the
+	// way out. scrubclear_amd64_test.go proves that reaches what these
+	// phases leave.
 	secmem.Scrub(func() {
 		ws.initHash(in, password, salt, secret, data, time, keyLen, mode)
 		ws.initBlocks()
-		clearVectorRegs()
 	})
-	runtime.UnlockOSThread()
 
 	ws.processBlocks(mode, time)
 
-	runtime.LockOSThread()
 	secmem.Scrub(func() {
 		ws.extractKey(out)
-		clearVectorRegs()
 	})
-	runtime.UnlockOSThread()
 }
 
 // h0Input returns a buffer of n bytes for the H0 input: the workspace's
@@ -315,19 +308,16 @@ func (ws *Workspace) processBlocks(mode Mode, time uint32) {
 // blamkaGeneric's spilled words and the frame an asynchronous preemption
 // pushes; asynchronous preemption itself is not prevented there (on Linux
 // the legacy window blocks the signal; on Windows and Darwin it cannot).
-// The vector-register clear at the end is the legacy path's supplement for
-// what runtime/secret does itself, and the OS-thread pin makes it land on
-// the thread that did the work.
+// On both paths the window clears the vector registers — where the SSE
+// blamka keeps block rows — on the way out, on the thread that did the
+// work: Scrub pins the goroutine to its OS thread for the window.
 func (ws *Workspace) runSegment(mode Mode, n, slice, lane, time, lanes, segments uint32, s *laneScratch, wg *sync.WaitGroup) {
 	defer wg.Done()
-	runtime.LockOSThread()
-	defer runtime.UnlockOSThread()
 	secmem.Scrub(func() {
 		if segmentProbe != nil {
 			segmentProbe()
 		}
 		ws.processSegment(mode, n, slice, lane, time, lanes, segments, s)
-		clearVectorRegs()
 	})
 }
 
