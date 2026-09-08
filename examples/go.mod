@@ -3,7 +3,7 @@ module github.com/deadpoets/secmem/examples
 go 1.26.0
 
 require (
-	github.com/deadpoets/secmem v0.4.0
+	github.com/deadpoets/secmem v0.5.0
 	github.com/deadpoets/secmem/secmem-crypto v0.1.0
 	golang.org/x/crypto v0.56.0
 	golang.org/x/term v0.45.0
