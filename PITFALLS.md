@@ -190,6 +190,95 @@ transport sits below `http.Client`, so the Client's rule of dropping
 `Authorization` on a cross-domain redirect does not cover what is injected
 here, and with no host filter the credential follows the redirect.
 
+## 9. Leaving a secret inside a decoded document
+
+```go
+// BAD — the password is now a heap string, and the whole response body
+// still holds it too; neither can be wiped.
+body, _ := io.ReadAll(resp.Body)
+var cfg struct {
+    DBPassword string `json:"db_password"`
+}
+json.Unmarshal(body, &cfg)
+```
+
+```go
+// GOOD — the field's type takes the raw token straight into secure memory,
+// and the document itself lives in a buffer, so no copy is left behind.
+type secretField struct{ *secmem.SecureBuffer }
+
+func (f *secretField) UnmarshalJSON(raw []byte) error {
+    // raw is the quoted token, a sub-slice of the document being decoded.
+    if len(raw) < 2 || raw[0] != '"' || bytes.IndexByte(raw, '\\') >= 0 {
+        return errors.New("secret must be a plain JSON string")
+    }
+    buf, err := secmem.NewBuffer(raw[1 : len(raw)-1]) // copies, then wipes its input in place
+    f.SecureBuffer = buf
+    return err
+}
+
+doc, _, err := secmem.NewBufferFromReader(resp.Body, int(resp.ContentLength))
+if err != nil { return err }
+defer doc.Destroy()
+var cfg struct {
+    DBPassword secretField `json:"db_password"`
+}
+if err := doc.WithBytesErr(func(b []byte) error { return json.Unmarshal(b, &cfg) }); err != nil {
+    return err
+}
+defer cfg.DBPassword.Destroy()
+```
+
+Why it matters: `Secret` deliberately has no `UnmarshalJSON`, because a
+decoder that lands plaintext on the heap would be doing pitfall 2 for you,
+invisibly. A field type of your own makes the copy explicit and puts it
+where you want it. Two details carry the weight. `json.Unmarshal` hands an
+`Unmarshaler` a sub-slice of the input, so when the input is a buffer the
+token is read from locked memory and `NewBuffer` wipes that span in place;
+`json.NewDecoder` instead reads into an internal buffer you can neither
+reach nor wipe, so it is the wrong tool here. And `io.ReadAll` grows by
+doubling, leaving the abandoned halves on the heap; read a known length
+into a buffer, or into a `[]byte` you own and `SecureWipe` afterwards. What
+remains is honest to state: a value with JSON escapes needs an explicit
+unescape, which is a heap transient at that call site; and YAML and TOML
+decoders copy tokens internally, so a secret in those formats is a residual
+to record, or a reason to deliver it through a file or descriptor instead.
+
+## 10. Writing to globals or caches inside a Scrub window
+
+```go
+// BAD — the window's stack and registers are erased on the way out; a
+// global or a cache entry is reachable by definition, so it is exactly
+// what survives.
+var lastKey []byte
+
+secmem.Scrub(func() {
+    k := deriveOnStack(seed)
+    lastKey = append([]byte(nil), k[:]...) // or: cache.Add(id, k[:])
+})
+```
+
+```go
+// GOOD — anything that must outlive the window goes into secure memory
+// from inside it; the cache, if there is one, is keyed by public data.
+secmem.Scrub(func() {
+    k := deriveOnStack(seed)
+    _, err = key.CopyIn(k[:], 0)
+})
+```
+
+Why it matters: `Scrub` wipes the stack band its callback used and clears
+the vector registers, and under `GOEXPERIMENT=runtimesecret` the runtime
+also erases heap allocated inside the window once nothing refers to it. A
+global, a package-level cache, a `sync.Map` or `sync.Pool` entry still
+refers to it, by design, and the `runtime/secret` contract says so: erasure
+does not extend to globals written by the callback or to goroutines it
+starts. The same shape hides inside libraries. `crypto/ed25519`'s FIPS
+code caches the private key it was given in a package-level structure no
+wipe can reach, which is one reason `secmem-crypto` signs Ed25519 in place
+rather than calling it. When a dependency caches what you hand it, either
+do not hand it the key, or write the residual down.
+
 ---
 
 Run `go vet ./...` and the `secmem-lint` analyzer in CI. The linter catches
