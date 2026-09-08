@@ -15,6 +15,22 @@ mark the stability commitment.
 
 ### Added
 
+- **`secmem-crypto`: `BcryptPBKDFInto` — OpenSSH's bcrypt_pbkdf as a KDF in
+  its own right.** The algorithm lives in `golang.org/x/crypto/ssh/internal/bcrypt_pbkdf`,
+  where nothing outside x/crypto can call it, so a program that has to
+  reproduce ssh-keygen's derivation — opening or writing a key file's
+  protection by hand, or matching a derivation performed elsewhere — had to
+  vendor it. This module already carries a wiping fork for its own passphrase
+  paths; the new function is that fork behind the same `*Into` shape the rest
+  of the KDFs use, deriving `out.Len()` bytes into a `SecureBuffer`. Nothing
+  holding secret state touches the heap: the whole working set is one locked
+  workspace allocated for the call and wiped before it returns. The doc says
+  plainly that this is an interoperability primitive and not the password KDF
+  to choose fresh — bcrypt_pbkdf's working set is a 4 KiB Blowfish schedule
+  whatever cost you ask for, so `Argon2Into` is the memory-hard answer.
+
+### Added
+
 - **`ADOPTION.md`, and two more pitfalls.** An adoption guide for putting the
   library into an existing service: inventory the secrets, classify each as
   INTERNAL (the plaintext never leaves a buffer) or EXTERNAL (it must cross

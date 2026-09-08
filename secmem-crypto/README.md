@@ -36,6 +36,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 4231 derivation straight into a buffer |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
+| `BcryptPBKDFInto` | OpenSSH's bcrypt_pbkdf, on the fork below, with its whole working state in a locked buffer; for interoperating with that format, not as a password KDF chosen fresh (it is not memory-hard — use Argon2) |
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place |
 | `X25519Key` | key agreement with the private scalar in a buffer; the shared secret comes back in one |
 | `MLKEM768Key`, `Encapsulate` | ML-KEM-768 with the 64-byte seed in a buffer; the expanded decapsulation key transits the heap per operation, as the type doc states |
@@ -107,7 +108,11 @@ derived from it on the heap for every bcrypt step, and the derived key and
 IV in a slice the caller cannot wipe. The fork keeps all of that in one
 caller-owned workspace — a `SecureBuffer` in this module — re-keys the
 schedule in place, hashes with one-shots, and writes into the caller's
-slice. It is about 550 lines; the Feistel round, key schedule and constant
+slice. Because the fork exists anyway, the algorithm is exposed as
+`BcryptPBKDFInto` for callers who need bcrypt_pbkdf itself and would
+otherwise have to vendor x/crypto's internal package; its doc says plainly
+that Argon2 is the better choice where the format does not dictate this
+one. It is about 550 lines; the Feistel round, key schedule and constant
 tables are verbatim and identity-tested against the resolved x/crypto, and
 the output is pinned by OpenBSD's reference vectors, a differential test
 against `x/crypto/blowfish`, and interop both ways with ssh-keygen and

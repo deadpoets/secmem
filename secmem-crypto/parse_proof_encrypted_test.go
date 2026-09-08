@@ -10,6 +10,8 @@ import (
 	"testing"
 
 	"golang.org/x/crypto/ssh"
+
+	"github.com/deadpoets/secmem"
 )
 
 // The passphrase paths make one heap allocation on purpose — the AES Block
@@ -112,5 +114,32 @@ func TestMarshalOpenSSHPrivateKey_AllocatesOnlyTheAESBlock(t *testing.T) {
 			}
 			buf.Destroy()
 		})
+	})
+}
+
+// BcryptPBKDFInto is a stricter case than the paths above: it has no AES
+// Block to account for, so nothing it owns may allocate at all. The
+// workspace is a SecureBuffer whose contents are off-heap, the derived
+// bytes go into the caller's buffer, and the salt is short enough not to
+// spill. Ownership is decided by the package prefix before the file name,
+// so the identically named file in internal/bcryptpbkdf — a different
+// package — is never the owner here, and an allocation inside the fork
+// would be reported against its own caller rather than hidden.
+var (
+	bcryptPBKDFFiles   = map[string]bool{"bcrypt_pbkdf.go": true}
+	bcryptPBKDFAllowed = []string{"github.com/deadpoets/secmem."} // SecureBuffer bookkeeping; the contents are off-heap
+)
+
+func TestBcryptPBKDFInto_AllocatesNothing(t *testing.T) {
+	out, err := secmem.NewEmptyBuffer(opensshKeyIVLen)
+	if err != nil {
+		t.Skipf("NewEmptyBuffer: %v", err)
+	}
+	defer func() { _ = out.Destroy() }()
+	password, salt := []byte(testPassphrase), []byte("0123456789abcdef")
+	proveNoOwnedAllocations(t, bcryptPBKDFFiles, bcryptPBKDFAllowed, func() {
+		if err := BcryptPBKDFInto(password, salt, 1, out); err != nil {
+			t.Fatal(err)
+		}
 	})
 }
