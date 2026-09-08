@@ -126,6 +126,33 @@ when the layout it expects is not there.
 Ed25519ph and Ed25519ctx requests are **refused**, not silently signed as pure
 Ed25519. A signature over the wrong scheme is worse than no signature.
 
+## What this will not support
+
+Some refusals here are gaps, and some are decisions. They look the same to a
+caller unless the library says which is which, so it does: a refusal that will
+never become support wraps `ErrRetiredAlgorithm`, and one that is merely
+unimplemented does not. Test for it when you need to tell "convert the file"
+from "wait for a release".
+
+**Legacy PEM encryption** — the `Proc-Type: 4,ENCRYPTED` / `DEK-Info:` headers
+openssl wrote before PKCS#8, and ssh-keygen before the OpenSSH format — is
+refused permanently, whatever cipher the `DEK-Info` line names. The key comes
+from a single pass of MD5 over the passphrase and an 8-byte salt
+(`EVP_BytesToKey`): there is no cost parameter, so an offline guess costs one
+MD5, and the ciphertext is unauthenticated CBC, so it is malleable and offers
+a padding oracle to anything that reports a decryption failure. Reading such a
+file is not a service to whoever holds it — keeping it openable is what lets
+it stay unconverted. `ssh-keygen -p -f key` and `openssl pkey -in key -out
+key` both rewrite one into a format this package reads, and the error says so.
+
+The same reasoning is why `AsSSH` never offers SHA-1 `ssh-rsa` and why
+Ed25519ph and Ed25519ctx are refused above.
+
+What is **not** in this category, and may yet arrive: PKCS#8 PBES2
+(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, and the aes128 and aes192
+OpenSSH ciphers. Those need forks that wipe their working state, which is
+work, not a judgement.
+
 ## Versioning
 
 This module is versioned and tagged independently of the core, as

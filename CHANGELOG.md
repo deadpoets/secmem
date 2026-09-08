@@ -40,6 +40,20 @@ mark the stability commitment.
   rather than to itself, so the two cannot drift apart unnoticed. A higher
   cost buys time-hardness only, which the doc says plainly.
 
+- **`secmem-crypto`: `ErrRetiredAlgorithm` separates a refusal that is a
+  decision from one that is a gap.** Both looked identical to a caller: an
+  error wrapping `ErrUnsupportedKey` could mean "convert your file" or "wait
+  for a release", and the only way to tell was to read the message. Legacy
+  PEM encryption (the `Proc-Type` / `DEK-Info` headers, whatever cipher they
+  name) now wraps this marker as well as the sentinel it already wrapped, and
+  the error says which command rewrites the file. It will not gain support:
+  the key comes from one pass of MD5 over the passphrase and an 8-byte salt,
+  so there is no cost to raise, and the ciphertext is unauthenticated CBC.
+  Keeping such a file openable is what lets it stay unconverted. Refusals
+  that are only unimplemented — PBES2, `chacha20-poly1305@openssh.com`,
+  aes128/192 — deliberately do not wrap it, and a test enforces that
+  distinction so the marker cannot decay into a synonym.
+
 ### Added
 
 - **`ADOPTION.md`, and two more pitfalls.** An adoption guide for putting the
