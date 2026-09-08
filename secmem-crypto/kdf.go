@@ -153,8 +153,8 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 //     runtime/secret build every worker's stack and registers are erased
 //     by the runtime and the worker is not asynchronously preempted while
 //     block state is in registers, and on the legacy path each worker's
-//     stack band is wiped in place; on amd64 the vector registers are
-//     additionally cleared inside every window, pinned to the thread that
+//     stack band is wiped in place; on amd64 and arm64 every window also
+//     clears the vector registers on its way out, on the thread that
 //     dirtied them.
 //
 // What remains, stated so that it can be relied on rather than guessed:

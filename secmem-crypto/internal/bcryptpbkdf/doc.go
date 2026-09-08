@@ -56,8 +56,8 @@
 // Blowfish is a table-driven cipher and its S-box lookups are keyed; that is
 // bcrypt's design and upstream's implementation, and this fork does not
 // change it. Vector registers are not touched here: SHA-512's assembly
-// leaves message-block state in them, and the caller clears them at the end
-// of its Scrub window.
+// leaves message-block state in them, and the [secmem.ScrubErr] window the
+// caller runs this inside clears them on the way out.
 //
 // # Maintenance
 //
