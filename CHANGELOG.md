@@ -13,6 +13,19 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`ADOPTION.md`, and two more pitfalls.** An adoption guide for putting the
+  library into an existing service: inventory the secrets, classify each as
+  INTERNAL (the plaintext never leaves a buffer) or EXTERNAL (it must cross
+  out, so the job is one short-lived copy per crossing and a written residual),
+  draw the boundary map of crossings against the helpers that handle them, and
+  size the locked-memory budget with a formula over buffers, arenas,
+  workspaces and transients. `PITFALLS.md` gains a secret inside a decoded
+  JSON document (a field type that unmarshals straight into a buffer, and why
+  `json.NewDecoder` and `io.ReadAll` defeat it) and writes to globals or
+  caches inside a `Scrub` window. Documentation only.
+
 ### Changed
 
 - **`secmem-crypto`: the Argon2 fork's own vector-register clear is gone, and

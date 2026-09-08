@@ -45,7 +45,9 @@ privilege contexts:
 | **non-root**, allocation exceeds `RLIMIT_MEMLOCK` (e.g. `ulimit -l 0`) | **fails closed** (`ErrNoSecureMemory`) | the pages cannot be locked, so secmem refuses rather than leave the secret swappable. |
 
 The takeaway that matters for deployment: the fail-closed path is only reachable
-by an **unprivileged process with a memlock budget smaller than the secret**. A
+by an **unprivileged process with a memlock budget smaller than the secret**.
+[ADOPTION.md](ADOPTION.md) has the formula for sizing that budget from the
+containers a service holds at peak. A
 root process can always lock memory, so under root the question is never "will it
 fail closed" but "are the *other* protections (kernel isolation, dump exclusion)
 in force" — which `Probe` answers.
