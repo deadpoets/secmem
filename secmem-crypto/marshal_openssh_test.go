@@ -134,10 +134,7 @@ func TestMarshalOpenSSHPrivateKey_ContainerLayout(t *testing.T) {
 	if string(e.cipher) != "aes256-ctr" || string(e.kdf) != "bcrypt" || e.numKeys != 1 {
 		t.Errorf("encrypted header: cipher %q kdf %q keys %d", e.cipher, e.kdf, e.numKeys)
 	}
-	o := sshReader{e.kdfOpts}
-	salt, ok1 := o.str()
-	rounds, ok2 := o.uint32()
-	if !ok1 || !ok2 || len(o.b) != 0 || len(salt) != 16 || rounds != 16 {
+	if salt, rounds, ok := kdfOptsIn(e); !ok || len(salt) != 16 || rounds != 16 {
 		t.Errorf("encrypted KDF options: salt %d bytes, %d rounds", len(salt), rounds)
 	}
 	if len(e.privBlock)%16 != 0 {

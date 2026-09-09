@@ -197,19 +197,6 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 	const pk, epk, rsaPK = "PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "RSA PRIVATE KEY"
 	legacy := []byte(pemOfType(rsaPK, "Proc-Type: 4,ENCRYPTED\nDEK-Info: AES-128-CBC,00112233445566778899AABBCCDDEEFF\n\n", "AAAA"))
 
-	// Containers with a bad header, built by hand; the private block is
-	// never reached, so it is filler of a valid length.
-	container := func(cipher, kdf string, kdfOpts []byte, privLen int) []byte {
-		outer := sshOuter{CipherName: cipher, KdfName: kdf, KdfOpts: string(kdfOpts), NumKeys: 1, PubKey: []byte("pub"), PrivKeyBlock: make([]byte, privLen)}
-		return append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
-	}
-	kdfOpts := func(saltLen int, rounds uint32) []byte {
-		return ssh.Marshal(struct {
-			Salt   []byte
-			Rounds uint32
-		}{make([]byte, saltLen), rounds})
-	}
-
 	cases := []struct {
 		name string
 		data []byte
@@ -225,16 +212,16 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		{"pkcs8 encrypted pem", []byte(pemOfType(epk, "", "MAAA")), testPassphrase, ErrUnsupportedKey},
 		{"pkcs8 encrypted raw", []byte{0x30, 0x04, 0x30, 0x02, 0x05, 0x00}, testPassphrase, ErrUnsupportedKey},
 		{"legacy pem encryption", legacy, testPassphrase, ErrUnsupportedKey},
-		{"kdf none", container("aes256-ctr", "none", nil, 16), testPassphrase, ErrNotEncrypted},
-		{"cipher none", container("none", "bcrypt", kdfOpts(16, 1), 16), testPassphrase, ErrNotEncrypted},
-		{"unknown kdf", container("aes256-ctr", "scrypt", kdfOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
-		{"aes128", container("aes128-ctr", "bcrypt", kdfOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
-		{"rounds over cap", container("aes256-ctr", "bcrypt", kdfOpts(16, opensshMaxRounds+1), 16), testPassphrase, ErrUnsupportedKey},
-		{"rounds zero", container("aes256-ctr", "bcrypt", kdfOpts(16, 0), 16), testPassphrase, errMalformed},
-		{"empty salt", container("aes256-ctr", "bcrypt", kdfOpts(0, 1), 16), testPassphrase, errMalformed},
-		{"kdf options trailing bytes", container("aes256-ctr", "bcrypt", append(kdfOpts(16, 1), 0), 16), testPassphrase, errMalformed},
-		{"block not multiple of 16", container("aes256-ctr", "bcrypt", kdfOpts(16, 1), 24), testPassphrase, errMalformed},
-		{"empty block", container("aes256-ctr", "bcrypt", kdfOpts(16, 1), 0), testPassphrase, errMalformed},
+		{"kdf none", testContainer("aes256-ctr", "none", nil, 16), testPassphrase, ErrNotEncrypted},
+		{"cipher none", testContainer("none", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrNotEncrypted},
+		{"unknown kdf", testContainer("aes256-ctr", "scrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
+		{"aes128", testContainer("aes128-ctr", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
+		{"rounds over cap", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, opensshMaxRounds+1), 16), testPassphrase, ErrUnsupportedKey},
+		{"rounds zero", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 0), 16), testPassphrase, errMalformed},
+		{"empty salt", testContainer("aes256-ctr", "bcrypt", testKDFOpts(0, 1), 16), testPassphrase, errMalformed},
+		{"kdf options trailing bytes", testContainer("aes256-ctr", "bcrypt", append(testKDFOpts(16, 1), 0), 16), testPassphrase, errMalformed},
+		{"block not multiple of 16", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 1), 24), testPassphrase, errMalformed},
+		{"empty block", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 1), 0), testPassphrase, errMalformed},
 		{"not a key", []byte("hello"), testPassphrase, errMalformed},
 		{"truncated container", raw[:40], testPassphrase, errMalformed},
 	}
@@ -382,7 +369,7 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 		f.Add(raw)
 	}
 	f.Fuzz(func(t *testing.T, data []byte) {
-		if rounds, ok := fuzzRounds(data); ok && rounds > 4 {
+		if _, rounds, ok := readKDFOpts(data); ok && rounds > 4 {
 			t.Skip("rounds > 4")
 		}
 		s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
@@ -397,27 +384,67 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 	})
 }
 
-// fuzzRounds reads the bcrypt round count out of a container, PEM or raw,
-// for the fuzz target's cost cap; ok is false when there is none to read.
-func fuzzRounds(data []byte) (uint32, bool) {
+// testContainer builds an OpenSSH container with a hand-written header,
+// for tests whose parse stops in the header: the private block is filler
+// of the requested length and is never reached.
+func testContainer(cipher, kdf string, kdfOpts []byte, privLen int) []byte {
+	outer := sshOuter{CipherName: cipher, KdfName: kdf, KdfOpts: string(kdfOpts), NumKeys: 1, PubKey: []byte("pub"), PrivKeyBlock: make([]byte, privLen)}
+	return append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
+}
+
+// testKDFOpts marshals bcrypt's KDF options: a zero salt of saltLen bytes,
+// then rounds.
+func testKDFOpts(saltLen int, rounds uint32) []byte {
+	return ssh.Marshal(struct {
+		Salt   []byte
+		Rounds uint32
+	}{make([]byte, saltLen), rounds})
+}
+
+// kdfOptsIn reads the bcrypt salt and round count out of a parsed header
+// the way the parser does: the options must be exactly a salt and a count.
+func kdfOptsIn(h opensshHeader) (salt []byte, rounds uint32, ok bool) {
+	if string(h.kdf) != opensshKDFBcrypt {
+		return nil, 0, false
+	}
+	o := sshReader{h.kdfOpts}
+	salt, ok1 := o.str()
+	rounds, ok2 := o.uint32()
+	if !ok1 || !ok2 || len(o.b) != 0 {
+		return nil, 0, false
+	}
+	return salt, rounds, true
+}
+
+// readKDFOpts is kdfOptsIn over a whole container, PEM-armoured or raw. It
+// never fails a test, so the fuzz target can use it as a cost estimate.
+func readKDFOpts(data []byte) (salt []byte, rounds uint32, ok bool) {
 	raw := data
 	if !bytes.HasPrefix(data, opensshMagic) {
 		_, body, err := pemBlock(data)
 		if err != nil {
-			return 0, false
+			return nil, 0, false
 		}
 		raw, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(body)), ""))
 		if err != nil {
-			return 0, false
+			return nil, 0, false
 		}
 	}
 	h, err := readOpenSSHHeader(raw)
-	if err != nil || string(h.kdf) != opensshKDFBcrypt {
-		return 0, false
+	if err != nil {
+		return nil, 0, false
 	}
-	o := sshReader{h.kdfOpts}
-	if _, ok := o.str(); !ok {
-		return 0, false
+	return kdfOptsIn(h)
+}
+
+// kdfOptsOf is readKDFOpts for a test that requires the options to be
+// there. The count is public: it has to be, since whoever opens the file
+// needs it.
+func kdfOptsOf(t testing.TB, data []byte) (salt []byte, rounds uint32) {
+	t.Helper()
+	salt, rounds, ok := readKDFOpts(data)
+	if !ok {
+		t.Fatal("could not read the bcrypt KDF options")
 	}
-	return o.uint32()
+	return salt, rounds
 }

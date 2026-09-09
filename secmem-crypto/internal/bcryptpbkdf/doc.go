@@ -40,6 +40,10 @@
 //     the intermediate buffer; output is byte-identical.
 //   - The decryption direction of Blowfish and its KeySizeError are
 //     dropped as unused.
+//   - The input bounds are one function, [Check], that [Derive] calls
+//     first and a caller may call on its own; the bounds themselves are
+//     the exported [MaxKeyLen] and [MaxSaltLen], so nothing outside this
+//     package restates the numbers.
 //
 // The algorithm is unchanged: encryptBlock, ExpandKey, expandKeyWithSalt,
 // getNextWord, initCipher and Encrypt are verbatim, const.go is

@@ -30,12 +30,45 @@ import (
 // key: an OpenSSH file with a cipher or KDF other than "none", a PKCS#8
 // "ENCRYPTED PRIVATE KEY" block, or a legacy PEM block with Proc-Type /
 // DEK-Info headers. A protected OpenSSH file opens with
-// [ParsePrivateKeyWithPassphrase]. The other two use KDFs whose working
-// state this package does not control (PBKDF2 / scrypt under PBES2, MD5
-// key stretching for the legacy form), so they are refused rather than
-// decrypted leakily; convert the file with ssh-keygen -p or openssl pkey
-// first.
+// [ParsePrivateKeyWithPassphrase]. The other two are refused: PBES2's KDFs
+// are not implemented here yet, and legacy PEM encryption never will be
+// (see [ErrRetiredAlgorithm]). Convert the file with ssh-keygen -p or
+// openssl pkey first.
 var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protected")
+
+// ErrRetiredAlgorithm marks a refusal that is a decision rather than a gap:
+// the input names a construction that should not be in use, and this
+// package will not grow support for it. Errors that wrap it also wrap
+// [ErrEncryptedKey] or [ErrUnsupportedKey], so existing checks keep
+// working; test for this one when you want to tell "convert the file" from
+// "wait for a release".
+//
+// What it marks today is legacy PEM encryption — the Proc-Type / DEK-Info
+// headers openssl wrote before PKCS#8, and ssh-keygen before the OpenSSH
+// format. The construction derives its key by iterating MD5 over the
+// passphrase and an 8-byte salt exactly once (OpenSSL's EVP_BytesToKey),
+// which is not a password KDF in any modern sense: there is no cost
+// parameter to raise, so an offline guess costs one MD5. The ciphertext is
+// then unauthenticated CBC, so it is malleable and gives a padding oracle
+// to anything that reports decryption failures. Supporting it would mean
+// implementing all of that, correctly, to make files that should be
+// re-encrypted keep working — which is the opposite of the service this
+// package is trying to do. `ssh-keygen -p -f key` and
+// `openssl pkey -in key -out key` both rewrite such a file in a format this
+// package reads.
+//
+// It is deliberately NOT returned for things that are merely unimplemented
+// — PKCS#8 PBES2, chacha20-poly1305@openssh.com, the aes128 and aes192
+// OpenSSH ciphers — because those may yet arrive, and a caller should be
+// able to tell the two apart.
+var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
+
+// errLegacyPEM is the one refusal that carries ErrRetiredAlgorithm today.
+// It is built once, with the remedy in it, so that both entry points say
+// the same thing: ParsePrivateKey wraps it in ErrEncryptedKey and
+// ParsePrivateKeyWithPassphrase in ErrUnsupportedKey, each keeping the
+// sentinel it always returned.
+var errLegacyPEM = fmt.Errorf("%w: legacy PEM encryption (Proc-Type / DEK-Info headers); re-encrypt it with ssh-keygen -p or openssl pkey", ErrRetiredAlgorithm)
 
 // ErrUnsupportedKey is returned by [ParsePrivateKey] for a well-formed key of
 // a kind this package has no signer for: DSA, FIDO (sk-*) keys, certificates,
@@ -237,7 +270,9 @@ func pemBlock(data []byte) (typ, body []byte, err error) {
 		break
 	}
 	if encrypted {
-		return nil, nil, ErrEncryptedKey
+		// Proc-Type / DEK-Info is the legacy form, and it is refused as a
+		// policy rather than as a gap; see ErrRetiredAlgorithm.
+		return nil, nil, fmt.Errorf("%w: %w", ErrEncryptedKey, errLegacyPEM)
 	}
 	if headers > 0 {
 		return nil, nil, fmt.Errorf("%w: PEM headers", ErrUnsupportedKey)

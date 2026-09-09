@@ -14,6 +14,7 @@ package bcryptpbkdf
 import (
 	"crypto/sha512"
 	"errors"
+	"fmt"
 	"unsafe"
 
 	"github.com/deadpoets/secmem"
@@ -68,6 +69,14 @@ func (ws *Workspace) Wipe() {
 	secmem.SecureWipe(unsafe.Slice((*byte)(unsafe.Pointer(ws)), Size))
 }
 
+// The input bounds upstream's Key enforces. They are exported so a caller
+// can name them (secmemcrypto.MaxBcryptPBKDFKeyLen) without carrying a
+// second copy of the number that could drift from the one Check applies.
+const (
+	MaxKeyLen  = 1024
+	MaxSaltLen = 1 << 20
+)
+
 // Errors for the input bounds upstream's Key enforces, plus the empty output.
 var (
 	ErrRounds   = errors.New("bcrypt_pbkdf: number of rounds is too small")
@@ -77,26 +86,36 @@ var (
 	ErrOutput   = errors.New("bcrypt_pbkdf: empty output")
 )
 
-// Derive computes bcrypt_pbkdf(password, salt, rounds) into out, whose
-// length is the key length (1 to 1024 bytes), using ws for every piece of
-// working state. The output is byte-identical to upstream's Key for the same
-// inputs. password and salt are only read. ws is left holding the last
-// state the derivation used; the caller wipes it.
-func Derive(out, password, salt []byte, rounds int, ws *Workspace) error {
-	if rounds < 1 {
-		return ErrRounds
-	}
-	if len(password) == 0 {
+// Check reports whether Derive would accept a keyLen-byte output for these
+// inputs, without touching a Workspace. It is Derive's own validation, not
+// a copy of it, so a caller that wants to refuse before allocating a
+// workspace gets exactly the answer, and the error, Derive would give
+// afterwards. Errors wrap the sentinels above and name the offending value.
+func Check(keyLen int, password, salt []byte, rounds int) error {
+	switch {
+	case rounds < 1:
+		return fmt.Errorf("%w: got %d", ErrRounds, rounds)
+	case len(password) == 0:
 		return ErrPassword
-	}
-	if len(salt) == 0 || len(salt) > 1<<20 {
-		return ErrSalt
-	}
-	if len(out) == 0 {
+	case len(salt) == 0 || len(salt) > MaxSaltLen:
+		return fmt.Errorf("%w: %d bytes, want 1 to %d", ErrSalt, len(salt), MaxSaltLen)
+	case keyLen <= 0:
 		return ErrOutput
+	case keyLen > MaxKeyLen:
+		return fmt.Errorf("%w: %d bytes, want at most %d", ErrKeyLen, keyLen, MaxKeyLen)
 	}
-	if len(out) > 1024 {
-		return ErrKeyLen
+	return nil
+}
+
+// Derive computes bcrypt_pbkdf(password, salt, rounds) into out, whose
+// length is the key length (1 to [MaxKeyLen] bytes), using ws for every
+// piece of working state. The output is byte-identical to upstream's Key
+// for the same inputs. password and salt are only read. ws is left holding
+// the last state the derivation used; the caller wipes it. Inputs are
+// validated by [Check] before anything is written.
+func Derive(out, password, salt []byte, rounds int, ws *Workspace) error {
+	if err := Check(len(out), password, salt, rounds); err != nil {
+		return err
 	}
 	if ws == nil {
 		panic("bcrypt_pbkdf: nil workspace")

@@ -81,9 +81,9 @@ crossings this repository has a helper for:
 | Key file into a signer | `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` |
 | Terminal or form input that arrives as `[]byte` | `NewBuffer`, which wipes its input |
 | Decoded document field | a `json.Unmarshaler` on the field type; see pitfall 9 |
-| Password into a key | `Argon2Into` and the other `*Into` KDFs; `Argon2Workspace` for the working state |
+| Password into a key | `Argon2Into` and the other `*Into` KDFs; `Argon2Workspace` for the working state; `BcryptPBKDFInto` only where a format names bcrypt_pbkdf |
 | Buffer into an HTTP header | `httpauth` |
-| Buffer into a key file | `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase` |
+| Buffer into a key file | `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase`, `…WithPassphraseParams` |
 | Buffer into a socket or file | `SecureBuffer.WriteTo`, on the raw writer; a `bufio.Writer` in between keeps a copy |
 | Buffer into a log | never. `Secret` redacts itself; `redact` is the backstop for text that was assembled anyway |
 
@@ -144,9 +144,11 @@ where:
   the budget.
 - **Transients** are the buffers helpers allocate for one call. The
   passphrase paths of `ParsePrivateKeyWithPassphrase` and
-  `MarshalOpenSSHPrivateKeyWithPassphrase` take a scratch of a couple of pages
-  plus the decoded key; the parsers allocate the decoded file and the key
-  they return. Multiply by the peak number of concurrent calls.
+  `MarshalOpenSSHPrivateKeyWithPassphrase` (and its `Params` form) take a
+  scratch of a couple of pages plus the decoded key; `BcryptPBKDFInto` takes
+  a workspace of a little over 4 KiB, which is two 4 KiB pages; the parsers
+  allocate the decoded file and the key they return. Multiply by the peak
+  number of concurrent calls.
 - **Headroom.** A quarter over the computed peak is a reasonable default; the
   cost of being generous is locked RAM that is otherwise idle, the cost of
   being exact is an allocation failure under load.

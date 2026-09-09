@@ -31,11 +31,12 @@ So each function here derives, signs, or decrypts **into or out of** a
 |---|---|
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below) |
 | `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes the transient it can reach; the copies it cannot reach are named in the type docs |
-| `AsSSH`, `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, unencrypted or passphrase-protected, assembled and encrypted in place into a buffer |
+| `AsSSH`, `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase`, `…WithPassphraseParams` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, unencrypted or passphrase-protected, assembled and encrypted in place into a buffer. The `Params` form takes the bcrypt cost (ssh-keygen's `-a`), capped where the readers cap it so a written file always opens |
 | `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files (bcrypt, aes256-ctr/cbc — what ssh-keygen writes) open through the bcrypt_pbkdf fork below, with the AES round keys wiped by reflection; PKCS#8 PBES2 and legacy PEM encryption are refused |
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 4231 derivation straight into a buffer |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small |
+| `BcryptPBKDFInto` | OpenSSH's bcrypt_pbkdf, on the fork below, with its whole working state in a locked buffer; for interoperating with that format, not as a password KDF chosen fresh (it is not memory-hard — use Argon2) |
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place |
 | `X25519Key` | key agreement with the private scalar in a buffer; the shared secret comes back in one |
 | `MLKEM768Key`, `Encapsulate` | ML-KEM-768 with the 64-byte seed in a buffer; the expanded decapsulation key transits the heap per operation, as the type doc states |
@@ -107,7 +108,11 @@ derived from it on the heap for every bcrypt step, and the derived key and
 IV in a slice the caller cannot wipe. The fork keeps all of that in one
 caller-owned workspace — a `SecureBuffer` in this module — re-keys the
 schedule in place, hashes with one-shots, and writes into the caller's
-slice. It is about 550 lines; the Feistel round, key schedule and constant
+slice. Because the fork exists anyway, the algorithm is exposed as
+`BcryptPBKDFInto` for callers who need bcrypt_pbkdf itself and would
+otherwise have to vendor x/crypto's internal package; its doc says plainly
+that Argon2 is the better choice where the format does not dictate this
+one. It is about 550 lines; the Feistel round, key schedule and constant
 tables are verbatim and identity-tested against the resolved x/crypto, and
 the output is pinned by OpenBSD's reference vectors, a differential test
 against `x/crypto/blowfish`, and interop both ways with ssh-keygen and
@@ -120,6 +125,36 @@ when the layout it expects is not there.
 
 Ed25519ph and Ed25519ctx requests are **refused**, not silently signed as pure
 Ed25519. A signature over the wrong scheme is worse than no signature.
+
+## What this will not support
+
+Some refusals here are gaps, and some are decisions. They look the same to a
+caller unless the library says which is which, so it does: a refusal that will
+never become support wraps `ErrRetiredAlgorithm`, and one that is merely
+unimplemented does not. Test for it when you need to tell "convert the file"
+from "wait for a release".
+
+**Legacy PEM encryption** — the `Proc-Type: 4,ENCRYPTED` / `DEK-Info:` headers
+openssl wrote before PKCS#8, and ssh-keygen before the OpenSSH format — is
+refused permanently, whatever cipher the `DEK-Info` line names. The key comes
+from a single pass of MD5 over the passphrase and an 8-byte salt
+(`EVP_BytesToKey`): there is no cost parameter, so an offline guess costs one
+MD5, and the ciphertext is unauthenticated CBC, so it is malleable and offers
+a padding oracle to anything that reports a decryption failure. Reading such a
+file is not a service to whoever holds it — keeping it openable is what lets
+it stay unconverted. `ssh-keygen -p -f key` and `openssl pkey -in key -out
+key` both rewrite one into a format this package reads, and the error says so.
+
+Two other refusals are decisions of the same kind but do not carry the
+marker, because there is no file to convert and nothing to wait for: `AsSSH`
+never offers SHA-1 `ssh-rsa`, and `Sign` returns a plain error for Ed25519ph
+and Ed25519ctx (above). `ErrRetiredAlgorithm` is for input this package
+refuses to read; those two are things it refuses to produce.
+
+What is **not** in this category, and may yet arrive: PKCS#8 PBES2
+(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, and the aes128 and aes192
+OpenSSH ciphers. Those need forks that wipe their working state, which is
+work, not a judgement.
 
 ## Versioning
 

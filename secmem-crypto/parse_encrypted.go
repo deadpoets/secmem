@@ -38,7 +38,10 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // cap: cost is linear in rounds and the count comes from the file). Other
 // ciphers (chacha20-poly1305@openssh.com, the aes128 and aes192 variants),
 // PKCS#8 "ENCRYPTED PRIVATE KEY" (PBES2), and legacy PEM Proc-Type /
-// DEK-Info encryption return an error wrapping [ErrUnsupportedKey]. A wrong
+// DEK-Info encryption return an error wrapping [ErrUnsupportedKey]; the
+// legacy form additionally wraps [ErrRetiredAlgorithm], because that one is
+// refused on purpose and will not arrive in a later release, while the
+// others are simply not implemented yet. A wrong
 // passphrase returns an error wrapping [x509.IncorrectPasswordError], the
 // value x/crypto/ssh returns for the same condition, so a caller migrating
 // from ssh.ParseRawPrivateKeyWithPassphrase keeps its errors.Is check. A
@@ -90,7 +93,9 @@ func parseEncryptedPrivateKey(data, passphrase []byte) (Signer, error) {
 	case bytes.Contains(data, pemBegin):
 		typ, body, perr := pemBlock(data)
 		if errors.Is(perr, ErrEncryptedKey) {
-			return nil, fmt.Errorf("%w: legacy PEM encryption (Proc-Type / DEK-Info headers)", ErrUnsupportedKey)
+			// The legacy form: refused permanently, not pending. The
+			// passphrase is not even looked at. See ErrRetiredAlgorithm.
+			return nil, fmt.Errorf("%w: %w", ErrUnsupportedKey, errLegacyPEM)
 		}
 		if perr != nil {
 			return nil, perr
