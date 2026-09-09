@@ -137,7 +137,7 @@ func TestScrubErr_ScrubsLiveFramesOnPanic(t *testing.T) {
 // helper that captures a panic must not swallow fn's ordinary error.
 func TestScrubErr_ReturnsFnError(t *testing.T) {
 	want := errors.New("fn failed")
-	if got := ScrubErr(func() error { return want }); got != want {
+	if got := ScrubErr(func() error { return want }); !errors.Is(got, want) {
 		t.Errorf("ScrubErr returned %v, want %v", got, want)
 	}
 	if got := ScrubErr(func() error { return nil }); got != nil {

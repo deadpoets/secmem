@@ -167,7 +167,7 @@ func ScrubErr(fn func() error) error {
 	var exit scrubExit
 	defer exit.goexitBackstop()
 
-	err, p := scrubCallErr(fn)
+	p, err := scrubCallErr(fn)
 
 	clearVectorRegs()
 	wipeScratchFrameFull()
@@ -193,9 +193,9 @@ func scrubCall(fn func()) (p any) {
 }
 
 // scrubCallErr is scrubCall for a fn that returns an error.
-func scrubCallErr(fn func() error) (err error, p any) {
+func scrubCallErr(fn func() error) (p any, err error) {
 	defer func() { p = recover() }()
-	return fn(), nil
+	return nil, fn()
 }
 
 // scrubExit is the deferred backstop for runtime.Goexit inside fn: the
