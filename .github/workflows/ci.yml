@@ -21,8 +21,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, whatever its base: a stacked PR (base = the branch
+  # beneath it) must be checked before it retargets to main on merge, or the
+  # first run it ever gets is the one that gates the merge.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
