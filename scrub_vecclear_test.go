@@ -37,7 +37,7 @@ func countEqual(a, b []byte) int {
 //  1. Probe sanity. A non-zero pattern planted in the registers must read back
 //     exactly, or the probe observes nothing and the rest is vacuous.
 //  2. Controls. Scrub's window WITHOUT the clear (legacyWindowNoClear: same
-//     pin, same reserve-then-wipe, same defers, minus one line) must leave the
+//     pin, same reserve-then-wipe, same recover-and-re-raise, minus one line) must leave the
 //     pattern visible after a normal return. This is what proves the ABI does
 //     not reload the vector registers around the calls, i.e. that a clear
 //     placed there has something to clear. A zero here is a failure, not a
