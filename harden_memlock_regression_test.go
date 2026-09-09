@@ -30,6 +30,11 @@ func TestEnsureMemlockLimit_CompetingRaiseNotLowered(t *testing.T) {
 	if err != nil {
 		t.Fatalf("isolated child failed: %v\n%s", err, out)
 	}
+	// A child that skipped exits 0 like one that passed; surface it so the
+	// skip is audited rather than passed over.
+	if reason, skipped := childSkipReason(out); skipped {
+		t.Skipf("child skipped: %s", reason)
+	}
 }
 
 // memlockCompetingRaiseChild is the in-child body. G1 asks for small. At the
