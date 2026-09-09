@@ -456,6 +456,10 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # Named explicitly rather than left to auto-detection, so the scan
+          # cannot silently fall back to the default rules and start failing
+          # on redact's synthetic corpus again. See .gitleaks.toml.
+          GITLEAKS_CONFIG: ${{ github.workspace }}/.gitleaks.toml
 
   # API-compatibility radar: gorelease diffs each module's exported API against
   # its latest published tag and posts the report to the job summary, so an
