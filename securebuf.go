@@ -12,9 +12,13 @@
 //     returned by allocSecretMem/allocMapAnon (guarded outer reservation +
 //     inner secret area). Truncate MUST NOT modify region.
 //
-//   - mu.rLock is held by ALL access methods for the duration of the operation.
-//     mu.lock is held ONLY by Destroy.  This prevents TOCTOU races between
-//     Destroy (Munmap) and in-flight access callbacks.
+//   - mu.rLock is held by every read-side access method (WithBytes, ByteAt,
+//     CopyOut, ConstantTimeEqual, ...) for the duration of the operation.
+//     mu.lock (exclusive) is held by Destroy and by every method that changes
+//     the buffer's state or contents: CopyIn, SetByteAt, Truncate, ReadFrom,
+//     Seal, Unseal, ReadOnly, ReadWrite — and by the janitor's wipe paths.
+//     A borrowed slice therefore never observes a concurrent mutation,
+//     protection change, or unmap: they wait for the callback to return.
 //
 //   - The lock is a sync.Cond-based reader-writer lock (not sync.RWMutex) so
 //     that all blocking states are durably blocked under testing/synctest.
@@ -66,7 +70,7 @@ type SecureBuffer struct {
 	cleanup runtime.Cleanup
 
 	// janitorKey identifies this buffer's raw mapping in emergencyJanitor.
-	janitorKey uintptr
+	janitorKey uint64
 
 	// sealed is true when the buffer's mmap region has been set to PROT_NONE,
 	// or when Seal encrypted the contents and could then neither protect the
@@ -147,7 +151,7 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	copy(data, raw)
-	return newSecureBuffer(region, data, info), nil
+	return newSecureBuffer(region, data, info)
 }
 
 // NewEmptyBuffer allocates an mlock'd zero-filled region of exactly size bytes.
@@ -167,7 +171,7 @@ func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 		_ = freeSecretMem(region)
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
-	return newSecureBuffer(region, data, info), nil
+	return newSecureBuffer(region, data, info)
 }
 
 // NewSyscallSafeBuffer allocates via MAP_ANON only (no memfd_secret attempt).
@@ -191,7 +195,7 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	copy(data, raw)
-	return newSecureBuffer(region, data, info), nil
+	return newSecureBuffer(region, data, info)
 }
 
 // newSecureBuffer wires up a SecureBuffer from a pre-allocated (region, data)
@@ -200,7 +204,12 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 //
 // The janitor key is passed to AddCleanup by value; cleanup resolution happens
 // through emergencyJanitor's raw-mapping registry.
-func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBuffer {
+//
+// On a refused registration (identity collision — see nextJanitorKey) the
+// region, which already holds the caller's secret, is wiped and released
+// here and the error returned: a buffer no wipe path can reach must not
+// exist.
+func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureBuffer, error) {
 	sb := &SecureBuffer{
 		data:       data,
 		region:     region,
@@ -217,7 +226,13 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 
 	// Register with the emergency janitor first. The janitor stores raw mapping
 	// metadata (not *SecureBuffer), so this does not keep sb reachable for GC.
-	sb.janitorKey = emergencyJanitor.register(region, canary, sb.mu, sb.sealCipher, sb.wiped)
+	key, err := emergencyJanitor.register(region, canary, sb.mu, sb.sealCipher, sb.wiped)
+	if err != nil {
+		secureWipeSlice(region.inner)
+		_ = freeSecretMem(region)
+		return nil, err
+	}
+	sb.janitorKey = key
 
 	// Safety-net cleanup: if the caller forgets Destroy(), this wipes and frees
 	// the mmap'd region when the *SecureBuffer is GC'd.
@@ -229,7 +244,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 	// IMPORTANT: The cleanup fires when sb becomes unreachable — NOT when all
 	// references to data are gone.  Any retained []byte from WithBytes
 	// becomes a dangling pointer after the cleanup runs.
-	sb.cleanup = runtime.AddCleanup(sb, func(key uintptr) {
+	sb.cleanup = runtime.AddCleanup(sb, func(key uint64) {
 		slog.Warn("secmem: SecureBuffer finalized without explicit Destroy()",
 			slog.Int("size", len(region.inner)),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
@@ -241,7 +256,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 		}
 	}, sb.janitorKey)
 
-	return sb
+	return sb, nil
 }
 
 // ---------------------------------------------------------------------------
@@ -257,7 +272,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) *SecureBu
 //  5. freeSecretMem — unmap the reservation: Munmap (Linux munlocks first;
 //     Darwin deliberately does not, see mlock_darwin.go) / VirtualUnlock +
 //     VirtualFree.
-//  6. Nil out data and raw — makes Destroy idempotent.
+//  6. Nil out data and zero region — makes Destroy idempotent.
 //  7. runtime.KeepAlive(s) — ensures the GC does not run the cleanup
 //     concurrently between Stop() and the wipe.
 //
@@ -591,9 +606,10 @@ func (s *SecureBuffer) IsSealed() bool {
 
 // Truncate re-slices data to n bytes and wipes the freed tail [n:].
 //
-// Invariant: raw is NEVER modified. Only data is re-sliced.
-// This ensures the AddCleanup finalization closure always holds the correct
-// full-page allocation regardless of Truncate calls.
+// Invariant: region is NEVER modified. Only data is re-sliced. This keeps
+// the janitor's registration — which is what the AddCleanup fallback and the
+// emergency wipe resolve — describing the full allocation regardless of
+// Truncate calls.
 func (s *SecureBuffer) Truncate(n int) error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.Truncate: nil receiver")

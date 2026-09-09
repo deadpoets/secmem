@@ -45,7 +45,10 @@
 //     counter, and every WRITE to a slot's generation.  Taken by Acquire,
 //     Release and LiveCount only.  The borrow path and IsLive do NOT take it:
 //     liveness is one atomic load of the parity-encoded generation, which is
-//     what lets borrows of distinct slots scale instead of serializing.
+//     what lets borrows of distinct slots scale instead of serializing. The
+//     borrow path takes that load under mu.rLock, right before the slice is
+//     produced — never before the lock, where a wait for a queued writer
+//     would separate the check from the use.
 //     Never held across a callback.
 //
 // Each ArenaSlot should be owned by a single goroutine at a time.  Concurrent
@@ -122,9 +125,14 @@ type slotMeta struct {
 	// acquisitions AND encodes liveness in its low bit. Even = free, odd =
 	// live. Acquire increments it even→odd and hands the odd value to the
 	// ArenaSlot; Release increments it odd→even. A handle is therefore valid
-	// exactly while the slot's generation still equals the handle's — released
-	// (now even) and recycled (a different odd) both mismatch — so the borrow
-	// path's whole liveness check is ONE atomic load and compare, with no lock.
+	// while the slot's generation still equals the handle's — released (now
+	// even) and recycled (a different odd) both mismatch — so the borrow
+	// path's whole liveness check is ONE atomic load and compare, with no
+	// lock of its own. The borrow path performs it under the arena's region
+	// lock, immediately before it hands out the slice, so a Release that
+	// completed before that instant is always observed; what it does not and
+	// cannot promise is anything about a Release that runs concurrently with
+	// the callback itself, which the single-owner rule forbids.
 	//
 	// atomic.Uint64 rather than a plain uint64 for two reasons. The borrow path
 	// and IsLive read it outside arena.alloc while Acquire/Release write it
@@ -268,7 +276,7 @@ type SecureArena struct {
 	cleanup runtime.Cleanup
 
 	// janitorKey identifies this arena's raw slab in emergencyJanitor.
-	janitorKey uintptr
+	janitorKey uint64
 }
 
 // ArenaSlot is a handle to one fixed-size slot in a [SecureArena].
@@ -411,15 +419,24 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	}
 
 	// Register the slab with emergency janitor using raw metadata only.
-	// Arenas have no Seal, hence no seal-cipher state.
-	a.janitorKey = emergencyJanitor.register(region, canary, a.mu, nil, a.wiped)
+	// Arenas have no Seal, hence no seal-cipher state. A refused registration
+	// (identity collision — see nextJanitorKey) leaves the slab unregistered
+	// and therefore unreachable by every wipe path; it is released here, and
+	// the caller gets the error instead of an arena nothing can clean up.
+	key, err := emergencyJanitor.register(region, canary, a.mu, nil, a.wiped)
+	if err != nil {
+		secureWipeSlice(region.inner)
+		_ = freeSecretMem(region)
+		return nil, fmt.Errorf("secmem.NewArena: %w", err)
+	}
+	a.janitorKey = key
 
 	// Safety-net cleanup: wipe and free the slab if Destroy was forgotten.
 	// Only the slab size is captured (not a reference to a) so that the
 	// cleanup closure cannot keep a alive and prevent it from becoming
 	// unreachable.
 	slabBytes := len(region.inner)
-	a.cleanup = runtime.AddCleanup(a, func(key uintptr) {
+	a.cleanup = runtime.AddCleanup(a, func(key uint64) {
 		slog.Warn("secmem: SecureArena finalized without explicit Destroy()",
 			slog.Int("slab_bytes", slabBytes),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
@@ -636,20 +653,11 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 		return ErrSlotReleased
 	}
 
-	// Liveness check — two atomic loads, NO lock. This used to take arena.alloc,
-	// which made every borrow in the arena serialize on one mutex even when the
-	// goroutines shared no slot; measured, that mutex was the residual wall
-	// after the rw-lock fast path landed (see TESTING.md). The parity-encoded
-	// generation makes the lock unnecessary: one load answers both "released?"
-	// (now even, mismatch) and "recycled?" (different odd, mismatch), which is
-	// exactly what the inUse+generation pair answered under the mutex. The
-	// check is advisory either way — the authoritative destroy gate is the
+	// Fail fast on a destroyed arena rather than queue behind the Destroy
+	// that is draining callbacks. Advisory: the authoritative gate is the
 	// region-nil test under rLock below, and always was.
 	if s.arena.destroyed.Load() {
 		return ErrArenaDestroyed
-	}
-	if s.arena.slots[s.idx].generation.Load() != s.generation {
-		return ErrSlotReleased
 	}
 
 	// Hold arena RLock for the callback — blocks Destroy from unmapping.
@@ -658,6 +666,29 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 
 	if s.arena.region.inner == nil {
 		return ErrArenaDestroyed
+	}
+
+	// Liveness check — one atomic load, no further lock, and UNDER the region
+	// lock, immediately before the slice is produced. It used to run before
+	// the rLock, which made it check-then-use: a borrower that passed it and
+	// then waited for the lock (any queued writer — ReadOnly, ReadWrite, the
+	// emergency wipe — parks new readers) resumed holding a slice into a slot
+	// that had meanwhile been Released, wiped, re-Acquired and written by a
+	// new owner, and read or overwrote that owner's secret with no error.
+	// Checking here leaves nothing between the check and the use but the call
+	// itself: a Release that retired this handle before this instant is
+	// always observed. A Release that runs concurrently with the callback is
+	// the single-owner contract's to prevent (see "Concurrency Model"); the
+	// wipe it performs races the callback's reads regardless of any check.
+	//
+	// Still no mutex: this used to take arena.alloc, which made every borrow
+	// in the arena serialize on one lock even when the goroutines shared no
+	// slot; measured, that was the residual wall after the rw-lock fast path
+	// landed (see TESTING.md). The parity-encoded generation answers both
+	// "released?" (now even, mismatch) and "recycled?" (different odd,
+	// mismatch) in one load.
+	if s.arena.slots[s.idx].generation.Load() != s.generation {
+		return ErrSlotReleased
 	}
 
 	// Capacity-clamped to the slot's usable bytes: fn cannot re-slice its
