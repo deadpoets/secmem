@@ -84,8 +84,8 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 |---|---|---|---|---|---|
 | Off the Go heap | ✓ memfd_secret | ✓ mmap | ✓ mmap | ✓ VirtualAlloc | **LOUD** heap only |
 | No swap (locked) | ✓ | ✓ mlock | ✓ mlock | ⚠ VirtualLock ‡ | ✗ |
-| Kernel isolation (defeats passive reads — ptrace, `/proc/<pid>/mem`, crash dumps — including by root) | ✓ memfd_secret | ✗ (falls to mlock) | ✗ | ✗ | ✗ |
-| Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion | ✗ |
+| Kernel isolation (defeats passive reads — ptrace, `/proc/<pid>/mem`, crash dumps — including by root: the in-tree proof runs unprivileged, and CI repeats it as root) | ✓ memfd_secret | ✗ (falls to mlock) | ✗ | ✗ | ✗ |
+| Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion (reported by the registration call, not verified by a dump) | ✗ |
 | Not inherited across fork | ⚠ MADV_DONTFORK | ⚠ MADV_DONTFORK | ✗ | n/a | ✗ |
 | No THP/KSM secret copies | ✓ madvise | ✓ madvise | n/a | n/a | ✗ |
 | Guaranteed wipe on destroy | ✓ asm + cache flush (the zeros are read back; the flush is structural, not measured) | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64/arm64) | ⚠ barriered store loop, no flush |
