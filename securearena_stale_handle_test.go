@@ -137,7 +137,7 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 	// The new owner's secret is intact.
 	if err := next.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, second) {
-			t.Errorf("next tenant's slot = %x…, want %x…", b[:4], second[:4])
+			t.Errorf("next tenant's slot = %x…, want %x…", b[:4], second[:4]) //nolint:secmem-lint // diagnostic on failure only; test fixture, not a secret
 		}
 	}); err != nil {
 		t.Fatalf("next.WithBytes: %v", err)
