@@ -85,7 +85,7 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 	ran := make(chan []byte, 1)
 	go func() {
 		borrowErr <- subject.WithBytesErr(func(b []byte) error {
-			ran <- append([]byte(nil), b...)
+			ran <- append([]byte(nil), b...) //nolint:secmem-lint // test copies its own fixture out to assert on it after the borrow
 			return nil
 		})
 	}()
