@@ -21,8 +21,10 @@ name: CI
 on:
   push:
     branches: [main]
+  # Every pull request, whatever its base: a stacked PR (base = the branch
+  # beneath it) must be checked before it retargets to main on merge, or the
+  # first run it ever gets is the one that gates the merge.
   pull_request:
-    branches: [main]
 
 permissions:
   contents: read
@@ -41,6 +43,12 @@ env:
   GO_VERSION: "1.26.6"
 
 jobs:
+  # Every test step below runs through the test-audited action: `go test
+  # -json` piped into internal/skipaudit, which prints each skipped test with
+  # its reason and fails the job on any skip that is not on the lane's
+  # allowlist (.github/skip-allowlist/). A plain `go test` prints nothing for
+  # a t.Skip, so a proof that stopped running on a runner looked exactly like
+  # one that passed.
   test:
     strategy:
       fail-fast: false
@@ -53,9 +61,14 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
-      - run: go test -race ./...
-      - run: go test -race ./...
-        working-directory: secmem-crypto
+      - uses: ./.github/actions/test-audited
+        with:
+          allowlist: ${{ runner.os == 'Linux' && 'linux' || runner.os == 'macOS' && 'darwin' || 'windows' }}
+      - uses: ./.github/actions/test-audited
+        with:
+          working-directory: secmem-crypto
+          allowlist: ${{ runner.os == 'Linux' && 'linux' || runner.os == 'macOS' && 'darwin' || 'windows' }}
+          memlock: unlimited
       - uses: ./.github/actions/argon2-workspace-ran
 
   test-arm64-linux:
@@ -66,9 +79,14 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
-      - run: go test -race ./...
-      - run: go test -race ./...
-        working-directory: secmem-crypto
+      - uses: ./.github/actions/test-audited
+        with:
+          allowlist: linux
+      - uses: ./.github/actions/test-audited
+        with:
+          working-directory: secmem-crypto
+          allowlist: linux
+          memlock: unlimited
       - uses: ./.github/actions/argon2-workspace-ran
 
   # Exercise the GOEXPERIMENT=runtimesecret build. The register/stack/heap
@@ -89,9 +107,14 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
-      - run: go test -race ./...
-      - run: go test -race ./...
-        working-directory: secmem-crypto
+      - uses: ./.github/actions/test-audited
+        with:
+          allowlist: linux
+      - uses: ./.github/actions/test-audited
+        with:
+          working-directory: secmem-crypto
+          allowlist: linux
+          memlock: unlimited
 
   # Execute (not just compile) the suite on 32-bit x86. The wipe helpers
   # manipulate big.Word limbs, whose width differs on 386, so 386 must be RUN,
@@ -107,16 +130,23 @@ jobs:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
       - name: test (core)
+        uses: ./.github/actions/test-audited
         env:
           GOARCH: "386"
           CGO_ENABLED: "0"
-        run: go test ./...
+        with:
+          allowlist: linux-386
+          args: ""
       - name: test (secmem-crypto)
-        working-directory: secmem-crypto
+        uses: ./.github/actions/test-audited
         env:
           GOARCH: "386"
           CGO_ENABLED: "0"
-        run: go test ./...
+        with:
+          working-directory: secmem-crypto
+          allowlist: linux-386
+          memlock: unlimited
+          args: ""
 
   # Run the AllocsPerRun no-heap-escape gates on the primary 64-bit targets.
   # They are //go:build !race (alloc counts are not meaningful under the race
@@ -138,6 +168,72 @@ jobs:
       - run: go test -run TestNoHeapEscape ./...
       - run: go test -run TestNoHeapEscape ./...
         working-directory: secmem-crypto
+
+  # The isolation proofs as ROOT. memfd_secret's claim is that the pages are
+  # unreadable through /proc/<pid>/mem and process_vm_readv even by a reader
+  # with every permission; the ordinary test job proves it from an
+  # unprivileged parent, which Yama would let read its child anyway. This
+  # lane re-runs the same proofs under sudo, where the tests treat every
+  # environmental skip as a failure (root has nothing to be refused) — the
+  # control marker must be recovered and the secret must not — and runs the
+  # KSM opt-out proof, whose PR_SET_MEMORY_MERGE needs CAP_SYS_RESOURCE. The
+  # test binary is built unprivileged and only the binary runs as root, so
+  # root never touches the Go caches; its output is framed by test2json and
+  # audited against an EMPTY allowlist: nothing may skip here.
+  test-root-linux:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off" # the core module alone; no sibling resolution needed
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: build the test binary and the audit (unprivileged)
+        run: |
+          go test -c -o "$RUNNER_TEMP/secmem.test" .
+          go build -o "$RUNNER_TEMP/skipaudit" ./internal/skipaudit
+      - name: isolation, extraction and madvise proofs as root
+        run: |
+          set -o pipefail
+          echo "kernel $(uname -r); memfd_secret and ptrace as euid $(sudo id -u)"
+          sudo "$RUNNER_TEMP/secmem.test" -test.v=test2json -test.count=1 \
+              -test.run 'Extraction|Isolation|MemfdSecret|Madvise' \
+            | go tool test2json -t -p github.com/deadpoets/secmem \
+            | "$RUNNER_TEMP/skipaudit" -allow .github/skip-allowlist/linux-root.txt
+
+  # The dependent modules against what is actually PUBLISHED. Every other Go
+  # job runs under setup-workspace, which resolves secmem-crypto's core
+  # dependency from the sibling tree — so a crypto change that needs core API
+  # newer than the tag its go.mod names builds green everywhere and breaks
+  # for anyone who `go get`s it. release.sh checks this at release time; this
+  # job checks it on every PR, with GOWORK=off and no go.work written, so the
+  # module is built and tested exactly as a consumer would build it.
+  # secmem-lint has no in-repo dependency, and is included so that stays true
+  # by test rather than by memory.
+  released-deps:
+    runs-on: ubuntu-latest
+    env:
+      GOWORK: "off"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - name: secmem-crypto against the released core tag
+        working-directory: secmem-crypto
+        run: |
+          test ! -f ../go.work || { echo "::error::a go.work is present; this job must run without one"; exit 1; }
+          go list -m github.com/deadpoets/secmem
+          go mod verify
+          go vet ./...
+          go test -count=1 ./...
+      - name: secmem-lint without a workspace
+        working-directory: secmem-lint
+        run: |
+          go mod verify
+          go vet ./...
+          go test -count=1 ./...
 
   # secmem-lint: the borrowing-closure analyzer (its own module, x/tools only).
   # Runs its analysistest suite, then dogfoods it — the library AND the examples
@@ -220,6 +316,17 @@ jobs:
           # windows and 32-bit, so without this row that break ships.
           - goos: windows
             goarch: "386"
+          # Platforms with no secure-memory API at all: the LOUD heap stub
+          # (mlock_stub.go, harden_stub.go, sealcipher_other.go, ...) and its
+          # fail-closed constructors. Nothing in CI EXECUTES these — they are
+          # compile-checked only, which is exactly what the README's "other"
+          # column says. Without these rows the stub column was never built.
+          - goos: freebsd
+            goarch: amd64
+          - goos: openbsd
+            goarch: amd64
+          - goos: wasip1
+            goarch: wasm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -234,6 +341,19 @@ jobs:
         run: |
           go build ./...
           cd secmem-crypto && go build ./...
+      # vet type-checks the test files too, which `go build` does not.
+      # unsafeptr is off: it has no exemption for non-stdlib syscall wrappers
+      # and flags the VirtualAlloc conversion and the dead-stack probes on
+      # every amd64 target (see the mlock_windows.go header); golangci-lint
+      # carries the same, scoped, exclusions.
+      - name: vet
+        env:
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: "0"
+        run: |
+          go vet -unsafeptr=false ./...
+          cd secmem-crypto && go vet -unsafeptr=false ./...
       - name: compile test binaries
         env:
           GOOS: ${{ matrix.goos }}

@@ -15,6 +15,26 @@ mark the stability commitment.
 
 ### Added
 
+- **Independent oracles for claims that rested on a syscall's return value,
+  and a CI that cannot pass over a skipped proof.** On Linux the lock, dump,
+  fork and THP flags are now read back from the kernel's own `/proc/self/smaps`
+  record on both allocation tiers, and the KSM opt-out is proven under
+  `PR_SET_MEMORY_MERGE` in the new root lane, which also repeats the
+  `memfd_secret` extraction proof as root with every environmental skip turned
+  into a failure. On Windows the process mitigations are read back through
+  `GetProcessMitigationPolicy`, and the WER registration through WER's own
+  unregister result. The region wipe itself is fuzzed
+  (`FuzzWipe_RegionReadsBackZero`: `Truncate`, `WipeAllSecrets`, slot
+  release, read back as zero). Every test step runs through
+  `internal/skipaudit`, which prints each skip with its reason and fails the
+  job on any skip not on the lane's allowlist; the vector-clear proof's
+  control is pinned to `Scrub`'s source; the stub platforms are
+  compile-checked; and `secmem-crypto` and `secmem-lint` are built and tested
+  against their released dependencies on every PR. Test and CI changes only —
+  no library code changed. Where a proof does not exist the wording now says
+  so: the WER exclusion is reported by the registration call, not verified by
+  a dump, and the wipe's cache flush is structural, not measured.
+
 - **`secmem-crypto`: `BcryptPBKDFInto` — OpenSSH's bcrypt_pbkdf as a KDF in
   its own right.** The algorithm lives in `golang.org/x/crypto/ssh/internal/bcrypt_pbkdf`,
   where nothing outside x/crypto can call it, so a program that has to

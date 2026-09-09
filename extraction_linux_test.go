@@ -160,9 +160,24 @@ func TestExternalExtraction_SecureBufferUnreadable(t *testing.T) {
 		t.Skip("victim's SecureBuffer is not memfd_secret-backed on this kernel — ordinary locked memory is readable by design, so there is nothing to prove")
 	}
 
+	// Unprivileged, the environment can legitimately refuse the scan (Yama
+	// ptrace_scope, a seccomp policy) and the proof skips. Root has every
+	// permission the scan needs, so as root the same conditions are failures:
+	// the root lane in CI exists to show that root, too, recovers the control
+	// and never the secret, and a skip there would prove nothing.
+	root := os.Geteuid() == 0
+	environmental := func(format string, args ...any) {
+		t.Helper()
+		if root {
+			t.Fatalf("as root (euid 0), which nothing may refuse: "+format, args...)
+		}
+		t.Skipf(format, args...)
+	}
+	t.Logf("scanning as euid %d (root=%v)", os.Geteuid(), root)
+
 	memf, err := os.Open(fmt.Sprintf("/proc/%d/mem", pid))
 	if err != nil {
-		t.Skipf("cannot open the victim's /proc/%d/mem (%v) — ptrace is not permitted in this environment", pid, err)
+		environmental("cannot open the victim's /proc/%d/mem (%v) — ptrace is not permitted in this environment", pid, err)
 	}
 	defer func() { _ = memf.Close() }()
 
@@ -254,24 +269,37 @@ func TestExternalExtraction_SecureBufferUnreadable(t *testing.T) {
 
 	// Environmental guards: skip (never fail) when the host can't host the proof.
 	if scanned == 0 {
-		t.Skip("no region of the victim was readable — ptrace is not permitted in this environment")
+		environmental("no region of the victim was readable — ptrace is not permitted in this environment")
 	}
 	if controlHits == 0 {
-		t.Skipf("control marker not found across %d MiB of readable memory — scan inconclusive on this host", scanned/(1<<20))
+		environmental("control marker not found across %d MiB of readable memory — scan inconclusive on this host", scanned/(1<<20))
 	}
 	if !secretFound {
-		t.Skip("could not locate the victim's memfd_secret region — nothing to assert")
+		environmental("could not locate the victim's memfd_secret region — nothing to assert")
 	}
 
 	// Primitive 1 — /proc/<pid>/mem: the secret must be absent everywhere.
 	if secretHits != 0 {
 		t.Fatalf("SecureBuffer secret recovered %d time(s) via /proc/%d/mem by an external process — isolation FAILED", secretHits, pid)
 	}
+	// And a direct read of the secret page must be refused outright — not
+	// merely fail to contain the marker. The scan recorded the region as
+	// wholly unreadable; this repeats the read at its start so the refusal is
+	// asserted, with the reason in the log, rather than inferred.
+	probe := make([]byte, pageSize)
+	if n, rerr := memf.ReadAt(probe, int64(secretStart)); rerr == nil || n > 0 {
+		t.Fatalf("read %d bytes of the victim's memfd_secret page at %#x via /proc/%d/mem (err=%v) — the kernel let an external reader in", n, secretStart, pid, rerr)
+	} else {
+		t.Logf("/proc/%d/mem read of the secret page at %#x refused: %v", pid, secretStart, rerr)
+	}
 
 	// Primitive 2 — process_vm_readv(2): prove the primitive works by reading the
 	// control marker at its known address, then prove it cannot read the secret.
 	got := make([]byte, ctrlLen)
 	if n, err := procVMReadvInto(pid, ctrlAddr, got); err != nil || n != ctrlLen || !bytes.Equal(got, control) {
+		if root {
+			t.Fatalf("as root, process_vm_readv could not read the control marker (n=%d err=%v): the primitive is refused, so its refusal of the secret would prove nothing", n, err)
+		}
 		t.Logf("process_vm_readv could not read the control marker (n=%d err=%v) — /proc/mem already established the secret is absent; skipping its assertion", n, err)
 	} else {
 		leak := make([]byte, secretSize)

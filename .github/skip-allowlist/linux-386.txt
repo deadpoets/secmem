@@ -1,0 +1,25 @@
+# Expected skips on test-386-linux (GOARCH=386 on ubuntu-latest, no -race).
+# Derived from the t.Skip sites in the source: the first red run corrects it.
+#
+# memfd_secret is 64-bit only (mlock_linux.go refuses the syscall number on
+# 32-bit), so every proof that needs the memfd_secret tier skips here and the
+# anon tier is what this lane exercises.
+github.com/deadpoets/secmem TestMemfdIsolation_HoldsAfterMapFixed
+github.com/deadpoets/secmem TestExternalExtraction_SecureBufferUnreadable
+github.com/deadpoets/secmem TestMadvise_MemfdSecretTierFlagsInForce
+github.com/deadpoets/secmem TestMadviseBeforeFree_MemfdSecretZapsOnlyPageTables
+
+# The success path is verified out-of-process in TestHelpersIsolated; this
+# test is the ErrUnsupported pin for platforms without a core-dump rlimit.
+github.com/deadpoets/secmem TestDisableCoreDumps_Unsupported
+
+# The forced-exit status only has to match the OS default on Windows.
+github.com/deadpoets/secmem TestForcedExitStatus_MatchesUninterceptedSignal
+
+# PR_SET_MEMORY_MERGE needs CAP_SYS_RESOURCE; the child skips with EPERM
+# here. The root lane runs this proof.
+github.com/deadpoets/secmem TestMadvise_UnmergeableInForce
+
+# Seed #1 is the empty plaintext: a zero-length buffer is refused by the core
+# by design, so this seed skips on every platform.
+github.com/deadpoets/secmem/secmem-crypto FuzzOpenInto_RoundTrip/seed#1

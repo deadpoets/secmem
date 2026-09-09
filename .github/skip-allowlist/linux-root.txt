@@ -1,0 +1,4 @@
+# The root lane (test-root-linux) runs the isolation, extraction and madvise
+# proofs as root on ubuntu-latest. Root has every permission those proofs
+# need and the runner's kernel has memfd_secret live, so NOTHING may skip:
+# a skip here means the proof of "unreadable, including by root" did not run.

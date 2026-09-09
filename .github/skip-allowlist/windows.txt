@@ -1,0 +1,10 @@
+# Expected skips on windows-latest (windows/amd64). Measured with
+# `go test -race -json ./...` on a Windows 11 host; see README.md here.
+
+# GitHub's hosted pool mixes CPU generations and does not guarantee AVX-512,
+# so Z16–Z31 may not exist; the proof runs wherever they do.
+github.com/deadpoets/secmem TestScrub_ClearsVectorRegistersZMMHi
+
+# Seed #1 is the empty plaintext: a zero-length buffer is refused by the core
+# by design, so this seed skips on every platform.
+github.com/deadpoets/secmem/secmem-crypto FuzzOpenInto_RoundTrip/seed#1
