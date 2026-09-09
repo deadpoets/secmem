@@ -169,41 +169,6 @@ mark the stability commitment.
   the default base64 heuristic no longer needs `=` padding and would
   otherwise tag a real provider token as `base64_secret` first.
 
-### Fixed
-
-- **`secmem/redact`: the allowlist was quadratic in the message.** Every
-  entropy match re-scanned `message[:matchStart]` with every allowlist
-  pattern. On the default configuration 41 KB took 0.85 s, 205 KB 22 s and
-  410 KB 145 s. The allowlist is now indexed once per rule application (one
-  `FindAllStringIndex` per pattern, then binary search per match): the same
-  inputs take 33 ms, 160 ms and 320 ms. An allowlist match still exempts an
-  entropy match that begins where it ends, and now also one it contains
-  entirely. A scaling test and a 400 KB benchmark pin it.
-
-- **`secmem/redact`: the default rules missed common credential shapes.**
-  Verified against the previous rule set: `Authorization: Bearer <JWT>` and
-  `Authorization: Basic …` (the auth rule needed `=`/`:` right after `auth`,
-  and a JWT has no `=` padding for the base64 rule); `AWS_SECRET_ACCESS_KEY=…`
-  (only the non-secret `AKIA…` id was caught); `passwd=`, `pwd=`, `pass=`,
-  `passphrase=`, `secret_key=`, `private_key=`, `signing_key=`,
-  `credentials=`; `postgres://user:PASSWORD@host`; `?code=` and other
-  credential query parameters; `Cookie:`/`Set-Cookie:`; `0x` + 64 hex (`\b`
-  does not fall after `x`); unpadded and base64url tokens; `password => x`;
-  JSON-escaped `\"password\":\"x\"`; `password%3Dx`; `OPENAI_API_KEY=` (`\b`
-  does not fall after `_`); and every body line of a PEM block, because the
-  CRLF rule tagged the line breaks before the base64 rule ran and the PEM
-  rule only ever matched the header. Each has a rule now — Authorization
-  with any scheme, Cookie, URL userinfo and query, the extra key spellings,
-  JWT, bare Bearer, a PEM rule that matches header through footer and runs
-  before CRLF, a base64 rule that accepts unpadded and base64url runs
-  (screened by a mixed-case-plus-digit filter so paths and identifiers stay
-  put), and a hex rule that accepts `0x`. `CommonProviderRules` gains
-  fine-grained GitHub PATs, GitLab PATs, OpenAI-style `sk-` keys, `ASIA`
-  temporary AWS ids and the AWS secret key by name. Tests cover both
-  directions: every shape above is redacted, and UUIDs, allowlisted commit
-  hashes, module and file paths, long identifiers, `bypass=`, `token_type=`,
-  `password_length=` and `Bearer authentication required` survive unchanged.
-
 - **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
   wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
   used to return `ErrEncryptedKey` itself; it now returns an error that wraps
@@ -253,6 +218,39 @@ mark the stability commitment.
   lock instead of claiming only `Destroy` does.
 
 ### Fixed
+
+- **`secmem/redact`: the allowlist was quadratic in the message.** Every
+  entropy match re-scanned `message[:matchStart]` with every allowlist
+  pattern. On the default configuration 41 KB took 0.85 s, 205 KB 22 s and
+  410 KB 145 s. The allowlist is now indexed once per rule application (one
+  `FindAllStringIndex` per pattern, then binary search per match): the same
+  inputs take 33 ms, 160 ms and 320 ms. An allowlist match still exempts an
+  entropy match that begins where it ends, and now also one it contains
+  entirely. A scaling test and a 400 KB benchmark pin it.
+
+- **`secmem/redact`: the default rules missed common credential shapes.**
+  Verified against the previous rule set: `Authorization: Bearer <JWT>` and
+  `Authorization: Basic …` (the auth rule needed `=`/`:` right after `auth`,
+  and a JWT has no `=` padding for the base64 rule); `AWS_SECRET_ACCESS_KEY=…`
+  (only the non-secret `AKIA…` id was caught); `passwd=`, `pwd=`, `pass=`,
+  `passphrase=`, `secret_key=`, `private_key=`, `signing_key=`,
+  `credentials=`; `postgres://user:PASSWORD@host`; `?code=` and other
+  credential query parameters; `Cookie:`/`Set-Cookie:`; `0x` + 64 hex (`\b`
+  does not fall after `x`); unpadded and base64url tokens; `password => x`;
+  JSON-escaped `\"password\":\"x\"`; `password%3Dx`; `OPENAI_API_KEY=` (`\b`
+  does not fall after `_`); and every body line of a PEM block, because the
+  CRLF rule tagged the line breaks before the base64 rule ran and the PEM
+  rule only ever matched the header. Each has a rule now — Authorization
+  with any scheme, Cookie, URL userinfo and query, the extra key spellings,
+  JWT, bare Bearer, a PEM rule that matches header through footer and runs
+  before CRLF, a base64 rule that accepts unpadded and base64url runs
+  (screened by a mixed-case-plus-digit filter so paths and identifiers stay
+  put), and a hex rule that accepts `0x`. `CommonProviderRules` gains
+  fine-grained GitHub PATs, GitLab PATs, OpenAI-style `sk-` keys, `ASIA`
+  temporary AWS ids and the AWS secret key by name. Tests cover both
+  directions: every shape above is redacted, and UUIDs, allowlisted commit
+  hashes, module and file paths, long identifiers, `bypass=`, `token_type=`,
+  `password_length=` and `Bearer authentication required` survive unchanged.
 
 - **`Scrub` and `ScrubErr` now scrub the frames that were live when the
   callback panicked.** The legacy (non-`runtime/secret`) window ran its
