@@ -88,9 +88,22 @@ func disableCoreDumps() error {
 		errors.ErrUnsupported)
 }
 
-// QUOTA_LIMITS_HARDWS_* flags for SetProcessWorkingSetSizeEx: both limits
-// soft (the memory manager may trim under pressure, matching rlimit
-// semantics rather than pinning).
+// QUOTA_LIMITS_HARDWS_* flags for SetProcessWorkingSetSizeEx. Both limits
+// are left SOFT (the *_DISABLE flags): under memory pressure the memory
+// manager may trim the working set below the minimum, which matches rlimit
+// semantics — a budget, not a reservation.
+//
+// The trade-off, stated because the name of the alternative suggests it
+// would help the secrets: a hard minimum (QUOTA_LIMITS_HARDWS_MIN_ENABLE)
+// stops the balance-set manager trimming the process below newMin, at the
+// cost of pinning that much of the process's OTHER pages in RAM at the
+// system's expense. Working-set trimming never touches VirtualLock'd pages
+// in the first place — locked pages are exactly the ones the trimmer skips —
+// so the hard flag buys the secrets nothing there. The one path that does
+// write locked pages to the pagefile is the memory manager outswapping an
+// idle process's ENTIRE working set (see Capabilities.Mlocked); whether a
+// hard minimum exempts a process from that is not documented and has not
+// been measured here, so it is not claimed, and the budget stays soft.
 const quotaLimitsSoft = 0x2 | 0x8 // HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE
 
 // ensureMemlockLimit raises the minimum working-set size so at least bytes of

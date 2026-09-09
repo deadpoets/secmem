@@ -76,7 +76,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Protection | linux/amd64·arm64 (≥5.14, secretmem live †) | linux (older / 32-bit / secretmem inert) | darwin | windows | other |
 |---|---|---|---|---|---|
 | Off the Go heap | ✓ memfd_secret | ✓ mmap | ✓ mmap | ✓ VirtualAlloc | **LOUD** heap only |
-| No swap (locked) | ✓ | ✓ mlock | ✓ mlock | ✓ VirtualLock | ✗ |
+| No swap (locked) | ✓ | ✓ mlock | ✓ mlock | ⚠ VirtualLock ‡ | ✗ |
 | Kernel isolation (defeats passive reads — ptrace, `/proc/<pid>/mem`, crash dumps — including by root) | ✓ memfd_secret | ✗ (falls to mlock) | ✗ | ✗ | ✗ |
 | Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion | ✗ |
 | Not inherited across fork | ⚠ MADV_DONTFORK | ⚠ MADV_DONTFORK | ✗ | n/a | ✗ |
@@ -124,6 +124,15 @@ Orin Nano on kernel 6.8.12 ships `CONFIG_SECRETMEM=y` and still returns
 uses `mmap`+`mlock`, honestly, per allocation. Read
 [`Capabilities`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Capabilities)
 at runtime; do not infer the tier from a config symbol or a `uname`.
+
+‡ `VirtualLock` is weaker than `mlock`: it pins pages into the process
+**working set**, not into physical memory. While the process is running they
+stay resident and are exempt from working-set trimming, but when the memory
+manager outswaps an idle process's working set as a whole, locked pages go to
+the pagefile with it (Microsoft's `VirtualLock` remarks; Raymond Chen,
+"VirtualLock only locks your memory into the working set"). No user-mode
+setting closes that; `Capabilities.Warnings` says so on Windows, and
+[`WINDOWS.md`](WINDOWS.md) covers the working-set budget.
 
 On a unified-memory SoC (Tegra, Apple Silicon, AMD APUs, most ARM SBCs) note
 also that locking a page constrains the CPU's view of it, not an on-die

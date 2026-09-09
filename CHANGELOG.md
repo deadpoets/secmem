@@ -94,6 +94,83 @@ mark the stability commitment.
   residue. The test-only register probe moves to `internal/regprobe` so both
   packages can use it.
 
+- **`Capabilities.Warnings` says what `VirtualLock` does not do.** On
+  Windows a locked report now carries one more line: `VirtualLock` pins pages
+  into the process working set, not into physical memory, and when the
+  memory manager outswaps an idle process's working set as a whole, locked
+  pages go to the pagefile with it. The README matrix cell, the package doc
+  and the `Mlocked` field doc say the same; the `EnsureMemlockLimit` code
+  records why the working-set minimum stays soft (a hard minimum does not
+  reach locked pages, which the trimmer already skips).
+
+- **Documentation corrections.** `DESIGN.md` and `PITFALLS.md` no longer say
+  the garbage collector moves heap objects (it is non-moving for the heap, as
+  `THREAT-MODEL.md` already said); the off-heap rationale is now the real
+  one — heap pages cannot be locked, guarded or protected, the GC does not
+  zero what it frees, and stacks *do* move. The cache-flush rationale is
+  corrected the same way: caches are coherent, so the flush changes nothing a
+  CPU read can see; it shortens the time the old bytes remain in DRAM, which
+  matters only to DMA or cold-boot capture — out of the threat model, so the
+  flush is defence in depth. The amd64 wipe is described as what it is
+  (`REP STOSB` and fences, not non-temporal stores); the package doc no
+  longer calls the wipe "architecture-specific assembly" on every platform;
+  and the `SecureBuffer` header lists every method that takes the exclusive
+  lock instead of claiming only `Destroy` does.
+
+### Fixed
+
+- **`Scrub` and `ScrubErr` now scrub the frames that were live when the
+  callback panicked.** The legacy (non-`runtime/secret`) window ran its
+  stack wipe from a deferred call. When the callback panics, the runtime
+  runs deferred calls from `gopanic`'s frame, which sits *below* the frames
+  still live at the panic; the 32 KiB wipe therefore landed under the
+  residue, not on it. Measured: a callback filling 2 KiB at each of four
+  recursion levels and panicking from the deepest left 2048/2048 marker
+  bytes behind — identical to no `Scrub` at all. The window now runs the
+  callback through a helper that recovers the panic, clears the vector file
+  and burns the band once those frames are dead, then re-raises — so the
+  panic appears to originate from `Scrub`, as `runtime/secret.Do` does.
+  `runtime.Goexit` inside the callback remains best-effort and is documented
+  as such. Regression test: `TestScrub_ScrubsLiveFramesOnPanic`.
+
+- **A GC cleanup racing `WipeAllSecrets` can no longer strand a locked
+  mapping.** The cleanup consulted the registry before taking the region's
+  lock, while the wipe passes took the lock first and briefly held the region
+  in *neither* set. A cleanup that looked in that window found nothing,
+  returned, and was consumed for good; the pass then parked the mapping in
+  the wiped set with no path left to reclaim it — a leaked, still-locked
+  mapping until process exit. The passes now move the region between sets in
+  one registry operation, and the cleanup peeks, locks, then re-resolves
+  under its own exclusive lock, the same order the passes use. Regression
+  test: `TestJanitorRelease_ConcurrentWithWipePass_ReclaimsMapping`, which
+  forces the interleaving.
+
+- **`ArenaSlot.WithBytes` checks the handle's generation under the region
+  lock.** The check ran first and the lock was taken afterwards, so a
+  borrower that passed it and then waited for the lock (any queued writer
+  parks new readers) resumed holding a slice into a slot that had meanwhile
+  been released, wiped, re-acquired and written by a new owner — and read or
+  overwrote that owner's secret with no error. The check now runs after the
+  lock, immediately before the slice is produced. A release that runs
+  concurrently with the callback itself remains the single-owner rule's to
+  prevent, as documented. Regression test:
+  `TestArenaSlot_StaleHandleRefusedUnderLock`, which forces the interleaving.
+
+- **Janitor registration keys are 64 bits wide end to end.** The key was
+  minted as `uintptr(counter)`; on a 32-bit target that wraps after 2^32
+  registrations, after which a new registration silently overwrote a live
+  one and the older buffer's `Destroy` would have wiped and unmapped a
+  different live buffer with no lock held. The maps, the owners' fields, the
+  cleanup argument and `LockOrder` are `uint64` now, and a registration whose
+  key is already in use (or zero) is refused with an error from the
+  constructor rather than absorbed.
+
+- **`Probe` no longer fires the "INSECURE fallback in use" warning on
+  platforms without secure memory.** The warning fired from the stub
+  allocator, which `Probe` uses to report what the platform provides; it now
+  fires from the constructor gate, only when `WithInsecureFallback` is
+  actually used.
+
 ## [0.5.0] - 2026-09-07
 
 Two boundary-hardening pieces: `Scrub` and `ScrubErr` clear the vector

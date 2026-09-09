@@ -6,6 +6,12 @@
 
 package secmem
 
+import (
+	"log/slog"
+	"runtime"
+	"sync"
+)
+
 // config collects the effects of constructor Options.
 type config struct {
 	insecureFallback bool
@@ -45,8 +51,30 @@ func applyOptions(opts []Option) config {
 // The platform fact is a parameter (rather than read from the build-tagged
 // const directly) so the policy is testable on every platform.
 func gateInsecure(platformSecure bool, cfg config) error {
-	if !platformSecure && !cfg.insecureFallback {
+	if platformSecure {
+		return nil
+	}
+	if !cfg.insecureFallback {
 		return ErrNoSecureMemory
 	}
+	warnInsecureFallback()
 	return nil
+}
+
+// insecureWarnOnce backs the one-time LOUD warning on first use of the
+// fallback.
+var insecureWarnOnce sync.Once //nolint:gochecknoglobals // once-only process-wide warning.
+
+// warnInsecureFallback fires the one-time warning that a constructor has
+// accepted the plain-heap fallback. It lives on the gate, not in the stub
+// allocator: Probe allocates through the same path to REPORT what the
+// platform provides, and used to trip the warning on a platform where no
+// caller had opted into anything — a false alarm on the one call meant to
+// tell the truth quietly.
+func warnInsecureFallback() {
+	insecureWarnOnce.Do(func() {
+		slog.Warn("secmem: INSECURE fallback in use — secrets are on the unprotected Go heap "+
+			"(not locked, swappable, GC-visible, included in core dumps)",
+			"GOOS", runtime.GOOS, "GOARCH", runtime.GOARCH)
+	})
 }

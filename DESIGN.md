@@ -17,17 +17,26 @@ open another. What follows walks the stack from the allocation outward.
 ## Why the memory lives off the Go heap
 
 Every other decision depends on this one. A `[]byte` from `make` lives on
-the Go heap, and the garbage collector is free to *move* it (copying the
-bytes to a new location and leaving the old copy as un-zeroed garbage until
-it is reused) and to *scan* it. You cannot pin it, you cannot reliably wipe
-it (you might be wiping a stale copy), and you cannot apply page-level
-protections to it because you do not own the page — the runtime does.
+the Go heap, and the runtime owns it in ways that defeat every protection
+below. Go's collector is *non-moving* for heap objects — a heap slice keeps
+one address for its whole life, so there is no hidden second copy to hunt
+down — but it does not *zero* what it frees: when the slice becomes garbage
+its bytes stay in the span, unwiped, until the allocator hands that memory
+to the next object, and the collector scans it in the meantime. You cannot
+lock, guard, or change the protection of the page it sits on, because the
+page is shared with whatever else the allocator placed there and the runtime,
+not you, decides what happens to it. And while heap objects stay put, the
+copies your code makes of a heap secret do move: goroutine stacks are copied
+on growth and shrink, and the abandoned segment is not wiped (see
+[THREAT-MODEL.md](THREAT-MODEL.md), "Why the stack specifically").
 
 secmem therefore allocates secret memory with `mmap` (Unix) or
-`VirtualAlloc` (Windows), entirely outside the Go heap. The GC never scans,
-moves, or copies it. This is what makes wiping meaningful (there is exactly
-one copy, at an address that never changes) and what makes every
-page-protection mechanism below even possible. It is also why the public
+`VirtualAlloc` (Windows), entirely outside the Go heap. The GC never scans
+it and never recycles it; its pages hold nothing else; its address never
+changes; and it is released only after secmem has zeroed it. This is what
+makes wiping meaningful (there is exactly one copy, and secmem controls its
+whole lifetime) and what makes every page-protection mechanism below even
+possible. It is also why the public
 API never hands out the backing slice by value: the borrowing methods
 (`WithBytes`, `WithBytesErr`) lend it inside a closure, and the linter
 (`secmem-lint`) statically rejects code that lets that slice escape — a heap
@@ -138,15 +147,27 @@ by the fuzzer and the named regression tests in
 Zeroing a secret in Go is deceptively hard: a plain loop that writes zeros
 and never reads them back is "dead" by the compiler's analysis and can be
 optimized away entirely, leaving the secret intact. secmem's wipe is
-hand-written assembly (amd64/arm64) using non-temporal or explicitly
-barriered stores that the compiler cannot elide, followed by a cache-line
-flush (`CLFLUSH`/`CLFLUSHOPT` on amd64, `DC CIVAC` on arm64) so the zeros
-are pushed out of cache to main memory rather than lingering in a dirty line
-that a later attacker-controlled read might observe. On platforms without
-the assembly path, the wipe falls back to a barriered store loop — still
-correct against elision, just without the flush — and `Capabilities`
-reports `FlushedWipe: false` so the caller knows which they got. The wipe
-runs on `Destroy`, and again from the janitor's paths as a backstop.
+hand-written assembly on amd64 and arm64 — `REP STOSB` bracketed by fences
+on amd64, a fenced store loop on arm64 — which the compiler cannot see into
+and so cannot elide, followed by a cache-line flush (`CLFLUSH`/`CLFLUSHOPT`
+on amd64, `DC CIVAC` on arm64).
+
+The flush deserves a precise statement of what it buys, because it is less
+than "the zeros become real". CPU caches are coherent: from the moment the
+stores retire, every load on every core — an attacker's included — sees
+zeros, flushed or not. A dirty line is not a window in which software can
+still read the old bytes. What the flush changes is *when the zeros reach
+DRAM*: until they do, the physical cells still hold the secret, and that is
+visible only to something that reads memory without going through the cache
+hierarchy — a DMA-capable device, or a cold-boot capture of the modules.
+[THREAT-MODEL.md](THREAT-MODEL.md) puts full-RAM capture out of scope (no
+userspace scheme survives it), so the flush is defence in depth against a
+threat the model does not otherwise cover, bought for a few hundred cycles
+per page. On platforms without the assembly path, the wipe falls back to a
+barriered store loop — still correct against elision, just without the flush
+— and `Capabilities` reports `FlushedWipe: false` so the caller knows which
+they got. The wipe runs on `Destroy`, and again from the janitor's paths as a
+backstop.
 
 ## Why there is a janitor, and a termination-wipe
 
@@ -200,7 +221,8 @@ the code makes that inspectable rather than asking for trust.
 ```
                          defends against            mechanism
   ────────────────────── ────────────────────────── ──────────────────────────
-  off the Go heap        GC move/scan/copy, no-pin   mmap / VirtualAlloc
+  off the Go heap        GC scan, unzeroed free,     mmap / VirtualAlloc
+                         no lock/guard/protect
   page locking           swap-to-disk                mlock / VirtualLock
   kernel isolation       /proc/pid/mem, ptrace,      memfd_secret (Linux 5.14+)
                          core dumps
@@ -209,7 +231,9 @@ the code makes that inspectable rather than asking for trust.
   canary                 intra-mapping overflow      random slack + verify
   Seal (idle)            in-process read primitives  PROT_NONE + CryptProtectMem
   ReadOnly               stray writes                PROT_READ + API flag
-  wipe                   remanence in RAM/cache      asm zero + cache flush
+  wipe                   remanence in RAM            asm zero + cache flush
+                         (flush: DRAM, vs DMA/cold
+                         boot — out of scope, depth)
   Scrub vector clear     residue in XMM/YMM/ZMM, V   VZEROALL+VPXORQ / VEOR after fn
   janitor + term-wipe    unwiped-on-exit/crash       finalizer + signal handler
   redaction              logging the secret          Stringer/Marshaler sentinels

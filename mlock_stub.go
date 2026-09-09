@@ -12,35 +12,27 @@ package secmem
 
 import (
 	"fmt"
-	"log/slog"
 	"math"
-	"runtime"
-	"sync"
 )
 
 // platformHasSecureMemory: no lockable off-heap memory here — constructors
 // fail with ErrNoSecureMemory unless WithInsecureFallback() is passed.
 const platformHasSecureMemory = false
 
-// insecureWarnOnce backs the one-time LOUD warning on first fallback use.
-var insecureWarnOnce sync.Once
-
 // allocSecretMem falls back to heap allocation on unsupported platforms.
-// Reachable only via WithInsecureFallback() — the constructor gate rejects
-// un-opted-in callers before this runs. outer and inner alias the same heap
-// slice (there are no guards to distinguish); data is capacity-clamped so it
-// cannot be re-sliced into the canary slack. info.insecure is TRUE and
-// guardPages FALSE: Capabilities and Warnings report the exposure, and the
-// first allocation fires a one-time slog warning.
+// Reachable through a constructor only via WithInsecureFallback() — the gate
+// rejects un-opted-in callers before this runs, and it is the gate that fires
+// the one-time "INSECURE fallback in use" warning (warnInsecureFallback in
+// options.go), not this function: Probe allocates through here too, to report
+// what the platform provides, and a report is not an opt-in. outer and inner
+// alias the same heap slice (there are no guards to distinguish); data is
+// capacity-clamped so it cannot be re-sliced into the canary slack.
+// info.insecure is TRUE and guardPages FALSE: Capabilities and Warnings
+// report the exposure.
 func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	if size <= 0 {
 		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: invalid size %d", size)
 	}
-	insecureWarnOnce.Do(func() {
-		slog.Warn("secmem: INSECURE fallback in use — secrets are on the unprotected Go heap "+
-			"(not locked, swappable, GC-visible, included in core dumps)",
-			"GOOS", runtime.GOOS, "GOARCH", runtime.GOARCH)
-	})
 	// Page-round for API consistency — heap allocations don't need it but
 	// the inner/data split contract (canary slack) must be maintained.
 	pageSize := 4096
