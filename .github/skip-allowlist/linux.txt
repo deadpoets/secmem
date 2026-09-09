@@ -1,0 +1,30 @@
+# Expected skips on the unprivileged Linux lanes: ubuntu-latest (amd64),
+# ubuntu-24.04-arm (arm64), and the GOEXPERIMENT=runtimesecret variant of
+# both. Derived from the t.Skip sites in the source and what the hosted
+# runners provide, not measured on a runner: the first red run corrects it.
+#
+# Deliberately NOT listed, because ubuntu-latest kernels have memfd_secret
+# live and the parent may ptrace its child under Yama's default scope:
+# TestMemfdIsolation_HoldsAfterMapFixed, TestExternalExtraction_*,
+# TestMadvise_MemfdSecretTierFlagsInForce, TestMadviseBeforeFree_*. If one of
+# those skips, the isolation proof has stopped running and the job must say so.
+
+# GitHub's hosted pool mixes CPU generations and does not guarantee AVX-512,
+# so Z16–Z31 may not exist; the proof runs wherever they do. amd64 only —
+# the file is not compiled on arm64, so the entry is unused there.
+github.com/deadpoets/secmem TestScrub_ClearsVectorRegistersZMMHi
+
+# The success path is verified out-of-process in TestHelpersIsolated; this
+# test is the ErrUnsupported pin for platforms without a core-dump rlimit.
+github.com/deadpoets/secmem TestDisableCoreDumps_Unsupported
+
+# The forced-exit status only has to match the OS default on Windows.
+github.com/deadpoets/secmem TestForcedExitStatus_MatchesUninterceptedSignal
+
+# PR_SET_MEMORY_MERGE needs CAP_SYS_RESOURCE; the child skips with EPERM
+# here. The root lane (linux-root.txt) runs this proof and may not skip it.
+github.com/deadpoets/secmem TestMadvise_UnmergeableInForce
+
+# Seed #1 is the empty plaintext: a zero-length buffer is refused by the core
+# by design, so this seed skips on every platform.
+github.com/deadpoets/secmem/secmem-crypto FuzzOpenInto_RoundTrip/seed#1

@@ -1,0 +1,33 @@
+name: go test with skip audit
+description: >-
+  Run one module's tests with `go test -json`, piped through
+  internal/skipaudit. The audit echoes the ordinary -v output, prints every
+  skipped test with its reason, and FAILS the step when a skip is not on the
+  runner's allowlist (.github/skip-allowlist/<name>.txt), when any test
+  failed, or when no test events arrived at all. A plain `go test` prints
+  nothing for a t.Skip, so a proof that stopped running on a runner looked
+  exactly like one that passed; this is what makes it visible.
+inputs:
+  allowlist:
+    description: Name of the allowlist under .github/skip-allowlist (without .txt).
+    required: true
+  working-directory:
+    description: Module directory to test.
+    default: "."
+  args:
+    description: Extra `go test` flags, e.g. -race.
+    default: "-race"
+runs:
+  using: composite
+  steps:
+    - name: build skipaudit
+      shell: bash
+      working-directory: ${{ github.workspace }}
+      run: go build -o "$RUNNER_TEMP/skipaudit$(go env GOEXE)" ./internal/skipaudit
+    - name: test ${{ inputs.working-directory }} (skips audited against ${{ inputs.allowlist }}.txt)
+      shell: bash
+      working-directory: ${{ inputs.working-directory }}
+      run: |
+        set -o pipefail
+        go test ${{ inputs.args }} -json ./... \
+          | "$RUNNER_TEMP/skipaudit$(go env GOEXE)" -allow "$GITHUB_WORKSPACE/.github/skip-allowlist/${{ inputs.allowlist }}.txt"
