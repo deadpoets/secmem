@@ -14,8 +14,8 @@ form.
 This is the cardinal sin, and the one `secmem-lint` rejects at compile time.
 
 ```go
-// BAD — the borrowed slice escapes; now there is a heap copy the GC can
-// move and never wipe, and the SecureBuffer's protections are moot.
+// BAD — the borrowed slice escapes; now there is a heap copy that is never
+// locked and never wiped, and the SecureBuffer's protections are moot.
 var leaked []byte
 buf.WithBytes(func(b []byte) {
     leaked = b            // escape by aliasing
@@ -32,8 +32,11 @@ buf.WithBytes(func(b []byte) {
 ```
 
 Why it matters: the entire premise is that the secret exists in exactly one
-off-heap location. An escaped slice is a second copy on the Go heap — movable,
-scannable, and never wiped. `secmem-lint` flags assignment-out, return,
+off-heap location. An escaped slice is a second copy on the Go heap —
+unlocked, unguarded, scanned by the collector, and never wiped: Go's GC does
+not move heap objects, but it does not zero what it frees either, so the
+bytes stay in the span until the allocator reuses it. `secmem-lint` flags
+assignment-out, return,
 `append`, and capture-by-goroutine of the borrowed slice; run it in CI.
 
 ## 2. Converting the secret to a string

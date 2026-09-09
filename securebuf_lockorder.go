@@ -12,5 +12,5 @@ func (b *SecureBuffer) LockOrder() uint64 {
 	if b == nil {
 		return 0
 	}
-	return uint64(b.janitorKey)
+	return b.janitorKey
 }

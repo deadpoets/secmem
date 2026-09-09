@@ -27,11 +27,19 @@ type Capabilities struct {
 	GOOS, GOARCH string
 
 	// OffHeap reports that the memory lives outside the Go heap (mmap or
-	// VirtualAlloc, not make([]byte)) — the GC never scans, moves, or copies it.
+	// VirtualAlloc, not make([]byte)) — the GC never scans it or recycles it
+	// unzeroed, and its pages can be locked, guarded and protected.
 	OffHeap bool
 
-	// Mlocked reports that the pages are excluded from swap (mlock /
-	// VirtualLock, or memfd_secret's kernel-enforced equivalent).
+	// Mlocked reports that the pages are locked against paging: mlock, or
+	// memfd_secret's kernel-enforced equivalent, keeps them off the swap
+	// device. On Windows the mechanism is VirtualLock, which is weaker than
+	// the name suggests: it pins the pages into the process WORKING SET, not
+	// into physical memory. They stay resident and exempt from working-set
+	// trimming while the process runs, but when the memory manager outswaps
+	// an idle process's working set as a whole, locked pages go to the
+	// pagefile with it, and no user-mode setting prevents that. Warnings
+	// reports this on Windows.
 	Mlocked bool
 
 	// MemfdSecret reports kernel isolation: the pages are invisible to
@@ -181,6 +189,8 @@ func (c Capabilities) Warnings() []string {
 	}
 	if !c.Mlocked {
 		w = append(w, "pages are not locked — secrets may be written to the swap device")
+	} else if c.GOOS == "windows" {
+		w = append(w, "VirtualLock pins pages into the working set only — when an idle process is outswapped, locked pages go to the pagefile with it")
 	}
 	if !c.MemfdSecret {
 		w = append(w, "no kernel isolation (memfd_secret) — a sufficiently privileged process or debugger can read the memory")

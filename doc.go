@@ -34,10 +34,14 @@
 // in the per-platform capability matrix; the summary here is the intent.
 //
 //   - Off the Go heap. Secret bytes live in mmap'd pages (VirtualAlloc on
-//     Windows), outside the region the garbage collector scans, moves, or copies.
+//     Windows), outside the heap the garbage collector scans and recycles
+//     without zeroing, on pages that can be locked, guarded and protected.
 //
-//   - No swap. Pages are locked with mlock (VirtualLock on Windows) so they are
-//     not written to the swap device.
+//   - No swap. Pages are locked with mlock so they are not written to the
+//     swap device. On Windows the mechanism is VirtualLock, which is weaker:
+//     it pins the pages into the process working set, and when the memory
+//     manager outswaps an idle process's working set as a whole, locked pages
+//     go to the pagefile with it. Capabilities.Warnings says so on Windows.
 //
 //   - Kernel isolation. On 64-bit Linux (amd64/arm64, kernel 5.14+ with
 //     CONFIG_SECRETMEM) pages are backed by memfd_secret, which hides them from
@@ -49,8 +53,10 @@
 //     opt-in process-wide dumpable=0), the pages are kept out of core dumps.
 //     This is best-effort and its failure is reported, not fatal.
 //
-//   - Guaranteed wipe. On destroy the pages are overwritten by an
-//     architecture-specific assembly routine that the compiler cannot elide.
+//   - Guaranteed wipe. On destroy the pages are overwritten by a routine the
+//     compiler cannot elide: architecture assembly with a cache-line flush on
+//     amd64 and arm64, a barriered store loop everywhere else
+//     (Capabilities.FlushedWipe tells the two apart).
 //
 //   - Scrub windows. A SecureBuffer governs where a secret lives, not the copies
 //     a computation makes of it on the stack. Scrub burns the stack band its

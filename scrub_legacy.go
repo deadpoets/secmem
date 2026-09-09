@@ -92,8 +92,29 @@ package secmem
 // goroutine has already moved) and panics rather than restore the wrong
 // thread's mask; the leak itself is not repairable.
 //
-// Panics propagate; the registers are still cleared and the frame still
-// scrubbed during unwind via the deferred calls. Scrub(nil) is a no-op.
+// # Panics and Goexit
+//
+// A panic in fn propagates, and the scrub still happens — but not from a
+// deferred call, which is how an earlier version did it and why it did not
+// work. A deferred call that runs because fn panicked is run by
+// runtime.gopanic from gopanic's OWN frame, which sits below the frames that
+// were live at the panic: fn's call tree is not unwound until something
+// recovers. A deferred 32 KiB wipe therefore landed under the residue instead
+// of on it, and every byte of a live frame survived, measured identical to a
+// no-Scrub control (scrub_frame_panic_test.go). Scrub now runs fn through a
+// helper that recovers the panic and returns its value; by the time the
+// helper has returned the panicking frames are dead stack below Scrub, the
+// clear and the wipe run there directly, and the value is re-raised — so the
+// panic appears to originate from Scrub, with fn's frames gone. This is the
+// shape runtime/secret.Do uses. The panic value itself is not scrubbed; it
+// escapes fn like any other result.
+//
+// runtime.Goexit inside fn is not a panic and cannot be recovered. The
+// goroutine unwinds through Scrub without returning to it, so the post-return
+// clear and wipe never run; only a deferred backstop does, and it runs from
+// Goexit's frame, below fn's still-live frames — it reaches the band fn's
+// finished callees left and not fn itself. runtime/secret documents the same
+// limitation. Do not Goexit from inside a window. Scrub(nil) is a no-op.
 func Scrub(fn func()) {
 	if fn == nil {
 		return
@@ -107,19 +128,34 @@ func Scrub(fn func()) {
 	suppressAsyncPreempt(&window)
 	defer window.restore()
 
-	wipeScratchFrameFull()       // reserve headroom + pre-clean, before secrets exist
-	defer wipeScratchFrameFull() // now guaranteed to wipe in place
-	// Registered last so it runs FIRST on the way out, normal return or panic
-	// unwind alike: the vector file is cleared on the thread that ran fn, before
-	// the frame wipe and before the pin is released. Proven to reach fn's
-	// residue by scrub_vecclear_test.go — the rule for any register scrub here.
-	defer clearVectorRegs()
-	fn()
+	wipeScratchFrameFull() // reserve headroom + pre-clean, before secrets exist
+
+	// Backstop for the one exit scrubCall cannot intercept (Goexit); a no-op
+	// on every other path. Registered after the pin's restore so it runs
+	// before it, on the thread that ran fn.
+	var exit scrubExit
+	defer exit.goexitBackstop()
+
+	p := scrubCall(fn)
+
+	// fn's frames are dead now — after a panic too, because scrubCall
+	// recovered it and returned. The vector file is cleared first, on the
+	// thread that ran fn and before anything else runs there (proven to reach
+	// fn's residue by scrub_vecclear_test.go — the rule for any register scrub
+	// here); then the band those frames occupied is burned in place, which
+	// the entry reserve guarantees (see "Why the wipe runs twice").
+	clearVectorRegs()
+	wipeScratchFrameFull()
+	exit.done = true
+
+	if p != nil {
+		panic(p)
+	}
 }
 
 // ScrubErr is [Scrub] for a fn that returns an error. ScrubErr(nil) is
 // a no-op that returns nil.
-func ScrubErr(fn func() error) (err error) {
+func ScrubErr(fn func() error) error {
 	if fn == nil {
 		return nil
 	}
@@ -128,9 +164,58 @@ func ScrubErr(fn func() error) (err error) {
 	defer window.restore()
 
 	wipeScratchFrameFull()
-	defer wipeScratchFrameFull()
-	defer clearVectorRegs() // first on the way out; see Scrub
-	return fn()
+	var exit scrubExit
+	defer exit.goexitBackstop()
+
+	p, err := scrubCallErr(fn)
+
+	clearVectorRegs()
+	wipeScratchFrameFull()
+	exit.done = true
+
+	if p != nil {
+		panic(p)
+	}
+	return err
+}
+
+// scrubCall runs fn and returns the value it panicked with, or nil. The
+// recover happens in this frame's deferred call, which is what pops the stack
+// back to here: once scrubCall has returned, every frame fn had live at the
+// panic is dead stack below the caller, exactly where the caller's wipe
+// reaches. Mirrors runtime/secret's doHelper. Since Go 1.21 recover reports
+// every panic as non-nil (panic(nil) arrives as *runtime.PanicNilError), so a
+// nil result means fn returned.
+func scrubCall(fn func()) (p any) {
+	defer func() { p = recover() }()
+	fn()
+	return nil
+}
+
+// scrubCallErr is scrubCall for a fn that returns an error.
+func scrubCallErr(fn func() error) (p any, err error) {
+	defer func() { p = recover() }()
+	return nil, fn()
+}
+
+// scrubExit is the deferred backstop for runtime.Goexit inside fn: the
+// goroutine leaves Scrub without returning, so the direct clear and wipe never
+// run. done is set once they have, making the backstop a no-op on the normal
+// and panic paths (the re-raised panic unwinds through it after done is set).
+// A struct with a method rather than a closure so the defer cannot cost an
+// allocation — the window is on every hardened crypto path and gated at zero
+// allocations by TestNoHeapEscape_Scrub.
+type scrubExit struct{ done bool }
+
+// goexitBackstop clears the vector file and burns the band below the frame it
+// runs from. On the Goexit path that frame is Goexit's, below fn's still-live
+// frames, so this is best-effort by construction: see the Scrub doc.
+func (e *scrubExit) goexitBackstop() {
+	if e.done {
+		return
+	}
+	clearVectorRegs()
+	wipeScratchFrameFull()
 }
 
 // RuntimeSecretActive reports whether runtime/secret erasure is active. On the

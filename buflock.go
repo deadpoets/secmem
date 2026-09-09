@@ -90,6 +90,16 @@ import (
 	"sync/atomic"
 )
 
+// rLockSlowTestHook, when non-nil, runs at the very end of the reader slow
+// path: the caller is enrolled as a reader and about to return from rLock. It
+// is the one point where a test can hold a borrower still AFTER it has taken
+// the region lock and BEFORE it uses what the lock protects, which is how the
+// arena's stale-handle interleaving is forced rather than raced (see
+// TestArenaSlot_StaleHandleRefusedUnderLock). Never consulted on the fast
+// path, so a live borrow with no writer in play pays nothing for it. Nil in
+// production.
+var rLockSlowTestHook func() //nolint:gochecknoglobals // test seam, nil in production.
+
 // bufMaxReaders is the writer bias. Any real reader count is far below it, so
 // a biased word is always negative and Add(1)'s sign alone tells a reader
 // whether a writer is in play.
@@ -112,6 +122,12 @@ type bufferRWLock struct {
 	// while one holds the lock. Guarded by mu.
 	writersWaiting int
 	writerActive   bool
+
+	// readersWaiting counts readers parked in rLockSlow. Guarded by mu, and
+	// touched only on the slow path — the fast path never sees it. It exists
+	// so a test can tell that a reader has reached the wait rather than guess
+	// with a sleep; nothing in the lock's own logic reads it.
+	readersWaiting int
 }
 
 // newBufferRWLock constructs a ready-to-use bufferRWLock.
@@ -140,14 +156,19 @@ func (l *bufferRWLock) rLockSlow() {
 	if l.readers.Add(-1) == -bufMaxReaders {
 		l.cond.Broadcast()
 	}
+	l.readersWaiting++
 	for l.writerActive || l.writersWaiting > 0 {
 		l.cond.Wait() // durably blocked under synctest
 	}
+	l.readersWaiting--
 	// No writer active or waiting, and none can arrive while mu is held (both
 	// installing the bias and setting the flags require mu) — so the bias is
 	// off and this Add enrolls a real reader.
 	l.readers.Add(1)
 	l.mu.Unlock()
+	if rLockSlowTestHook != nil {
+		rLockSlowTestHook()
+	}
 }
 
 // rUnlock releases shared (reader) access. If this was the last active reader
