@@ -24,7 +24,7 @@ func TestWithBytes_Basic(t *testing.T) {
 	if err := buf.WithBytes(func(b []byte) {
 		called = true
 		if !bytes.Equal(b, want) {
-			t.Errorf("WithBytes: got %x, want %x", b, want)
+			t.Errorf("WithBytes: got %x, want %x", b, want) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
 		t.Fatalf("WithBytes: %v", err)

@@ -51,7 +51,7 @@ func TestOpenInto_RoundTrip(t *testing.T) {
 	}
 	if err := out.WithBytesErr(func(got []byte) error {
 		if !bytes.Equal(got, plaintext) {
-			t.Errorf("plaintext mismatch\n  got:  %q\n  want: %q", got, plaintext)
+			t.Errorf("plaintext mismatch\n  got:  %q\n  want: %q", got, plaintext) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	}); err != nil {
@@ -82,7 +82,7 @@ func TestOpenInto_TamperedCiphertextLeavesBufferZeroed(t *testing.T) {
 	}
 	if err := out.WithBytesErr(func(got []byte) error {
 		if !bytes.Equal(got, make([]byte, len(plaintext))) {
-			t.Errorf("buffer not zeroed after auth failure: %x", got)
+			t.Errorf("buffer not zeroed after auth failure: %x", got) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	}); err != nil {

@@ -395,7 +395,7 @@ func TestWipeAllSecrets_MarksOwnerDead(t *testing.T) {
 	// Reads still work and see zeros — the documented no-fault guarantee.
 	if err := buf.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("read after emergency wipe returned non-zero bytes: %x", b)
+			t.Errorf("read after emergency wipe returned non-zero bytes: %x", b) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
 		t.Errorf("WithBytes after emergency wipe = %v, want nil (reads must not fault or fail)", err)
@@ -480,7 +480,7 @@ func TestWipeAllSecrets_RewipesSlotWrittenThroughLiveHandle(t *testing.T) {
 	}
 	if err := slot.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("bytes written through a live handle after the first wipe survived the second: %x", b)
+			t.Errorf("bytes written through a live handle after the first wipe survived the second: %x", b) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
 		t.Fatalf("WithBytes after the second wipe: %v", err)
@@ -607,7 +607,7 @@ func TestWipeInPlace_RefusesAliasedRegistration(t *testing.T) {
 	}
 	if err := bystander.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, secret) {
-			t.Errorf("bystander was ZEROED by a wipe holding a different buffer's lock — "+
+			t.Errorf("bystander was ZEROED by a wipe holding a different buffer's lock — "+ //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 				"got %x…, want %x…", b[:8], secret[:8])
 		}
 	}); err != nil {

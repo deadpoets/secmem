@@ -156,7 +156,7 @@ func TestGenerateDicewarePassphrase_PinsPreviousImplementation(t *testing.T) {
 	const pinned = "outhouse unit trustless rewrite observing running"
 	_ = buf.WithBytesErr(func(b []byte) error {
 		if string(b) != pinned { //nolint:secmem-lint // test compares the generated phrase against a pinned literal
-			t.Errorf("pinned output changed:\n  got:  %q\n  want: %q", b, pinned)
+			t.Errorf("pinned output changed:\n  got:  %q\n  want: %q", b, pinned) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	})
@@ -175,7 +175,7 @@ func TestGenerateDicewarePassphrase_TrimsToExactLength(t *testing.T) {
 	n := buf.Len() // outside the closure: access methods are not reentrant
 	_ = buf.WithBytesErr(func(b []byte) error {
 		if bytes.IndexByte(b, 0) >= 0 {
-			t.Errorf("buffer contains a NUL: %q", b)
+			t.Errorf("buffer contains a NUL: %q", b) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		if n != len(b) {
 			t.Errorf("Len() = %d, borrowed %d", n, len(b))
