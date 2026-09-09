@@ -1,0 +1,20 @@
+# gitleaks configuration: the default rule set, plus one scoped allowlist.
+#
+# redact's shape corpus is a list of credential SHAPES, which is exactly what a
+# redaction library has to be tested against — gitleaks flags those fixtures
+# because the corpus is doing its job. Every value in that file is synthetic and
+# published: the RFC 7519 example JWT, AWS's own documentation secret key,
+# "hunter2". The allowlist names that one file, so a real credential committed
+# anywhere else — including elsewhere in this package — still fails the scan.
+#
+# Paths, not fingerprints: a fingerprint is bound to the commit SHA that
+# introduced the line, so every rebase of a branch would invalidate it.
+
+[extend]
+useDefault = true
+
+[allowlist]
+description = "redact's synthetic credential-shape corpus"
+paths = [
+  '''redact/sanitizer_shapes_test\.go$''',
+]
