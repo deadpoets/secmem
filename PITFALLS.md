@@ -77,8 +77,12 @@ buf.WithBytes(func(b []byte) {
 Why it matters: the redaction lives on the wrapper type, not on the bytes.
 The moment you borrow the raw bytes and hand *those* to a formatter, you have
 opted out. For defense in depth on everything else your program logs, route
-`slog` through [`redact.NewHandler`](redact/) so credential-shaped strings are
-sanitized even when they reach the log by another path.
+`slog` through [`redact.NewHandler`](redact/) so credential-shaped strings, and
+any attribute whose *key* is credential-shaped (`password`, `token`, `api_key`,
+…) whatever its value looks like, are sanitized even when they reach the log
+by another path. It is a backstop: a value split from its key across two
+attributes, or a secret under an innocent key with no recognizable shape,
+still gets through.
 
 ## 4. Forgetting to Destroy (or Destroying at the wrong time)
 
@@ -191,7 +195,11 @@ assembled from. The per-request string is still a string — that residual is
 stated in the package doc, not hidden. Always pass the API's host: the
 transport sits below `http.Client`, so the Client's rule of dropping
 `Authorization` on a cross-domain redirect does not cover what is injected
-here, and with no host filter the credential follows the redirect.
+here, and with no host filter the credential follows the redirect. The host
+filter is scheme-aware: the credential goes out over https only, and a plain
+`http://` URL or an https→http redirect to a listed host fails with
+`ErrInsecureScheme` rather than sending the token in the clear — opt in per
+host with an `http://host` entry, or for all hosts with `AllowInsecureHTTP`.
 
 ## 9. Leaving a secret inside a decoded document
 
