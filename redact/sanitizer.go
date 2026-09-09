@@ -346,7 +346,7 @@ func stripNonPrintable(s string) string {
 // credSep is what may stand between a credential key and its value: an
 // optional closing quote on the key (plain or JSON-escaped), then "=", ":",
 // "=>" or the URL-encoded "%3D"/"%3A", with whitespace on either side.
-const credSep = `(?:\\?")?\s*(?:=>|[=:]|%3[dDaA])\s*`
+const credSep = `(?:\\?")?\s*(?:=>|[=:]|%3[dDaA])\s*` //nolint:gosec // G101: a regex naming credential KEYS, not a credential
 
 // credValue is the value part. The alternation is ordered so a quoted literal
 // is consumed whole — a JSON-escaped one (\"...\") first, then a plain
@@ -356,7 +356,7 @@ const credSep = `(?:\\?")?\s*(?:=>|[=:]|%3[dDaA])\s*`
 //
 // The escaped-quoted alternative stops at the first \" so that one value in
 // an escaped JSON document does not swallow every field after it.
-const credValue = `(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'[^']*'|\S+)`
+const credValue = `(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'[^']*'|\S+)` //nolint:gosec // G101: a regex naming credential KEYS, not a credential
 
 // credRe builds the matcher for one key=value credential field. field is a
 // regex fragment for the key name(s); it is applied case-insensitively.
@@ -375,9 +375,9 @@ func credRe(field string) *regexp.Regexp {
 // either way.
 const (
 	passwordNames = `(?:password|passwd|passphrase|(?:\b|_)pass|(?:\b|_)pwd)`
-	secretNames   = `(?:secret(?:[_-]?access)?(?:[_-]?key)?|(?:\b|_)private[_-]?key|(?:\b|_)signing[_-]?key|credentials?)`
-	tokenNames    = `(?:token|(?:\b|_)bearer)`
-	apiKeyNames   = `(?:\b|_)api[_-]?key`
+	secretNames   = `(?:secret(?:[_-]?access)?(?:[_-]?key)?|(?:\b|_)private[_-]?key|(?:\b|_)signing[_-]?key|credentials?)` //nolint:gosec // G101: a regex naming credential KEYS, not a credential
+	tokenNames    = `(?:token|(?:\b|_)bearer)`                                                                             //nolint:gosec // G101: a regex naming credential KEYS, not a credential
+	apiKeyNames   = `(?:\b|_)api[_-]?key`                                                                                  //nolint:gosec // G101: a regex naming credential KEYS, not a credential
 	authNames     = `auth`
 )
 

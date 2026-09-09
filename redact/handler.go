@@ -291,7 +291,7 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		case error, fmt.Stringer:
 			// fmt recovers a panicking String/Error method; calling it
 			// directly would not.
-			b.WriteString(fmt.Sprint(x))
+			fmt.Fprint(b, x)
 			return
 		case encoding.TextMarshaler:
 			if text, err := x.MarshalText(); err == nil {
