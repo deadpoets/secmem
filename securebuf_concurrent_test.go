@@ -106,7 +106,7 @@ func TestConcurrentAccess(t *testing.T) {
 					}
 					for i, b := range got {
 						if b != want[i] {
-							return fmt.Errorf("byte[%d] = %d, want %d", i, b, want[i])
+							return fmt.Errorf("byte[%d] = %d, want %d", i, b, want[i]) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 						}
 					}
 					return nil

@@ -70,7 +70,7 @@ func TestJanitorRegister_RefusesKeyCollision(t *testing.T) {
 	}
 	if err := live.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, secret) {
-			t.Errorf("live buffer = %x…, want %x…", b[:4], secret[:4])
+			t.Errorf("live buffer = %x…, want %x…", b[:4], secret[:4]) //nolint:secmem-lint // diagnostic on failure only; test fixture, not a secret
 		}
 	}); err != nil {
 		t.Fatalf("live.WithBytes: %v", err)

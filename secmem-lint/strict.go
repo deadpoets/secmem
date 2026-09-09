@@ -12,13 +12,20 @@ import (
 )
 
 // strict enables the opt-in checks. They are off by default because they are
-// heuristic and higher-noise than the escape/reentrancy checks: a consumer opts
-// in with `-secmemlint.strict` (go vet) or the analyzer flag.
+// heuristic and higher-noise than the escape/reentrancy checks. The flag is
+// -strict in every driver: `go vet -vettool=$(command -v secmem-lint) -strict ./...`
+// (go vet forwards flags it does not own to the vettool) and `secmem-lint
+// -strict ./...` when the binary is run directly.
+//
+// Besides N1 and L1 below, strict mode also reports the two cases the default
+// checks stay silent on because they cannot decide them: a borrowing closure
+// the analyzer cannot resolve to a body, and a SecureArena.Destroy / ReadOnly /
+// ReadWrite inside a slot borrow whose arena it cannot identify.
 var strict bool //nolint:gochecknoglobals // go/analysis flag state is package-level by convention.
 
 func init() { //nolint:gochecknoinits // registers the analyzer's -strict flag.
 	Analyzer.Flags.BoolVar(&strict, "strict", false,
-		"enable opt-in checks: N1 secret-named strings and L1 missing defer Destroy")
+		"enable opt-in checks: N1 secret-named strings, L1 missing defer Destroy, and diagnostics for borrowing closures or arenas the analyzer cannot resolve")
 }
 
 // secretNameRE matches identifier names that are high-confidence secrets — names

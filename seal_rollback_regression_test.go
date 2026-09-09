@@ -114,7 +114,7 @@ func TestSeal_RollbackDecryptFailure_FailsClosed(t *testing.T) {
 	}
 	if err := buf.WithBytesErr(func(b []byte) error {
 		if !bytes.Equal(b, want) {
-			t.Errorf("contents after Unseal recovered the rollback = %x, want %x", b, want)
+			t.Errorf("contents after Unseal recovered the rollback = %x, want %x", b, want) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	}); err != nil {
@@ -141,7 +141,7 @@ func TestSeal_RetryAfterRollbackFailure_DoesNotDoubleEncrypt(t *testing.T) {
 	}
 	if err := buf.WithBytesErr(func(b []byte) error {
 		if !bytes.Equal(b, want) {
-			t.Errorf("contents after retried Seal + Unseal = %x, want %x (the retry encrypted ciphertext again)", b, want)
+			t.Errorf("contents after retried Seal + Unseal = %x, want %x (the retry encrypted ciphertext again)", b, want) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	}); err != nil {

@@ -52,7 +52,7 @@ func FuzzOpenInto_RoundTrip(f *testing.F) {
 		}
 		_ = out.WithBytesErr(func(got []byte) error {
 			if !bytes.Equal(got, plaintext) {
-				t.Errorf("round trip mismatch\n  got:  %x\n  want: %x", got, plaintext)
+				t.Errorf("round trip mismatch\n  got:  %x\n  want: %x", got, plaintext) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 			}
 			return nil
 		})

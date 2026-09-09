@@ -70,7 +70,7 @@ func TestOpenInto_RejectsAEADThatDoesNotWriteInPlace(t *testing.T) {
 		}
 		if err := out.WithBytesErr(func(got []byte) error {
 			if !bytes.Equal(got, make([]byte, len(got))) {
-				t.Errorf("buffer not zeroed after the violation: %x", got)
+				t.Errorf("buffer not zeroed after the violation: %x", got) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 			}
 			return nil
 		}); err != nil {

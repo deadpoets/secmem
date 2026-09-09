@@ -79,7 +79,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 				t.Fatal("Truncate changed the kept head")
 			}
 			if i := firstNonZero(full[n:]); i >= 0 {
-				t.Fatalf("Truncate left byte %d of the wiped tail non-zero (%#x)", n+i, full[n+i])
+				t.Fatalf("Truncate left byte %d of the wiped tail non-zero (%#x)", n+i, full[n+i]) //nolint:secmem-lint // diagnostic on failure only; reports the one non-zero byte of a wiped region
 			}
 		}); err != nil {
 			t.Fatalf("WithBytes after Truncate: %v", err)
@@ -98,7 +98,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 		for name, b := range map[string]*SecureBuffer{"live": live, "truncated": buf} {
 			if err := b.WithBytes(func(data []byte) {
 				if i := firstNonZero(data[:cap(data)]); i >= 0 {
-					t.Fatalf("WipeAllSecrets left byte %d of the %s buffer non-zero (%#x)", i, name, data[i])
+					t.Fatalf("WipeAllSecrets left byte %d of the %s buffer non-zero (%#x)", i, name, data[i]) //nolint:secmem-lint // diagnostic on failure only; reports the one non-zero byte of a wiped region
 				}
 				// Whole secret area, canary slack included: the in-place
 				// wipe must not stop at the data's end. Read under the
@@ -142,7 +142,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 			}
 			if err := s.WithBytes(func(b []byte) {
 				if j := firstNonZero(b); j >= 0 {
-					t.Fatalf("slot %d byte %d reads %#x after Release; the release wipe missed it", s.Index(), j, b[j])
+					t.Fatalf("slot %d byte %d reads %#x after Release; the release wipe missed it", s.Index(), j, b[j]) //nolint:secmem-lint // diagnostic on failure only; reports the one non-zero byte of a wiped region
 				}
 			}); err != nil {
 				t.Fatalf("read re-acquired slot %d: %v", i, err)

@@ -81,7 +81,7 @@ func TestX25519Key_RFC7748SharedSecret(t *testing.T) {
 			defer shared.Destroy()
 			if err := shared.WithBytesErr(func(k []byte) error {
 				if !bytes.Equal(k, wantK) {
-					t.Errorf("shared secret mismatch\n  got:  %x\n  want: %x", k, wantK)
+					t.Errorf("shared secret mismatch\n  got:  %x\n  want: %x", k, wantK) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 				}
 				return nil
 			}); err != nil {

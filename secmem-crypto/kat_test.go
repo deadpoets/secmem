@@ -185,7 +185,7 @@ func TestAEAD_AES256GCM_KAT(t *testing.T) {
 	}
 	if err := out.WithBytesErr(func(b []byte) error {
 		if !bytes.Equal(b, plaintext) {
-			t.Errorf("OpenInto plaintext = %x, want %x", b, plaintext)
+			t.Errorf("OpenInto plaintext = %x, want %x", b, plaintext) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	}); err != nil {

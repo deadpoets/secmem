@@ -86,7 +86,7 @@ func BenchmarkWithBytes(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		_ = buf.WithBytes(func(data []byte) {
-			sink = data[0]
+			sink = data[0] //nolint:secmem-lint // benchmark sink: one byte of a test pattern
 		})
 	}
 	runtime.KeepAlive(sink)
@@ -103,7 +103,7 @@ func BenchmarkWithBytesErr_Sized(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		_ = buf.WithBytesErr(func(data []byte) error {
-			sink = data[0]
+			sink = data[0] //nolint:secmem-lint // benchmark sink: one byte of a test pattern
 			return nil
 		})
 	}
@@ -319,7 +319,7 @@ func BenchmarkWithBytesErr_Parallel_Sized(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			_ = buf.WithBytesErr(func(data []byte) error {
-				sink = data[0]
+				sink = data[0] //nolint:secmem-lint // benchmark sink: one byte of a test pattern
 				return nil
 			})
 		}

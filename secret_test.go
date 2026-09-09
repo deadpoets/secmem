@@ -54,7 +54,7 @@ func TestNewSecret_CopiesAndWipesInput(t *testing.T) {
 	}
 	if err := s.WithBytes(func(b []byte) {
 		if !bytes.Equal(b, []byte(secretPlaintext)) {
-			t.Errorf("contents = %q, want %q", b, secretPlaintext)
+			t.Errorf("contents = %q, want %q", b, secretPlaintext) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
 		t.Fatalf("WithBytes: %v", err)

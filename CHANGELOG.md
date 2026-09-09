@@ -129,6 +129,29 @@ mark the stability commitment.
   anywhere in the process) and `httptrace.WroteHeaderField`. A test proves
   the recipe produces an HTTP/1.1 request against an h2-enabled server.
 
+- **`secmem-lint`: the escape check follows the bytes, not just the
+  identifier.** A borrowed slice now taints every local derived from it —
+  aliases, elements, conversions (`any(b)`, `[]byte(b)`), composites
+  (`holder{b}`, `msg{b}` on a channel, `&myErr{b}` returned), element-wise
+  copy loops, closures that capture it, `unsafe.String` / `SliceData` /
+  `Pointer`, `reflect.ValueOf`, `bytes.NewReader` — and a finding fires
+  where a tainted value reaches memory outside the closure. The accessor call
+  is resolved through more shapes too: a closure held in a local assigned
+  once, a package-level function passed by name, a method value
+  (`f := buf.WithBytes`), an interface receiver with a borrowing-shaped
+  method, and a `type raw = []byte` parameter. `-strict` now also reports a
+  closure it cannot resolve, so coverage gaps are visible instead of silent.
+  The sink table gains `os.WriteFile`, the `Write` methods of `bytes.Buffer`
+  / `strings.Builder` / `bufio.Writer` / `os.File`, the `json` / `xml` /
+  `gob` decoders, `hex.Dump` / `AppendEncode`, `base64` / `base32`
+  `AppendEncode`, `slices.Concat`, `bytes.Join` / `Repeat`, `slog.Any` /
+  `String` / `Group` and `Logger.With`, the `testing` log methods, and the
+  stdlib / `x/crypto` ciphers, key parsers and KDFs that copy a key into heap
+  state. `io.Writer` / `net.Conn` interface values stay unflagged by design.
+  Reentrancy resolves aliases (`b2 := buf`) and method values (`l := buf.Len`),
+  and covers `ArenaSlot.Release` and the arena's exclusive-lock methods
+  (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow.
+
 ### Changed
 
 - **`secmem/httpauth`: the credential is no longer sent over cleartext http
@@ -168,6 +191,15 @@ mark the stability commitment.
   order is now `append(CommonProviderRules(), DefaultRules()...)`, because
   the default base64 heuristic no longer needs `=` padding and would
   otherwise tag a real provider token as `base64_secret` first.
+
+- **`secmem-lint`: the recommended idioms no longer report.** `copy` / `append`
+  into another borrowed slice (the decrypt-into pattern, nested either way),
+  into an array or struct declared inside the closure, or into a local slice
+  made with `make` / a literal is not an escape; a func literal that calls the
+  buffer but is only assigned or returned runs after the lease and is not
+  reentrant; the slice's address as a `uintptr` is not the secret. The README
+  and package doc now say exactly what the analyzer resolves and what it does
+  not, and the `-strict` flag is documented in the form `go vet` accepts.
 
 - **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
   wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
