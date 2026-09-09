@@ -30,10 +30,17 @@ than none. So:
 - A platform with no lockable off-heap memory **fails loudly**
   (`ErrNoSecureMemory`) rather than degrading to unprotected heap — unless you
   opt in explicitly with `WithInsecureFallback()`.
-- Every claim below is exercised by a test. The guard pages actually fault; the
-  `memfd_secret` isolation is checked against `/proc/self/mem`; the wipe,
-  redaction, and no-panic promises are fuzzed. See [`KERNELS.md`](KERNELS.md)
-  for the kernels the suite has been executed on.
+- Every `✓` below is backed by a test, or is named in
+  [`TESTING.md`](TESTING.md)'s "Deliberately not proven" list. The guard pages
+  actually fault; the lock, dump, fork, THP and KSM flags are read back from
+  the kernel's own `/proc/self/smaps` record on both allocation tiers; the
+  `memfd_secret` isolation is checked against `/proc/<pid>/mem` and
+  `process_vm_readv` from inside the process, from a separate process, and as
+  root; the region wipe (truncate, emergency, slot release), redaction, and
+  no-panic promises are fuzzed. A test that skips in CI fails the job unless
+  the skip is on a per-runner allowlist, so a proof cannot stop running
+  unnoticed. See [`KERNELS.md`](KERNELS.md) for the kernels the suite has been
+  executed on.
 - **secmem has not had an independent third-party security audit.** Every claim
   here is self-verified by the suite that runs in CI, and self-verification is
   not an audit — [`TESTING.md`](TESTING.md) lists what is measured and, in its
@@ -73,15 +80,15 @@ subpackage provides a `slog.Handler` wrapper.
 provided · **LOUD** opt-in only. This table is the threat model's spine; see
 [THREAT-MODEL.md](THREAT-MODEL.md) for what none of it protects against.
 
-| Protection | linux/amd64·arm64 (≥5.14, secretmem live †) | linux (older / 32-bit / secretmem inert) | darwin | windows | other |
+| Protection | linux/amd64·arm64 (≥5.14, secretmem live †) | linux (older / 32-bit / secretmem inert) | darwin | windows | other (compile-checked, not executed) |
 |---|---|---|---|---|---|
 | Off the Go heap | ✓ memfd_secret | ✓ mmap | ✓ mmap | ✓ VirtualAlloc | **LOUD** heap only |
 | No swap (locked) | ✓ | ✓ mlock | ✓ mlock | ⚠ VirtualLock ‡ | ✗ |
-| Kernel isolation (defeats passive reads — ptrace, `/proc/<pid>/mem`, crash dumps — including by root) | ✓ memfd_secret | ✗ (falls to mlock) | ✗ | ✗ | ✗ |
-| Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion | ✗ |
+| Kernel isolation (defeats passive reads — ptrace, `/proc/<pid>/mem`, crash dumps — including by root: the in-tree proof runs unprivileged, and CI repeats it as root) | ✓ memfd_secret | ✗ (falls to mlock) | ✗ | ✗ | ✗ |
+| Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion (reported by the registration call, not verified by a dump) | ✗ |
 | Not inherited across fork | ⚠ MADV_DONTFORK | ⚠ MADV_DONTFORK | ✗ | n/a | ✗ |
 | No THP/KSM secret copies | ✓ madvise | ✓ madvise | n/a | n/a | ✗ |
-| Guaranteed wipe on destroy | ✓ asm + cache flush | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64/arm64) | ⚠ barriered store loop, no flush |
+| Guaranteed wipe on destroy | ✓ asm + cache flush (the zeros are read back; the flush is structural, not measured) | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64/arm64) | ⚠ barriered store loop, no flush |
 | Guard pages + overflow canary | ✓ | ✓ | ✓ | ✓ | ✗ (heap fallback) |
 | Stack-frame scrub inside [`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub) | ✓ asm | ✓ asm on amd64/arm64; ✗ stub elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ stub |
 | No async register dump into the window (preemption signal blocked) | ✓ SIGURG+SIGPROF | ✓ SIGURG+SIGPROF | ✗ no `pthread_sigmask` binding | ✗ unmaskable (`SetThreadContext`) | ✗ |

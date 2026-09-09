@@ -28,14 +28,42 @@ that is said outright rather than dressed up.
   them; dedicated `test-noescape` jobs run them on linux/amd64 and
   linux/arm64 (where `OpenInto`'s GCM path is assembly), and the 386 job runs
   them on the generic path.
+- **No test skips silently.** Every test step runs `go test -json` through
+  `internal/skipaudit`, which prints each skipped test with the reason its
+  `t.Skip` gave and fails the job on any skip that is not on that lane's
+  allowlist (`.github/skip-allowlist/<lane>.txt`, one reason per entry). A
+  skip is a proof that stopped running; whether that is the environment or
+  the claim is decided in a reviewed diff to the allowlist, not in a log
+  nobody reads. The Windows list was measured; the Linux and macOS lists were
+  derived from the `t.Skip` sites and the hosted runners' documented
+  capabilities, and the first red run corrects them. The `memfd_secret`
+  isolation and extraction proofs are deliberately **not** allowlisted on
+  Linux, where `ubuntu-latest` has the feature live. Re-exec'd children
+  propagate their skips to the parent (`childSkipReason`) so a child that
+  proved nothing is not reported as a pass.
 - **Locked-workspace tests cannot skip silently.** A step on each execution
   runner re-runs the Argon2 workspace, pool, vector-register-clear and
   upstream-identity tests verbosely and fails on any `--- SKIP`; on Linux it
   first raises `RLIMIT_MEMLOCK` with `prlimit`, because the hosted runners'
   hard limit is below the 64 MiB the package-default workspace needs.
+- **The isolation proofs also run as root** (`test-root-linux`). The test
+  binary is built unprivileged and executed under `sudo`, where the
+  extraction test treats every environmental skip as a failure — root has
+  nothing to be refused — and asserts that root's `/proc/<pid>/mem` read of
+  the victim's secret page is refused while its read of the control page
+  succeeds. The KSM opt-out proof, whose `PR_SET_MEMORY_MERGE` needs
+  `CAP_SYS_RESOURCE`, runs there too. The lane's allowlist is empty.
+- **`secmem-crypto` and `secmem-lint` are built and tested against their
+  released dependencies** (`released-deps`): `GOWORK=off`, no `go.work`, so
+  a change that needs core API newer than the tag in `go.mod` fails on the
+  PR rather than for the first consumer. Every other job resolves the core
+  from the sibling tree.
 - **Cross-compiled** for linux/arm64, darwin/arm64, darwin/amd64, windows/arm64
-  and windows/386 (build + test-binary compile) so the whole matrix at least
-  builds.
+  and windows/386 (build + vet + test-binary compile) so the whole matrix at
+  least builds. The platforms with no secure-memory API — freebsd/amd64,
+  openbsd/amd64, wasip1/wasm, which take the LOUD heap stub — are
+  compile-checked the same way and **never executed** anywhere in CI; that is
+  what the README's "other" column means by compile-checked.
 - **Fuzz seed corpora** run as ordinary tests in CI on every PR. Active,
   coverage-guided fuzzing runs nightly (`fuzz.yml`): every `Fuzz*` target in
   every package of the core and `secmem-crypto` modules, three minutes each by
@@ -58,10 +86,13 @@ that is said outright rather than dressed up.
 | Claim | How it is proven | Test |
 |---|---|---|
 | Secret bytes live off the Go GC heap | Structural (mmap / VirtualAlloc, never `make`); reported per allocation | `Capabilities.OffHeap`, `capabilities_test.go` |
-| Pages are locked out of swap | Kernel's own `lo` (locked) flag read from `/proc/self/smaps` | `madvise_linux_test.go` |
+| Pages are locked out of swap | Kernel's own `lo` (locked) flag read from `/proc/self/smaps` on **both** tiers — the anon+mlock area and the `memfd_secret` mapping (secretmem sets `VM_LOCKED` itself) | `madvise_linux_test.go` |
+| Excluded from core dumps, not inherited across fork, no THP collapse (Linux) | The kernel's `VmFlags` for the secret area must carry `dd` (`VM_DONTDUMP`), `dc` (`VM_DONTCOPY`) and `nh` (`VM_NOHUGEPAGE`), on both tiers. The rule for a missing flag: if `Capabilities` claims the protection, missing is a **failure**; if it does not, the test re-issues the advice to obtain the kernel's refusal and skips with that reason — and if the kernel then accepts it, the allocator's own call was dropped, which fails. Every skip is a named subtest the CI audit sees | `madvise_linux_test.go` |
+| No KSM deduplication of secret pages | `MADV_UNMERGEABLE` only clears `VM_MERGEABLE`, which a fresh mapping never has, so a plain process cannot show anything. A child opts the whole process into KSM with `PR_SET_MEMORY_MERGE` (Linux 6.4+), confirms with a control mapping that the kernel now marks new mappings `mg`, and requires the secret area to lack it. Needs `CAP_SYS_RESOURCE`: skips with `EPERM` unprivileged and runs in the root lane | `madvise_linux_test.go` (`TestMadvise_UnmergeableInForce`) |
 | `memfd_secret` pages are unreadable via `/proc/<pid>/mem` | Reads the buffer's address range through `/proc/self/mem`, requires the read to **fail**, with a control read of ordinary heap that must **succeed** | `memfd_isolation_linux_test.go` |
-| A **separate process** cannot extract a `SecureBuffer` | A victim subprocess holds the secret only in a `memfd_secret` buffer and a twin control marker on the heap; its parent scans the victim's whole address space via both `/proc/<pid>/mem` **and** `process_vm_readv(2)` — the control marker is recovered every time, the secret never. Skips (never fails) when `memfd_secret` or ptrace is unavailable. The root/`CAP_SYS_PTRACE` and `gcore` core-dump variants are recorded as manual runs in [KERNELS.md](KERNELS.md) | `extraction_linux_test.go` |
+| A **separate process** cannot extract a `SecureBuffer` — including root | A victim subprocess holds the secret only in a `memfd_secret` buffer and a twin control marker on the heap; its parent scans the victim's whole address space via both `/proc/<pid>/mem` **and** `process_vm_readv(2)` — the control marker is recovered every time, the secret never, and a direct read of the secret page must be refused outright. Unprivileged, it skips (never fails) when `memfd_secret` or ptrace is unavailable; as root (`euid 0`) every such condition is a **failure**, and the `process_vm_readv` control must succeed. CI runs it both ways (`test` and `test-root-linux`). The `gcore` core-dump variant remains a manual run recorded in [KERNELS.md](KERNELS.md) | `extraction_linux_test.go` |
 | `Destroy` deterministically zeroes the secret | A slab slot is written `0xFF`, released (running the production wipe on the mapped region), re-acquired, and read back as zero | `securearena_test.go` (`TestArena_ReleaseWipesSlot`) |
+| The region wipe holds for arbitrary sizes and contents | Fuzzed, over the three wipes whose target stays mapped: `Truncate`'s tail read back through the slice's full capacity with the head intact; `WipeAllSecrets` read back over the whole secret area, canary slack included; and every arena slot filled, released, re-acquired and read as zero. An allocation refusal skips loudly, never returns silently | `wipe_fuzz_test.go` (`FuzzWipe_RegionReadsBackZero`) |
 | The wipe is exact and not compiler-elided | Assembly (`REP STOSB` / `DC CIVAC`) is inherently un-elidable. The generic fallback takes its zero byte from a package-level atomic (so the stored value is not a compile-time constant), reads every byte back into an accumulator, and publishes the accumulator to a second atomic, so the stores are provably observed; `//go:noinline` stops a caller re-deriving what the body cannot. Confirmed in the GOARCH=386 disassembly — both loops and both atomics survive. The readback tests above would fail if a store were dropped | `wipe_unaligned_test.go`, `wipe_arm64.s`/`wipe_amd64.s`, `wipe_generic.go` |
 | Guard pages trap a linear over/under-flow | Reads one byte past each edge in a re-exec'd child and requires the runtime's fault report at that address; in-region bytes must not fault (clean child exit) | `guard_canary_test.go`, `fault_probe_test.go` |
 | An in-mapping overflow too small to reach a guard is caught | Corrupts the canary slack, requires `ErrCanaryViolation` on Destroy/Release | `guard_canary_test.go`, `securearena_test.go` |
@@ -69,7 +100,7 @@ that is said outright rather than dressed up.
 | An arena's Go-heap bookkeeping stays smaller than its locked slab | Arithmetic pin: per-slot `slotMeta` must be under `canaryLen+1`, the locked cost of the smallest legal slot. This is what makes `NewArena`'s slab-first allocation order protective — the allocation that can `throw` must be the smaller one | `securearena_test.go` (`TestArena_HeapMetadataStaysUnderLockedSlab`) |
 | `Scrub` erases the stack residue of a shallow call tree | Plants markers down the stack, runs `Scrub`, reads the abandoned frames back through a raw `uintptr` and requires zero. Covers both architectures with real frame assembly — amd64 and arm64 | `scrub_frame_test.go` (`TestScrub_ScrubsShallowCallTree`); `runtimesecret` integration in `securebuf_scrub_test.go`, `secretdo_active_test.go` |
 | A `Scrub` window blocks the preemption signal, so `asyncPreempt` cannot spill the register file into it | Reads `SigBlk` for the **calling thread** from `/proc/thread-self/status` — the kernel's own record — inside the window, and requires SIGURG and SIGPROF set there and the mask exactly restored after. Asserts the goroutine did not migrate (`LockOSThread`), and that a nested window restores the outer mask rather than unblocking | `scrub_window_linux_test.go` |
-| `Scrub` clears the vector registers on the thread that ran `fn`, and the clear reaches what `fn` left | A test-only assembly probe (`internal/regprobe`) plants a non-zero pattern in X0–X14 (Z16–Z31 under AVX-512; V0–V31 on arm64) inside a window and reads the file back after it: all zero after `Scrub`, `ScrubErr`, and a panicking `fn`. A control runs the window's exact exit sequence **without** the clear and requires the pattern to survive — a zero there is a failure, not a skip, because it would mean the residue had become unobservable and the clear unprovable. A panicking control measures the 16 bytes the runtime's unwinder writes after the clear, and the subject must be zero outside that footprint | `scrub_vecclear_test.go`, `scrub_vecclear_amd64_test.go`, `scrub_vecclear_arm64_test.go` |
+| `Scrub` clears the vector registers on the thread that ran `fn`, and the clear reaches what `fn` left | A test-only assembly probe (`internal/regprobe`) plants a non-zero pattern in X0–X14 (Z16–Z31 under AVX-512; V0–V31 on arm64) inside a window and reads the file back after it: all zero after `Scrub`, `ScrubErr`, and a panicking `fn`. A control runs the window's exact exit sequence **without** the clear and requires the pattern to survive — a zero there is a failure, not a skip, because it would mean the residue had become unobservable and the clear unprovable. A panicking control measures the 16 bytes the runtime's unwinder writes after the clear, and the subject must be zero outside that footprint. The control is a hand-written copy of `Scrub`'s body (the two cannot share a helper: nothing may run between `fn`'s return and the clear), so a source-level pin parses both and requires the control's statements to equal `Scrub`'s less the nil guard and the deferred clear — shown to fail on an injected extra call | `scrub_vecclear_test.go`, `scrub_vecclear_amd64_test.go`, `scrub_vecclear_arm64_test.go`, `scrub_vecclear_control_pin_test.go` |
 | Blocking that signal does not make a window unpreemptible | Eight concurrent windows against a deliberately GC-heavy workload must all complete; a window the collector could not suspend would hang rather than fail quietly | `scrub_window_linux_test.go` (`TestScrub_ConcurrentWindowsUnderGCPressure`) |
 | Constructors fail closed, never panic | Bad/overflow inputs on every constructor; `RLIMIT_MEMLOCK=0` with `CAP_IPC_LOCK` dropped; unsupported-platform stub | `negative_test.go`, `negative_mlock_linux_test.go`, `mlock_stub_test.go` |
 | Constructors wipe the caller's input on failure, not only on success | An allocation that is forced to fail must leave the input slice zeroed | `securebuf_test.go` (`TestNewBuffer_WipesInputOnFailure`), `secret_test.go` (`TestNewSecret_CopiesAndWipesInput`) |
@@ -78,6 +109,8 @@ that is said outright rather than dressed up.
 | The termination wipe ends the process, and stays armed when it does not | Where the signal cannot be re-raised the exit status equals the un-intercepted one (`STATUS_CONTROL_C_EXIT` on Windows, checked against a real console Ctrl-C); a handler that leaves the process running re-arms for the next signal | `terminationwipe_exit_test.go`, `terminationwipe_rearm_*_test.go` |
 | Borrow/copy/compare paths do not allocate (no heap escape) | `testing.AllocsPerRun` gate asserts 0 allocs on `WithBytes`/`ByteAt`/`CopyOut`/`CopyIn`/`ConstantTimeEqual`/… | `alloc_test.go` |
 | A sealed buffer holds ciphertext at rest (Windows) | Peeks the raw mapping while sealed and asserts the plaintext is absent (and not all-zero) | `sealcipher_windows_test.go` |
+| `HardenProcess` puts Arbitrary Code Guard and strict handle checks in force (Windows) | Read back through `GetProcessMitigationPolicy` in a re-exec'd child (ACG is irreversible): both policies must be clear before `hardenProcess` and `ProhibitDynamicCode`, `RaiseExceptionOnInvalidHandleReference` and `HandleExceptionsPermanentlyEnabled` set after — the kernel's record of the process, not the setter's return value | `harden_windows_test.go` (`TestHardenProcess_Windows`) |
+| The secret area is registered for WER dump exclusion (Windows) | WER's own bookkeeping, the only readback that exists: `WerUnregisterExcludedMemoryBlock` returns `S_OK` for a block it holds and `ERROR_NOT_FOUND` for one it does not; a never-registered control page pins the distinction, the secret area must read as registered, and the registration is restored afterwards. This proves the registration, not that a dump would honour it — see below | `harden_windows_test.go` (`TestWERExclusion_RegisteredWithWER`) |
 | `Secret` / `redact` never emit the plaintext | Formatting/marshalling/slog routed through `any` so the verb can't be folded; adversarial and fuzzed inputs | `secret_test.go`, `negative_test.go`, `redact/*_test.go` |
 
 ## secmem-crypto: correctness and secret hygiene
@@ -136,7 +169,16 @@ stand-in rather than measured directly.
   (`Capabilities.FlushedWipe`) is not observable from Go. The flush is
   structural — architecture assembly emits `CLFLUSH`/`CLFLUSHOPT` or
   `DC CIVAC` — and the field reports which path ran; there is no test that
-  inspects cache state, because Go cannot.
+  inspects cache state, because Go cannot. The README's "asm + cache flush"
+  cell therefore means: the zeros are read back (above), the flush is not.
+- **The WER dump exclusion is reported by the registration call, not
+  verified by a dump.** The only oracle independent of the registration
+  would be a real WER dump of the process with the pages missing, and a
+  test cannot crash itself into WER and read the file back. What is tested
+  (`TestWERExclusion_RegisteredWithWER`) is WER's own record that the block
+  is registered; whether a dump honours it is Windows' contract, not
+  measured here. The README's Windows "excluded from crash dumps" cell says
+  the same.
 - **The stack residue `Scrub` cannot reach is argued, not measured.** The frame
   wipe is proven to zero the band it reserves (above), and the preemption block
   is proven against the kernel's own record of the mask, and the vector-register
