@@ -175,9 +175,10 @@ independently, so neither adds anything to the core's dependency graph:
   fork of `golang.org/x/crypto/argon2` for the same kind of reason. Adds
   `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys`.
 - **[`secmem-lint`](secmem-lint/)** — a `go/analysis` analyzer (and
-  `go vet -vettool` binary) that enforces the borrowing-closure discipline at
+  `go vet -vettool` binary) that checks the borrowing-closure discipline at
   compile time: the slice handed to `WithBytes` must not escape the closure.
-  Depends only on `golang.org/x/tools`.
+  It detects a documented set of escape shapes, not every possible one; its
+  README lists exactly what it resolves. Depends only on `golang.org/x/tools`.
 
 ## Documentation
 

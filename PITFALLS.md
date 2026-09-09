@@ -2,16 +2,18 @@
 
 These are the mistakes that quietly defeat secure-memory handling. Most of
 them look fine and compile fine; that is exactly why they are dangerous. The
-good news is that the most important one is caught for you at compile time by
-[`secmem-lint`](secmem-lint/) — but knowing *why* each is wrong is what keeps
-you from reintroducing it in a shape the linter can't see.
+good news is that the common shapes of the most important one are caught for
+you at compile time by [`secmem-lint`](secmem-lint/) — but knowing *why* each
+is wrong is what keeps you from reintroducing it in a shape the linter can't
+see (its README lists exactly which shapes it resolves).
 
 Each entry is the mistake, why it defeats the protection, and the correct
 form.
 
 ## 1. Letting the secret slice escape the borrow
 
-This is the cardinal sin, and the one `secmem-lint` rejects at compile time.
+This is the cardinal sin, and the one `secmem-lint` is built to catch at
+compile time.
 
 ```go
 // BAD — the borrowed slice escapes; now there is a heap copy that is never
@@ -36,8 +38,10 @@ off-heap location. An escaped slice is a second copy on the Go heap —
 unlocked, unguarded, scanned by the collector, and never wiped: Go's GC does
 not move heap objects, but it does not zero what it frees either, so the
 bytes stay in the span until the allocator reuses it. `secmem-lint` flags
-assignment-out, return,
-`append`, and capture-by-goroutine of the borrowed slice; run it in CI.
+assignment-out, return, `append`, `copy` into outer memory, channel sends,
+capture-by-goroutine, and the borrowed slice wrapped in a conversion,
+composite or closure; it does not follow the slice into a helper you call.
+Run it in CI.
 
 ## 2. Converting the secret to a string
 
@@ -293,5 +297,5 @@ do not hand it the key, or write the residual down.
 ---
 
 Run `go vet ./...` and the `secmem-lint` analyzer in CI. The linter catches
-pitfall 1 — the one with no visible symptom and the worst consequence —
-before it ever ships.
+the common shapes of pitfall 1 — the one with no visible symptom and the worst
+consequence — before they ever ship.
