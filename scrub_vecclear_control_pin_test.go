@@ -18,8 +18,9 @@ import (
 // while still reporting "residue survives". The two cannot share a helper —
 // the whole point of the window is that nothing runs between fn's return and
 // the clear — so this test compares their source instead: Scrub's statement
-// list, less the nil guard (the control is never handed nil) and the deferred
-// clearVectorRegs (the line under test), must print identically to the
+// list, less the nil guard (the control is never handed nil), the direct
+// clearVectorRegs call (the line under test) and the Goexit backstop (a
+// no-op on the paths the proof measures), must print identically to the
 // control's. Comments are not compared; statements are.
 func TestVecClearControl_IsScrubMinusTheClear(t *testing.T) {
 	t.Parallel()
@@ -34,11 +35,19 @@ func TestVecClearControl_IsScrubMinusTheClear(t *testing.T) {
 			removedNilGuard = true
 			continue
 		}
-		if isDeferredCallTo(st, "clearVectorRegs") {
+		if isCallTo(st, "clearVectorRegs") {
 			if removedClear {
-				t.Fatal("Scrub defers clearVectorRegs more than once; the pin removes exactly one")
+				t.Fatal("Scrub's body calls clearVectorRegs more than once; the pin removes exactly one")
 			}
 			removedClear = true
+			continue
+		}
+		if mentionsScrubExit(fset, st) {
+			// The Goexit backstop (var exit scrubExit / defer
+			// exit.goexitBackstop() / exit.done = true) is a no-op on the
+			// return and panic paths the proof measures, and it clears the
+			// vector file itself on the Goexit path, so the control leaves
+			// it out rather than carry a second clear-free copy of it.
 			continue
 		}
 		kept = append(kept, st)
@@ -47,7 +56,7 @@ func TestVecClearControl_IsScrubMinusTheClear(t *testing.T) {
 		t.Fatal("Scrub's body no longer opens with the `if fn == nil { return }` guard this pin removes; update the pin with the control")
 	}
 	if !removedClear {
-		t.Fatal("Scrub's body no longer defers clearVectorRegs; the control has nothing to be a control for")
+		t.Fatal("Scrub's body no longer calls clearVectorRegs; the control has nothing to be a control for")
 	}
 
 	want := printStmts(t, fset, kept)
@@ -86,14 +95,29 @@ func isNilGuard(fset *token.FileSet, st ast.Stmt) bool {
 	return strings.Join(strings.Fields(b.String()), " ") == "if fn == nil { return }"
 }
 
-// isDeferredCallTo matches `defer name()`.
-func isDeferredCallTo(st ast.Stmt, name string) bool {
-	d, ok := st.(*ast.DeferStmt)
+// isCallTo matches the expression statement `name()`.
+func isCallTo(st ast.Stmt, name string) bool {
+	es, ok := st.(*ast.ExprStmt)
 	if !ok {
 		return false
 	}
-	id, ok := d.Call.Fun.(*ast.Ident)
-	return ok && id.Name == name && len(d.Call.Args) == 0
+	call, ok := es.X.(*ast.CallExpr)
+	if !ok {
+		return false
+	}
+	id, ok := call.Fun.(*ast.Ident)
+	return ok && id.Name == name && len(call.Args) == 0
+}
+
+// mentionsScrubExit matches the three statements of the Goexit backstop: the
+// scrubExit declaration, its deferred method call, and the done flag.
+func mentionsScrubExit(fset *token.FileSet, st ast.Stmt) bool {
+	var b bytes.Buffer
+	if err := printer.Fprint(&b, fset, st); err != nil {
+		return false
+	}
+	src := b.String()
+	return strings.Contains(src, "scrubExit") || strings.Contains(src, "exit.")
 }
 
 // printStmts renders statements one per line, position-independent.
