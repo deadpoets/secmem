@@ -116,6 +116,7 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 			}
 		}
 		t.Logf("control (panic unwind): %d of %d planted bytes survive the window without the clear; the unwind itself writes %d bytes", survived, fillable, n)
+		widenToRegisters(controlFootprint)
 	} else {
 		t.Log("runtime/secret active: controls omitted, the legacy exit sequence they replicate does not exist on this build")
 	}
@@ -154,12 +155,22 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 		}
 	}
 	t.Logf("unwind footprint: the runtime's stack walk writes %d byte(s) to the vector file after the clear", footprintBytes)
+	widenToRegisters(unwindFootprint)
 	// The control measured the footprint as "changed from the pattern", which
 	// also counts bytes the unwind writes as zero (the upper half of the
 	// register it copies through); this measurement can only see non-zero
 	// bytes. So the two agree when every position seen here is one the
 	// control saw change — a non-zero byte the control did not see would be
 	// residue the control missed, and fails.
+	//
+	// Both footprints are compared at register granularity. The unwind
+	// writes whole registers, and what it writes is data — a pointer or a
+	// length — whose individual bytes differ from run to run (a heap address
+	// under the race detector, a stack address on arm64); a byte-level
+	// comparison then fails on a byte that happened to be zero, or equal to
+	// the pattern, in one run and not the other. Measured on darwin/arm64:
+	// V16 holds a pointer whose byte 10 varied between the control and the
+	// subject.
 	if controlFootprint != nil {
 		for i := range got {
 			if unwindFootprint[i] && !controlFootprint[i] {
@@ -182,5 +193,27 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	}
 	if !allZero(got) {
 		t.Logf("after the panicking window the registers hold only what the unwind wrote after the clear: %x", got)
+	}
+}
+
+// widenToRegisters marks every byte of each 16-byte register that has any
+// byte marked, so a footprint names registers the unwind wrote rather than
+// the particular bytes of the values it wrote.
+func widenToRegisters(fp []bool) {
+	const reg = 16
+	for base := 0; base < len(fp); base += reg {
+		end := min(base+reg, len(fp))
+		touched := false
+		for i := base; i < end; i++ {
+			if fp[i] {
+				touched = true
+				break
+			}
+		}
+		if touched {
+			for i := base; i < end; i++ {
+				fp[i] = true
+			}
+		}
 	}
 }
