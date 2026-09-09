@@ -232,12 +232,15 @@ func TestSanitize_LinearScaling(t *testing.T) {
 	time400 := timeSanitize(s, large)
 	t.Logf("40 KB: %v, 400 KB: %v", time40, time400)
 
-	if time400 > 3*time.Second {
-		t.Errorf("400 KB took %v, want well under a second on a developer host", time400)
-	}
-	// Linear is 10x; quadratic is 100x. Allow noise.
+	// The proof is the ratio: linear is 10x, the old quadratic path was 100x.
+	// Allow noise. Under the race detector regexp runs an order of magnitude
+	// slower and CI runners are shared, so the absolute bound is asserted only
+	// on a plain build; the ratio holds on both.
 	if time400 > 40*time40 && time40 > time.Millisecond {
 		t.Errorf("superlinear: 40 KB %v vs 400 KB %v (ratio %.0f)", time40, time400, float64(time400)/float64(time40))
+	}
+	if !raceEnabled && time400 > 3*time.Second {
+		t.Errorf("400 KB took %v, want well under a second on a plain build", time400)
 	}
 }
 

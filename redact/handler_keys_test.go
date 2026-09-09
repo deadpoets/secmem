@@ -237,8 +237,11 @@ func TestHandler_AnyWalkAppliesCustomKeys(t *testing.T) {
 	type spell struct{ Magic string }
 	_, js, _, jbuf := sinks(redact.WithSensitiveKeys("magic"))
 	js.Info("m", "v", spell{"abracadabra"}, "w", map[string]int{"magic": 42})
-	if strings.Contains(jbuf.String(), "abracadabra") || strings.Contains(jbuf.String(), "42") {
-		t.Errorf("custom key inside an Any value leaked: %s", jbuf.String())
+	// Look at the rendered values, not the whole line: the record's timestamp
+	// can itself contain "42".
+	out := jbuf.String()
+	if strings.Contains(out, "abracadabra") || strings.Contains(out, "magic:42") || !strings.Contains(out, "[REDACTED:key]") {
+		t.Errorf("custom key inside an Any value leaked: %s", out)
 	}
 }
 

@@ -340,12 +340,12 @@ func (t *Transport) decide(req *http.Request) decision {
 			continue
 		}
 		matched = true
-		switch {
-		case entryScheme == "":
+		switch entryScheme {
+		case "":
 			if secure || t.AllowInsecureHTTP {
 				return inject
 			}
-		case entryScheme == scheme:
+		case scheme:
 			return inject
 		}
 	}
