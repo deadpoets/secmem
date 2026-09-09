@@ -23,3 +23,7 @@ github.com/deadpoets/secmem TestMadvise_UnmergeableInForce
 # Seed #1 is the empty plaintext: a zero-length buffer is refused by the core
 # by design, so this seed skips on every platform.
 github.com/deadpoets/secmem/secmem-crypto FuzzOpenInto_RoundTrip/seed#1
+
+# Measured on test-386-linux: RLIMIT_MEMLOCK's hard limit is 8 MiB and this
+# lane has no prlimit step, so the 64 MiB Argon2 workspace cannot be locked.
+github.com/deadpoets/secmem/secmem-crypto TestArgon2Workspace_FullProfile

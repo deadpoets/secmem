@@ -12,3 +12,7 @@ github.com/deadpoets/secmem TestForcedExitStatus_MatchesUninterceptedSignal
 # Seed #1 is the empty plaintext: a zero-length buffer is refused by the core
 # by design, so this seed skips on every platform.
 github.com/deadpoets/secmem/secmem-crypto FuzzOpenInto_RoundTrip/seed#1
+
+# Measured on macos-latest: the runner locks the 512 MiB probe, so the
+# mlock-failure path this test needs cannot be reached there.
+github.com/deadpoets/secmem TestNewBuffer_WipesInputOnFailure
