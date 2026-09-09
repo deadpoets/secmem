@@ -17,6 +17,14 @@ inputs:
   args:
     description: Extra `go test` flags, e.g. -race.
     default: "-race"
+  memlock:
+    description: >-
+      "unlimited" raises RLIMIT_MEMLOCK for this step on Linux, for a module
+      whose tests need a bigger locked budget than a hosted runner's default
+      (secmem-crypto's locked Argon2 workspace). Leave it at "default"
+      everywhere else: the core suite has a test that needs a 512 MiB lock to
+      FAIL, so raising the limit for it turns a proof into a skip.
+    default: "default"
 runs:
   using: composite
   steps:
@@ -32,10 +40,11 @@ runs:
         # The hosted Linux runners cap RLIMIT_MEMLOCK below what the locked
         # Argon2 workspace proofs need, and EnsureMemlockLimit cannot raise a
         # hard limit without privilege. The runner user has sudo, so lift it
-        # for this shell (children inherit); elsewhere the default suffices.
-        # Without this the workspace tests skip, and the audit reports the
-        # skip as a failure rather than letting it pass unseen.
-        if [ "$(uname -s)" = Linux ] && command -v sudo >/dev/null; then
+        # for this shell (children inherit) where the caller asks for it.
+        # Only where it asks: the core suite proves NewBuffer wipes its input
+        # on an allocation the lock budget REFUSES, so an unlimited budget
+        # there replaces a proof with a skip.
+        if [ "${{ inputs.memlock }}" = unlimited ] && [ "$(uname -s)" = Linux ] && command -v sudo >/dev/null; then
           sudo prlimit --pid $$ --memlock=unlimited:unlimited || true
         fi
         echo "memlock soft/hard: $(ulimit -Sl) / $(ulimit -Hl)"

@@ -68,6 +68,7 @@ jobs:
         with:
           working-directory: secmem-crypto
           allowlist: ${{ runner.os == 'Linux' && 'linux' || runner.os == 'macOS' && 'darwin' || 'windows' }}
+          memlock: unlimited
       - uses: ./.github/actions/argon2-workspace-ran
 
   test-arm64-linux:
@@ -85,6 +86,7 @@ jobs:
         with:
           working-directory: secmem-crypto
           allowlist: linux
+          memlock: unlimited
       - uses: ./.github/actions/argon2-workspace-ran
 
   # Exercise the GOEXPERIMENT=runtimesecret build. The register/stack/heap
@@ -112,6 +114,7 @@ jobs:
         with:
           working-directory: secmem-crypto
           allowlist: linux
+          memlock: unlimited
 
   # Execute (not just compile) the suite on 32-bit x86. The wipe helpers
   # manipulate big.Word limbs, whose width differs on 386, so 386 must be RUN,
@@ -142,6 +145,7 @@ jobs:
         with:
           working-directory: secmem-crypto
           allowlist: linux-386
+          memlock: unlimited
           args: ""
 
   # Run the AllocsPerRun no-heap-escape gates on the primary 64-bit targets.
