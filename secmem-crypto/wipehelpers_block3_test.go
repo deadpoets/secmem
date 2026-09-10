@@ -85,7 +85,9 @@ func TestWipeRSAPrivateKey(t *testing.T) {
 		}
 	}
 
-	wipeRSAPrivateKey(key)
+	if err := wipeRSAPrivateKey(key); err != nil {
+		t.Fatalf("wipeRSAPrivateKey: %v", err)
+	}
 	for name, limbs := range captured {
 		assertLimbsZero(t, "wipeRSAPrivateKey("+name+")", limbs)
 	}
@@ -93,11 +95,16 @@ func TestWipeRSAPrivateKey(t *testing.T) {
 		t.Error("wipe touched the public modulus N")
 	}
 
-	wipeRSAPrivateKey(nil) // must not panic
+	if err := wipeRSAPrivateKey(nil); err != nil { // must not panic
+		t.Errorf("wipeRSAPrivateKey(nil) = %v", err)
+	}
 
-	// A key with no precomputed values must not panic either.
+	// A key with no precomputed values (no FIPS-form key either) must not
+	// panic, and has nothing to report.
 	bare := &rsa.PrivateKey{}
-	wipeRSAPrivateKey(bare)
+	if err := wipeRSAPrivateKey(bare); err != nil {
+		t.Errorf("wipeRSAPrivateKey(bare) = %v", err)
+	}
 }
 
 // TestWipeRSAPrivateKey_CRTValues exercises the multi-prime CRT loop, which
@@ -115,7 +122,9 @@ func TestWipeRSAPrivateKey_CRTValues(t *testing.T) {
 	crt := key.Precomputed.CRTValues
 	exp, coeff, r := crt[0].Exp.Bits(), crt[0].Coeff.Bits(), crt[0].R.Bits()
 
-	wipeRSAPrivateKey(key)
+	if err := wipeRSAPrivateKey(key); err != nil {
+		t.Fatalf("wipeRSAPrivateKey: %v", err)
+	}
 	assertLimbsZero(t, "CRTValues.Exp", exp)
 	assertLimbsZero(t, "CRTValues.Coeff", coeff)
 	assertLimbsZero(t, "CRTValues.R", r)

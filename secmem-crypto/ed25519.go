@@ -1,7 +1,12 @@
 // Package secmemcrypto adapts secmem's hardened memory primitives to the
-// standard library's crypto interfaces, so key material stays inside a
-// [secmem.SecureBuffer] for the whole of an operation rather than being
-// copied out first.
+// standard library's crypto interfaces. Key material is held in a
+// [secmem.SecureBuffer] between operations; during an operation it is
+// either kept there and on the stack of a Scrub window (Ed25519 signing,
+// the parsers, the KDFs and AEAD helpers that write in place) or copied
+// through the Go heap by a standard-library primitive that has no in-place
+// API, with every copy this module can reach wiped before return and every
+// copy it cannot named in the type's documentation (RSA, ECDSA, X25519,
+// ML-KEM, HKDF/HMAC). The module README classifies every entry point.
 //
 // Signers: [Ed25519Signer] (RFC 8032, signs in place), [ECDSASigner] and
 // [RSASigner] (custody at rest; each Sign re-materialises the key through

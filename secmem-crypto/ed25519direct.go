@@ -17,9 +17,21 @@
 // filippo.io/edwards25519 scalar arithmetic and crypto/sha512, bypassing
 // crypto/ed25519.Sign entirely while producing byte-identical signatures
 // that crypto/ed25519.Verify accepts. Every secret intermediate (the
-// SHA-512 hash, the private scalar, the nonce scalar) is wiped after use;
-// the seed itself is read in place from the caller's buffer and never
-// copied.
+// SHA-512 hash, the private scalar, the nonce scalar, the nonce pre-image)
+// lives on the stack and is wiped after use — the edwards25519 scalars and
+// points do not escape — so for a message of up to ed25519NonceStackBytes
+// the only heap allocation of a signature is the signature; a longer
+// message puts its nonce pre-image on the heap, wiped before return
+// (classification_test.go pins both counts). The seed itself is read in place
+// from the caller's buffer and never copied to the heap; it is copied
+// twice on the stack, inside sha512.Sum512 — once into the digest's block
+// buffer and once, as the digest, into the returned array — both in
+// frames that die before the enclosing Scrub window closes and are wiped
+// with it (on the legacy path, the 32 KiB band below the window; under
+// runtime/secret, the whole call tree). A streaming sha512.New() digest
+// would not improve on that: it is a heap object whose block buffer would
+// hold the seed, Reset does not clear that buffer, and it would need the
+// same reflection wipe the AES schedule needs — so the one-shot stays.
 //
 // Verification remains via crypto/ed25519.Verify — public keys are not
 // sensitive and have no FIPS-cache issue.
@@ -41,12 +53,22 @@ import (
 // 64 bytes for ML-KEM-768 ([MLKEM768Key] — see [crypto/mlkem.SeedSize]).
 var ErrBadSeedLength = errors.New("secmemcrypto: bad seed length")
 
+// ed25519NonceStackBytes is the longest message whose nonce pre-image
+// (the 32-byte secret prefix followed by the message) is assembled on the
+// stack rather than the heap. 4 KiB covers TLS and SSH transcripts and most
+// X.509 TBS structures, and stays well inside the 32 KiB band the legacy
+// Scrub wipes.
+const ed25519NonceStackBytes = 4096
+
 // signEd25519Direct signs message using the 32-byte Ed25519 seed, following
 // RFC 8032 §5.1.6 exactly. It produces signatures byte-identical to
 // crypto/ed25519.Sign.
 //
-// seed is read but never modified. All secret intermediates (the SHA-512
-// hash, the private scalar, the nonce scalar) are wiped before return.
+// seed is read but never modified. All secret intermediates this function
+// allocates (the SHA-512 hash, the private scalar, the nonce scalar, the
+// nonce pre-image) are wiped before return; the two stack copies of the
+// seed inside sha512.Sum512 are covered by the caller's Scrub window (see
+// the file comment).
 func signEd25519Direct(seed, message []byte) ([]byte, error) {
 	if len(seed) != ed25519.SeedSize {
 		return nil, fmt.Errorf("%w: got %d, want %d", ErrBadSeedLength, len(seed), ed25519.SeedSize)
@@ -73,11 +95,19 @@ func signEd25519Direct(seed, message []byte) ([]byte, error) {
 	// buffer with sha512.Sum512 (whose digest is a stack local) rather than a
 	// streaming sha512.New() hasher: the streaming hasher is a heap allocation
 	// that retains the written prefix in its unexported block buffer, which no
-	// wipe here can reach. The scratch is wiped immediately after. Leaking two
-	// nonce pre-images for the same key recovers the private scalar.
-	nonceInput := make([]byte, 32+len(message))
-	copy(nonceInput, h[32:])
-	copy(nonceInput[32:], message)
+	// wipe here can reach. The scratch lives on the stack for messages up to
+	// ed25519NonceStackBytes — the common case, and then nothing secret in
+	// this function touches the heap at all (classification_test.go pins Sign
+	// at one allocation, the signature) — and on the heap, wiped immediately
+	// after, for longer ones. Leaking two nonce pre-images for the same key
+	// recovers the private scalar.
+	var nonceStack [32 + ed25519NonceStackBytes]byte
+	nonceInput := nonceStack[:0]
+	if len(message) > ed25519NonceStackBytes {
+		nonceInput = make([]byte, 0, 32+len(message))
+	}
+	nonceInput = append(nonceInput, h[32:]...)
+	nonceInput = append(nonceInput, message...)
 	nonceDigest := sha512.Sum512(nonceInput)
 	secmem.SecureWipe(nonceInput)
 	r, err := edwards25519.NewScalar().SetUniformBytes(nonceDigest[:])

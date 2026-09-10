@@ -37,16 +37,34 @@ var errCandidateRejected = errors.New("candidate rejected")
 // stdlib's constant-time code already handles. Each Sign call instead
 // re-materializes the key on the Go heap via [ecdsa.ParseRawPrivateKey],
 // signs with the standard library, and zeroes the transient's D limbs
-// before dropping it. Copies stdlib makes internally — its FIPS-form key
-// (held in a package-level cache until the transient is collected) and
-// bigmod/nistec scratch values — are unreachable from here: on
-// GOEXPERIMENT=runtimesecret builds the surrounding [secmem.ScrubErr]
-// erases them; otherwise they are reclaimed by the garbage collector, not
-// explicitly zeroed. What ECDSASigner guarantees is custody at rest: the
-// durable, wipeable copy of the scalar lives only inside the SecureBuffer.
-// After a Sign, stdlib's cached FIPS-form copy persists on the ordinary
-// heap until the garbage collector collects the transient key, per the
-// cache behavior described above.
+// before dropping it.
+//
+// What that leaves on the heap, per operation, in go1.26 — none of it
+// reachable from here, and none of it zeroed on a build without
+// GOEXPERIMENT=runtimesecret:
+//
+//   - From the parse: a bigmod.Nat of the scalar and a FIPS-form key
+//     holding the scalar's bytes, both dropped as soon as the *PrivateKey
+//     is built (not cached; a fresh expansion each time).
+//   - From the sign: the scalar filled into a fresh []byte, a second
+//     FIPS-form key built from it, and a bigmod.Nat of the scalar inside
+//     the signature arithmetic. The FIPS-form key is stored in
+//     crypto/ecdsa's package-level cache (crypto/internal/fips140cache)
+//     keyed by a weak pointer to the transient *ecdsa.PrivateKey, and is
+//     evicted only after the collector finds that transient unreachable
+//     and runs its cleanup — one to two GC cycles after Sign returns.
+//     This module does not retain the transient between operations, which
+//     is what keeps that lifetime short; nothing can make it zero.
+//
+// On a runtimesecret build every one of those objects is allocated inside
+// the surrounding [secmem.ScrubErr] and erased by the runtime once
+// unreachable. On every other build (Windows, macOS, Linux without the
+// experiment) they are reclaimed by the collector, not zeroed, and the
+// cached copy is the longest-lived. What ECDSASigner guarantees is custody
+// at rest: the durable, wipeable copy of the scalar lives only inside the
+// SecureBuffer. The constructors consult [ErrHeapTransients]'s policy, so
+// that gating this type to runtimesecret builds is a one-line decision
+// (README, "What each signer actually buys you").
 //
 // The per-operation parse recomputes the public key (one scalar-base
 // multiplication), making a P-256 signature roughly half again as
@@ -93,6 +111,9 @@ func scalarSize(curve elliptic.Curve) int {
 // crypto/x509, copy the scalar into a SecureBuffer with D.FillBytes into
 // the borrowed slice, and wipe the parsed key's D limbs.
 func NewECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer) (*ECDSASigner, error) {
+	if err := checkHeapTransients("secmemcrypto: new ecdsa signer"); err != nil {
+		return nil, err
+	}
 	if curve == nil || !supportedCurve(curve) {
 		return nil, ErrUnsupportedCurve
 	}
@@ -149,6 +170,9 @@ func NewECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer) (*ECDS
 //
 // To persist the generated key, use [ECDSASigner.WithScalar].
 func GenerateECDSASigner(curve elliptic.Curve) (*ECDSASigner, error) {
+	if err := checkHeapTransients("secmemcrypto: generate ecdsa scalar"); err != nil {
+		return nil, err
+	}
 	if curve == nil || !supportedCurve(curve) {
 		return nil, ErrUnsupportedCurve
 	}

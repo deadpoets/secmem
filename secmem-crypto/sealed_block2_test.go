@@ -85,8 +85,10 @@ func TestMLKEM768_SealedBuffer(t *testing.T) {
 	if err := buf.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if _, err := k.EncapsulationKeyBytes(); !errors.Is(err, secmem.ErrSealed) {
-		t.Errorf("sealed EncapsulationKeyBytes: error = %v, want ErrSealed", err)
+	// The encapsulation key is public and cached at construction, so it
+	// stays readable while the seed is sealed (and reads no seed byte).
+	if sealedEK, err := k.EncapsulationKeyBytes(); err != nil || !bytes.Equal(sealedEK, ekBytes) {
+		t.Errorf("sealed EncapsulationKeyBytes: error = %v, want the cached key", err)
 	}
 	if _, err := k.Decapsulate(ct); !errors.Is(err, secmem.ErrSealed) {
 		t.Errorf("sealed Decapsulate: error = %v, want ErrSealed", err)

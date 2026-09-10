@@ -82,16 +82,7 @@ func aesFieldLayout(t reflect.Type, field string) (uintptr, int, error) {
 	if sf.Type.Kind() != reflect.Array || sf.Type.Elem().Kind() != reflect.Uint32 || sf.Type.Len() == 0 {
 		return 0, 0, fmt.Errorf("secmemcrypto: wipe aes block: %v.%s is %s on %s, want [N]uint32; the round keys were NOT wiped", t, field, sf.Type, runtime.Version())
 	}
-	// A promoted field's Offset is relative to the struct that declares it;
-	// walk the index path for the offset from the outermost struct.
-	var off uintptr
-	cur := st
-	for _, i := range sf.Index {
-		f := cur.Field(i)
-		off += f.Offset
-		cur = f.Type
-	}
-	return off, int(sf.Type.Size()), nil
+	return promotedFieldOffset(st, sf), int(sf.Type.Size()), nil
 }
 
 // aesRoundKeys returns a byte view of the named round-key array inside b,

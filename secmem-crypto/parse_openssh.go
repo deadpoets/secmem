@@ -10,7 +10,6 @@ import (
 	"crypto/elliptic"
 	"encoding/binary"
 	"fmt"
-	"math/big"
 	"math/bits"
 
 	"github.com/deadpoets/secmem"
@@ -277,14 +276,15 @@ const (
 // pkcs1DER assembles an RSAPrivateKey (RFC 8017 A.1.2) from the six integers
 // an OpenSSH file carries and returns it in a new SecureBuffer, ready for
 // NewRSASigner. The file does not hold the CRT exponents dp = d mod (p-1) and
-// dq = d mod (q-1) that PKCS#1 requires, so those two are computed with
-// math/big: the operands and results are heap big.Ints, wiped limb by limb on
-// return, while math/big's internal scratch is out of reach and is left to
-// the enclosing Scrub window and the collector. Everything else is written
-// from the wire bytes straight into the buffer, and dp and dq are filled into
-// their final position in it (FillBytes), so no further heap copy of any
-// integer is made here. The DER is byte-identical to x509.MarshalPKCS1PrivateKey's
-// for the same key (parse_openssh_test.go pins that).
+// dq = d mod (q-1) that PKCS#1 requires, so those two are computed here with
+// reduceMod (modreduce.go) over stack arrays inside the enclosing Scrub
+// window — not with math/big, whose division scratch is pooled and returned
+// unwiped. Everything else is written from the wire bytes straight into the
+// buffer, and dp and dq are copied into their final position in it; no heap
+// copy of any integer is made here, which the parser's allocation proof
+// (parse_proof_test.go) now covers for this container too. The DER is
+// byte-identical to x509.MarshalPKCS1PrivateKey's for the same key
+// (parse_openssh_test.go pins that).
 func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 	n, e, d, p, q, iqmp = stripZeros(n), stripZeros(e), stripZeros(d), stripZeros(p), stripZeros(q), stripZeros(iqmp)
 	if len(n) == 0 || len(e) == 0 || len(d) == 0 || len(p) == 0 || len(q) == 0 || len(iqmp) == 0 {
@@ -299,28 +299,30 @@ func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 		return nil, fmt.Errorf("%w: RSA public exponent", errMalformed)
 	}
 
-	bd := new(big.Int).SetBytes(d)
-	bp := new(big.Int).SetBytes(p)
-	bq := new(big.Int).SetBytes(q)
-	pm1 := new(big.Int).Sub(bp, big.NewInt(1))
-	qm1 := new(big.Int).Sub(bq, big.NewInt(1))
-	dp := new(big.Int)
-	dq := new(big.Int)
+	// p-1, q-1, dp and dq, each the width of its prime, on the stack.
+	var pm1, qm1, dpBuf, dqBuf [rsaMaxPrimeBits / 8]byte
 	defer func() {
-		for _, x := range []*big.Int{bd, bp, bq, pm1, qm1, dp, dq} {
-			wipeBigInt(x)
-		}
+		secmem.SecureWipe(pm1[:])
+		secmem.SecureWipe(qm1[:])
+		secmem.SecureWipe(dpBuf[:])
+		secmem.SecureWipe(dqBuf[:])
 	}()
-	if pm1.Sign() <= 0 || qm1.Sign() <= 0 {
+	// A prime below 2 has no p-1 to reduce by; the standard library rejects
+	// the key later anyway, but the reduction must not be asked for m = 0.
+	if !decrementBE(pm1[:len(p)], p) || !decrementBE(qm1[:len(q)], q) ||
+		len(stripZeros(pm1[:len(p)])) == 0 || len(stripZeros(qm1[:len(q)])) == 0 {
 		return nil, errMalformed
 	}
-	dp.Mod(bd, pm1)
-	dq.Mod(bd, qm1)
+	if !reduceMod(dpBuf[:len(p)], d, pm1[:len(p)]) || !reduceMod(dqBuf[:len(q)], d, qm1[:len(q)]) {
+		return nil, errMalformed
+	}
+	dp := stripZeros(dpBuf[:len(p)])
+	dq := stripZeros(dqBuf[:len(q)])
 
 	fields := [9]derInt{
 		{}, // version 0
 		{raw: n}, {raw: e}, {raw: d}, {raw: p}, {raw: q},
-		{big: dp}, {big: dq}, {raw: iqmp},
+		{raw: dp}, {raw: dq}, {raw: iqmp},
 	}
 	content := 0
 	for _, f := range fields {
@@ -351,21 +353,16 @@ func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 	return out, nil
 }
 
-// derInt is one INTEGER of the RSAPrivateKey: either a stripped big-endian
-// magnitude aliasing the file, or a computed big.Int. The zero value encodes
-// the integer 0.
+// derInt is one INTEGER of the RSAPrivateKey: a stripped big-endian
+// magnitude aliasing the file or a stack array. The zero value encodes the
+// integer 0.
 type derInt struct {
 	raw []byte
-	big *big.Int
 }
 
 // magnitude returns the byte length of the value and whether its top bit is
 // set (which DER's two's-complement INTEGER answers with a leading 0x00).
 func (x derInt) magnitude() (nbytes int, high bool) {
-	if x.big != nil {
-		bl := x.big.BitLen()
-		return (bl + 7) / 8, bl > 0 && bl%8 == 0
-	}
 	return len(x.raw), len(x.raw) > 0 && x.raw[0]&0x80 != 0
 }
 
@@ -434,11 +431,6 @@ func (w *derWriter) putInteger(x derInt) {
 	}
 	if high {
 		w.putByte(0)
-	}
-	if x.big != nil {
-		x.big.FillBytes(w.b[w.off : w.off+nbytes])
-		w.off += nbytes
-		return
 	}
 	w.off += copy(w.b[w.off:], x.raw)
 }
