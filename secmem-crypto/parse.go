@@ -112,17 +112,25 @@ var (
 // an error wrapping [ErrEncryptedKey] (see [ParsePrivateKeyWithPassphrase]);
 // other kinds, [ErrUnsupportedKey]. Errors never quote the input.
 //
-// What touches the heap: the PEM type, the algorithm identifiers, the public
-// key, and the returned error — none secret. The decoded key structure lives
-// in a SecureBuffer for the duration of the call and is wiped before return;
-// the seed, scalar, or DER the signer keeps is copied into it directly. The
-// one exception is an OpenSSH-format RSA key: its CRT exponents dp and dq are
-// not in the file and are computed with math/big on the heap, then wiped
-// limb by limb; the standard library's own scratch for that arithmetic is
-// out of reach and is left to [secmem.ScrubErr] (the whole parse runs inside
-// one) and the collector. Every RSA key is additionally parsed once more by
-// crypto/x509 inside [NewRSASigner], with the transient wiped as that
-// function documents.
+// What the parser itself puts on the heap: the PEM type, the algorithm
+// identifiers, the public key, and the returned error — none secret. The
+// decoded key structure lives in a SecureBuffer for the duration of the
+// call and is wiped before return; the seed, scalar, or DER the signer
+// keeps is copied into it directly, and an OpenSSH-format RSA key's CRT
+// exponents, which the file omits, are computed over stack arrays
+// (modreduce.go) rather than with math/big. parse_proof_test.go pins that
+// for every container.
+//
+// What the signer constructors then put on the heap is theirs, and is not
+// nothing: [NewECDSASigner] runs [ecdsa.ParseRawPrivateKey], which builds a
+// bigmod.Nat and a FIPS-form key holding the scalar, and then a big.Int D
+// that is wiped; the first two are dropped unreachable. [NewRSASigner]
+// parses the DER once more with crypto/x509 into big.Ints and a FIPS-form
+// key, both wiped, leaving the []byte copies its type doc lists.
+// [NewEd25519Signer] derives the public key on the stack and through one
+// wiped scalar. The whole parse runs inside one [secmem.ScrubErr], so on a
+// GOEXPERIMENT=runtimesecret build the dropped objects are erased by the
+// runtime; elsewhere they are left to the collector.
 //
 // data is the caller's: it is neither wiped nor retained. Read the file into a
 // SecureBuffer with [secmem.NewBufferFromReader] and call this from inside its

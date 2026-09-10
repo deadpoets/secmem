@@ -204,9 +204,23 @@ func TestMLKEM768_NilAndDestroyed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
+	before, err := live.EncapsulationKeyBytes()
+	if err != nil {
+		t.Fatalf("EncapsulationKeyBytes: %v", err)
+	}
 	_ = live.Destroy()
-	if _, err := live.EncapsulationKeyBytes(); err == nil {
-		t.Error("EncapsulationKeyBytes after Destroy should error")
+	// The encapsulation key is public and captured at construction, so it
+	// survives Destroy like Ed25519Signer.Public — and does not re-expand.
+	after, err := live.EncapsulationKeyBytes()
+	if err != nil || !bytes.Equal(before, after) {
+		t.Errorf("EncapsulationKeyBytes after Destroy = %v, want the cached key", err)
+	}
+	after[0] ^= 1
+	if again, _ := live.EncapsulationKeyBytes(); !bytes.Equal(again, before) {
+		t.Error("EncapsulationKeyBytes returned an alias of its cache")
+	}
+	if _, err := live.Decapsulate(make([]byte, mlkem.CiphertextSize768)); !errors.Is(err, secmem.ErrDestroyed) {
+		t.Errorf("Decapsulate after Destroy error = %v", err)
 	}
 	if err := live.Destroy(); err != nil {
 		t.Errorf("double Destroy not idempotent: %v", err)

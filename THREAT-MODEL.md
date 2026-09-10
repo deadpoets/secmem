@@ -325,10 +325,16 @@ and is not.
   post-quantum protocol.** `MLKEM768Key` keeps the 64-byte KEM seed off the
   GC heap for its lifetime and expands it per operation; it does not perform
   key agreement, negotiate parameters, or make a surrounding protocol
-  quantum-resistant on its own. The expanded decapsulation key transiently
-  touches the heap during each operation — `crypto/mlkem` exposes no in-place
-  path — so the seed is hardened at rest and the expansion is not. The type's
-  godoc states this inline.
+  quantum-resistant on its own. `crypto/mlkem` exposes no in-place path, so
+  each `Decapsulate` (and construction, once) expands the seed into a heap
+  key that holds the seed verbatim and the secret polynomial `s`; that
+  object is wiped by reflection through its unexported fields before the
+  call returns, with a tripwire test on the layout and a call that fails
+  closed. What remains on the heap — the SHA3/SHAKE states that absorbed
+  the seed halves and the recovered message — is erased by the runtime on
+  a `GOEXPERIMENT=runtimesecret` build and left to the collector elsewhere.
+  The type's godoc states this inline, and the module README classifies
+  every entry point the same way.
 
 - **The urgent PQ threat is a transport concern secmem does not own.**
   "Harvest now, decrypt later" — recording ciphertext today to break with a

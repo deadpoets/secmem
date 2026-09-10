@@ -152,6 +152,29 @@ mark the stability commitment.
   and covers `ArenaSlot.Release` and the arena's exclusive-lock methods
   (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow.
 
+- **`secmem-crypto`: every entry point is classified, and the README says
+  what each signer buys you.** The module's headline claimed key material
+  stays in a `SecureBuffer` "for the whole of the operation"; that is true of
+  Ed25519 signing, the parsers, the KDFs and AEAD helpers that write in
+  place, and false — admitted a paragraph later — of everything that hands a
+  copy to a standard-library primitive. The README now carries a class per
+  entry point (**contained**, or **runtimesecret-only**: contained on
+  linux/amd64|arm64 with `GOEXPERIMENT=runtimesecret`, transient on the heap
+  everywhere else), a table of what is protected at rest and what copies
+  each operation leaves on each kind of build after the fixes below, and a
+  recommendation on `RSASigner` and `ECDSASigner` for legacy builds.
+  `classification_test.go` pins the classes: `SealFrom` at zero allocations,
+  `Ed25519Signer.Sign` at exactly one (the signature) for messages up to
+  4 KiB, the standard-library-backed paths as allocating.
+
+- **`secmem-crypto`: `ErrHeapTransients`, an unused gate.** The constructors
+  of `RSASigner` and `ECDSASigner` consult a package-level policy that is
+  permissive in this release. Flipping it to `secmem.RuntimeSecretActive`
+  refuses both types with this error on any build where their per-operation
+  heap copies are never erased; the decision is recorded in the README and
+  left to the maintainers, and the error exists now so callers can test for
+  it before it is ever returned.
+
 ### Changed
 
 - **`secmem/httpauth`: the credential is no longer sent over cleartext http
@@ -248,6 +271,76 @@ mark the stability commitment.
   longer calls the wipe "architecture-specific assembly" on every platform;
   and the `SecureBuffer` header lists every method that takes the exclusive
   lock instead of claiming only `Destroy` does.
+
+- **`secmem-crypto`: `MLKEM768Key` wipes the expanded key, and the
+  encapsulation key is cached.** The type doc said the seed "lives in a
+  SecureBuffer for its entire lifetime" and only the expanded key touched
+  the heap. In go1.26 that expansion — the `crypto/internal/fips140/mlkem`
+  key `NewDecapsulationKey768` allocates — stores the seed halves d and z
+  verbatim and the secret polynomial `s`, so every operation put the seed on
+  the heap and left it there. The expansion is now wiped by reflection
+  through its unexported fields after construction and after every
+  `Decapsulate`, with a tripwire test pinning the layout (`dk.Bytes()` reads
+  zero and the key no longer decapsulates afterwards) and a call that returns
+  an error rather than succeeding over a live copy. The 1184-byte
+  encapsulation key is public and is computed once at construction:
+  `EncapsulationKeyBytes` no longer expands the seed, and — like
+  `Ed25519Signer.Public` — keeps working after `Destroy` and while the seed
+  is sealed, where it used to return `ErrDestroyed` / `ErrSealed`. The doc
+  now names what still transits the heap: crypto/mlkem's SHA3/SHAKE states
+  and the recovered message, erased by the runtime on a runtimesecret build
+  and left to the collector elsewhere.
+
+- **`secmem-crypto`: `RSASigner` wipes the standard library's FIPS-form
+  key, and a wipe it cannot perform is an error.** The type doc said the
+  unexported FIPS-form key inside `Precomputed` was "not reachable"; it is
+  reachable the same way the AES schedule and the ECDH scalar already were,
+  and it holds a second copy of every secret integer as `bigmod` limbs —
+  d and qInv, p and q with the Montgomery constants derived from them, dP
+  and dQ — which every `Sign` uses and nothing zeroed. `wipeRSAPrivateKey`
+  now reaches it by reflection, with a tripwire test that uses
+  `crypto/rsa`'s own `Validate` consistency check as the independent oracle,
+  and returns an error when the layout is not the one it expects; `Sign`,
+  `NewRSASigner` and `GenerateRSASigner` fold that error into their result
+  instead of reporting success over a live key. The doc now lists what
+  remains — the parse's `big.Int.Bytes()` copies, `Validate`'s comparison
+  copies, and the signature's Montgomery scratch — and corrects the claim
+  that `math/big` scratch is "left to `ScrubErr` and the collector":
+  `math/big`'s division scratch is a `sync.Pool` returned unwiped, which
+  stays reachable, so `runtime/secret` does not erase it either. Two-prime
+  keys no longer touch it at all (next entry); a deprecated multi-prime key
+  still does, and the doc says so.
+
+- **`secmem-crypto`: an OpenSSH RSA key's CRT exponents are computed over
+  stack arrays, not with `math/big`.** `pkcs1DER` derived dp and dq with
+  `big.Int.Mod`, pushing limbs of d, p and q through the pooled scratch
+  above. It now uses a shift-and-subtract reduction (`modreduce.go`, about
+  a hundred lines, one conditional subtraction per bit of d, no
+  value-dependent branches) over fixed-size stack arrays inside the parse's
+  Scrub window, wiped before return; the differential test compares it
+  against `math/big` on random operands across the accepted size range and
+  the edges, and the parser's allocation proof now covers the OpenSSH RSA
+  container it used to exclude. The DER is unchanged byte for byte.
+
+- **`secmem-crypto`: Ed25519 signing assembles the nonce pre-image on the
+  stack.** The 32-byte secret prefix and the message were concatenated into
+  a heap slice (wiped) for every signature; for messages up to 4 KiB that
+  now happens in a stack array inside the Scrub window, so a signature makes
+  exactly one heap allocation — the signature. The file doc also corrects
+  "the seed itself is never copied": it is copied twice on the stack inside
+  `sha512.Sum512`, in frames the window wipes, and says why a streaming
+  digest would be worse (a heap block buffer that `Reset` does not clear).
+
+- **`secmem-crypto`: the parser and `ECDSASigner` docs are true.**
+  `ParsePrivateKey` said only non-secret material touched the heap with one
+  exception; every EC path ends in `ecdsa.ParseRawPrivateKey`, which builds
+  a `bigmod.Nat` and a FIPS-form key holding the scalar before the `big.Int`
+  the module wipes. The `ECDSASigner` doc now lists every copy `Sign` leaves
+  in go1.26, including the FIPS-form key `crypto/ecdsa` keeps in a
+  package-level weak-pointer cache until the collector evicts it — not
+  reachable from any wipe, kept short-lived by not retaining the transient
+  between operations, and named as the longest-lived residue on a legacy
+  build.
 
 ### Fixed
 

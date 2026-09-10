@@ -26,9 +26,9 @@ import (
 // signer constructors (ed25519.go, ecdsa.go, rsa.go) are those types'
 // documented business, not the parser's.
 //
-// The OpenSSH RSA container is excluded on purpose: pkcs1DER computes the
-// CRT exponents with math/big and says so in its doc — that path is
-// covered by the DER identity test, not by this proof.
+// The OpenSSH RSA container is included: pkcs1DER computes the CRT
+// exponents over stack arrays (modreduce.go), so a heap copy there is a
+// regression this proof must catch.
 //
 // A stray copy — a seed cloned into a []byte, a scalar formatted into an
 // error, an escaping closure — shows up here as a named allocation site.
@@ -39,9 +39,6 @@ func TestParsePrivateKey_ParserAllocatesNoSecret(t *testing.T) {
 
 	for _, k := range parseTestKeys(t) {
 		for _, enc := range encodings(t, k) {
-			if k.pkcs1 && strings.HasPrefix(enc.name, "openssh") {
-				continue
-			}
 			t.Run(k.name+"/"+enc.name, func(t *testing.T) {
 				// One warm-up parse so lazily initialised state (curve
 				// tables, the secmem registry, profiler buckets) is not

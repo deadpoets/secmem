@@ -27,17 +27,44 @@ import (
 // Honesty caveat — transient materialization, at RSA scale: every Sign call
 // parses the DER into a full *rsa.PrivateKey on the Go heap — D, both
 // primes, and the CRT exponents as big.Ints, plus the standard library's
-// internal FIPS-form key — signs with the standard library, then zeroes
-// every exported big.Int limb before dropping the key. The internal FIPS
-// form and stdlib's modular-arithmetic scratch are unreachable from here:
-// on GOEXPERIMENT=runtimesecret builds the surrounding [secmem.ScrubErr]
-// erases them; otherwise they are reclaimed by the garbage collector, not
-// explicitly zeroed. RSA has no compact secret form — no 32-byte seed to
-// guard — so custody at rest means custody of the whole DER blob, and the
+// FIPS-form key (a second copy of every secret integer as bigmod limbs,
+// which x509's parser builds and every Sign uses) — signs with the standard
+// library, then wipes both: the FIPS-form key by reflection through its
+// unexported fields (rsawipe.go; the layout is pinned by a tripwire test
+// and Sign returns an error, not a signature, when it cannot be located)
+// and every exported big.Int limb by hand.
+//
+// What that leaves on the heap, per operation, in go1.26 — unreachable
+// from here, and not zeroed on a build without GOEXPERIMENT=runtimesecret:
+//
+//   - The parse's big-endian []byte copies of N, D, P, Q, Dp, Dq and Qinv
+//     that crypto/rsa makes with big.Int.Bytes to build the FIPS-form key
+//     (Dp and Dq are retained inside it and so are wiped; the other five
+//     are dropped once converted), and the []byte that Validate fills
+//     from each big.Int to compare the two forms.
+//   - The modular-arithmetic scratch of the signature itself: bigmod Nats
+//     holding the blinded message, the two CRT half-exponentiations and
+//     the Montgomery tables built from p and q.
+//
+// math/big's pooled division scratch is not among them: for a two-prime
+// key nothing on this path divides, and the one derivation this module
+// performs itself — the CRT exponents of an OpenSSH-format key — is
+// computed over stack arrays (modreduce.go). A deprecated multi-prime key
+// is the exception: crypto/rsa derives its CRT values with math/big, whose
+// scratch is returned to a sync.Pool unwiped.
+//
+// On a runtimesecret build every one of those objects is allocated inside
+// the surrounding [secmem.ScrubErr] and erased by the runtime once
+// unreachable; on every other build they are reclaimed by the collector,
+// not zeroed. RSA has no compact secret form — no 32-byte seed to guard —
+// so custody at rest means custody of the whole DER blob, and the
 // per-operation heap exposure is proportionally larger than
 // [ECDSASigner]'s. If transient heap copies of the full private key are
 // outside your threat model's tolerance, keep RSA keys in an HSM or KMS;
-// this type's job is to be honest about that line, not to blur it.
+// this type's job is to be honest about that line, not to blur it. The
+// constructors consult [ErrHeapTransients]'s policy, so that gating this
+// type to runtimesecret builds is a one-line decision (README, "What each
+// signer actually buys you").
 //
 // Each Sign re-runs DER parsing, key validation, and CRT precomputation —
 // the price of not keeping a live heap key; the benchmarks measure it. The
@@ -72,6 +99,9 @@ type RSASigner struct {
 // than 1024 bits at Sign time (see the crypto/rsa package documentation,
 // including the rsa1024min GODEBUG escape hatch for tests).
 func NewRSASigner(derBuf *secmem.SecureBuffer) (*RSASigner, error) {
+	if err := checkHeapTransients("secmemcrypto: new rsa signer"); err != nil {
+		return nil, err
+	}
 	if derBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -84,7 +114,7 @@ func NewRSASigner(derBuf *secmem.SecureBuffer) (*RSASigner, error) {
 		pkcs8 bool
 	)
 	err := secmem.ScrubErr(func() error {
-		return derBuf.WithBytesErr(func(der []byte) error {
+		return derBuf.WithBytesErr(func(der []byte) (err error) {
 			key, perr := parseRSAPrivateKey(der, false)
 			if perr != nil {
 				var p8err error
@@ -94,7 +124,7 @@ func NewRSASigner(derBuf *secmem.SecureBuffer) (*RSASigner, error) {
 				}
 				pkcs8 = true
 			}
-			defer wipeRSAPrivateKey(key)
+			defer func() { err = errors.Join(err, wipeRSAPrivateKey(key)) }()
 			// Copy the embedded struct out so nothing retains the transient
 			// *PrivateKey — holding &key.PublicKey would keep the whole key,
 			// including its internal FIPS form, reachable forever.
@@ -114,21 +144,25 @@ func NewRSASigner(derBuf *secmem.SecureBuffer) (*RSASigner, error) {
 //
 // Honesty caveat: RSA key generation is inherently a heap operation —
 // candidate primes, primality-test scratch, and the finished key all
-// materialize in ordinary memory, and only the finished key's exported
-// limbs and the DER copy can be wiped from here (the rest is erased by
-// [secmem.ScrubErr] on GOEXPERIMENT=runtimesecret builds, otherwise
-// GC-reclaimed, not zeroed). If that one-time window matters to your threat
-// model, generate RSA keys in an HSM/KMS and import the DER instead.
+// materialize in ordinary memory, and only the finished key — its exported
+// big.Int limbs, its FIPS-form copy, and the DER — can be wiped from here
+// (the rest is erased by [secmem.ScrubErr] on GOEXPERIMENT=runtimesecret
+// builds, otherwise GC-reclaimed, not zeroed). If that one-time window
+// matters to your threat model, generate RSA keys in an HSM/KMS and import
+// the DER instead.
 //
 // The standard library rejects bits < 1024.
 func GenerateRSASigner(bits int) (*RSASigner, error) {
+	if err := checkHeapTransients("secmemcrypto: generate rsa key"); err != nil {
+		return nil, err
+	}
 	var buf *secmem.SecureBuffer
-	err := secmem.ScrubErr(func() error {
+	err := secmem.ScrubErr(func() (err error) {
 		key, gerr := rsa.GenerateKey(rand.Reader, bits)
 		if gerr != nil {
 			return gerr
 		}
-		defer wipeRSAPrivateKey(key)
+		defer func() { err = errors.Join(err, wipeRSAPrivateKey(key)) }()
 		// NewBuffer zeroes its source slice after copying — but only on
 		// success. On failure (no lockable memory, mlock limit) the DER is a
 		// complete private key stranded on the plain heap; wipe it ourselves.
@@ -188,12 +222,12 @@ func (s *RSASigner) Sign(random io.Reader, digest []byte, opts crypto.SignerOpts
 	}
 	var sig []byte
 	err := secmem.ScrubErr(func() error {
-		return s.derBuf.WithBytesErr(func(der []byte) error {
+		return s.derBuf.WithBytesErr(func(der []byte) (err error) {
 			priv, perr := parseRSAPrivateKey(der, s.pkcs8)
 			if perr != nil {
 				return perr
 			}
-			defer wipeRSAPrivateKey(priv)
+			defer func() { err = errors.Join(err, wipeRSAPrivateKey(priv)) }()
 			var serr error
 			sig, serr = priv.Sign(random, digest, opts)
 			return serr
@@ -328,19 +362,21 @@ var wipeECDHPrivateKey = func(k *ecdh.PrivateKey) error {
 	return nil
 }
 
-// wipeRSAPrivateKey zeroes the secret limbs of a transiently materialized
-// *rsa.PrivateKey: D, the primes, and every CRT precomputation big.Int.
-// The public N/E are left intact (callers may have copied the embedded
-// PublicKey, which shares N). The unexported FIPS-form key inside
-// Precomputed is not reachable; see the RSASigner type comment.
+// wipeRSAPrivateKey zeroes the secret material of a transiently
+// materialized *rsa.PrivateKey: the FIPS-form key inside Precomputed
+// (wipeRSAFIPSKey, by reflection — its error is returned, and means the
+// key is still live on the heap), then D, the primes, and every CRT
+// precomputation big.Int. The public N/E are left intact (callers may have
+// copied the embedded PublicKey, which shares N).
 //
 // Like [wipeECDSAPrivateKey] it is a package var so a test can wrap it to
 // prove Sign's deferred wipe fires on the live transient; production always
 // runs the value defined here.
-var wipeRSAPrivateKey = func(key *rsa.PrivateKey) {
+var wipeRSAPrivateKey = func(key *rsa.PrivateKey) error {
 	if key == nil {
-		return
+		return nil
 	}
+	err := wipeRSAFIPSKey(key)
 	wipeBigInt(key.D)
 	for _, p := range key.Primes {
 		wipeBigInt(p)
@@ -359,4 +395,5 @@ var wipeRSAPrivateKey = func(key *rsa.PrivateKey) {
 		wipeBigInt(crt[i].R)
 	}
 	runtime.KeepAlive(key)
+	return err
 }

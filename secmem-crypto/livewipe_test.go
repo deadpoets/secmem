@@ -72,7 +72,7 @@ func TestRSASigner_SignWipesLiveTransient(t *testing.T) {
 	var fired bool
 	var dLimbs, pLimbs, qLimbs []big.Word
 	orig := wipeRSAPrivateKey
-	wipeRSAPrivateKey = func(key *rsa.PrivateKey) {
+	wipeRSAPrivateKey = func(key *rsa.PrivateKey) error {
 		fired = true
 		if key != nil {
 			if key.D != nil {
@@ -83,7 +83,7 @@ func TestRSASigner_SignWipesLiveTransient(t *testing.T) {
 				qLimbs = key.Primes[1].Bits()
 			}
 		}
-		orig(key)
+		return orig(key)
 	}
 	defer func() { wipeRSAPrivateKey = orig }()
 
