@@ -23,9 +23,31 @@
 // [secmem.SecureWipe] before the window closes. After the request completes
 // the header is deleted from the request the transport sent, so the only
 // reference to the value is dropped as early as this package can drop it.
-// Out of reach entirely: the bytes the underlying transport wrote to the
-// connection's write buffer and to any TLS record buffer, and anything a
-// Base transport that logs or caches requests keeps for itself.
+//
+// Out of reach entirely — copies net/http makes that this package can
+// neither wipe nor drop:
+//
+//   - The bytes written to the connection's bufio.Writer and to the TLS
+//     record buffer. Both are reused for the next request on the connection
+//     and overwritten then, not before.
+//   - HTTP/2 HPACK state. The bundled http2 client hands every header field
+//     to the HPACK encoder without marking it Sensitive, so
+//     "authorization: Bearer …" is INSERTED INTO THE CONNECTION'S DYNAMIC
+//     TABLE (4 KB by default) and stays there until enough later fields
+//     evict it — on a pooled connection that can be the life of the
+//     process. The encoder's scratch buffer holds the encoded field until
+//     the next request on that connection overwrites it. [ForceHTTP1]
+//     configures a Base transport that never negotiates h2, for callers who
+//     want the shorter lifetime more than they want multiplexing.
+//   - The header-writer's pooled sorter. HTTP/1 header writing sorts the
+//     Header map's key/value slices through a sync.Pool-backed sorter; the
+//     []string holding the credential stays reachable from that pool entry
+//     until the sorter is reused, which is the next header write on any
+//     connection in the process.
+//   - An [net/http/httptrace.ClientTrace] with WroteHeaderField set is handed
+//     the value as a string, and keeps whatever it keeps.
+//   - Anything a Base transport that logs or caches requests keeps for
+//     itself.
 //
 // The redirect footgun: this transport sits BELOW [net/http.Client]. The
 // Client's rule of dropping Authorization on a cross-domain redirect applies
@@ -36,12 +58,22 @@
 // it empty only when the client never follows redirects or the API never
 // issues one.
 //
+// The downgrade footgun: a host filter is scheme-blind unless told
+// otherwise, and a redirect from https://api.example.com to
+// http://api.example.com passes it. The credential is therefore never
+// injected into a request whose scheme is not https unless the caller opts
+// in — with [Transport.AllowInsecureHTTP] for every host, or with an
+// "http://host" entry in Hosts for one — and a cleartext request to an
+// admitted host fails with [ErrInsecureScheme] rather than going out
+// without the header, so the downgrade is visible instead of a puzzling 401.
+//
 // The package is stdlib + secmem only. A Transport is safe for concurrent
 // use once constructed; its fields must not be modified while requests are
 // in flight.
 package httpauth
 
 import (
+	"crypto/tls"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -63,6 +95,11 @@ var ErrNilRequest = errors.New("httpauth: nil request")
 // server splits user-pass at the first colon, so such a name cannot be
 // transmitted correctly and is refused rather than sent wrong.
 var ErrBasicUsername = errors.New("httpauth: basic username must not contain ':'")
+
+// ErrInsecureScheme is returned by [Transport.RoundTrip] when the request is
+// for a host the credential is meant for but its URL scheme is not https and
+// nothing opted in to cleartext. The request is not sent.
+var ErrInsecureScheme = errors.New("httpauth: refusing to send the credential over cleartext http (set AllowInsecureHTTP, or list the host as \"http://host\" to opt in)")
 
 // defaultHeader is the header set when [Transport.Header] is empty.
 const defaultHeader = "Authorization"
@@ -98,7 +135,23 @@ type Transport struct {
 	// never follows redirects or the API never redirects: this transport sits
 	// BELOW http.Client, so the Client's own rule of dropping Authorization on
 	// a cross-domain redirect does not apply to what is injected here.
+	//
+	// An entry may carry a scheme. "https://api.example.com" admits only
+	// https requests to that host; "http://localhost:8080" admits only
+	// cleartext ones, and is the per-host opt-in for them. A bare
+	// "api.example.com" admits https, and http only when AllowInsecureHTTP is
+	// set. A request to a listed host whose scheme no entry admits fails with
+	// ErrInsecureScheme; a request to an unlisted host is forwarded to Base
+	// untouched.
 	Hosts []string
+
+	// AllowInsecureHTTP permits injecting the credential into a request whose
+	// URL scheme is not https, for every host the filter admits. Off by
+	// default: without it a plain http URL, or an https→http redirect on an
+	// admitted host, fails with ErrInsecureScheme instead of sending the
+	// token in cleartext. Prefer an "http://host" entry in Hosts, which opts
+	// in one host rather than all of them.
+	AllowInsecureHTTP bool
 
 	// basic is set by NewBasic: the value is base64(basicUser + ":" + Token)
 	// with a "Basic " prefix, rather than Prefix + Token.
@@ -146,17 +199,53 @@ func NewBasic(username string, password *secmem.SecureBuffer, base http.RoundTri
 	}
 }
 
+// ForceHTTP1 returns a copy of base — of http.DefaultTransport when base is
+// nil — that negotiates HTTP/1.1 only, for use as [Transport.Base] by
+// callers who want the credential kept out of HTTP/2's per-connection HPACK
+// dynamic table (see the package doc). It clears ForceAttemptHTTP2, sets an
+// empty TLSNextProto map (net/http's documented way to disable its bundled
+// http2), and drops "h2" from the TLS config's advertised protocols so the
+// server cannot select it either. base itself is not modified.
+func ForceHTTP1(base *http.Transport) *http.Transport {
+	var t *http.Transport
+	switch {
+	case base != nil:
+		t = base.Clone()
+	default:
+		if dt, ok := http.DefaultTransport.(*http.Transport); ok {
+			t = dt.Clone()
+		} else {
+			t = &http.Transport{Proxy: http.ProxyFromEnvironment}
+		}
+	}
+	t.ForceAttemptHTTP2 = false
+	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	if t.TLSClientConfig != nil && len(t.TLSClientConfig.NextProtos) > 0 {
+		kept := t.TLSClientConfig.NextProtos[:0:0]
+		for _, p := range t.TLSClientConfig.NextProtos {
+			if p != "h2" {
+				kept = append(kept, p)
+			}
+		}
+		t.TLSClientConfig.NextProtos = kept
+	}
+	return t
+}
+
 // RoundTrip implements [http.RoundTripper]. It clones req, sets the credential
 // header on the clone when the host filter admits it, and forwards the clone
 // to Base. The header is deleted from the clone (which the response's Request
 // field points at) once Base returns, whether or not it succeeded.
 //
 // A request whose host is excluded by [Transport.Hosts] is forwarded to Base
-// unchanged and the Token is not touched.
+// unchanged and the Token is not touched. A request for an admitted host
+// over a scheme other than https fails with [ErrInsecureScheme] unless
+// [Transport.AllowInsecureHTTP] or an "http://" Hosts entry opted in; it is
+// not sent.
 //
-// Errors: [ErrNilRequest]; [ErrNoToken] for a nil Token; an error wrapping
-// [secmem.ErrDestroyed] or [secmem.ErrSealed] for a Token in that state;
-// [ErrBasicUsername]; otherwise whatever Base returns.
+// Errors: [ErrNilRequest]; [ErrInsecureScheme]; [ErrNoToken] for a nil
+// Token; an error wrapping [secmem.ErrDestroyed] or [secmem.ErrSealed] for a
+// Token in that state; [ErrBasicUsername]; otherwise whatever Base returns.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t == nil {
 		return nil, errors.New("httpauth: RoundTrip on a nil *Transport")
@@ -164,8 +253,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if req == nil {
 		return nil, ErrNilRequest
 	}
-	if !t.admits(req) {
+	switch t.decide(req) {
+	case forward:
 		return t.base().RoundTrip(req)
+	case refuse:
+		return nil, ErrInsecureScheme
 	}
 	if t.Token == nil {
 		return nil, ErrNoToken
@@ -211,21 +303,67 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	return resp, rerr
 }
 
-// admits reports whether req's host passes the Hosts filter. An empty filter
-// admits everything.
-func (t *Transport) admits(req *http.Request) bool {
+// decision is what RoundTrip does with a request.
+type decision int
+
+const (
+	inject  decision = iota // admitted host, acceptable scheme
+	forward                 // host not listed: pass through untouched
+	refuse                  // admitted host, cleartext scheme, no opt-in
+)
+
+// decide applies the Hosts filter and the scheme rule. With an empty filter
+// every host is admitted and only the scheme is checked. Otherwise every
+// entry whose host matches gets to admit the request's scheme; if none does
+// but at least one matched the host, the request is refused rather than
+// forwarded bare, so a downgrade fails loudly.
+func (t *Transport) decide(req *http.Request) decision {
+	var scheme, host string
+	if req.URL != nil {
+		scheme = strings.ToLower(req.URL.Scheme)
+		host = req.URL.Host
+	}
+	secure := scheme == "https"
 	if len(t.Hosts) == 0 {
-		return true
+		if secure || t.AllowInsecureHTTP {
+			return inject
+		}
+		return refuse
 	}
 	if req.URL == nil {
-		return false
+		return forward
 	}
-	for _, h := range t.Hosts {
-		if strings.EqualFold(req.URL.Host, h) {
-			return true
+	matched := false
+	for _, entry := range t.Hosts {
+		entryScheme, entryHost := splitHostEntry(entry)
+		if !strings.EqualFold(host, entryHost) {
+			continue
+		}
+		matched = true
+		switch entryScheme {
+		case "":
+			if secure || t.AllowInsecureHTTP {
+				return inject
+			}
+		case scheme:
+			return inject
 		}
 	}
-	return false
+	if matched {
+		return refuse
+	}
+	return forward
+}
+
+// splitHostEntry separates an optional "scheme://" prefix from a Hosts
+// entry. The scheme is returned lower-cased; a trailing "/" on the host is
+// dropped so "https://api.example.com/" reads as intended.
+func splitHostEntry(entry string) (scheme, host string) {
+	if i := strings.Index(entry, "://"); i >= 0 {
+		scheme = strings.ToLower(entry[:i])
+		entry = entry[i+3:]
+	}
+	return scheme, strings.TrimSuffix(entry, "/")
 }
 
 // base returns the RoundTripper that performs requests.

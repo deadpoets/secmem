@@ -131,7 +131,7 @@ func TestGenerateDicewarePassphrase_OneWordNoSeparator(t *testing.T) {
 
 	_ = buf.WithBytesErr(func(b []byte) error {
 		if strings.Contains(string(b), " ") { //nolint:secmem-lint // test checks the single-word output contains no separator
-			t.Errorf("n=1 output contains a space: %q", b)
+			t.Errorf("n=1 output contains a space: %q", b) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 		return nil
 	})

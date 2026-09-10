@@ -49,3 +49,33 @@ func handedOffOK() {
 }
 
 func consume(b *secmem.SecureBuffer) { _ = b.Destroy() }
+
+// --- unresolvable borrowing closures ---
+
+var sink []byte
+
+func wrap(f func([]byte)) func([]byte) { return f }
+
+type callbacks struct{ fn func([]byte) }
+
+func unresolvable(buf *secmem.SecureBuffer, cb callbacks, cond bool) {
+	defer buf.Destroy()
+	_ = buf.WithBytes(wrap(func(b []byte) { sink = b })) // want `secmem-lint: borrowed closure is not a function literal and cannot be checked`
+	_ = buf.WithBytes(cb.fn)                             // want `secmem-lint: borrowed closure is not a function literal and cannot be checked`
+	fn := func(b []byte) { sink = b }
+	if cond {
+		fn = func(b []byte) {}
+	}
+	_ = buf.WithBytes(fn)                // want `secmem-lint: borrowed closure is not a function literal and cannot be checked`
+	_ = buf.WithBytes(func(b []byte) {}) // ok: a literal
+	_ = buf.WithBytes(nil)               // ok: not a closure
+}
+
+// --- a SecureArena method inside a slot borrow of an unknown arena ---
+
+func unknownArena(slot *secmem.ArenaSlot, arena *secmem.SecureArena) {
+	defer arena.Destroy()
+	_ = slot.WithBytes(func(b []byte) {
+		_ = arena.Destroy() // want `secmem-lint: Destroy called on a SecureArena inside a slot borrow whose arena cannot be resolved`
+	})
+}

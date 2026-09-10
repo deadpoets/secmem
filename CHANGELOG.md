@@ -87,7 +87,119 @@ mark the stability commitment.
   `json.NewDecoder` and `io.ReadAll` defeat it) and writes to globals or
   caches inside a `Scrub` window. Documentation only.
 
+- **`secmem/redact`: `Handler` redacts by attribute KEY, not only by value.**
+  `slog.String("password", "hunter2")`, `logger.With("token", t)`,
+  `slog.Group("db", slog.String("password", …))` and a `[]byte` or struct
+  under a `client_secret` key all reached the sink in full, because the
+  handler only ever looked at values and `hunter2` on its own has no
+  credential shape. An attribute whose key is in the sensitive set now has
+  its whole value replaced with `[REDACTED:key]` whatever its kind — string,
+  bytes, number, group (as a whole), Any, or an unresolved `LogValuer`. Keys
+  are compared case-insensitively as a whole and as components split on
+  `_`, `-`, `.`, `/`, digit runs and CamelCase, so `DB_PASSWORD`,
+  `db.password`, `accessToken` and `x-api-key` all match, and a
+  multi-component entry such as `api_key` matches across a `WithGroup("api")`
+  and a `key` attribute. A `WithGroup` whose name is sensitive redacts every
+  attribute beneath it. `DefaultSensitiveKeys` lists the set (password,
+  passwd, pwd, pass, passphrase, secret, token, access/refresh/id_token,
+  api_key, authorization, auth, bearer, cookie, set_cookie, session,
+  private_key, signing_key, credential(s), client_secret and a few more);
+  `WithSensitiveKeys` extends it and `WithoutDefaultSensitiveKeys` drops the
+  defaults. `NewHandler` takes the options variadically, so existing calls
+  compile unchanged.
+
+- **`secmem/redact`: `Rule.Filter`, and `Rule.Tag` documented as a template.**
+  A `Filter func(match string) bool` on a rule vetoes individual matches, for
+  heuristics a regex cannot express; the built-in base64 rule uses it. `Tag`
+  has always been passed through `ReplaceAllString`, which expands `$1`; that
+  is now documented, and the new URL rules rely on it to keep the part of a
+  match that is not the credential.
+
+- **`secmem/httpauth`: `ForceHTTP1`.** Returns a clone of an `*http.Transport`
+  (or of `http.DefaultTransport`) that negotiates HTTP/1.1 only —
+  `ForceAttemptHTTP2` off, an empty `TLSNextProto` map, `h2` dropped from the
+  TLS config's ALPN list — for callers who want the credential kept out of
+  HTTP/2's per-connection HPACK dynamic table. The package doc's residual list
+  now states that table precisely: the bundled http2 client inserts every
+  header field, `authorization` included, into the 4 KB table without marking
+  it sensitive, where it lives until evicted or the pooled connection closes,
+  and the encoder's scratch buffer holds it until the next request. The list
+  also gains the HTTP/1 header writer's pooled sorter (the `[]string` holding
+  the value stays reachable from a `sync.Pool` until the next header write
+  anywhere in the process) and `httptrace.WroteHeaderField`. A test proves
+  the recipe produces an HTTP/1.1 request against an h2-enabled server.
+
+- **`secmem-lint`: the escape check follows the bytes, not just the
+  identifier.** A borrowed slice now taints every local derived from it —
+  aliases, elements, conversions (`any(b)`, `[]byte(b)`), composites
+  (`holder{b}`, `msg{b}` on a channel, `&myErr{b}` returned), element-wise
+  copy loops, closures that capture it, `unsafe.String` / `SliceData` /
+  `Pointer`, `reflect.ValueOf`, `bytes.NewReader` — and a finding fires
+  where a tainted value reaches memory outside the closure. The accessor call
+  is resolved through more shapes too: a closure held in a local assigned
+  once, a package-level function passed by name, a method value
+  (`f := buf.WithBytes`), an interface receiver with a borrowing-shaped
+  method, and a `type raw = []byte` parameter. `-strict` now also reports a
+  closure it cannot resolve, so coverage gaps are visible instead of silent.
+  The sink table gains `os.WriteFile`, the `Write` methods of `bytes.Buffer`
+  / `strings.Builder` / `bufio.Writer` / `os.File`, the `json` / `xml` /
+  `gob` decoders, `hex.Dump` / `AppendEncode`, `base64` / `base32`
+  `AppendEncode`, `slices.Concat`, `bytes.Join` / `Repeat`, `slog.Any` /
+  `String` / `Group` and `Logger.With`, the `testing` log methods, and the
+  stdlib / `x/crypto` ciphers, key parsers and KDFs that copy a key into heap
+  state. `io.Writer` / `net.Conn` interface values stay unflagged by design.
+  Reentrancy resolves aliases (`b2 := buf`) and method values (`l := buf.Len`),
+  and covers `ArenaSlot.Release` and the arena's exclusive-lock methods
+  (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow.
+
 ### Changed
+
+- **`secmem/httpauth`: the credential is no longer sent over cleartext http
+  unless the caller opts in.** `Transport.Hosts` compared only the host, so
+  with `Hosts=["api.example.com"]` a plain `http://api.example.com/` URL, or
+  an https→http redirect on that host, carried the bearer token in the clear.
+  A request for an admitted host whose scheme is not https now fails with
+  `ErrInsecureScheme` — it is not forwarded bare, because a silent 401 would
+  hide the downgrade — unless `Transport.AllowInsecureHTTP` is set or the
+  host is listed with an explicit scheme: `"http://localhost:8080"` admits
+  cleartext for that host alone, `"https://api.example.com"` admits only TLS,
+  and a bare entry admits https (and http only with the flag). The empty
+  filter follows the same rule. A request to an unlisted host is still
+  forwarded untouched. This breaks any caller that was injecting over plain
+  http, which is the point; set `AllowInsecureHTTP` or an `http://` entry to
+  keep doing it deliberately. A redirect test with a TLS server bouncing to a
+  cleartext one pins the refusal.
+
+- **`secmem/redact`: `Handler` renders `Any` values to one sanitized string.**
+  A struct, map, slice, `[]byte`, `fmt.Stringer` or a `LogValuer` resolving
+  to any of those used to pass through the handler untouched, carrying its
+  secrets to both text and JSON sinks. Such a value is now rendered to a
+  `%+v`-like text by a reflection walk — which applies the sensitive-key set
+  to struct field names and map keys along the way and treats `[]byte` as
+  text — then sanitized and emitted as a single string attribute. The
+  structured shape is lost at the sink: a JSON handler writes a string where
+  it used to write an object or array, and bytes as text rather than base64.
+  Numbers, bools, times, durations and a nil `Any` are untouched.
+
+- **`secmem/redact`: `WithMaxLen` truncates before the rules run.** The cut
+  used to come after the rules on each pass, so it bounded the output but
+  not the work. It now happens before the first pass (at a rune boundary),
+  which is what makes the cap a bound on what a hostile input can cost, and
+  again after each pass if the tags grew the result. `Sanitize` stays
+  idempotent. The `pem_private_key` rule moves from `CommonProviderRules`
+  to `DefaultRules` — the format is vendor-neutral — and the recommended
+  order is now `append(CommonProviderRules(), DefaultRules()...)`, because
+  the default base64 heuristic no longer needs `=` padding and would
+  otherwise tag a real provider token as `base64_secret` first.
+
+- **`secmem-lint`: the recommended idioms no longer report.** `copy` / `append`
+  into another borrowed slice (the decrypt-into pattern, nested either way),
+  into an array or struct declared inside the closure, or into a local slice
+  made with `make` / a literal is not an escape; a func literal that calls the
+  buffer but is only assigned or returned runs after the lease and is not
+  reentrant; the slice's address as a `uintptr` is not the secret. The README
+  and package doc now say exactly what the analyzer resolves and what it does
+  not, and the `-strict` flag is documented in the form `go vet` accepts.
 
 - **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
   wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
@@ -138,6 +250,39 @@ mark the stability commitment.
   lock instead of claiming only `Destroy` does.
 
 ### Fixed
+
+- **`secmem/redact`: the allowlist was quadratic in the message.** Every
+  entropy match re-scanned `message[:matchStart]` with every allowlist
+  pattern. On the default configuration 41 KB took 0.85 s, 205 KB 22 s and
+  410 KB 145 s. The allowlist is now indexed once per rule application (one
+  `FindAllStringIndex` per pattern, then binary search per match): the same
+  inputs take 33 ms, 160 ms and 320 ms. An allowlist match still exempts an
+  entropy match that begins where it ends, and now also one it contains
+  entirely. A scaling test and a 400 KB benchmark pin it.
+
+- **`secmem/redact`: the default rules missed common credential shapes.**
+  Verified against the previous rule set: `Authorization: Bearer <JWT>` and
+  `Authorization: Basic …` (the auth rule needed `=`/`:` right after `auth`,
+  and a JWT has no `=` padding for the base64 rule); `AWS_SECRET_ACCESS_KEY=…`
+  (only the non-secret `AKIA…` id was caught); `passwd=`, `pwd=`, `pass=`,
+  `passphrase=`, `secret_key=`, `private_key=`, `signing_key=`,
+  `credentials=`; `postgres://user:PASSWORD@host`; `?code=` and other
+  credential query parameters; `Cookie:`/`Set-Cookie:`; `0x` + 64 hex (`\b`
+  does not fall after `x`); unpadded and base64url tokens; `password => x`;
+  JSON-escaped `\"password\":\"x\"`; `password%3Dx`; `OPENAI_API_KEY=` (`\b`
+  does not fall after `_`); and every body line of a PEM block, because the
+  CRLF rule tagged the line breaks before the base64 rule ran and the PEM
+  rule only ever matched the header. Each has a rule now — Authorization
+  with any scheme, Cookie, URL userinfo and query, the extra key spellings,
+  JWT, bare Bearer, a PEM rule that matches header through footer and runs
+  before CRLF, a base64 rule that accepts unpadded and base64url runs
+  (screened by a mixed-case-plus-digit filter so paths and identifiers stay
+  put), and a hex rule that accepts `0x`. `CommonProviderRules` gains
+  fine-grained GitHub PATs, GitLab PATs, OpenAI-style `sk-` keys, `ASIA`
+  temporary AWS ids and the AWS secret key by name. Tests cover both
+  directions: every shape above is redacted, and UUIDs, allowlisted commit
+  hashes, module and file paths, long identifiers, `bypass=`, `token_type=`,
+  `password_length=` and `Bearer authentication required` survive unchanged.
 
 - **`Scrub` and `ScrubErr` now scrub the frames that were live when the
   callback panicked.** The legacy (non-`runtime/secret`) window ran its

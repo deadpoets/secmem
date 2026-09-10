@@ -2,16 +2,18 @@
 
 These are the mistakes that quietly defeat secure-memory handling. Most of
 them look fine and compile fine; that is exactly why they are dangerous. The
-good news is that the most important one is caught for you at compile time by
-[`secmem-lint`](secmem-lint/) — but knowing *why* each is wrong is what keeps
-you from reintroducing it in a shape the linter can't see.
+good news is that the common shapes of the most important one are caught for
+you at compile time by [`secmem-lint`](secmem-lint/) — but knowing *why* each
+is wrong is what keeps you from reintroducing it in a shape the linter can't
+see (its README lists exactly which shapes it resolves).
 
 Each entry is the mistake, why it defeats the protection, and the correct
 form.
 
 ## 1. Letting the secret slice escape the borrow
 
-This is the cardinal sin, and the one `secmem-lint` rejects at compile time.
+This is the cardinal sin, and the one `secmem-lint` is built to catch at
+compile time.
 
 ```go
 // BAD — the borrowed slice escapes; now there is a heap copy that is never
@@ -36,8 +38,10 @@ off-heap location. An escaped slice is a second copy on the Go heap —
 unlocked, unguarded, scanned by the collector, and never wiped: Go's GC does
 not move heap objects, but it does not zero what it frees either, so the
 bytes stay in the span until the allocator reuses it. `secmem-lint` flags
-assignment-out, return,
-`append`, and capture-by-goroutine of the borrowed slice; run it in CI.
+assignment-out, return, `append`, `copy` into outer memory, channel sends,
+capture-by-goroutine, and the borrowed slice wrapped in a conversion,
+composite or closure; it does not follow the slice into a helper you call.
+Run it in CI.
 
 ## 2. Converting the secret to a string
 
@@ -77,8 +81,12 @@ buf.WithBytes(func(b []byte) {
 Why it matters: the redaction lives on the wrapper type, not on the bytes.
 The moment you borrow the raw bytes and hand *those* to a formatter, you have
 opted out. For defense in depth on everything else your program logs, route
-`slog` through [`redact.NewHandler`](redact/) so credential-shaped strings are
-sanitized even when they reach the log by another path.
+`slog` through [`redact.NewHandler`](redact/) so credential-shaped strings, and
+any attribute whose *key* is credential-shaped (`password`, `token`, `api_key`,
+…) whatever its value looks like, are sanitized even when they reach the log
+by another path. It is a backstop: a value split from its key across two
+attributes, or a secret under an innocent key with no recognizable shape,
+still gets through.
 
 ## 4. Forgetting to Destroy (or Destroying at the wrong time)
 
@@ -191,7 +199,11 @@ assembled from. The per-request string is still a string — that residual is
 stated in the package doc, not hidden. Always pass the API's host: the
 transport sits below `http.Client`, so the Client's rule of dropping
 `Authorization` on a cross-domain redirect does not cover what is injected
-here, and with no host filter the credential follows the redirect.
+here, and with no host filter the credential follows the redirect. The host
+filter is scheme-aware: the credential goes out over https only, and a plain
+`http://` URL or an https→http redirect to a listed host fails with
+`ErrInsecureScheme` rather than sending the token in the clear — opt in per
+host with an `http://host` entry, or for all hosts with `AllowInsecureHTTP`.
 
 ## 9. Leaving a secret inside a decoded document
 
@@ -285,5 +297,5 @@ do not hand it the key, or write the residual down.
 ---
 
 Run `go vet ./...` and the `secmem-lint` analyzer in CI. The linter catches
-pitfall 1 — the one with no visible symptom and the worst consequence —
-before it ever ships.
+the common shapes of pitfall 1 — the one with no visible symptom and the worst
+consequence — before they ever ship.

@@ -16,9 +16,11 @@ var (
 func leaks(buf *secmem.SecureBuffer) {
 	_ = buf.WithBytes(func(b []byte) {
 		sinkStr = string(b)       // want `secmem-lint: string\(\) copies borrowed secret bytes`
-		sink = append(sink, b...) // want `secmem-lint: append\(dst, borrowed\.\.\.\) copies borrowed secret bytes`
+		sink = append(sink, b...) // want `secmem-lint: append\(\) copies borrowed secret bytes`
 		dst := make([]byte, len(b))
-		copy(dst, b)   // want `secmem-lint: copy\(\) moves borrowed secret bytes`
+		copy(dst, b)   // ok: a scratch slice declared inside the closure (see the idioms fixture)
+		copy(sink, b)  // want `secmem-lint: copy\(\) moves borrowed secret bytes`
+		sink = dst     // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
 		sink = b       // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
 		fmt.Println(b) // want `secmem-lint: borrowed secret bytes passed to fmt.Println`
 	})
@@ -58,7 +60,7 @@ func leaksViaNonIdentifierTargets(buf *secmem.SecureBuffer) {
 		outerMap["k"] = b             // want `secmem-lint: borrowed secret bytes assigned to a map or slice element`
 		outerSlab[0] = b              // want `secmem-lint: borrowed secret bytes assigned to a map or slice element`
 		*outerPtr = b                 // want `secmem-lint: borrowed secret bytes assigned to a pointer target`
-		sink = append(sink, b[:1]...) // want `secmem-lint: append\(dst, borrowed\.\.\.\) copies borrowed secret bytes`
+		sink = append(sink, b[:1]...) // want `secmem-lint: append\(\) copies borrowed secret bytes`
 		panic(b)                      // want `secmem-lint: panic\(\) puts borrowed secret bytes in the traceback`
 	})
 }

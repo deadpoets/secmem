@@ -63,7 +63,7 @@ func stdlibRSAKey(tb testing.TB) *rsa.PrivateKey {
 	s := testRSASigner(tb)
 	var key *rsa.PrivateKey
 	if err := s.WithDER(func(der []byte) error {
-		k, perr := x509.ParsePKCS1PrivateKey(der)
+		k, perr := x509.ParsePKCS1PrivateKey(der) //nolint:secmem-lint // test reloads the exported DER through the stdlib parser to verify it
 		key = k
 		return perr
 	}); err != nil {

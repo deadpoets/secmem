@@ -284,7 +284,7 @@ func TestArena_WithBytesSlotSizeEnforced(t *testing.T) {
 	_ = s0.WithBytesErr(func(b []byte) error {
 		for i, v := range b {
 			if v != 0xAA {
-				t.Errorf("s0[%d] = 0x%02X after s1 write, want 0xAA", i, v)
+				t.Errorf("s0[%d] = 0x%02X after s1 write, want 0xAA", i, v) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 			}
 		}
 		return nil
@@ -329,7 +329,7 @@ func TestArena_ReleaseWipesSlot(t *testing.T) {
 	_ = slot2.WithBytesErr(func(b []byte) error {
 		for i, v := range b {
 			if v != 0x00 {
-				t.Errorf("slot[%d] = 0x%02X after Release, want 0x00 (wiped)", i, v)
+				t.Errorf("slot[%d] = 0x%02X after Release, want 0x00 (wiped)", i, v) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 			}
 		}
 		return nil
@@ -474,7 +474,7 @@ func TestArena_ConcurrentAcquireRelease(t *testing.T) {
 				_ = slot.WithBytesErr(func(b []byte) error {
 					for j, v := range b {
 						if v != id {
-							t.Errorf("goroutine %d: slot[%d] = 0x%02X, want 0x%02X", id, j, v, id)
+							t.Errorf("goroutine %d: slot[%d] = 0x%02X, want 0x%02X", id, j, v, id) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 						}
 					}
 					return nil
@@ -697,7 +697,7 @@ func TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting(t *testing.T) {
 	// A read still works while read-only (PROT_READ permits reads).
 	if err := slot.WithBytes(func(b []byte) {
 		if b[0] != 0xAB {
-			t.Errorf("slot contents = %#x, want 0xAB", b[0])
+			t.Errorf("slot contents = %#x, want 0xAB", b[0]) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
 		t.Errorf("WithBytes while read-only should succeed, got %v", err)

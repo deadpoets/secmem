@@ -66,7 +66,7 @@ func (c *capture) last() http.Header {
 func newServer(t *testing.T) (*httptest.Server, *capture) {
 	t.Helper()
 	c := &capture{}
-	srv := httptest.NewServer(http.HandlerFunc(c.handle))
+	srv := httptest.NewTLSServer(http.HandlerFunc(c.handle))
 	t.Cleanup(srv.Close)
 	return srv, c
 }
@@ -270,7 +270,7 @@ func TestRoundTrip_HeaderDeletedFromCloneEvenWhenBaseFails(t *testing.T) {
 	base := &errBase{header: "Authorization"}
 
 	tr := httpauth.NewBearer(tok, base)
-	err := do(t, tr, "http://example.invalid/")
+	err := do(t, tr, "https://example.invalid/")
 	if !errors.Is(err, errBaseFailed) {
 		t.Fatalf("err = %v, want the base's error", err)
 	}
@@ -404,12 +404,13 @@ func TestHosts_ExcludedRequestDoesNotTouchToken(t *testing.T) {
 func TestHosts_MatchIsCaseInsensitive(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
-	srv, c := newServer(t)
+	srv, c := newPlainServer(t)
 
 	// httptest binds a numeric address, so upper-case the hostname the
 	// request will use instead and keep the filter as written.
 	host := hostOf(t, srv)
 	tr := httpauth.NewBearer(tok, srv.Client().Transport, "LOCALHOST:"+portOf(t, host))
+	tr.AllowInsecureHTTP = true
 	target := "http://localhost:" + portOf(t, host)
 	if err := do(t, tr, target); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
@@ -448,7 +449,7 @@ func TestHosts_PortIsPartOfTheMatch(t *testing.T) {
 func redirectServer(t *testing.T, target string) (*httptest.Server, *capture) {
 	t.Helper()
 	c := &capture{}
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	srv := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		c.mu.Lock()
 		c.headers = append(c.headers, r.Header.Clone())
 		c.mu.Unlock()
@@ -510,9 +511,10 @@ func TestRedirect_EmptyHostsLeaksHeaderToSecondHost_DocumentedFootgun(t *testing
 func TestBaseNil_UsesDefaultTransport(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
-	srv, c := newServer(t)
+	srv, c := newPlainServer(t)
 
 	tr := httpauth.NewBearer(tok, nil)
+	tr.AllowInsecureHTTP = true
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip via http.DefaultTransport: %v", err)
 	}

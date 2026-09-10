@@ -18,7 +18,7 @@ func ExampleSanitizer() {
 
 // Named third-party token formats are opt-in via CommonProviderRules.
 func ExampleCommonProviderRules() {
-	rules := append(redact.DefaultRules(), redact.CommonProviderRules()...)
+	rules := append(redact.CommonProviderRules(), redact.DefaultRules()...)
 	s := redact.NewSanitizer(rules, redact.WithAllowlist(redact.DefaultAllowlist()))
 	fmt.Println(s.Sanitize("token is ghp_000000000000000000000000000000000000"))
 	// Output: token is [REDACTED:github_pat]
