@@ -35,6 +35,18 @@ mark the stability commitment.
   so: the WER exclusion is reported by the registration call, not verified by
   a dump, and the wipe's cache flush is structural, not measured.
 
+- **`secmem-crypto`: what each key type leaves in memory is measured.** A new
+  out-of-process test (`residue_linux_test.go`) hands a victim subprocess known
+  key material, has it build and use each key type, freezes it, and scans its
+  whole address space for every encoding that recovers the key — raw bytes,
+  limbs, the Ed25519 nonce and scalars in their internal layout, HMAC pads
+  and chaining values, ML-KEM's secret polynomial and SHAKE state, AES round
+  keys — outside locked memory. Contained entry points must leave nothing;
+  transient ones must leave copies, and on a `GOEXPERIMENT=runtimesecret`
+  build must lose them to the collector. A new `test-residue` CI job runs it
+  on linux/amd64 and linux/arm64 in both build modes with no skip allowed.
+  Test and CI only.
+
 - **`secmem-crypto`: `BcryptPBKDFInto` — OpenSSH's bcrypt_pbkdf as a KDF in
   its own right.** The algorithm lives in `golang.org/x/crypto/ssh/internal/bcrypt_pbkdf`,
   where nothing outside x/crypto can call it, so a program that has to

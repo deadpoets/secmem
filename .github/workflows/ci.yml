@@ -169,6 +169,37 @@ jobs:
       - run: go test -run TestNoHeapEscape ./...
         working-directory: secmem-crypto
 
+  # The out-of-process key residue proof (secmem-crypto/residue_linux_test.go):
+  # a parent freezes a victim subprocess and scans its whole address space for
+  # every encoding of each entry point's key, which is what the README's
+  # protection table is measured against. It is //go:build !race — the race
+  # detector's shadow reservations make an address-space scan meaningless —
+  # so none of the -race jobs above run it. Both build modes on both deployed
+  # architectures, because what a transient entry point leaves behind is
+  # exactly what runtime/secret changes; audited against an empty allowlist,
+  # because a skipped scan is an unproven table row.
+  test-residue:
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-latest, ubuntu-24.04-arm]
+        goexperiment: ["", runtimesecret]
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOEXPERIMENT: ${{ matrix.goexperiment }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+      - uses: ./.github/actions/test-audited
+        with:
+          working-directory: secmem-crypto
+          allowlist: linux-residue
+          memlock: unlimited
+          args: "-count=1 -run ^TestKeyResidue$"
+
   # The isolation proofs as ROOT. memfd_secret's claim is that the pages are
   # unreadable through /proc/<pid>/mem and process_vm_readv even by a reader
   # with every permission; the ordinary test job proves it from an

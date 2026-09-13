@@ -1,0 +1,5 @@
+# The residue lane (test-residue) runs secmem-crypto's out-of-process key
+# residue scan unprivileged on ubuntu-latest and ubuntu-24.04-arm, legacy and
+# GOEXPERIMENT=runtimesecret. Yama's ptrace_scope=1 lets a parent read its own
+# child and the step raises the lock budget, so NOTHING may skip: a skipped
+# scenario is a row of the protection table that was not measured.
