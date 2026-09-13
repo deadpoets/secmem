@@ -13,6 +13,7 @@ import (
 	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/mlkem"
+	"crypto/mlkem/mlkemtest"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -414,15 +415,14 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
-		name: "MLKEM768Key", class: residueContained,
+		// The decapsulation key and everything derived from it that recovers
+		// it: the seed halves, the secret polynomial s, sigma, and the SHAKE
+		// state that absorbed z. In go1.26 crypto/mlkem keeps its hash states
+		// and polynomials on the stack, which the Scrub window wipes.
+		name: "MLKEM768Key/decapsulation-key", class: residueContained,
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
-			seed := residueRandom(t, 64)
+			seed, ct, _, shared := mlkemMaterial(t)
 			dk, err := mlkem.NewDecapsulationKey768(seed)
-			if err != nil {
-				t.Fatal(err)
-			}
-			_, ct := dk.EncapsulationKey().Encapsulate()
-			shared, err := dk.Decapsulate(ct)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -448,20 +448,19 @@ var residueScenarios = []residueScenario{
 			)
 			return seed, ct, pats
 		},
-		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
-			k, err := NewMLKEM768Key(buf)
-			if err != nil {
-				return nil, nil, err
-			}
-			op := func() error {
-				ss, err := k.Decapsulate(aux)
-				if err != nil {
-					return err
-				}
-				return ss.Destroy()
-			}
-			return op, k.Destroy, nil
+		victim: mlkemVictim,
+	},
+	{
+		// The message decapsulation recovers. With the public key's hash it
+		// gives this ciphertext's shared key — not the decapsulation key.
+		// crypto/mlkem returns it from an unexported function as a fresh heap
+		// slice that nothing outside the package can reach to wipe.
+		name: "MLKEM768Key/recovered-message", class: residueTransient,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			seed, ct, m, _ := mlkemMaterial(t)
+			return seed, ct, []residuePattern{{"m", m}}
 		},
+		victim: mlkemVictim,
 	},
 	{
 		name: "ECDSASigner/P-256", class: residueTransient,
@@ -647,6 +646,38 @@ var residueScenarios = []residueScenario{
 }
 
 // ---------------------------------------------------------------- victims
+
+// mlkemMaterial is a seed, a ciphertext encapsulated to its key with a known
+// message m through the standard library's derandomized test helper, m, and
+// the shared key.
+func mlkemMaterial(t *testing.T) (seed, ct, m, shared []byte) {
+	t.Helper()
+	seed, m = residueRandom(t, 64), residueRandom(t, 32)
+	dk, err := mlkem.NewDecapsulationKey768(seed)
+	if err != nil {
+		t.Fatal(err)
+	}
+	shared, ct, err = mlkemtest.Encapsulate768(dk.EncapsulationKey(), m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return seed, ct, m, shared
+}
+
+func mlkemVictim(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+	k, err := NewMLKEM768Key(buf)
+	if err != nil {
+		return nil, nil, err
+	}
+	op := func() error {
+		ss, err := k.Decapsulate(aux)
+		if err != nil {
+			return err
+		}
+		return ss.Destroy()
+	}
+	return op, k.Destroy, nil
+}
 
 var residueSink []byte
 
