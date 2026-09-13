@@ -106,14 +106,18 @@ mark the stability commitment.
   private_key, signing_key, credential(s), client_secret and a few more);
   `WithSensitiveKeys` extends it and `WithoutDefaultSensitiveKeys` drops the
   defaults. `NewHandler` takes the options variadically, so existing calls
-  compile unchanged.
+  compile unchanged; a function value of the old type no longer matches, and
+  `Handler` is no longer comparable. `gorelease` reports both as
+  incompatible.
 
 - **`secmem/redact`: `Rule.Filter`, and `Rule.Tag` documented as a template.**
   A `Filter func(match string) bool` on a rule vetoes individual matches, for
   heuristics a regex cannot express; the built-in base64 rule uses it. `Tag`
   has always been passed through `ReplaceAllString`, which expands `$1`; that
   is now documented, and the new URL rules rely on it to keep the part of a
-  match that is not the credential.
+  match that is not the credential. The func field makes `Rule` no longer
+  comparable: comparing `Rule` values with `==`, or using them as map keys,
+  no longer compiles.
 
 - **`secmem/httpauth`: `ForceHTTP1`.** Returns a clone of an `*http.Transport`
   (or of `http.DefaultTransport`) that negotiates HTTP/1.1 only —
@@ -150,7 +154,9 @@ mark the stability commitment.
   state. `io.Writer` / `net.Conn` interface values stay unflagged by design.
   Reentrancy resolves aliases (`b2 := buf`) and method values (`l := buf.Len`),
   and covers `ArenaSlot.Release` and the arena's exclusive-lock methods
-  (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow.
+  (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow. No API changed,
+  but code that vetted clean against v0.2.0 can now report findings, so a CI
+  step running the analyzer may start failing on upgrade.
 
 - **`secmem-crypto`: every entry point is classified, and the README says
   what each signer buys you.** The module's headline claimed key material
