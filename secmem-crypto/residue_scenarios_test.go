@@ -329,6 +329,75 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
+		// Key and plaintext both in locked memory: the AEAD is lent by
+		// WithAESGCM, and SealFrom and OpenInto run inside its callback.
+		name: "WithAESGCM+SealFrom+OpenInto", class: residueContained,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			key, pt := residueRandom(t, 32), residueRandom(t, 64)
+			pats := append([]residuePattern{{"key", key}, {"plaintext", pt}}, aesSchedulePatterns(t, "aes256", key)...)
+			layout, err := aesGCMLayoutReady()
+			if err != nil {
+				t.Fatal(err)
+			}
+			blk, err := aes.NewCipher(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			g, err := cipher.NewGCM(blk)
+			if err != nil {
+				t.Fatal(err)
+			}
+			// The GHASH table is populated from its start and zero after, so
+			// the pattern is its populated prefix.
+			if table, ok := aesGCMViews(t, layout, g)["productTable"]; ok {
+				n := len(table)
+				for n > 0 && table[n-1] == 0 {
+					n--
+				}
+				if n >= 16 && !isLowEntropy(table[:16]) {
+					used := slices.Clone(table[:n])
+					if tail := (n - 16) / 8 * 8; tail < 16 || !isLowEntropy(used[tail:tail+16]) {
+						pats = append(pats, residuePattern{"ghash-table", used})
+					} else {
+						pats = append(pats, residuePattern{"ghash-table", used[:16]})
+					}
+				}
+			}
+			return append(slices.Clone(key), pt...), nil, pats
+		},
+		victim: func(buf *secmem.SecureBuffer, _ []byte) (func() error, func() error, error) {
+			keyBuf, err := secmem.NewEmptyBuffer(32)
+			if err != nil {
+				return nil, nil, err
+			}
+			ptBuf, err := secmem.NewEmptyBuffer(64)
+			if err != nil {
+				return nil, nil, err
+			}
+			back, err := secmem.NewEmptyBuffer(64)
+			if err != nil {
+				return nil, nil, err
+			}
+			if err := copyWithin(keyBuf, buf, 0, 32); err != nil {
+				return nil, nil, err
+			}
+			if err := copyWithin(ptBuf, buf, 32, 64); err != nil {
+				return nil, nil, err
+			}
+			nonce := make([]byte, 12)
+			op := func() error {
+				return WithAESGCM(keyBuf, func(a cipher.AEAD) error {
+					ct, err := SealFrom(nil, a, nonce, ptBuf, nil)
+					if err != nil {
+						return err
+					}
+					return OpenInto(back, a, nonce, ct, nil)
+				})
+			}
+			return op, destroyAll(keyBuf.Destroy, ptBuf.Destroy, back.Destroy, buf.Destroy), nil
+		},
+	},
+	{
 		name: "MLKEM768Key", class: residueContained,
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
 			seed := residueRandom(t, 64)

@@ -320,6 +320,36 @@ time. For anything that signs or agrees keys continuously it buys nothing
 but a quieter log. Record it as a residual if you pass it; see the
 `secmem-crypto` README, "RSASigner and ECDSASigner on a legacy build".
 
+## 12. Keeping a `cipher.AEAD` for the life of a session
+
+```go
+// BAD — the key is in a SecureBuffer, but the AEAD built from it holds the
+// expanded key schedule on the heap for as long as the session lasts, and
+// dropping it later leaves the schedule for the collector, unwiped.
+var aead cipher.AEAD
+_ = key.WithBytesErr(func(k []byte) error {
+    block, _ := aes.NewCipher(k)
+    aead, _ = cipher.NewGCM(block)
+    return nil
+})
+```
+
+```go
+// GOOD — build the AEAD for each use; the schedule is wiped when the
+// callback returns.
+err := secmemcrypto.WithAESGCM(key, func(aead cipher.AEAD) error {
+    return secmemcrypto.OpenInto(out, aead, nonce, ciphertext, ad)
+})
+```
+
+Why it matters: `aes.NewCipher` expands the key into a heap object and
+`cipher.NewGCM` copies that expansion into another, with a key-derived GHASH
+table beside it. A long-lived AEAD is a long-lived copy of the key on the heap
+no matter where the key itself is kept; a short-lived one is still a copy the
+collector will not zero. Building per use costs a key expansion and the wipe:
+about 2.4 µs to seal 1 KiB against 0.2 µs on a kept AEAD, measured by
+`BenchmarkAESGCM`.
+
 ---
 
 Run `go vet ./...` and the `secmem-lint` analyzer in CI. The linter catches

@@ -35,6 +35,23 @@ mark the stability commitment.
   so: the WER exclusion is reported by the registration call, not verified by
   a dump, and the wipe's cache flush is structural, not measured.
 
+- **`secmem-crypto`: `WithAESGCM` and `ErrAEADOutOfScope`.** An AES key in a
+  `SecureBuffer` still ended up on the heap the moment it was used:
+  `aes.NewCipher` expands it into a heap `Block`, and `cipher.NewGCM` copies
+  that expansion into its own object beside a key-derived GHASH table, and
+  nothing exported clears either — the residue test found the round keys after
+  every use, whether the AEAD was kept for a session or built per call.
+  `WithAESGCM(key, fn)` builds AES-GCM inside a Scrub window, lends it to `fn`,
+  and when `fn` returns, errors or panics wipes both round-key arrays of the
+  `Block`, their copy in the GCM object and the GHASH table, through unexported
+  fields resolved by reflection and pinned by a tripwire; a layout it does not
+  recognise is an error before the key is expanded. The lent AEAD panics with
+  `ErrAEADOutOfScope` if it is kept and used afterwards, rather than encrypting
+  under a wiped schedule. The residue test finds nothing after a call. Sealing
+  1 KiB costs about 2.4 µs this way against 0.2 µs on a kept AEAD on a Core
+  Ultra 7 265KF, mostly the cache-flushing wipe (`BenchmarkAESGCM`). New API:
+  a minor bump.
+
 - **`secmem-crypto`: what each key type leaves in memory is measured.** A new
   out-of-process test (`residue_linux_test.go`) hands a victim subprocess known
   key material, has it build and use each key type, freezes it, and scans its

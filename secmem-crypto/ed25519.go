@@ -25,7 +25,9 @@
 // in-tree fork of golang.org/x/crypto/argon2 that wipes its working state
 // ([Argon2Into], [Argon2Workspace], [Argon2Pool]).
 //
-// AEAD: [OpenInto] and [SealFrom]. Key agreement: [X25519Key]; ML-KEM-768
+// AEAD: [OpenInto] and [SealFrom] keep the plaintext in locked memory, and
+// [WithAESGCM] lends AES-GCM whose key schedule is wiped when the callback
+// returns. Key agreement: [X25519Key]; ML-KEM-768
 // via [MLKEM768Key] and [Encapsulate]. Passphrases:
 // [GenerateDicewarePassphrase].
 //

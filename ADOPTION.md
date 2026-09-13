@@ -19,7 +19,7 @@ comes from, where it goes, how long it must live, and how big it is:
 | API token for the payments provider | secret manager, JSON over HTTPS | `Authorization` header, one request at a time | process | 40 B |
 | Database password | environment variable | driver's connect string, once | until connected | 32 B |
 | Service signing key (Ed25519) | key file on disk, passphrase-protected | never; signatures only | process | 32 B seed |
-| Session keys | derived (HKDF) per session | never; AEAD in place | minutes | 32 B × sessions |
+| Session keys | derived (HKDF) per session | never; AEAD via `WithAESGCM` per use, plaintext via `OpenInto`/`SealFrom` | minutes | 32 B × sessions |
 | User password, during login | HTTP form body | Argon2, once | milliseconds | ≤ 128 B |
 
 The inventory is where most adoptions find their surprise: the secret that
@@ -47,7 +47,9 @@ session keys, derived encryption and MAC keys, the seed of a key-exchange
 private scalar. The goal is that the plaintext never exists outside a
 `SecureBuffer` from ingress to `Destroy`. For most such keys that is
 achievable, because the operation can run in place: `Ed25519Signer` signs
-from the buffer, `X25519Key` agrees keys from it, `OpenInto` and `SealFrom` encrypt and decrypt from it, the
+from the buffer, `X25519Key` agrees keys from it, `WithAESGCM` lends an AEAD
+built from it and wipes the schedule after, `OpenInto` and `SealFrom` encrypt
+and decrypt from it, the
 `*Into` KDFs derive into it. `Seal` the buffer whenever the key is dormant;
 protection is proportional to dormancy.
 
