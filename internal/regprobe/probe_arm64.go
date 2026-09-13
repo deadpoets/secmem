@@ -16,3 +16,15 @@ func DumpV(buf *[512]byte)
 //
 //go:noescape
 func FillV(buf *[512]byte)
+
+// DumpGP copies R1–R17 and R19–R27 into buf, 8 bytes each in that order —
+// every general-purpose register the Go ABI lets a callee clobber except R0,
+// which carries buf.
+//
+//go:noescape
+func DumpGP(buf *[208]byte)
+
+// FillGP loads the same registers from buf, in the same order.
+//
+//go:noescape
+func FillGP(buf *[208]byte)

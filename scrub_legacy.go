@@ -38,18 +38,22 @@ package secmem
 // behind on the old one, which returns to the stack pool unwiped. Scrub cannot
 // reach it, because the runtime owns the abandoned segment and does not name it.
 //
-// # Vector registers
+// # Registers
 //
-// On amd64 and arm64 the window also zeroes the vector register file — X0–X15
-// at full YMM/ZMM width plus Z16–Z31 where AVX-512 is present, or V0–V31 — on
-// the thread that ran fn, as the first thing that happens after fn returns.
-// Vectorised crypto keeps its working state there and nothing in the Go
-// runtime ever clears it. The Go ABI treats vector registers as caller-saved
-// scratch, so the clear destroys nothing live, and because the ABI does not
-// reload them around a call the clear really reaches what fn left; that is
-// proven, not assumed, by scrub_vecclear_test.go, which is the empirical test
-// the project requires of any register scrub. Reported as
-// Capabilities.VectorRegisterClear. See vecclear_amd64.go.
+// On amd64 and arm64 the window also zeroes, on the thread that ran fn and as
+// the first thing that happens after fn returns, the vector register file —
+// X0–X15 at full YMM/ZMM width plus Z16–Z31 where AVX-512 is present, or
+// V0–V31 — and every general-purpose register a callee may clobber. Vectorised
+// crypto keeps its working state in the first, scalar code and short copies in
+// the second, and nothing in the Go runtime ever clears either: left there,
+// they are saved onto a goroutine stack by the next asynchronous preemption on
+// the thread, after the window has stopped blocking it. The Go ABI keeps no
+// live value in either across a call, so the clears destroy nothing, and they
+// really reach what fn left; that is proven, not assumed, by
+// scrub_vecclear_test.go and scrub_gpclear_test.go, the empirical tests the
+// project requires of any register scrub. Reported as
+// Capabilities.VectorRegisterClear and Capabilities.GPRegisterClear. See
+// vecclear_amd64.go.
 //
 // # Best-effort limits (stated honestly)
 //
@@ -61,10 +65,8 @@ package secmem
 //     runtime-owned, and unreachable from Go);
 //   - the stack segment abandoned by the entry wipe's own growth, which carries
 //     a copy of whatever the CALLER already had on its stack (see above);
-//   - general-purpose registers: the ABI keeps live values in them across the
-//     very call that would clear them, so no Go-level clear can be shown to
-//     reach anything. Vector registers are cleared on amd64 and arm64 (above)
-//     and on no other architecture.
+//   - registers on any architecture other than amd64 and arm64, where there is
+//     no clear (above).
 //
 // None of these are fixable in pure Go without runtime support — the
 // runtime/secret path handles them, which is why it is the primary path. Keep
@@ -139,12 +141,13 @@ func Scrub(fn func()) {
 	p := scrubCall(fn)
 
 	// fn's frames are dead now — after a panic too, because scrubCall
-	// recovered it and returned. The vector file is cleared first, on the
+	// recovered it and returned. The registers are cleared first, on the
 	// thread that ran fn and before anything else runs there (proven to reach
-	// fn's residue by scrub_vecclear_test.go — the rule for any register scrub
-	// here); then the band those frames occupied is burned in place, which
-	// the entry reserve guarantees (see "Why the wipe runs twice").
-	clearVectorRegs()
+	// fn's residue by scrub_vecclear_test.go and scrub_gpclear_test.go — the
+	// rule for any register scrub here); then the band those frames occupied
+	// is burned in place, which the entry reserve guarantees (see "Why the
+	// wipe runs twice").
+	clearRegisters()
 	wipeScratchFrameFull()
 	exit.done = true
 
@@ -169,7 +172,7 @@ func ScrubErr(fn func() error) error {
 
 	p, err := scrubCallErr(fn)
 
-	clearVectorRegs()
+	clearRegisters()
 	wipeScratchFrameFull()
 	exit.done = true
 
@@ -207,14 +210,14 @@ func scrubCallErr(fn func() error) (p any, err error) {
 // allocations by TestNoHeapEscape_Scrub.
 type scrubExit struct{ done bool }
 
-// goexitBackstop clears the vector file and burns the band below the frame it
+// goexitBackstop clears the registers and burns the band below the frame it
 // runs from. On the Goexit path that frame is Goexit's, below fn's still-live
 // frames, so this is best-effort by construction: see the Scrub doc.
 func (e *scrubExit) goexitBackstop() {
 	if e.done {
 		return
 	}
-	clearVectorRegs()
+	clearRegisters()
 	wipeScratchFrameFull()
 }
 

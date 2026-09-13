@@ -64,3 +64,23 @@ TEXT ·clearVectorRegsSSE(SB), NOSPLIT, $0-0
 	PXOR X14, X14
 	PXOR X15, X15
 	RET
+
+// func clearGPRegs()
+// Zeroes every general-purpose register a callee may clobber under the Go
+// ABI: AX, BX, CX, DX, SI, DI, R8–R13 and R15. Left alone: SP, BP (the frame
+// pointer) and R14 (g). A 32-bit XOR zero-extends to the full register.
+TEXT ·clearGPRegs(SB), NOSPLIT, $0-0
+	XORL AX, AX
+	XORL BX, BX
+	XORL CX, CX
+	XORL DX, DX
+	XORL SI, SI
+	XORL DI, DI
+	XORL R8, R8
+	XORL R9, R9
+	XORL R10, R10
+	XORL R11, R11
+	XORL R12, R12
+	XORL R13, R13
+	XORL R15, R15
+	RET

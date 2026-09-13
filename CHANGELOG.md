@@ -421,6 +421,24 @@ mark the stability commitment.
 
 ### Fixed
 
+- **`Scrub` and `ScrubErr` clear the general-purpose registers too.** On the
+  legacy path they cleared only the vector registers, on the stated grounds
+  that a clear of the general-purpose ones could not be shown to reach
+  anything. `secmem-crypto`'s residue test showed the cost: on linux/arm64 a
+  32-byte secret copied between two locked buffers inside a window left one of
+  its halves in the registers `memmove` moved it through (R6/R7, R12/R13), and
+  the next asynchronous preemption after the window — when the signal is no
+  longer blocked — saved them onto a goroutine stack, where they survived GC
+  and `Destroy`. The Go ABI has no callee-saved general-purpose registers, so
+  nothing live is in them at the call: the window now zeroes every one a callee
+  may clobber (all but SP, BP and R14 on amd64; all but R18, R28, R29, R30 and
+  RSP on arm64) right after the vector clear, through one `clearRegisters`
+  call. Proven like the vector clear, by planting a pattern and dumping the
+  registers, with the same pinned no-clear control; shown to fail with the
+  clear removed. Reported as `Capabilities.GPRegisterClear` (`gp-clear` in
+  `String`), with a warning when neither it nor `RegisterScrub` is in force —
+  a new exported field. The `runtime/secret` path calls it too, redundantly.
+
 - **`secmem/redact`: the allowlist was quadratic in the message.** Every
   entropy match re-scanned `message[:matchStart]` with every allowlist
   pattern. On the default configuration 41 KB took 0.85 s, 205 KB 22 s and

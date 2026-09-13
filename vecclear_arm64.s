@@ -46,3 +46,37 @@ TEXT ·clearVectorRegs(SB), NOSPLIT, $0-0
 	VEOR V30.B16, V30.B16, V30.B16
 	VEOR V31.B16, V31.B16, V31.B16
 	RET
+
+// func clearGPRegs()
+// Zeroes every general-purpose register a callee may clobber under the Go
+// ABI: R0–R17 and R19–R27. Left alone: R18 (the platform register), R28 (g),
+// R29 (the frame pointer), R30 (the link register) and RSP.
+TEXT ·clearGPRegs(SB), NOSPLIT, $0-0
+	MOVD ZR, R0
+	MOVD ZR, R1
+	MOVD ZR, R2
+	MOVD ZR, R3
+	MOVD ZR, R4
+	MOVD ZR, R5
+	MOVD ZR, R6
+	MOVD ZR, R7
+	MOVD ZR, R8
+	MOVD ZR, R9
+	MOVD ZR, R10
+	MOVD ZR, R11
+	MOVD ZR, R12
+	MOVD ZR, R13
+	MOVD ZR, R14
+	MOVD ZR, R15
+	MOVD ZR, R16
+	MOVD ZR, R17
+	MOVD ZR, R19
+	MOVD ZR, R20
+	MOVD ZR, R21
+	MOVD ZR, R22
+	MOVD ZR, R23
+	MOVD ZR, R24
+	MOVD ZR, R25
+	MOVD ZR, R26
+	MOVD ZR, R27
+	RET

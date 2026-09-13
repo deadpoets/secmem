@@ -192,13 +192,16 @@ Constraints of the Go runtime, not defects in this library:
   descheduled at a call boundary and have its stack scanned, and possibly
   copied. Suppressing the signal removes the arbitrary-instruction register
   dump, not every stack copy.
-- **The general-purpose registers at `Scrub`'s return.** The ABI keeps live
-  values in them across the very call that would do the clearing, so a Go-level
-  clear cannot be shown to reach anything, and an unverifiable scrub is worse
-  than none; the legacy path does not pretend to one. Vector registers are the
-  exception and are cleared (above) because their reach *can* be shown;
-  `runtime/secret` erases both classes properly, with the runtime's
-  cooperation.
+- **Registers on architectures other than amd64 and arm64.** There the window
+  clears neither the vector nor the general-purpose registers, and
+  `Capabilities` reports both gaps. On amd64 and arm64 both are cleared after
+  `fn` returns, each with a proof that the clear reaches what `fn` left. (An
+  earlier version of this document said the general-purpose registers could
+  not be cleared verifiably because the ABI keeps live values in them across
+  the call. The Go ABI has no callee-saved general-purpose registers, and the
+  register-dump proof shows the clear reaching them; the residue was measured
+  on linux/arm64, where a secret copied inside a window was saved to the stack
+  by a preemption after it.)
 - **A preemption that lands inside the window where it cannot be masked.** On
   Windows and Darwin the vector clear runs on the working thread, but a
   preemption before it can still copy the live register file into runtime

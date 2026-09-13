@@ -26,3 +26,43 @@ TEXT ·FillV(SB), NOSPLIT, $0-8
 	VLD1.P 64(R0), [V24.B16, V25.B16, V26.B16, V27.B16]
 	VLD1.P 64(R0), [V28.B16, V29.B16, V30.B16, V31.B16]
 	RET
+
+// func FillGP(buf *[208]byte)
+// R1–R17 then R19–R27, 8 bytes each in that order. R0 carries the pointer and
+// is not planted.
+TEXT ·FillGP(SB), NOSPLIT, $0-8
+	MOVD buf+0(FP), R0
+	LDP  0(R0), (R1, R2)
+	LDP  16(R0), (R3, R4)
+	LDP  32(R0), (R5, R6)
+	LDP  48(R0), (R7, R8)
+	LDP  64(R0), (R9, R10)
+	LDP  80(R0), (R11, R12)
+	LDP  96(R0), (R13, R14)
+	LDP  112(R0), (R15, R16)
+	MOVD 128(R0), R17
+	LDP  136(R0), (R19, R20)
+	LDP  152(R0), (R21, R22)
+	LDP  168(R0), (R23, R24)
+	LDP  184(R0), (R25, R26)
+	MOVD 200(R0), R27
+	RET
+
+// func DumpGP(buf *[208]byte)
+TEXT ·DumpGP(SB), NOSPLIT, $0-8
+	MOVD buf+0(FP), R0
+	STP  (R1, R2), 0(R0)
+	STP  (R3, R4), 16(R0)
+	STP  (R5, R6), 32(R0)
+	STP  (R7, R8), 48(R0)
+	STP  (R9, R10), 64(R0)
+	STP  (R11, R12), 80(R0)
+	STP  (R13, R14), 96(R0)
+	STP  (R15, R16), 112(R0)
+	MOVD R17, 128(R0)
+	STP  (R19, R20), 136(R0)
+	STP  (R21, R22), 152(R0)
+	STP  (R23, R24), 168(R0)
+	STP  (R25, R26), 184(R0)
+	MOVD R27, 200(R0)
+	RET

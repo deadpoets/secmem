@@ -43,12 +43,8 @@ import "golang.org/x/sys/cpu"
 // around a call, so a clear here really does reach what fn left. A control
 // that reads zero is a test failure, not a skip.
 //
-// # What it does not do
-//
-// General-purpose registers are not cleared: the ABI keeps live values in
-// them across the call that would clear them, so a Go-level clear cannot be
-// shown to do anything. Only runtime/secret, with the runtime's cooperation,
-// covers those.
+// General-purpose registers are cleared separately, by clearGPRegs; Scrub
+// calls both through clearRegisters.
 func clearVectorRegs() {
 	if cpu.X86.HasAVX {
 		clearVectorRegsAVX()
@@ -73,3 +69,34 @@ func clearVectorRegsAVX512Hi()
 
 //go:noescape
 func clearVectorRegsSSE()
+
+// clearGPRegs zeroes the general-purpose registers a callee may clobber: AX,
+// BX, CX, DX, SI, DI, R8–R13 and R15 — every one but SP, BP and R14 (g).
+//
+// # Why
+//
+// Scalar code keeps secrets in these: memmove moves a short copy through two
+// of them, and hash and bignum assembly holds its state words there. Nothing
+// clears them, so after fn returns they wait for the next asynchronous
+// preemption on the thread to be saved onto some goroutine's stack — outside
+// the window, where Scrub no longer blocks the signal and the frame wipe no
+// longer reaches. The residue test in secmem-crypto measured exactly that on
+// linux/arm64, where memmove moves a 17–32 byte copy through R6/R7 and
+// R12/R13 and asyncPreempt saves those pairs side by side.
+//
+// # Why it is safe
+//
+// The Go ABI has no callee-saved general-purpose registers: a call site
+// never keeps a live value in one across the call, so at the moment
+// clearGPRegs is called nothing in these registers belongs to anyone. The
+// registers with fixed meanings — the stack pointer, the frame pointer and g
+// — are not touched.
+//
+// # Why it is trusted
+//
+// scrub_gpclear_test.go plants a pattern in every register this clears
+// inside a window, and requires it to survive the window's exit sequence
+// without the clear (the control) and to be gone after Scrub and ScrubErr.
+//
+//go:noescape
+func clearGPRegs()

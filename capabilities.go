@@ -102,10 +102,19 @@ type Capabilities struct {
 	// RegisterScrub is also false, residue in the vector file outlives the
 	// window.
 	//
-	// General-purpose registers are not covered on any architecture: the ABI
-	// keeps live values in them across the call that would clear them. Only
-	// RegisterScrub (runtime/secret) reaches those.
+	// General-purpose registers are reported separately, by GPRegisterClear.
 	VectorRegisterClear bool
+
+	// GPRegisterClear reports that [Scrub] zeroes every general-purpose
+	// register a callee may clobber under the Go ABI (all but the stack
+	// pointer, frame pointer, g, and on arm64 the platform and link registers)
+	// on the thread that ran its callback, right after the vector clear.
+	// Scalar code and short copies leave secrets there, and the next
+	// asynchronous preemption on the thread saves them onto a goroutine stack
+	// outside the window. Real assembly on amd64 and arm64, proven by a
+	// register-dump test; a no-op elsewhere. When false and RegisterScrub is
+	// also false, that residue outlives the window.
+	GPRegisterClear bool
 
 	// GuardPages reports PROT_NONE guard pages bracket the mapping so a
 	// linear over/under-flow traps (SIGSEGV / access violation) instead of
@@ -148,6 +157,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		FrameScrub:             archFrameScrub,
 		AsyncPreemptSuppressed: asyncPreemptSuppressionSupported,
 		VectorRegisterClear:    archVectorClear,
+		GPRegisterClear:        archGPClear,
 
 		GuardPages: info.guardPages,
 		Insecure:   info.insecure,
@@ -216,6 +226,9 @@ func (c Capabilities) Warnings() []string {
 	if !c.VectorRegisterClear && !c.RegisterScrub {
 		w = append(w, "vector registers not cleared after a Scrub window — residue from vectorised crypto survives on this architecture")
 	}
+	if !c.GPRegisterClear && !c.RegisterScrub {
+		w = append(w, "general-purpose registers not cleared after a Scrub window — residue from scalar code and short copies survives on this architecture")
+	}
 	if !c.GuardPages {
 		w = append(w, "no guard pages — buffer overflows are not trapped")
 	}
@@ -244,6 +257,7 @@ func (c Capabilities) String() string {
 	flag("frame-scrub", c.FrameScrub)
 	flag("preempt-suppress", c.AsyncPreemptSuppressed)
 	flag("vector-clear", c.VectorRegisterClear)
+	flag("gp-clear", c.GPRegisterClear)
 	flag("guard-pages", c.GuardPages)
 
 	var b strings.Builder

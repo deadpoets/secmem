@@ -11,3 +11,7 @@ const archFrameScrub = false
 // clearVectorRegs is the no-op in vecclear_generic.go and whatever fn left in
 // the vector register file survives the window. Reported, not hidden.
 const archVectorClear = false
+
+// archGPClear: no general-purpose clear exists for this architecture either;
+// clearGPRegs is a no-op. Reported, not hidden.
+const archGPClear = false

@@ -11,3 +11,8 @@ const archFrameScrub = true
 // (vecclear_amd64.s / vecclear_arm64.s), so Scrub zeroes the vector register
 // file on the working thread after fn returns.
 const archVectorClear = true
+
+// archGPClear: this architecture has a real clearGPRegs implementation
+// (vecclear_amd64.s / vecclear_arm64.s), so Scrub zeroes the general-purpose
+// registers a callee may clobber after fn returns.
+const archGPClear = true

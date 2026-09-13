@@ -8,3 +8,7 @@ package secmem
 // reports the gap (VectorRegisterClear) rather than hiding it. See
 // vecclear_amd64.go for what the real implementation does and why.
 func clearVectorRegs() {}
+
+// clearGPRegs is a no-op for the same reason: no assembly, no proof, and
+// Capabilities.GPRegisterClear says so.
+func clearGPRegs() {}

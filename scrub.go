@@ -35,3 +35,14 @@ func AssertRuntimeSecret() error {
 	}
 	return nil
 }
+
+// clearRegisters zeroes the register file a Scrub window's callback may have
+// left secrets in: the vector registers, then the general-purpose registers
+// a callee may clobber. It is one call so that the window's exit sequence
+// has exactly one line the register proofs remove for their controls
+// (scrub_vecclear_control_pin_test.go). Both clears are no-ops on
+// architectures without the assembly; Capabilities reports which ran.
+func clearRegisters() {
+	clearVectorRegs()
+	clearGPRegs()
+}
