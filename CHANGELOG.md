@@ -270,10 +270,10 @@ mark the stability commitment.
   changes on a `GOEXPERIMENT=runtimesecret` build. `HKDFInto` and `HMACInto`
   are refused the same way when given a hash other than SHA-2 or SHA-3 (see
   their in-place entry). `MLKEM768Key` is not gated; the README lists what it
-  still leaves on the heap. The constructors and parsers gain a
-  variadic `...Option` parameter: existing calls compile unchanged, but a
-  function value of the old type no longer matches, which `gorelease` reports
-  as incompatible. The next `secmem-crypto` release is a minor bump. The SSH
+  still leaves on the heap. The constructors, the parsers, `HKDFInto` and
+  `HMACInto` gain a variadic `...Option` parameter: existing calls compile
+  unchanged, but a function value of the old type no longer matches, which
+  `gorelease` reports as incompatible. The next `secmem-crypto` release is a minor bump. The SSH
   agent example follows the same default and gains `-allow-heap-transients`.
 
 - **`secmem/httpauth`: the credential is no longer sent over cleartext http
