@@ -279,8 +279,8 @@ func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer)
 // both digest states, where nothing here can wipe them. On a build without
 // GOEXPERIMENT=runtimesecret that returns an error wrapping
 // [ErrHeapTransients] unless opts include [AllowHeapTransients]; on a
-// runtimesecret build the objects are erased once the collector finds them
-// unreachable.
+// runtimesecret build the objects are erased at the first garbage collection
+// after they become unreachable, not when HMACInto returns.
 func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
 	if h == nil {
 		return errors.New("secmemcrypto: nil hash function")
@@ -368,8 +368,9 @@ func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer) error {
 // reader keeps the pseudorandom key and HMAC state in heap fields nothing
 // here can wipe. On a build without GOEXPERIMENT=runtimesecret that returns
 // an error wrapping [ErrHeapTransients] unless opts include
-// [AllowHeapTransients]; on a runtimesecret build the objects are erased
-// once the collector finds them unreachable.
+// [AllowHeapTransients]; on a runtimesecret build the objects are erased at
+// the first garbage collection after they become unreachable, not when
+// HKDFInto returns.
 func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
 	if h == nil {
 		return errors.New("secmemcrypto: nil hash function")

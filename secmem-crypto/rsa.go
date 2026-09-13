@@ -54,8 +54,9 @@ import (
 // scratch is returned to a sync.Pool unwiped.
 //
 // On a runtimesecret build every one of those objects is allocated inside
-// the surrounding [secmem.ScrubErr] and erased by the runtime once
-// unreachable; on every other build they are reclaimed by the collector,
+// the surrounding [secmem.ScrubErr] and erased by the runtime at the first
+// garbage collection after it becomes unreachable, not when Sign returns; on
+// every other build they are reclaimed by the collector,
 // not zeroed. RSA has no compact secret form — no 32-byte seed to guard —
 // so custody at rest means custody of the whole DER blob, and the
 // per-operation heap exposure is proportionally larger than

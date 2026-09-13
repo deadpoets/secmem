@@ -57,8 +57,10 @@ var errCandidateRejected = errors.New("candidate rejected")
 //     is what keeps that lifetime short; nothing can make it zero.
 //
 // On a runtimesecret build every one of those objects is allocated inside
-// the surrounding [secmem.ScrubErr] and erased by the runtime once
-// unreachable. On every other build (Windows, macOS, Linux without the
+// the surrounding [secmem.ScrubErr] and erased by the runtime at the first
+// garbage collection after it becomes unreachable — not when Sign returns,
+// so a key that signs often has the copies of its latest signatures on the
+// heap almost all the time. On every other build (Windows, macOS, Linux without the
 // experiment) they are reclaimed by the collector, not zeroed, and the
 // cached copy is the longest-lived. What ECDSASigner guarantees is custody
 // at rest: the durable, wipeable copy of the scalar lives only inside the

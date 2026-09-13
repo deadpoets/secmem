@@ -70,7 +70,8 @@ func resolveOptions(opts []Option) options {
 
 // heapTransientsAllowed decides whether RSASigner and ECDSASigner may be
 // built on this build without an explicit AllowHeapTransients. It is true
-// exactly where the runtime erases the heap copies those types make: a
+// exactly where the runtime erases the heap copies those types make — at the
+// next garbage collection, not when the operation returns: a
 // GOEXPERIMENT=runtimesecret build on linux/amd64 or linux/arm64.
 //
 // A package var, not a direct call, so a test can exercise both outcomes

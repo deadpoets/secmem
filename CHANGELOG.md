@@ -52,6 +52,15 @@ mark the stability commitment.
   Ultra 7 265KF, mostly the cache-flushing wipe (`BenchmarkAESGCM`). New API:
   a minor bump.
 
+- **`PROTECTION.md`: what each key type is protected against, and by how
+  much.** One page with three levels — protected, protected at rest only, not
+  protected — for every key type and algorithm entry point, the residue
+  scenario that measures each, and what each level leaves open per attack
+  (swap, dumps, another process reading memory, an in-process disclosure bug,
+  code execution, kernel and physical attacks, accelerators, side channels),
+  with the measurement's own limits. Linked from the README, the threat model,
+  the adoption guide and the `secmem-crypto` README.
+
 - **`secmem-crypto`: what each key type leaves in memory is measured.** A new
   out-of-process test (`residue_linux_test.go`) hands a victim subprocess known
   key material, has it build and use each key type, freezes it, and scans its
@@ -348,6 +357,21 @@ mark the stability commitment.
   records why the working-set minimum stays soft (a hard minimum does not
   reach locked pages, which the trimmer already skips).
 
+- **Documentation: `runtime/secret` erases at the next garbage collection,
+  and ML-KEM's residue is the recovered message.** Several places said a
+  runtime/secret build made the standard-library-backed types "contained one GC
+  cycle late" and that building with the experiment was the fix for a busy
+  RSA or ECDSA signer. The erasure happens at the first collection after the
+  copies become unreachable — up to two minutes in a quiet process — so a key
+  used even once a second has copies on the heap almost all the time; the
+  README, the threat model, pitfall 11 and the type docs now say that. Earlier
+  drafts of this release's `MLKEM768Key` docs said crypto/mlkem's SHA3 and
+  SHAKE states and σ were left on the heap; in go1.26 they stay on the stack in the Scrub window, and the
+  residue test finds none of them. What does escape is the 32-byte message each
+  `Decapsulate` recovers, which gives that ciphertext's shared key: the
+  decapsulation key is now classified contained, and each decapsulation's
+  shared key as exposed until the next collection.
+
 - **Documentation corrections.** `DESIGN.md` and `PITFALLS.md` no longer say
   the garbage collector moves heap objects (it is non-moving for the heap, as
   `THREAT-MODEL.md` already said); the off-heap rationale is now the real
@@ -377,9 +401,10 @@ mark the stability commitment.
   `EncapsulationKeyBytes` no longer expands the seed, and — like
   `Ed25519Signer.Public` — keeps working after `Destroy` and while the seed
   is sealed, where it used to return `ErrDestroyed` / `ErrSealed`. The doc
-  now names what still transits the heap: crypto/mlkem's SHA3/SHAKE states
-  and the recovered message, erased by the runtime on a runtimesecret build
-  and left to the collector elsewhere. Holding the cached key makes the
+  now names what still transits the heap: the message each decapsulation
+  recovers (see the documentation entry above for how that was measured),
+  erased by the runtime at the next collection on a runtimesecret build and
+  left to the collector elsewhere. Holding the cached key makes the
   struct no longer comparable: `*MLKEM768Key` pointers, which is how the
   type is handed out, compare as before, but comparing `MLKEM768Key` values
   or using them as map keys no longer compiles, and `gorelease` reports it

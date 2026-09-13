@@ -53,6 +53,9 @@ and decrypt from it, the
 `*Into` KDFs derive into it. `Seal` the buffer whenever the key is dormant;
 protection is proportional to dormancy.
 
+[PROTECTION.md](PROTECTION.md) lists, per key type, how far this holds and
+what stays open.
+
 RSA and ECDSA keys are the exception. The standard library has no in-place
 API for them, so `RSASigner` and `ECDSASigner` keep the durable key in the
 buffer but copy it through the heap on every signature, and on a build without `GOEXPERIMENT=runtimesecret` nothing

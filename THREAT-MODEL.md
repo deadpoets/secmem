@@ -3,6 +3,8 @@
 This document states plainly what secmem does **not** protect against. The
 per-platform matrix of what it *does* provide is in [README.md](README.md) and,
 authoritatively, in the godoc; this is the other half of the honesty contract.
+[PROTECTION.md](PROTECTION.md) puts the two together per key type and per
+attack.
 
 ## What secmem is for
 
@@ -103,9 +105,14 @@ are.
   `EnsureMemlockLimit`, which raises the ceiling this guard rests on.
 
 - **GC timing of `runtime/secret` heap erasure.** When `Scrub` runs under
-  `GOEXPERIMENT=runtimesecret`, heap allocations made inside it are erased once
-  the collector observes them unreachable — best-effort timing, never a
-  synchronous guarantee. Do not cite it as a compliance control.
+  `GOEXPERIMENT=runtimesecret`, heap allocations made inside it are erased at
+  the first garbage collection after they become unreachable — not when `Scrub`
+  returns. In a process that allocates little that is up to two minutes, the
+  period after which the runtime forces a collection; a key whose operation
+  leaves heap copies and runs even once a second therefore has one on the heap
+  almost all the time. The residue test finds such copies after use on a
+  runtime/secret build, and gone only once collections have run. It is not a
+  synchronous guarantee; do not cite it as a compliance control.
 
 ## Stack residue: what `Scrub` reaches, and what it does not
 
@@ -333,14 +340,15 @@ bytes in place, and reimplementing either scheme is where subtle bugs leak
 private keys. So `RSASigner` and `ECDSASigner` keep the durable key in a
 `SecureBuffer` and rebuild it through the standard library for each
 signature. The copies that makes are listed in each type's documentation;
-on a `GOEXPERIMENT=runtimesecret` build the runtime erases them once they
-are unreachable, and on every other build the collector reclaims them
-without zeroing, one of them (ECDSA's cached FIPS-form key) a GC cycle or
-more after the signature.
+on a `GOEXPERIMENT=runtimesecret` build the runtime erases them at the first
+garbage collection after they become unreachable, and on every other build
+the collector reclaims them without zeroing, one of them (ECDSA's cached
+FIPS-form key) a GC cycle or more after the signature.
 
-That makes the buffer worth much less than it looks on a legacy build: a
-process that signs continuously has the key on the heap at almost every
-moment. Rather than let that be discovered in a heap dump, both types, and
+That makes the buffer worth much less than it looks: a process that signs
+continuously has the key on the heap at almost every moment on a legacy
+build, and on a runtime/secret build has the copies of every signature since
+the last collection. Rather than let that be discovered in a heap dump, both types, and
 the parsers for RSA and EC key files, **refuse on a legacy
 build** with `ErrHeapTransients`. A caller who accepts the residual passes
 `AllowHeapTransients()`, which makes the choice visible where the key is
@@ -352,9 +360,11 @@ all; the standard library's copies come from the `crypto/ecdh` key object
 around it, so this module calls the ladder directly over the buffer and the
 type is not gated.
 
-The gate is scoped to `RSASigner` and `ECDSASigner`.
-`MLKEM768Key` is not gated, although crypto/mlkem's hash states absorb its
-seed halves and are not wiped. `HKDFInto` and `HMACInto` run in place over
+The gate is scoped to `RSASigner` and `ECDSASigner`. It does not make them
+safe to use continuously on a runtime/secret build either — it only stops a
+legacy build from using them without saying so. `MLKEM768Key` is not gated:
+its decapsulation key is contained, but each `Decapsulate` leaves the message
+it recovers on the heap, and that message gives the ciphertext's shared key. `HKDFInto` and `HMACInto` run in place over
 SHA-2 and SHA-3, the standard library's one-shot hash calls keeping their
 state on the stack, and are gated only when given another hash. The
 `secmem-crypto` README lists each.
@@ -374,11 +384,14 @@ and is not.
   key that holds the seed verbatim and the secret polynomial `s`; that
   object is wiped by reflection through its unexported fields before the
   call returns, with a tripwire test on the layout and a call that fails
-  closed. What remains on the heap — the SHA3/SHAKE states that absorbed
-  the seed halves and the recovered message — is erased by the runtime on
-  a `GOEXPERIMENT=runtimesecret` build and left to the collector elsewhere.
-  The type's godoc states this inline, and the module README classifies
-  every entry point the same way.
+  closed. crypto/mlkem's hash states and polynomials stay on the stack in
+  the Scrub window, and the out-of-process residue test finds none of the
+  key's secrets outside locked memory. What remains on the heap is the
+  message each decapsulation recovers, which gives that ciphertext's shared
+  key: erased by the runtime at the next collection on a
+  `GOEXPERIMENT=runtimesecret` build, left to the collector elsewhere. The
+  type's godoc states this inline, and [PROTECTION.md](PROTECTION.md)
+  classifies it with every other entry point.
 
 - **The urgent PQ threat is a transport concern secmem does not own.**
   "Harvest now, decrypt later" — recording ciphertext today to break with a

@@ -93,7 +93,9 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Stack-frame scrub inside [`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub) | ✓ asm | ✓ asm on amd64/arm64; ✗ stub elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ stub |
 | No async register dump into the window (preemption signal blocked) | ✓ SIGURG+SIGPROF | ✓ SIGURG+SIGPROF | ✗ no `pthread_sigmask` binding | ✗ unmaskable (`SetThreadContext`) | ✗ |
 | Vector registers cleared after the window, on the working thread | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
-| Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
+| General-purpose registers cleared after the window, on the working thread | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
+| Registers cleared when a borrow or copy (`WithBytes`, `CopyIn`, `CopyOut`, …) returns | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
+| Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) — heap objects erased at the next garbage collection, not on return | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
 | Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
@@ -104,12 +106,15 @@ spanning kernels 5.10 through 7.x (see [`KERNELS.md`](KERNELS.md)). On arm64
 `/proc/self/mem` isolation proof, and the architecture-specific wipe assembly
 all pass.
 
-The four `Scrub` rows are separate because they degrade separately. On Linux
+The `Scrub` rows are separate because they degrade separately. On Linux
 the window blocks Go's preemption signal for its duration, so
 `runtime.asyncPreempt` cannot spill the whole register file onto the stack
 partway through a cipher round; on amd64 and arm64 it then zeroes the vector
-register file — where vectorised crypto keeps its working state, and which
-nothing in the Go runtime clears — before the window closes. What each reaches
+register file — where vectorised crypto keeps its working state — and the
+general-purpose registers — where scalar code and short copies leave theirs —
+before the window closes. Nothing in the Go runtime clears either, and the
+next preemption would otherwise save them onto a stack; the borrow and copy
+paths clear them on return for the same reason. What each reaches
 — and the residue that is a constraint of the Go runtime or the OS rather than
 something this library can fix — is set out in
 [THREAT-MODEL.md](THREAT-MODEL.md#stack-residue-what-scrub-reaches-and-what-it-does-not).
@@ -119,7 +124,11 @@ block is asserted against the kernel's own `SigBlk` for the calling thread, on
 linux/arm64 (Tegra 234, kernel 6.8.12; RK3328, kernel 6.18.35) and linux/amd64
 (kernel 7.0.0); the vector clear is asserted by planting a pattern in the
 registers inside a window and reading them back zero after it, with a control
-that must show the pattern surviving when the clear is left out.
+that must show the pattern surviving when the clear is left out, and the
+general-purpose and borrow-path clears the same way, per register. What each
+key type leaves in memory after use is measured from a separate process on
+linux/amd64 and linux/arm64; [`PROTECTION.md`](PROTECTION.md) has the result
+per key type and per attack.
 
 † Whether `memfd_secret` is live is **not** decided by the kernel version, and
 not even by `CONFIG_SECRETMEM` alone. It needs the kernel to be able to split
@@ -187,7 +196,8 @@ Full API docs, per-symbol runnable `Example`s, and per-symbol guarantees are on
 programs, [`examples/`](examples/) holds a password register/login flow and a
 working, hardened SSH agent — each composing the library under real I/O,
 concurrency, and shutdown. Start with the
-package overview, then [`THREAT-MODEL.md`](THREAT-MODEL.md) for the limits,
+package overview, then [`PROTECTION.md`](PROTECTION.md) for what each key
+type is protected against, [`THREAT-MODEL.md`](THREAT-MODEL.md) for the limits,
 [`ADOPTION.md`](ADOPTION.md) for putting it into an existing service (the
 secret inventory, the boundary map, and sizing the lock budget),
 [`PITFALLS.md`](PITFALLS.md) for the mistakes that quietly defeat it,

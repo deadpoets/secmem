@@ -37,17 +37,26 @@ import (
 // when the layout is not the one it expects. So the seed and s are on the
 // heap only for the duration of the call, and are zero afterwards.
 //
-// What no wipe here reaches, on every build: the SHA3/SHAKE digest states
-// crypto/mlkem allocates during expansion (absorbing d) and during
-// decapsulation (absorbing z and the recovered message), the 32-byte
-// recovered message m, and the intermediate polynomials e and σ from key
-// generation. All are allocated inside [secmem.ScrubErr], so on a
-// GOEXPERIMENT=runtimesecret build the runtime erases them once they are
-// unreachable; on any other build they are reclaimed by the collector,
-// not zeroed. The shared key returned by crypto/mlkem is copied into a
-// SecureBuffer and its heap copy wiped. The encapsulation key is public
-// and is computed once at construction, so EncapsulationKeyBytes performs
-// no expansion at all.
+// The rest of crypto/mlkem's working state — the SHA3 and SHAKE digests
+// that absorb d and z, σ, and the intermediate polynomials — does not
+// escape to the heap in go1.26: the compiler keeps it on the stack of the
+// call, inside the [secmem.ScrubErr] window, which wipes it. The residue test
+// searches a process that decapsulates for d, z, s, σ and the SHAKE state
+// that absorbed z, and finds none of them outside locked memory on either
+// kind of build.
+//
+// One value does escape: the 32-byte message m that decapsulation recovers,
+// returned as a fresh heap slice by an unexported function nothing here can
+// reach. With the public key's hash it gives that ciphertext's shared key —
+// not the decapsulation key. On a GOEXPERIMENT=runtimesecret build the
+// runtime erases it at the first garbage collection after the call; on any
+// other build it is reclaimed by the collector, not zeroed, and the residue
+// test finds it after collections and after Destroy. Treat each shared key
+// Decapsulate returns as exposed to a reader of the process's memory on a
+// legacy build. The shared key crypto/mlkem returns is copied into a
+// SecureBuffer and its heap copy wiped. The encapsulation key is public and
+// is computed once at construction, so EncapsulationKeyBytes performs no
+// expansion at all.
 type MLKEM768Key struct {
 	seedBuf *secmem.SecureBuffer
 	ek      []byte // public encapsulation key, captured at construction

@@ -305,10 +305,13 @@ cert := tls.Certificate{PrivateKey: signer /* ... */}
 ```
 
 ```go
-// GOOD — pick the option that actually keeps the key out of the heap.
-// Build with GOEXPERIMENT=runtimesecret (linux/amd64, linux/arm64), or
-// use an Ed25519 key, which signs in place and is never refused:
+// GOOD — pick the option that actually keeps the key out of the heap: an
+// Ed25519 key, which signs in place and is never refused.
 signer, err := secmemcrypto.ParsePrivateKey(ed25519File)
+// A key that has to be ECDSA or RSA belongs in an HSM, a TPM or a KMS.
+// GOEXPERIMENT=runtimesecret removes the refusal but not the copies: they
+// are erased at the next garbage collection, and a busy signer makes new
+// ones faster than that.
 ```
 
 Why it matters: `ErrHeapTransients` is not a configuration hiccup, it is the
@@ -316,8 +319,9 @@ library telling you that an RSA or ECDSA key will be copied onto
 the heap on every operation and that nothing on this build will erase the
 copies. `AllowHeapTransients()` is right for a key that is loaded once and
 used rarely, where the locked copy really is the only copy almost all of the
-time. For anything that signs or agrees keys continuously it buys nothing
-but a quieter log. Record it as a residual if you pass it; see the
+time. For anything that signs continuously it buys nothing but a quieter
+log, and building with the experiment instead does not change that much: the
+copies still exist until the next collection. Record it as a residual if you pass it; see the
 `secmem-crypto` README, "RSASigner and ECDSASigner on a legacy build".
 
 ## 12. Keeping a `cipher.AEAD` for the life of a session
