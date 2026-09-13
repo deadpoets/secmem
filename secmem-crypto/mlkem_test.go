@@ -16,7 +16,7 @@ import (
 // what the wrapper is responsible for.)
 func TestMLKEM768_RoundTrip(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateMLKEM768Key()
+	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
@@ -69,7 +69,7 @@ func TestEncapsulate_BadKey(t *testing.T) {
 // encapsulation key — the property WithSeed-based persistence relies on.
 func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateMLKEM768Key()
+	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	restored, err := NewMLKEM768Key(buf)
+	restored, err := NewMLKEM768Key(buf, AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewMLKEM768Key: %v", err)
 	}
@@ -124,12 +124,12 @@ func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 
 func TestMLKEM768_DistinctKeys(t *testing.T) {
 	t.Parallel()
-	a, err := GenerateMLKEM768Key()
+	a, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer a.Destroy()
-	b, err := GenerateMLKEM768Key()
+	b, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
@@ -144,7 +144,7 @@ func TestMLKEM768_DistinctKeys(t *testing.T) {
 
 func TestMLKEM768_Decapsulate_InvalidCiphertext(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateMLKEM768Key()
+	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
@@ -160,7 +160,7 @@ func TestMLKEM768_Decapsulate_InvalidCiphertext(t *testing.T) {
 
 func TestNewMLKEM768Key_BadInputs(t *testing.T) {
 	t.Parallel()
-	if _, err := NewMLKEM768Key(nil); err == nil {
+	if _, err := NewMLKEM768Key(nil, AllowHeapTransients()); err == nil {
 		t.Error("expected error for nil buffer")
 	}
 
@@ -169,7 +169,7 @@ func TestNewMLKEM768Key_BadInputs(t *testing.T) {
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer short.Destroy()
-	_, err = NewMLKEM768Key(short)
+	_, err = NewMLKEM768Key(short, AllowHeapTransients())
 	if !errors.Is(err, ErrBadSeedLength) {
 		t.Errorf("wrong-size seed: error = %v, want wrap of ErrBadSeedLength", err)
 	}
@@ -179,7 +179,7 @@ func TestNewMLKEM768Key_BadInputs(t *testing.T) {
 
 	destroyed, _ := secmem.NewEmptyBuffer(mlkem.SeedSize)
 	_ = destroyed.Destroy()
-	if _, err := NewMLKEM768Key(destroyed); !errors.Is(err, secmem.ErrDestroyed) {
+	if _, err := NewMLKEM768Key(destroyed, AllowHeapTransients()); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 }
@@ -200,7 +200,7 @@ func TestMLKEM768_NilAndDestroyed(t *testing.T) {
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
-	live, err := GenerateMLKEM768Key()
+	live, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
@@ -224,5 +224,58 @@ func TestMLKEM768_NilAndDestroyed(t *testing.T) {
 	}
 	if err := live.Destroy(); err != nil {
 		t.Errorf("double Destroy not idempotent: %v", err)
+	}
+}
+
+// TestEncapsulateInto_WipesToCapacity: crypto/mlkem returns the shared key as
+// the first half of a slice whose second half recovers it, so the wipe must
+// reach the slice's capacity — and must stop at its length when that range
+// would reach into the ciphertext about to be returned. The residue test
+// measures the first half end to end; this pins both halves of the rule.
+func TestEncapsulateInto_WipesToCapacity(t *testing.T) {
+	t.Parallel()
+	check := func(name string, shared, ct []byte, wantShared, wantWiped, wantCT []byte) {
+		t.Helper()
+		_, ss, err := encapsulateInto(func() ([]byte, []byte, error) { return shared, ct, nil })
+		if errors.Is(err, secmem.ErrNoSecureMemory) {
+			t.Skipf("%s: %v", name, err)
+		}
+		if err != nil {
+			t.Fatalf("%s: %v", name, err)
+		}
+		defer ss.Destroy()
+		if err := ss.WithBytesErr(func(b []byte) error {
+			if !bytes.Equal(b, wantShared) {
+				t.Errorf("%s: the buffer does not hold the shared key kem returned", name)
+			}
+			return nil
+		}); err != nil {
+			t.Fatal(err)
+		}
+		if !bytes.Equal(wantWiped, make([]byte, len(wantWiped))) {
+			t.Errorf("%s: %d bytes that should have been wiped hold %x", name, len(wantWiped), wantWiped)
+		}
+		if !bytes.Equal(ct, wantCT) {
+			t.Errorf("%s: the ciphertext was modified: %x", name, ct)
+		}
+	}
+
+	key := bytes.Repeat([]byte{0xA5}, 32)
+
+	// The go1.26 shape: shared key and randomness in one 64-byte array, the
+	// ciphertext elsewhere. All 64 bytes are wiped.
+	g := append(bytes.Clone(key), bytes.Repeat([]byte{0x5A}, 32)...)
+	ct := bytes.Repeat([]byte{0x3C}, 16)
+	check("separate ciphertext", g[:32], ct, key, g, bytes.Clone(ct))
+
+	// A ciphertext inside the shared key's capacity is returned intact; only
+	// the shared key itself is wiped.
+	a := append(bytes.Clone(key), bytes.Repeat([]byte{0x3C}, 64)...)
+	check("overlapping ciphertext", a[:32], a[32:], key, a[:32], bytes.Repeat([]byte{0x3C}, 64))
+
+	// A kem error surfaces, and nothing is returned.
+	boom := errors.New("boom")
+	if c, ss, err := encapsulateInto(func() ([]byte, []byte, error) { return nil, nil, boom }); !errors.Is(err, boom) || c != nil || ss != nil {
+		t.Errorf("kem error: got (%v, %v, %v), want (nil, nil, boom)", c, ss, err)
 	}
 }

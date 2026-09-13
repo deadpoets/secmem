@@ -27,8 +27,10 @@
 //
 // AEAD: [OpenInto] and [SealFrom] keep the plaintext in locked memory, and
 // [WithAESGCM] lends AES-GCM whose key schedule is wiped when the callback
-// returns. Key agreement: [X25519Key]; ML-KEM-768
-// via [MLKEM768Key] and [Encapsulate]. Passphrases:
+// returns. Key agreement: [X25519Key]; ML-KEM-768 via [MLKEM768Key], refused
+// on a legacy build like RSA and ECDSA because each decapsulation leaves that
+// ciphertext's shared key on the heap, and [Encapsulate], which is not.
+// Passphrases:
 // [GenerateDicewarePassphrase].
 //
 // Every type states in its own documentation what it does not cover — the

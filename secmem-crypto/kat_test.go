@@ -68,7 +68,7 @@ func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 		if err != nil {
 			t.Fatalf("NewBuffer: %v", err)
 		}
-		key, err := NewMLKEM768Key(buf)
+		key, err := NewMLKEM768Key(buf, AllowHeapTransients())
 		if err != nil {
 			t.Fatalf("NewMLKEM768Key: %v", err)
 		}

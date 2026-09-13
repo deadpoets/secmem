@@ -66,7 +66,7 @@ func BenchmarkX25519KeySharedSecret(b *testing.B) {
 }
 
 func BenchmarkMLKEM768Decapsulate(b *testing.B) {
-	k, err := GenerateMLKEM768Key()
+	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		b.Fatal(err)
 	}
