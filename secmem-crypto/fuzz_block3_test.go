@@ -35,7 +35,7 @@ func FuzzECDSASignDifferential(f *testing.F) {
 		if err != nil {
 			t.Fatalf("NewBuffer: %v", err)
 		}
-		ours, err := NewECDSASigner(elliptic.P256(), buf)
+		ours, err := NewECDSASigner(elliptic.P256(), buf, AllowHeapTransients())
 		if err != nil {
 			t.Fatalf("stdlib accepted the scalar but NewECDSASigner rejected it: %v", err)
 		}

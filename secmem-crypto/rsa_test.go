@@ -31,7 +31,7 @@ var (
 // a clone (see cloneRSADER).
 func testRSASigner(tb testing.TB) *RSASigner {
 	tb.Helper()
-	rsaFixtureOnce.Do(func() { rsaFixture, rsaFixtureErr = GenerateRSASigner(2048) })
+	rsaFixtureOnce.Do(func() { rsaFixture, rsaFixtureErr = GenerateRSASigner(2048, AllowHeapTransients()) })
 	if rsaFixtureErr != nil {
 		tb.Fatalf("GenerateRSASigner(2048): %v", rsaFixtureErr)
 	}
@@ -133,7 +133,7 @@ func TestRSASigner_PKCS8(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	s, err := NewRSASigner(buf)
+	s, err := NewRSASigner(buf, AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewRSASigner(PKCS#8): %v", err)
 	}
@@ -165,19 +165,19 @@ func TestRSASigner_PKCS8(t *testing.T) {
 func TestNewRSASigner_BadInputs(t *testing.T) {
 	t.Parallel()
 
-	if _, err := NewRSASigner(nil); err == nil {
+	if _, err := NewRSASigner(nil, AllowHeapTransients()); err == nil {
 		t.Error("expected error for nil buffer")
 	}
 
 	destroyed, _ := secmem.NewEmptyBuffer(64)
 	_ = destroyed.Destroy()
-	if _, err := NewRSASigner(destroyed); !errors.Is(err, secmem.ErrDestroyed) {
+	if _, err := NewRSASigner(destroyed, AllowHeapTransients()); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 
 	garbage, _ := secmem.NewBuffer([]byte("not DER at all, not even close"))
 	defer garbage.Destroy()
-	_, err := NewRSASigner(garbage)
+	_, err := NewRSASigner(garbage, AllowHeapTransients())
 	if err == nil {
 		t.Fatal("expected error for garbage DER")
 	}
@@ -205,7 +205,7 @@ func TestNewRSASigner_RejectsNonRSA(t *testing.T) {
 	}
 	ecBuf, _ := secmem.NewBuffer(ecDER)
 	defer ecBuf.Destroy()
-	if _, err := NewRSASigner(ecBuf); err == nil || !strings.Contains(err.Error(), "ECDSA") {
+	if _, err := NewRSASigner(ecBuf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "ECDSA") {
 		t.Errorf("PKCS#8 ECDSA key: error = %v, want mention of ECDSA", err)
 	}
 
@@ -219,7 +219,7 @@ func TestNewRSASigner_RejectsNonRSA(t *testing.T) {
 	}
 	edBuf, _ := secmem.NewBuffer(edDER)
 	defer edBuf.Destroy()
-	if _, err := NewRSASigner(edBuf); err == nil || !strings.Contains(err.Error(), "Ed25519") {
+	if _, err := NewRSASigner(edBuf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "Ed25519") {
 		t.Errorf("PKCS#8 Ed25519 key: error = %v, want mention of Ed25519", err)
 	}
 }
@@ -283,7 +283,7 @@ func TestRSASigner_ConcurrentSign(t *testing.T) {
 func TestRSASigner_SignDuringDestroy(t *testing.T) {
 	t.Parallel()
 	for round := range 3 {
-		signer, err := NewRSASigner(cloneRSADER(t))
+		signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 		if err != nil {
 			t.Fatalf("NewRSASigner: %v", err)
 		}
@@ -361,7 +361,7 @@ func TestRSASigner_NilAndDestroyed(t *testing.T) {
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
-	live, err := NewRSASigner(cloneRSADER(t))
+	live, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewRSASigner: %v", err)
 	}
@@ -383,7 +383,7 @@ func TestGenerateRSASigner_RejectsTinyKeys(t *testing.T) {
 	t.Parallel()
 	// stdlib refuses to generate keys below 1024 bits; make sure the error
 	// surfaces instead of being swallowed.
-	if _, err := GenerateRSASigner(512); err == nil {
+	if _, err := GenerateRSASigner(512, AllowHeapTransients()); err == nil {
 		t.Error("expected error for a 512-bit key")
 	}
 }

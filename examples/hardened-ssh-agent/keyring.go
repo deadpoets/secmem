@@ -94,12 +94,24 @@ type Keyring struct {
 	// bytes in secure memory. The passphrase itself is never retained.
 	lockCheck *secmem.SecureBuffer
 	lockSalt  [16]byte
+
+	// allowHeapTransients admits ECDSA identities on a build where every
+	// ECDSA signature leaves unwiped copies of the private scalar on the Go
+	// heap: any build without GOEXPERIMENT=runtimesecret. Off by default,
+	// so this agent's "keys never exist on the heap" holds for what it
+	// accepts; the operator turns it on with -allow-heap-transients.
+	allowHeapTransients bool
 }
 
 // lockCheckLen is the Argon2id output size for the lock derivation.
 const lockCheckLen = 32
 
-func NewKeyring() *Keyring { return &Keyring{} }
+// NewKeyring returns an empty keyring. allowHeapTransients admits ECDSA
+// identities on builds where their signatures leave key copies on the heap;
+// see the Keyring field and secmemcrypto.AllowHeapTransients.
+func NewKeyring(allowHeapTransients bool) *Keyring {
+	return &Keyring{allowHeapTransients: allowHeapTransients}
+}
 
 // Locked reports whether the agent-protocol lock is engaged.
 func (k *Keyring) Locked() bool {
@@ -122,7 +134,7 @@ func (k *Keyring) Add(req *addIdentityRequest) error {
 		return errLocked
 	}
 
-	rec, err := buildRecord(req)
+	rec, err := buildRecord(req, k.allowHeapTransients)
 	if err != nil {
 		return err
 	}
@@ -152,12 +164,12 @@ func (k *Keyring) Add(req *addIdentityRequest) error {
 
 // buildRecord constructs the sealed record for a parsed add request. On
 // any failure every intermediate SecureBuffer is destroyed before return.
-func buildRecord(req *addIdentityRequest) (*record, error) {
+func buildRecord(req *addIdentityRequest, allowHeapTransients bool) (*record, error) {
 	switch string(req.keyType) {
 	case "ssh-ed25519":
 		return buildEd25519Record(req)
 	default:
-		return buildECDSARecord(req)
+		return buildECDSARecord(req, allowHeapTransients)
 	}
 }
 
@@ -191,7 +203,7 @@ func buildEd25519Record(req *addIdentityRequest) (*record, error) {
 	return finishRecord(seedBuf, signer, req.comment)
 }
 
-func buildECDSARecord(req *addIdentityRequest) (*record, error) {
+func buildECDSARecord(req *addIdentityRequest, allowHeapTransients bool) (*record, error) {
 	var curve elliptic.Curve
 	switch string(req.ecCurveName) {
 	case "nistp256":
@@ -222,7 +234,16 @@ func buildECDSARecord(req *addIdentityRequest) (*record, error) {
 
 	// NewECDSASigner validates the scalar (rejects 0 and ≥ group order)
 	// and derives the public point; the wire Q is not trusted or used.
-	signer, err := secmemcrypto.NewECDSASigner(curve, scalarBuf)
+	//
+	// It also refuses, with ErrHeapTransients, on any build where an ECDSA
+	// signature's copies of the scalar are never erased — unless the
+	// operator passed -allow-heap-transients. The refusal comes before the
+	// scalar is read, and the buffer is destroyed just below.
+	var opts []secmemcrypto.Option
+	if allowHeapTransients {
+		opts = append(opts, secmemcrypto.AllowHeapTransients())
+	}
+	signer, err := secmemcrypto.NewECDSASigner(curve, scalarBuf, opts...)
 	if err != nil {
 		_ = scalarBuf.Destroy()
 		return nil, fmt.Errorf("keyring: %w", err)

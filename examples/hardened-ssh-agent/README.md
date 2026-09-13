@@ -3,8 +3,10 @@
 A working SSH agent, about a thousand lines, whose private keys **never
 exist on the Go heap** — and are unreadable by a stray read inside this
 process, or by a passive reader of its memory where the platform allows,
-except during the microseconds of an actual signature. The limits are in
-the threat-model section below.
+except during the microseconds of an actual signature. That holds for every
+identity it accepts by default; ECDSA is the one place it needs a build
+flag or an explicit opt-in, set out below. The limits are in the
+threat-model section.
 
 It speaks the standard agent protocol over `SSH_AUTH_SOCK`. Real `ssh`,
 `ssh-add`, `scp`, and `git` work against it unmodified:
@@ -23,6 +25,24 @@ Supported: Ed25519 and ECDSA P-256/384/521 identities; list, sign, add,
 remove, remove-all, lock, unlock, and **lifetime-constrained adds**
 (`ssh-add -t`). Deliberately unsupported (see the forking guide): RSA,
 FIDO2 `sk-*` keys, certificates, confirmation prompts (`-c`).
+
+### ECDSA identities
+
+Ed25519 signs in place, so an Ed25519 key never reaches the heap on any
+build. ECDSA signs through the standard library, which copies the private
+scalar onto the heap for every signature, and only `runtime/secret` erases
+those copies. So by default the agent accepts ECDSA identities only on a
+`GOEXPERIMENT=runtimesecret` build (linux/amd64 or linux/arm64):
+
+```console
+$ GOEXPERIMENT=runtimesecret go run .
+```
+
+On any other build `ssh-add` of an ECDSA key fails with "agent refused
+operation", and the agent logs why. Pass `-allow-heap-transients` to accept
+ECDSA keys anyway. That is a real trade: an agent under use signs often, so
+the scalar is on the heap for most of its life, and a heap dump of the agent
+contains it. The agent states which posture is in force when it starts.
 
 ## Why this exists
 
@@ -105,6 +125,11 @@ capture. The socket is `0600` in a `0700` directory — anything that can
 connect can request signatures, exactly as with `ssh-agent`; the lock and
 `-t` key lifetimes are the mitigations for that layer, and per-key
 confirmation (`-c`) is a documented fork point.
+
+ECDSA identities accepted through `-allow-heap-transients` fall outside the
+"never on the heap" claim: each signature leaves unwiped copies of the
+scalar on the heap, one of them cached until the collector evicts it. See
+the "ECDSA identities" section above and `secmem-crypto`'s README.
 
 ## Forking guide
 

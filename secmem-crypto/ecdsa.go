@@ -62,9 +62,15 @@ var errCandidateRejected = errors.New("candidate rejected")
 // experiment) they are reclaimed by the collector, not zeroed, and the
 // cached copy is the longest-lived. What ECDSASigner guarantees is custody
 // at rest: the durable, wipeable copy of the scalar lives only inside the
-// SecureBuffer. The constructors consult [ErrHeapTransients]'s policy, so
-// that gating this type to runtimesecret builds is a one-line decision
-// (README, "What each signer actually buys you").
+// SecureBuffer.
+//
+// Because every signature leaves those copies, the constructors refuse on a
+// build where they are never erased — every build without
+// GOEXPERIMENT=runtimesecret — with an error wrapping [ErrHeapTransients],
+// unless the caller passes [AllowHeapTransients]. The refusal is the default
+// so that choosing this residual is visible at the call site rather than
+// discovered in a heap dump. README, "What each signer actually buys you",
+// sets out when opting in is reasonable.
 //
 // The per-operation parse recomputes the public key (one scalar-base
 // multiplication), making a P-256 signature roughly half again as
@@ -109,9 +115,22 @@ func scalarSize(curve elliptic.Curve) int {
 //
 // To load a key that exists as SEC 1 or PKCS#8 DER, parse it with
 // crypto/x509, copy the scalar into a SecureBuffer with D.FillBytes into
-// the borrowed slice, and wipe the parsed key's D limbs.
-func NewECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer) (*ECDSASigner, error) {
-	if err := checkHeapTransients("secmemcrypto: new ecdsa signer"); err != nil {
+// the borrowed slice, and wipe the parsed key's D limbs. [ParsePrivateKey]
+// does all of that for you, without the x509 heap copy.
+//
+// On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
+// without the experiment) this refuses with an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients], because
+// every signature this type makes leaves copies of the private key on the
+// heap that nothing erases there. The check runs before the key is read.
+func NewECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer, opts ...Option) (*ECDSASigner, error) {
+	return newECDSASigner(curve, scalarBuf, resolveOptions(opts))
+}
+
+// newECDSASigner is NewECDSASigner with its options already resolved, shared
+// with the parsers so the gate is decided once per call.
+func newECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer, o options) (*ECDSASigner, error) {
+	if err := o.checkHeapTransients("secmemcrypto: new ecdsa signer"); err != nil {
 		return nil, err
 	}
 	if curve == nil || !supportedCurve(curve) {
@@ -169,8 +188,14 @@ func NewECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer) (*ECDS
 // replaced Reader.
 //
 // To persist the generated key, use [ECDSASigner.WithScalar].
-func GenerateECDSASigner(curve elliptic.Curve) (*ECDSASigner, error) {
-	if err := checkHeapTransients("secmemcrypto: generate ecdsa scalar"); err != nil {
+//
+// On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
+// without the experiment) this refuses with an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients], because
+// every signature this type makes leaves copies of the private key on the
+// heap that nothing erases there. The check runs before a scalar is drawn.
+func GenerateECDSASigner(curve elliptic.Curve, opts ...Option) (*ECDSASigner, error) {
+	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: generate ecdsa scalar"); err != nil {
 		return nil, err
 	}
 	if curve == nil || !supportedCurve(curve) {

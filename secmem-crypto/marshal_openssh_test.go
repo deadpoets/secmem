@@ -74,13 +74,13 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_RoundTrip(t *testing.T) {
 		t.Errorf("x/crypto without a passphrase: %v, want PassphraseMissingError", err)
 	}
 
-	ours, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
+	ours, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("own parser: %v", err)
 	}
 	defer ours.Destroy()
 	verifySigner(t, ours, pub)
-	if _, err := ParsePrivateKey(pemBytes); !errors.Is(err, ErrEncryptedKey) {
+	if _, err := ParsePrivateKey(pemBytes, AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
 		t.Errorf("own plain parser: %v, want ErrEncryptedKey", err)
 	}
 }

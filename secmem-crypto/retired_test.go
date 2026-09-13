@@ -44,7 +44,7 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 		data := legacyPEM(dek)
 		t.Run(name, func(t *testing.T) {
 			// The plain entry point: encrypted, and retired with it.
-			s, err := ParsePrivateKey(data)
+			s, err := ParsePrivateKey(data, AllowHeapTransients())
 			if s != nil {
 				s.Destroy()
 				t.Fatal("a legacy encrypted PEM was parsed")
@@ -57,7 +57,7 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 			// The passphrase entry point: unsupported, and retired with it.
 			// A caller who followed ErrEncryptedKey here must not be told to
 			// keep waiting for a release that will open the file.
-			s, err = ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
+			s, err = ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 			if s != nil {
 				s.Destroy()
 				t.Fatal("a legacy encrypted PEM was decrypted")
@@ -116,7 +116,7 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			s, err := ParsePrivateKeyWithPassphrase(c.data, []byte(testPassphrase))
+			s, err := ParsePrivateKeyWithPassphrase(c.data, []byte(testPassphrase), AllowHeapTransients())
 			if s != nil {
 				s.Destroy()
 				t.Fatal("want a refusal")

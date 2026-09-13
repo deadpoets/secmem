@@ -99,7 +99,7 @@ func TestClassification_Contained_Ed25519Sign(t *testing.T) {
 // the top of this file.
 func TestClassification_Transient(t *testing.T) {
 	digest := sha256.Sum256([]byte("classify me"))
-	ec, err := GenerateECDSASigner(elliptic.P256())
+	ec, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateECDSASigner: %v", err)
 	}

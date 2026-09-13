@@ -123,7 +123,7 @@ func TestNewRSASigner_RejectsECDHKey_WipesLiveTransient(t *testing.T) {
 	}
 	defer func() { wipeECDHPrivateKey = orig }()
 
-	_, rerr := NewRSASigner(buf)
+	_, rerr := NewRSASigner(buf, AllowHeapTransients())
 	if rerr == nil {
 		t.Fatal("NewRSASigner accepted an X25519 key; want rejection")
 	}

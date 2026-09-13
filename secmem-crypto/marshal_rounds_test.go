@@ -63,7 +63,7 @@ func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 				t.Errorf("file records %d rounds, asked for %d", got, rounds)
 			}
 
-			loaded, err := ParsePrivateKeyWithPassphrase(container, []byte(testPassphrase))
+			loaded, err := ParsePrivateKeyWithPassphrase(container, []byte(testPassphrase), AllowHeapTransients())
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -211,7 +211,7 @@ func TestOpenSSHKDFRounds_ReadCapIsWhereTheWriteCapStops(t *testing.T) {
 	}
 
 	parse := func() error {
-		s, err := ParsePrivateKeyWithPassphrase(probe, []byte(testPassphrase))
+		s, err := ParsePrivateKeyWithPassphrase(probe, []byte(testPassphrase), AllowHeapTransients())
 		if s != nil {
 			s.Destroy()
 			t.Fatal("the probe file must never parse successfully")

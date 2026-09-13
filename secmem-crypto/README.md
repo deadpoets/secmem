@@ -51,9 +51,9 @@ So each function here derives, signs, or decrypts **into or out of** a
 | | | class |
 |---|---|---|
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below). One heap allocation per signature — the signature — for messages up to 4 KiB; a longer message puts its nonce pre-image on the heap, wiped before return | **contained** |
-| `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes every copy it can reach — the `big.Int` limbs and, for RSA, the standard library's FIPS-form key, by reflection with a tripwire; the copies it cannot reach are listed in the type docs and in the value table below | **runtimesecret-only** |
+| `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes every copy it can reach — the `big.Int` limbs and, for RSA, the standard library's FIPS-form key, by reflection with a tripwire; the copies it cannot reach are listed in the type docs and in the value table below. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **runtimesecret-only** |
 | `AsSSH`, `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase`, `…WithPassphraseParams` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, unencrypted or passphrase-protected, assembled and encrypted in place into a buffer. The `Params` form takes the bcrypt cost (ssh-keygen's `-a`), capped where the readers cap it so a written file always opens. The passphrase form's one heap object, the AES key schedule, is wiped by reflection with a tripwire. `AsSSH` adds nothing of its own and inherits the class of the signer it wraps | **contained** (export) |
-| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; an OpenSSH RSA key's missing CRT exponents are computed over stack arrays, not with `math/big`; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files (bcrypt, aes256-ctr/cbc — what ssh-keygen writes) open through the bcrypt_pbkdf fork below, with the AES round keys wiped by reflection; PKCS#8 PBES2 and legacy PEM encryption are refused. The parser is contained; what the `ECDSASigner` and `RSASigner` constructors then do with the scalar or DER is their own class | **contained** (parser) |
+| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; an OpenSSH RSA key's missing CRT exponents are computed over stack arrays, not with `math/big`; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files (bcrypt, aes256-ctr/cbc — what ssh-keygen writes) open through the bcrypt_pbkdf fork below, with the AES round keys wiped by reflection; PKCS#8 PBES2 and legacy PEM encryption are refused. The parser is contained; what the `ECDSASigner` and `RSASigner` constructors then do with the scalar or DER is their own class, so an RSA or EC key file is refused on a legacy build without `AllowHeapTransients()`. Ed25519 files never are | **contained** (parser) |
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 4231 derivation straight into a buffer; the HMAC digest states that hold the key live in x/crypto and crypto/hmac heap objects nothing here can wipe | **runtimesecret-only** |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors. The working set is a heap allocation — pageable and dumpable during the call — that the fork wipes deterministically before returning | **contained** (heap workspace, wiped) |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small | **contained** |
@@ -102,24 +102,41 @@ On Windows, macOS or plain Linux, does keeping the durable key in a
   its cleanup. A heap dump taken during or shortly after a signature has the
   key in it, buffer or no buffer.
 
-The maintainers' options, in order of preference for the reviewer who
-raised this:
+So on a legacy build both types refuse by default. `NewRSASigner`,
+`GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` return an
+error wrapping `ErrHeapTransients`, and so do `ParsePrivateKey` and
+`ParsePrivateKeyWithPassphrase` for an RSA or EC key file. A caller who
+accepts the residual says so where the signer is built:
 
-1. **Keep, but gate.** Refuse construction on a legacy build unless the
-   caller opts in, so the class is decided where it can be seen. The gate
-   is implemented and unused: `ErrHeapTransients` exists, every constructor
-   of both types consults `heapTransientsAllowed`, and switching the policy
-   to `secmem.RuntimeSecretActive` is a one-line change (`policy.go`).
-   An `AllowHeapTransients` option would be the opt-in.
-2. **Keep as is,** with the type docs and this table as the disclosure.
-   Defensible for the load-and-rarely-sign profile; misleading for the
-   sign-continuously profile unless the reader gets this far.
-3. **Remove.** Cleanest claim, and the standard library's own key types
-   plus an HSM are the honest alternative. Loses the at-rest properties
-   for the profile that benefits from them.
+```go
+signer, err := secmemcrypto.ParsePrivateKey(file, secmemcrypto.AllowHeapTransients())
+```
 
-This PR implements the gate and leaves it open; the decision is the
-maintainers'.
+The refusal is the default so that the choice is visible in the code that
+makes it, not discovered later in a heap dump. It is checked before the key
+is handed to the standard library, so a refused call makes none of the
+copies it exists to prevent, and a buffer passed to a refused constructor
+stays the caller's. On a `GOEXPERIMENT=runtimesecret` build nothing is
+refused and the option has no effect. Ed25519 keys are never refused on any
+build, because Ed25519 signs in place.
+
+When to opt in:
+
+- **Reasonable:** load a key, sign rarely. The key spends almost all of its
+  life with the locked copy as the only copy.
+- **Not reasonable:** sign continuously — a TLS listener, a busy SSH agent,
+  a token-issuing service. That process has the key on the heap at almost
+  every moment, and the option only hides that. Build with the experiment,
+  move the key to Ed25519, or keep it in an HSM or KMS.
+
+**What the gate does not cover.** It is scoped to the two signer types.
+`X25519Key` has the same shape of residual — a copy of its private scalar
+inside `crypto/ecdh` on every operation — and does not refuse; treat an
+`X25519Key` on a legacy build as you would an opted-in ECDSA key.
+`MLKEM768Key`'s remaining residue is digest states and the recovered message
+rather than the seed, and `HKDFInto` and `HMACInto` leave digest states keyed
+by the caller's input. None of those refuse either. Each is listed in the
+table above.
 
 ## The parts that should make you look twice
 

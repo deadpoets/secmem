@@ -294,6 +294,32 @@ wipe can reach, which is one reason `secmem-crypto` signs Ed25519 in place
 rather than calling it. When a dependency caches what you hand it, either
 do not hand it the key, or write the residual down.
 
+## 11. Opting in to heap transients to make an error go away
+
+```go
+// BAD — a TLS server signs on every handshake. On a build without
+// GOEXPERIMENT=runtimesecret each signature leaves unwiped copies of the
+// scalar on the heap, so this key is effectively always there.
+signer, err := secmemcrypto.ParsePrivateKey(file, secmemcrypto.AllowHeapTransients())
+cert := tls.Certificate{PrivateKey: signer /* ... */}
+```
+
+```go
+// GOOD — pick the option that actually keeps the key out of the heap.
+// Build with GOEXPERIMENT=runtimesecret (linux/amd64, linux/arm64), or
+// use an Ed25519 key, which signs in place and is never refused:
+signer, err := secmemcrypto.ParsePrivateKey(ed25519File)
+```
+
+Why it matters: `ErrHeapTransients` is not a configuration hiccup, it is the
+library telling you that an RSA or ECDSA key will be copied onto the heap
+on every signature and that nothing on this build will erase the copies.
+`AllowHeapTransients()` is right for a key that is loaded once and used
+rarely, where the locked copy really is the only copy almost all of the
+time. For anything that signs continuously it buys nothing but a quieter
+log. Record it as a residual if you pass it; see the `secmem-crypto` README,
+"RSASigner and ECDSASigner on a legacy build".
+
 ---
 
 Run `go vet ./...` and the `secmem-lint` analyzer in CI. The linter catches

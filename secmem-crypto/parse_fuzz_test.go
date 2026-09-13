@@ -26,7 +26,7 @@ func FuzzParsePrivateKey(f *testing.F) {
 	f.Add([]byte{0x30, 0x00})
 
 	f.Fuzz(func(t *testing.T, data []byte) {
-		s, err := ParsePrivateKey(data)
+		s, err := ParsePrivateKey(data, AllowHeapTransients())
 		if err != nil {
 			if s != nil {
 				t.Fatal("error with a non-nil signer")

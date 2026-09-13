@@ -37,7 +37,7 @@ func TestAsSSH_Ed25519(t *testing.T) {
 
 func TestAsSSH_ECDSA(t *testing.T) {
 	t.Parallel()
-	signer, err := GenerateECDSASigner(elliptic.P256())
+	signer, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestAsSSH_BadInputs(t *testing.T) {
 
 	// x/crypto/ssh has no algorithm for P-224; the error should surface
 	// from NewSignerFromSigner rather than panic.
-	p224, err := GenerateECDSASigner(elliptic.P224())
+	p224, err := GenerateECDSASigner(elliptic.P224(), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateECDSASigner(P-224): %v", err)
 	}

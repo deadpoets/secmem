@@ -45,11 +45,21 @@ Two sources deserve a note of their own:
 **INTERNAL**: only this process ever needs the plaintext. Signing keys,
 session keys, derived encryption and MAC keys, the seed of a key-exchange
 private scalar. The goal is that the plaintext never exists outside a
-`SecureBuffer` from ingress to `Destroy`. That is achievable, because every
-operation on such a key can run in place: `secmem-crypto`'s signers sign
+`SecureBuffer` from ingress to `Destroy`. For most such keys that is
+achievable, because the operation can run in place: `Ed25519Signer` signs
 from the buffer, `OpenInto` and `SealFrom` encrypt and decrypt from it, the
 `*Into` KDFs derive into it. `Seal` the buffer whenever the key is dormant;
 protection is proportional to dormancy.
+
+RSA and ECDSA keys are the exception. The standard library has no in-place
+API for them, so `RSASigner` and `ECDSASigner` keep the durable key in the
+buffer but copy it through the heap on every signature, and on a build
+without `GOEXPERIMENT=runtimesecret` nothing erases those copies. There the
+constructors and the parsers refuse such keys with `ErrHeapTransients`
+unless you pass `AllowHeapTransients()`. Decide per key: an Ed25519 key is
+INTERNAL in the full sense; an RSA or ECDSA key that signs continuously is
+effectively on the heap for the life of the process unless you build with
+the experiment, and belongs in your residuals list if you opt in.
 
 **EXTERNAL**: the plaintext has to leave the process in the clear. A bearer
 token in a request header, a passphrase the user types, a key file written
@@ -78,7 +88,7 @@ crossings this repository has a helper for:
 | Crossing | Helper |
 |---|---|
 | File or stream into a buffer | `NewBufferFromReader`, `SecureBuffer.ReadFrom` |
-| Key file into a signer | `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` |
+| Key file into a signer | `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase`; RSA and EC key files need `AllowHeapTransients()` on a build without `GOEXPERIMENT=runtimesecret`, and opting in is a residual to record |
 | Terminal or form input that arrives as `[]byte` | `NewBuffer`, which wipes its input |
 | Decoded document field | a `json.Unmarshaler` on the field type; see pitfall 9 |
 | Password into a key | `Argon2Into` and the other `*Into` KDFs; `Argon2Workspace` for the working state; `BcryptPBKDFInto` only where a format names bcrypt_pbkdf |

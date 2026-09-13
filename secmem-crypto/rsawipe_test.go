@@ -178,7 +178,7 @@ func TestRSAFIPSSecretViews_ReportsUnresolvableLayout(t *testing.T) {
 // TestRSASigner_SignWipesLiveTransient for the copy that test could not
 // see. Must not call t.Parallel(): it swaps a package var.
 func TestRSASigner_SignWipesLiveFIPSKey(t *testing.T) {
-	signer, err := NewRSASigner(cloneRSADER(t))
+	signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewRSASigner: %v", err)
 	}
@@ -219,7 +219,7 @@ func TestRSASigner_SignWipesLiveFIPSKey(t *testing.T) {
 // FIPS-form key cannot be located, Sign and the constructors return the
 // error rather than reporting success over a live heap copy of the key.
 func TestRSASigner_WipeFailureIsAnError(t *testing.T) {
-	signer, err := NewRSASigner(cloneRSADER(t))
+	signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewRSASigner: %v", err)
 	}
@@ -240,7 +240,7 @@ func TestRSASigner_WipeFailureIsAnError(t *testing.T) {
 	}
 	der := cloneRSADER(t)
 	defer der.Destroy() // ownership is not transferred on failure
-	if s, err := NewRSASigner(der); err == nil {
+	if s, err := NewRSASigner(der, AllowHeapTransients()); err == nil {
 		s.Destroy()
 		t.Fatal("NewRSASigner reported success although the wipe failed")
 	}

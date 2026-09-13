@@ -150,8 +150,13 @@ func ExampleX25519Key() {
 // An ECDSASigner drops into any crypto.Signer consumer with the P-256
 // scalar held off-heap between operations — see the type's honesty caveat
 // for what happens during one. Unlike Ed25519, ECDSA signs a digest.
+//
+// AllowHeapTransients is passed so the example runs on every build. Without
+// it, a build lacking GOEXPERIMENT=runtimesecret refuses with
+// ErrHeapTransients, because each signature leaves unwiped copies of the
+// scalar on the heap there.
 func ExampleECDSASigner() {
-	signer, err := secmemcrypto.GenerateECDSASigner(elliptic.P256())
+	signer, err := secmemcrypto.GenerateECDSASigner(elliptic.P256(), secmemcrypto.AllowHeapTransients())
 	if err != nil {
 		panic(err)
 	}
@@ -187,11 +192,17 @@ func ExampleAsSSH() {
 }
 
 // Because ECDSASigner satisfies crypto.Signer, it plugs directly into
-// crypto/x509 certificate generation and crypto/tls.Certificate — the
-// private scalar never exists as a plain heap []byte for the life of a TLS
-// listener built on it.
+// crypto/x509 certificate generation and crypto/tls.Certificate, and the
+// durable copy of the scalar stays in locked memory.
+//
+// Read the residual before copying this into a server. A TLS listener signs
+// on every handshake, which is the continuous-signing profile: on a build
+// without GOEXPERIMENT=runtimesecret each signature leaves unwiped copies of
+// the scalar on the heap, so the key is effectively always there. The
+// example passes AllowHeapTransients only so it runs on every build; a
+// server should build with the experiment, or accept that residual knowingly.
 func ExampleECDSASigner_tlsCertificate() {
-	signer, err := secmemcrypto.GenerateECDSASigner(elliptic.P256())
+	signer, err := secmemcrypto.GenerateECDSASigner(elliptic.P256(), secmemcrypto.AllowHeapTransients())
 	if err != nil {
 		panic(err)
 	}

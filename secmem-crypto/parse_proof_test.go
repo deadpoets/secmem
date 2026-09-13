@@ -43,7 +43,7 @@ func TestParsePrivateKey_ParserAllocatesNoSecret(t *testing.T) {
 				// One warm-up parse so lazily initialised state (curve
 				// tables, the secmem registry, profiler buckets) is not
 				// attributed to the measured runs.
-				s, err := ParsePrivateKey(enc.data)
+				s, err := ParsePrivateKey(enc.data, AllowHeapTransients())
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -53,7 +53,7 @@ func TestParsePrivateKey_ParserAllocatesNoSecret(t *testing.T) {
 				runtime.GC()
 				before := memProfileByStack()
 				for range 3 {
-					s, err := ParsePrivateKey(enc.data)
+					s, err := ParsePrivateKey(enc.data, AllowHeapTransients())
 					if err != nil {
 						t.Fatal(err)
 					}

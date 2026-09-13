@@ -150,6 +150,7 @@ that is said outright rather than dressed up.
 | Every borrow path is safe when sealed/destroyed/nil | Each type's borrow methods return `ErrSealed`/`ErrDestroyed` and recover after `Unseal` | `sealed_block2_test.go`, `sealed_block3_test.go` |
 | Concurrent Sign is safe | 8×25 concurrent signs and Sign-vs-Destroy races under `-race` | `ed25519_test.go`, `ecdsa_test.go`, `rsa_test.go` |
 | Legacy `ssh-rsa` (SHA-1) is unreachable | Every signing path of an `AsSSH` RSA signer is asserted to offer/use only rsa-sha2 | `ssh_test.go` |
+| RSA and ECDSA are refused where their heap copies are never erased | The shipped policy is pinned to `secmem.RuntimeSecretActive` by identity and by value, so a permissive default fails the suite. Under a refusing policy all four constructors return `ErrHeapTransients` before reading their input and without taking ownership of a buffer, the parsers refuse RSA and EC files through both entry points while Ed25519 files parse, and `AllowHeapTransients` admits all of them. Shown to fail against a permissive default and against a parser that drops the option; run on a real `GOEXPERIMENT=runtimesecret` build as well as a legacy one | `policy_test.go`; the SSH agent example's `TestAdd_ECDSARefusedWithoutOptIn` |
 
 ## Deliberately not proven — and why
 
@@ -212,7 +213,9 @@ stand-in rather than measured directly.
   internal FIPS-form copy and modular-arithmetic scratch that no exported API
   exposes; those are erased on `GOEXPERIMENT=runtimesecret` builds and
   otherwise reclaimed by the GC, not explicitly zeroed. This is the documented
-  cost of not reimplementing ECDSA/RSA, stated in the signer type docs.
+  cost of not reimplementing ECDSA/RSA, stated in the signer type docs, and
+  it is why both signer types refuse by default on a build where those copies
+  are never erased (`policy_test.go` proves the refusal, not the erasure).
 - **secmem is not a FIPS 140-validated module.** The crypto known-answer tests
   anchor to the published RFC vectors a validation would use
   (RFC 8032/6979/7748/5869) and, for ML-KEM-768, to byte-for-byte agreement

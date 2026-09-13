@@ -41,10 +41,14 @@ import (
 
 	"github.com/deadpoets/secmem"
 	"github.com/deadpoets/secmem/redact"
+	secmemcrypto "github.com/deadpoets/secmem/secmem-crypto"
 )
 
 func main() {
 	socketPath := flag.String("socket", "", "unix socket path (default: private dir under $XDG_RUNTIME_DIR or the system temp dir)")
+	allowHeapTransients := flag.Bool("allow-heap-transients", false,
+		"accept ECDSA keys on a build where each ECDSA signature leaves unwiped copies of the private scalar on the heap "+
+			"(every build without GOEXPERIMENT=runtimesecret); Ed25519 keys are unaffected")
 	flag.Parse()
 
 	// Logging first, through the redaction handler: even a future bug
@@ -58,13 +62,13 @@ func main() {
 	))
 	slog.SetDefault(logger)
 
-	if err := run(*socketPath, logger); err != nil {
+	if err := run(*socketPath, *allowHeapTransients, logger); err != nil {
 		logger.Error("fatal", "err", err)
 		os.Exit(1)
 	}
 }
 
-func run(socketPath string, logger *slog.Logger) error {
+func run(socketPath string, allowHeapTransients bool, logger *slog.Logger) error {
 	// ---- Process hardening, before any key exists ----------------------
 
 	// Core dumps off, no-new-privs on (Linux; best effort per platform).
@@ -90,6 +94,21 @@ func run(socketPath string, logger *slog.Logger) error {
 	logger.Info("secure memory capabilities", "report", caps.String())
 	for _, w := range caps.Warnings() {
 		logger.Warn("capability warning", "warning", w)
+	}
+
+	// Which identities this build will hold without breaking the "keys
+	// never on the heap" claim. Ed25519 signs in place everywhere; ECDSA
+	// signs through the standard library, whose per-signature copies of
+	// the scalar only runtime/secret erases.
+	switch {
+	case secmem.RuntimeSecretActive():
+		logger.Info("ECDSA identities accepted", "why", "runtime/secret erases each signature's heap copies of the scalar")
+	case allowHeapTransients:
+		logger.Warn("ECDSA identities accepted by -allow-heap-transients",
+			"residual", "each ECDSA signature leaves unwiped copies of the private scalar on the heap, one cached until the collector evicts it")
+	default:
+		logger.Info("ECDSA identities will be refused on this build; Ed25519 only",
+			"remedy", "build with GOEXPERIMENT=runtimesecret on linux/amd64 or linux/arm64, or pass -allow-heap-transients to accept the residual")
 	}
 
 	// Backstop: if the process is killed by SIGINT/SIGTERM before the
@@ -129,7 +148,7 @@ func run(socketPath string, logger *slog.Logger) error {
 		return fmt.Errorf("restricting socket permissions: %w", err)
 	}
 
-	keyring := NewKeyring()
+	keyring := NewKeyring(allowHeapTransients)
 	defer keyring.DestroyAll()
 
 	// Orderly shutdown: destroy keys (full wipe + unmap), remove socket.
@@ -230,7 +249,14 @@ func dispatch(msg []byte, keyring *Keyring, logger *slog.Logger) []byte {
 			return replyFailure
 		}
 		if err := keyring.Add(req); err != nil {
-			logger.Debug("add refused", "err", err)
+			// A policy refusal is logged where the operator will see it:
+			// ssh-add only reports "agent refused operation".
+			if errors.Is(err, secmemcrypto.ErrHeapTransients) {
+				logger.Warn("ECDSA identity refused on this build",
+					"remedy", "build with GOEXPERIMENT=runtimesecret on linux/amd64 or linux/arm64, or restart with -allow-heap-transients")
+			} else {
+				logger.Debug("add refused", "err", err)
+			}
 			return replyFailure
 		}
 		logger.Info("identity added", "comment", req.comment)

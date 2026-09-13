@@ -167,15 +167,35 @@ mark the stability commitment.
   `Ed25519Signer.Sign` at exactly one (the signature) for messages up to
   4 KiB, the standard-library-backed paths as allocating.
 
-- **`secmem-crypto`: `ErrHeapTransients`, an unused gate.** The constructors
-  of `RSASigner` and `ECDSASigner` consult a package-level policy that is
-  permissive in this release. Flipping it to `secmem.RuntimeSecretActive`
-  refuses both types with this error on any build where their per-operation
-  heap copies are never erased; the decision is recorded in the README and
-  left to the maintainers, and the error exists now so callers can test for
-  it before it is ever returned.
+- **`secmem-crypto`: `ErrHeapTransients`, `AllowHeapTransients` and
+  `Option`.** The error a refused RSA or ECDSA signer returns (see Changed),
+  and the option that accepts the residual instead. `Option` is new and is
+  taken variadically by `NewRSASigner`, `GenerateRSASigner`,
+  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey` and
+  `ParsePrivateKeyWithPassphrase`; a nil `Option` is ignored.
 
 ### Changed
+
+- **BREAKING — `secmem-crypto`: RSA and ECDSA signers are refused on a build
+  where their heap copies are never erased.** `NewRSASigner`,
+  `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` now return
+  an error wrapping `ErrHeapTransients` on every build without
+  `GOEXPERIMENT=runtimesecret` — Windows, macOS, and Linux without the
+  experiment — and `ParsePrivateKey` and `ParsePrivateKeyWithPassphrase` do
+  the same for an RSA or EC key file. Both types rebuild the private key
+  through the standard library on every signature, and on those builds the
+  copies are reclaimed by the collector but never zeroed, so a process that
+  signs has the key on the heap whether or not its durable copy is locked.
+  The refusal happens before the key is handed to the standard library, and a
+  buffer passed to a refused constructor stays the caller's. Callers who
+  accept the residual pass `AllowHeapTransients()`; the README sets out when
+  that is reasonable (load and sign rarely) and when it is not (sign
+  continuously). Ed25519 keys are never refused, and nothing changes on a
+  `GOEXPERIMENT=runtimesecret` build. The constructors and parsers gain a
+  variadic `...Option` parameter: existing calls compile unchanged, but a
+  function value of the old type no longer matches, which `gorelease` reports
+  as incompatible. The next `secmem-crypto` release is a minor bump. The SSH
+  agent example follows the same default and gains `-allow-heap-transients`.
 
 - **`secmem/httpauth`: the credential is no longer sent over cleartext http
   unless the caller opts in.** `Transport.Hosts` compared only the host, so

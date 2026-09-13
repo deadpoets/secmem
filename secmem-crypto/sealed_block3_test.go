@@ -19,7 +19,7 @@ func TestECDSASigner_SealedBuffer(t *testing.T) {
 	t.Parallel()
 	buf := scalarBufFromHex(t, elliptic.P256(),
 		"C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721")
-	s, err := NewECDSASigner(elliptic.P256(), buf) // s owns buf; ref retained only to seal it
+	s, err := NewECDSASigner(elliptic.P256(), buf, AllowHeapTransients()) // s owns buf; ref retained only to seal it
 	if err != nil {
 		t.Fatalf("NewECDSASigner: %v", err)
 	}
@@ -65,7 +65,7 @@ func TestNewECDSASigner_SealedBuffer(t *testing.T) {
 	// NewECDSASigner reads the scalar to validate it and derive the public
 	// key, so a sealed buffer must fail with ErrSealed, without taking
 	// ownership.
-	if _, err := NewECDSASigner(elliptic.P256(), buf); !errors.Is(err, secmem.ErrSealed) {
+	if _, err := NewECDSASigner(elliptic.P256(), buf, AllowHeapTransients()); !errors.Is(err, secmem.ErrSealed) {
 		t.Errorf("NewECDSASigner(sealed): error = %v, want ErrSealed", err)
 	}
 	if buf.IsDestroyed() {
@@ -77,7 +77,7 @@ func TestNewECDSASigner_SealedBuffer(t *testing.T) {
 func TestRSASigner_SealedBuffer(t *testing.T) {
 	t.Parallel()
 	buf := cloneRSADER(t)
-	s, err := NewRSASigner(buf)
+	s, err := NewRSASigner(buf, AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewRSASigner: %v", err)
 	}
@@ -114,7 +114,7 @@ func TestNewRSASigner_SealedBuffer(t *testing.T) {
 	if err := buf.Seal(); err != nil {
 		t.Fatalf("Seal: %v", err)
 	}
-	if _, err := NewRSASigner(buf); !errors.Is(err, secmem.ErrSealed) {
+	if _, err := NewRSASigner(buf, AllowHeapTransients()); !errors.Is(err, secmem.ErrSealed) {
 		t.Errorf("NewRSASigner(sealed): error = %v, want ErrSealed", err)
 	}
 	if buf.IsDestroyed() {

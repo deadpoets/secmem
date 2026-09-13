@@ -77,7 +77,7 @@ var errCheckMismatch = fmt.Errorf("%w: check integers disagree", errMalformed)
 // and returns the signer. blob is destroyed on every path: the seed or
 // scalar is copied out of it, and for RSA the DER is assembled into a
 // separate buffer.
-func parseOpenSSH(blob *secmem.SecureBuffer) (Signer, error) {
+func parseOpenSSH(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	var (
 		s   Signer
 		der *secmem.SecureBuffer // RSA only: PKCS#1 DER built from the file's integers
@@ -93,7 +93,7 @@ func parseOpenSSH(blob *secmem.SecureBuffer) (Signer, error) {
 		if h.numKeys != 1 {
 			return fmt.Errorf("%w: OpenSSH file holds %d keys, want 1", ErrUnsupportedKey, h.numKeys)
 		}
-		s, der, err = parseOpenSSHPrivateBlock(h.privBlock, h.pubBlob)
+		s, der, err = parseOpenSSHPrivateBlock(h.privBlock, h.pubBlob, o)
 		return err
 	})
 	_ = blob.Destroy()
@@ -101,7 +101,7 @@ func parseOpenSSH(blob *secmem.SecureBuffer) (Signer, error) {
 		return nil, err
 	}
 	if der != nil {
-		return rsaFromDER(der)
+		return rsaFromDER(der, o)
 	}
 	return s, nil
 }
@@ -115,7 +115,7 @@ func parseOpenSSH(blob *secmem.SecureBuffer) (Signer, error) {
 // (OpenSSH itself does this on load), so a file whose halves disagree is
 // rejected rather than yielding a signer whose Public() is not what the
 // file advertises.
-func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte) (Signer, *secmem.SecureBuffer, error) {
+func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *secmem.SecureBuffer, error) {
 	var (
 		s   Signer
 		der *secmem.SecureBuffer
@@ -196,7 +196,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte) (Signer, *secmem.Secure
 				return fmt.Errorf("%w: public and private key blocks disagree", errMalformed)
 			}
 			var err error
-			s, err = ecdsaFromScalar(d, curve, q)
+			s, err = ecdsaFromScalar(d, curve, q, o)
 			return err
 
 		case "ssh-rsa":

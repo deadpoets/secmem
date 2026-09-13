@@ -84,7 +84,7 @@ func TestParseOpenSSH_Ed25519Variants(t *testing.T) {
 	pubBlob := sshPubBlob(t, pub)
 
 	// Sanity: the hand-built container parses and is the right key.
-	s, err := ParsePrivateKey(opensshContainer(pubBlob, good, "none", 1, nil))
+	s, err := ParsePrivateKey(opensshContainer(pubBlob, good, "none", 1, nil), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("hand-built container: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestParseOpenSSH_Ed25519Variants(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")
@@ -142,7 +142,7 @@ func TestParseOpenSSH_ECDSAVariants(t *testing.T) {
 		return sshInner{Check1: 3, Check2: 3, Keytype: "ecdsa-sha2-nistp256", Rest: ssh.Marshal(sshECDSAFields{Curve: curve, Pub: pub, D: d, Comment: "c"})}
 	}
 
-	s, err := ParsePrivateKey(opensshContainer(pubBlob, inner("nistp256", q, kd), "none", 1, nil))
+	s, err := ParsePrivateKey(opensshContainer(pubBlob, inner("nistp256", q, kd), "none", 1, nil), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("hand-built container: %v", err)
 	}
@@ -163,7 +163,7 @@ func TestParseOpenSSH_ECDSAVariants(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")
@@ -184,7 +184,7 @@ func TestParseOpenSSH_RSAVariants(t *testing.T) {
 	}
 	good := sshRSAFields{N: k.N, E: e, D: k.D, Iqmp: k.Precomputed.Qinv, P: k.Primes[0], Q: k.Primes[1], Comment: "c"}
 
-	s, err := ParsePrivateKey(opensshContainer(pubBlob, inner(good), "none", 1, nil))
+	s, err := ParsePrivateKey(opensshContainer(pubBlob, inner(good), "none", 1, nil), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("hand-built container: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestParseOpenSSH_RSAVariants(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")

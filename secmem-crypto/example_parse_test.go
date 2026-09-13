@@ -17,7 +17,9 @@ import (
 // ExampleParsePrivateKey loads an OpenSSH private-key file the way a
 // hardened program should: the file bytes go into a SecureBuffer, the key is
 // parsed from inside that buffer's borrow (the seed never lands on the
-// heap), and the signer is handed to x/crypto/ssh through AsSSH.
+// heap), and the signer is handed to x/crypto/ssh through AsSSH. An Ed25519
+// key needs no option on any build; an RSA or EC key file would need
+// AllowHeapTransients on a build without GOEXPERIMENT=runtimesecret.
 func ExampleParsePrivateKey() {
 	// Stand-in for the file on disk: an ssh-keygen-style OpenSSH key.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
