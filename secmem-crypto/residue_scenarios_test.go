@@ -68,6 +68,11 @@ type residueScenario struct {
 	name  string
 	class residueClass
 	nOps  int // operations per 'o' command; 0 means 32
+	// minCore is the first core release whose behaviour the scenario's class
+	// depends on, or "" when any will do. Against an older released core the
+	// scenario is skipped with the reason; against a local or workspace tree
+	// (no release version) it always runs.
+	minCore string
 	// material runs in the parent: the secret the victim receives in a
 	// SecureBuffer, public inputs, and every encoding to hunt for.
 	material func(t *testing.T) (secret, aux []byte, pats []residuePattern)
@@ -129,7 +134,18 @@ var residueScenarios = []residueScenario{
 		victim:   preemptedCopy(false),
 	},
 	{
+		// The copy runs inside two WithBytesErr borrows and no Scrub window,
+		// and the spin — and the preemptions — come after both have returned.
+		// What the copy left in the registers is gone only if the borrow
+		// clears them on the way out.
+		name: "WithBytesErr/copy-then-preempted", class: residueContained, nOps: 4,
+		minCore:  "v0.6.0", // the borrow paths clear the registers from this release
+		material: randomSecret(32, "secret"),
+		victim:   copyThenPreempted,
+	},
+	{
 		name: "control/preempted-copy-in-scrub", class: residueContained, nOps: 4,
+		minCore:  "v0.6.0", // Scrub clears the general-purpose registers (arm64 memmove uses them) from this release
 		material: randomSecret(32, "secret"),
 		victim:   preemptedCopy(true),
 	},
@@ -685,6 +701,40 @@ func residueSpin(n int) {
 	for i := 0; i < n; i++ {
 		residueSpinAcc += uint64(i) ^ residueSpinAcc>>3
 	}
+}
+
+// copyThenPreempted copies the secret between two locked buffers with nested
+// WithBytesErr calls and then, after both have returned, spins while another
+// goroutine collects continuously.
+func copyThenPreempted(buf *secmem.SecureBuffer, _ []byte) (func() error, func() error, error) {
+	dst, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		return nil, nil, err
+	}
+	var stop atomic.Bool
+	collected := make(chan struct{})
+	go func() {
+		defer close(collected)
+		for !stop.Load() {
+			runtime.GC()
+		}
+	}()
+	op := func() error {
+		err := buf.WithBytesErr(func(s []byte) error {
+			return dst.WithBytesErr(func(d []byte) error {
+				copy(d, s[:32])
+				return nil
+			})
+		})
+		residueSpin(200_000_000)
+		return err
+	}
+	destroy := func() error {
+		stop.Store(true)
+		<-collected
+		return destroyAll(dst.Destroy, buf.Destroy)()
+	}
+	return op, destroy, nil
 }
 
 // preemptedCopy copies the secret between two locked buffers and, with the

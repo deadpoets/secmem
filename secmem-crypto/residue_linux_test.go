@@ -177,13 +177,64 @@ func TestKeyResidue(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Logf("runtimesecret=%v euid=%d", secmem.RuntimeSecretActive(), os.Geteuid())
+	t.Logf("runtimesecret=%v euid=%d core=%q", secmem.RuntimeSecretActive(), os.Geteuid(), coreReleaseVersion())
 	for _, sc := range residueScenarios {
 		t.Run(sc.name, func(t *testing.T) {
 			t.Parallel()
 			runResidueScenario(t, exe, sc)
 		})
 	}
+}
+
+// coreReleaseVersion is the released version of the core module this
+// package resolves, or "" when it resolves a local or workspace tree, whose
+// behaviour is whatever this checkout says. Test binaries carry no module
+// build info, so it asks the go tool, as the fork identity tests do; without
+// one it reports "" and every scenario runs.
+func coreReleaseVersion() string {
+	out, err := exec.Command("go", "list", "-m", "-f", "{{if .Replace}}{{else}}{{.Version}}{{end}}", "github.com/deadpoets/secmem").Output()
+	if err != nil {
+		return ""
+	}
+	v := strings.TrimSpace(string(out))
+	if _, ok := releaseTriple(v); !ok {
+		return "" // a workspace module has no version; a pseudo-version is not a release
+	}
+	return v
+}
+
+// releaseTriple parses a plain release version "vX.Y.Z"; pre-releases and
+// pseudo-versions are not releases and do not parse.
+func releaseTriple(v string) ([3]int, bool) {
+	var t [3]int
+	rest, ok := strings.CutPrefix(v, "v")
+	if !ok {
+		return t, false
+	}
+	parts := strings.Split(rest, ".")
+	if len(parts) != 3 {
+		return t, false
+	}
+	for i, p := range parts {
+		n, err := strconv.Atoi(p)
+		if err != nil || n < 0 {
+			return t, false
+		}
+		t[i] = n
+	}
+	return t, true
+}
+
+// releaseBefore reports whether release v is older than release min.
+func releaseBefore(v, minimum string) bool {
+	a, _ := releaseTriple(v)
+	b, _ := releaseTriple(minimum)
+	for i := range a {
+		if a[i] != b[i] {
+			return a[i] < b[i]
+		}
+	}
+	return false
 }
 
 // residueVictim is a running victim process.
@@ -291,6 +342,9 @@ func startResidueVictim(t *testing.T, exe, name string, secret, aux []byte) *res
 }
 
 func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
+	if v := coreReleaseVersion(); sc.minCore != "" && v != "" && releaseBefore(v, sc.minCore) {
+		t.Skipf("this module resolves core %s; the scenario's class depends on behaviour first released in %s", v, sc.minCore)
+	}
 	secret, aux, pats := sc.material(t)
 	v := startResidueVictim(t, exe, sc.name, secret, aux)
 	rs := secmem.RuntimeSecretActive()
