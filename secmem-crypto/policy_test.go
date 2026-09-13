@@ -42,11 +42,12 @@ func TestHeapTransientsPolicy_DefaultIsRuntimeSecret(t *testing.T) {
 }
 
 // TestHeapTransientsPolicy_LegacyRefusesConstructors: with the policy
-// refusing, as on every build without GOEXPERIMENT=runtimesecret, all six
-// gated constructors (RSA, ECDSA and X25519, new and generate) refuse with
+// refusing, as on every build without GOEXPERIMENT=runtimesecret, all four
+// gated constructors (RSA and ECDSA, new and generate) refuse with
 // ErrHeapTransients — before they look at their input, and without taking
-// ownership of a buffer they were handed — and all six succeed once the
-// caller passes AllowHeapTransients.
+// ownership of a buffer they were handed — and all four succeed once the
+// caller passes AllowHeapTransients. X25519, which runs in place, is not
+// gated: its constructors succeed under the same refusing policy.
 func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 	withPolicy(t, false, func() {
 		// Before the input is read: a nil buffer is refused by the gate, not
@@ -62,12 +63,6 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		}
 		if _, err := GenerateECDSASigner(elliptic.P256()); !errors.Is(err, ErrHeapTransients) {
 			t.Errorf("GenerateECDSASigner: %v, want ErrHeapTransients", err)
-		}
-		if _, err := NewX25519Key(nil); !errors.Is(err, ErrHeapTransients) {
-			t.Errorf("NewX25519Key(nil): %v, want ErrHeapTransients before input validation", err)
-		}
-		if _, err := GenerateX25519Key(); !errors.Is(err, ErrHeapTransients) {
-			t.Errorf("GenerateX25519Key: %v, want ErrHeapTransients", err)
 		}
 
 		// A refused constructor does not take ownership: the caller's buffer
@@ -98,13 +93,17 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 			t.Error("a refused NewECDSASigner destroyed the caller's buffer; ownership must not transfer on failure")
 		}
 
+		// X25519 runs in place, so the policy does not apply to it.
 		xb := mustBuffer(t, bytes.Repeat([]byte{0x42}, 32))
-		defer func() { _ = xb.Destroy() }()
-		if _, err := NewX25519Key(xb); !errors.Is(err, ErrHeapTransients) {
-			t.Fatalf("NewX25519Key: %v, want ErrHeapTransients", err)
+		if k, err := NewX25519Key(xb); err != nil {
+			t.Errorf("NewX25519Key under a refusing policy: %v, want success (X25519 is not gated)", err)
+		} else {
+			_ = k.Destroy()
 		}
-		if xb.IsDestroyed() {
-			t.Error("a refused NewX25519Key destroyed the caller's buffer; ownership must not transfer on failure")
+		if k, err := GenerateX25519Key(); err != nil {
+			t.Errorf("GenerateX25519Key under a refusing policy: %v, want success (X25519 is not gated)", err)
+		} else {
+			_ = k.Destroy()
 		}
 
 		// The error tells the caller every way out, the opt-in included.
@@ -115,7 +114,7 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 			}
 		}
 
-		// The opt-in: all six proceed. The signers take ownership of der and
+		// The opt-in: all four proceed. The signers take ownership of der and
 		// sb; the deferred Destroys above are then no-ops, Destroy being
 		// idempotent.
 		if s, err := NewRSASigner(der, AllowHeapTransients()); err != nil {
@@ -137,16 +136,6 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 			t.Errorf("GenerateECDSASigner with AllowHeapTransients: %v", err)
 		} else {
 			_ = s.Destroy()
-		}
-		if k, err := NewX25519Key(xb, AllowHeapTransients()); err != nil {
-			t.Errorf("NewX25519Key with AllowHeapTransients: %v", err)
-		} else {
-			_ = k.Destroy()
-		}
-		if k, err := GenerateX25519Key(AllowHeapTransients()); err != nil {
-			t.Errorf("GenerateX25519Key with AllowHeapTransients: %v", err)
-		} else {
-			_ = k.Destroy()
 		}
 
 		// A nil Option is ignored, not a panic and not an opt-in.
@@ -221,11 +210,6 @@ func TestHeapTransientsPolicy_RuntimeSecretAllows(t *testing.T) {
 			t.Errorf("GenerateECDSASigner under an allowing policy: %v", err)
 		} else {
 			_ = s.Destroy()
-		}
-		if k, err := GenerateX25519Key(); err != nil {
-			t.Errorf("GenerateX25519Key under an allowing policy: %v", err)
-		} else {
-			_ = k.Destroy()
 		}
 		pkcs8, err := x509.MarshalPKCS8PrivateKey(testRSAKey())
 		if err != nil {

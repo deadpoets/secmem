@@ -47,18 +47,17 @@ session keys, derived encryption and MAC keys, the seed of a key-exchange
 private scalar. The goal is that the plaintext never exists outside a
 `SecureBuffer` from ingress to `Destroy`. For most such keys that is
 achievable, because the operation can run in place: `Ed25519Signer` signs
-from the buffer, `OpenInto` and `SealFrom` encrypt and decrypt from it, the
+from the buffer, `X25519Key` agrees keys from it, `OpenInto` and `SealFrom` encrypt and decrypt from it, the
 `*Into` KDFs derive into it. `Seal` the buffer whenever the key is dormant;
 protection is proportional to dormancy.
 
-RSA, ECDSA and X25519 keys are the exception. The standard library has no
-in-place API for them, so `RSASigner`, `ECDSASigner` and `X25519Key` keep
-the durable key in the buffer but copy it through the heap on every
-operation, and on a build without `GOEXPERIMENT=runtimesecret` nothing
+RSA and ECDSA keys are the exception. The standard library has no in-place
+API for them, so `RSASigner` and `ECDSASigner` keep the durable key in the
+buffer but copy it through the heap on every signature, and on a build without `GOEXPERIMENT=runtimesecret` nothing
 erases those copies. There the constructors and the parsers refuse such keys
 with `ErrHeapTransients` unless you pass `AllowHeapTransients()`. Decide per
-key: an Ed25519 key is INTERNAL in the full sense; an RSA, ECDSA or static
-X25519 key used continuously is effectively on the heap for the life of the
+key: an Ed25519 or X25519 key is INTERNAL in the full sense; an RSA or
+ECDSA key used continuously is effectively on the heap for the life of the
 process unless you build with the experiment, and belongs in your residuals
 list if you opt in.
 

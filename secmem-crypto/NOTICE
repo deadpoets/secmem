@@ -52,3 +52,20 @@ upstream's, byte for byte.
 
 As above, the fork is not a distribution of golang.org/x/crypto and does not
 use the Go name or the Go Authors' names to endorse this project.
+
+internal/x25519/
+-----------------
+x25519ScalarMult copied verbatim from the Go standard library's
+crypto/ecdh/x25519.go (go1.26), with its field package import pointed at
+filippo.io/edwards25519/field. Copyright 2022 The Go Authors. All rights
+reserved.
+
+Licensed under the BSD-3-Clause licence in internal/x25519/LICENSE, with the
+additional patent grant in internal/x25519/PATENTS; both files are copied
+unmodified from the Go distribution and govern every file in that directory.
+The changes are listed in internal/x25519/doc.go, and
+upstream_identity_test.go checks that the function is still text-identical
+to the toolchain's.
+
+The copy is not a distribution of Go and does not use the Go name or the Go
+Authors' names to endorse this project.

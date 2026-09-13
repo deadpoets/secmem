@@ -111,20 +111,16 @@ func ExampleOpenInto() {
 	// Output: recovered 15 bytes
 }
 
-// X25519Key does X25519 Diffie-Hellman with the durable private scalar held
-// off-heap; the agreed shared secret is returned in a fresh SecureBuffer.
-//
-// AllowHeapTransients is passed so the example runs on every build. Without
-// it, a build lacking GOEXPERIMENT=runtimesecret refuses with
-// ErrHeapTransients, because each SharedSecret leaves an unwiped copy of the
-// scalar on the heap there.
+// X25519Key does X25519 Diffie-Hellman with the private scalar held off-heap
+// and used in place; the agreed shared secret is computed straight into a
+// fresh SecureBuffer.
 func ExampleX25519Key() {
-	alice, err := secmemcrypto.GenerateX25519Key(secmemcrypto.AllowHeapTransients())
+	alice, err := secmemcrypto.GenerateX25519Key()
 	if err != nil {
 		panic(err)
 	}
 	defer alice.Destroy()
-	bob, err := secmemcrypto.GenerateX25519Key(secmemcrypto.AllowHeapTransients())
+	bob, err := secmemcrypto.GenerateX25519Key()
 	if err != nil {
 		panic(err)
 	}

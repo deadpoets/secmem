@@ -59,7 +59,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small | **contained** |
 | `BcryptPBKDFInto` | OpenSSH's bcrypt_pbkdf, on the fork below, with its whole working state in a locked buffer; for interoperating with that format, not as a password KDF chosen fresh (it is not memory-hard — use Argon2) | **contained** |
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place. Zero allocations, both directions | **contained** |
-| `X25519Key` | key agreement with the private scalar in a buffer; the shared secret comes back in one. `curve25519` copies the scalar into a `crypto/ecdh` key and produces the shared secret on the heap first; the module wipes the copy it is handed, not the ones inside ecdh. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **runtimesecret-only** |
+| `X25519Key` | key agreement with the private scalar in a buffer, used in place: the RFC 7748 ladder (the standard library's own, copied into `internal/x25519` and pinned to the toolchain's source) runs over the borrowed scalar inside a Scrub window and writes the shared secret straight into the buffer it returns. Nothing is allocated beyond that buffer | **contained** |
 | `MLKEM768Key`, `Encapsulate` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction. What remains is crypto/mlkem's SHA3 states and recovered message | **runtimesecret-only** |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string; every draw reads the whole wordlist | **contained** |
 | `WipeEd25519Scalar` | reaches `edwards25519.Scalar`'s unexported fields | — |
@@ -80,18 +80,18 @@ the collector finds it unreachable. All counts are for go1.26.
 | `Ed25519Signer` | 32-byte seed | none on the heap. Two stack copies of the seed inside `sha512.Sum512` and the scalars, points and nonce pre-image (≤ 4 KiB message) on the stack, all in the Scrub band; the pre-image of a longer message on the heap, wiped | same | The seed is protected for its whole life, and the only heap object a signature makes is the signature. This is the type the headline is true of | same |
 | `ECDSASigner` | the scalar (28–66 bytes) | **wiped:** the `big.Int` D limbs. **not wiped:** the scalar's bytes in a fresh `[]byte`, in a `bigmod.Nat`, and in two FIPS-form keys — one dropped after the parse, one kept in `crypto/ecdsa`'s package-level cache until the collector evicts it, one to two GC cycles after `Sign` | the same objects, erased by the runtime once unreachable; the cached one after eviction | The at-rest custody is real (the durable copy is locked, guard-paged, wiped on `Destroy`, and covered by `WipeAllSecrets`), but every signature leaves several unwiped copies of the scalar on the heap, one of them for a GC cycle or more. On a legacy build the buffer changes *where* the scalar is at rest, not whether it is in the heap dump of a process that signs | Contained one GC cycle late; the buffer adds the at-rest properties the heap cannot give |
 | `RSASigner` | the whole DER (1–2 KB) | **wiped:** all the `big.Int` limbs and the FIPS-form key (d, p, q with their Montgomery constants, dP, dQ, qInv). **not wiped:** the parse's `big.Int.Bytes()` copies of D, P, Q and Qinv, `Validate`'s comparison copies, and the signature's modular-arithmetic scratch (Montgomery tables built from p and q). `math/big`'s pooled scratch is not used for two-prime keys | the same, erased once unreachable | As ECDSA, at a larger scale: the whole private key is rebuilt on the heap per signature and the copies nothing wipes are the size of the key. Same verdict — real at rest, not during use | same as ECDSA |
-| `X25519Key` | 32-byte scalar | the scalar inside `crypto/ecdh`'s private key and `curve25519`'s field arithmetic; the shared secret's first heap copy (wiped) | erased once unreachable | at rest only | contained one GC cycle late |
+| `X25519Key` | 32-byte scalar | none on the heap: the clamped scalar and the ladder's field elements on the stack, in the Scrub band; the shared secret written into its buffer | same | contained | contained |
 | `MLKEM768Key` | 64-byte seed | **wiped:** the expanded key (seed halves and `s`). **not wiped:** SHA3/SHAKE states holding d, z and the recovered message; the message itself; key-generation intermediates e and σ | erased once unreachable | at rest, plus the largest and longest-lived copy now goes away; the digest states remain | contained one GC cycle late |
 | `HKDFInto`, `HMACInto` | the output only (inputs are the caller's) | HMAC inner/outer digest states holding the key | erased once unreachable | the output lands in a buffer instead of a slice you must remember to wipe — that is the whole benefit | contained one GC cycle late |
 | `Argon2Into` | output only | a heap workspace holding everything, wiped by the fork before return; dumpable and pageable during the call | same | contained, with a window during the call; use `Argon2Workspace` to close it | same |
 | `Argon2Workspace`, `BcryptPBKDFInto`, `OpenInto`, `SealFrom`, the parsers | output / working set in locked memory | none on the heap | none | contained | contained |
 
-### RSASigner, ECDSASigner and X25519Key on a legacy build
+### RSASigner and ECDSASigner on a legacy build
 
 On Windows, macOS or plain Linux, does keeping the durable key in a
 `SecureBuffer` buy anything measurable, given the per-operation copies? The
-three types share the answer: each rebuilds the private key, or copies the
-scalar, through the standard library on every operation.
+two types share the answer: each rebuilds the private key through the
+standard library on every signature.
 
 - **What it buys:** the key at rest is in locked, guard-paged, dump-excluded
   memory; `Destroy` and `WipeAllSecrets` reach it; nothing reaches it by
@@ -99,14 +99,14 @@ scalar, through the standard library on every operation.
   rarely — a CA, a release-signing service — spends most of its life in that
   state.
 - **What it does not buy:** any process that signs continuously has, at any
-  moment, an unwiped copy of the scalar or the key on the heap from the last
+  moment, an unwiped copy of the key on the heap from the last
   operation, and for ECDSA a cached copy that lives until the collector runs
   its cleanup. A heap dump taken during or shortly after a signature has the
   key in it, buffer or no buffer.
 
-So on a legacy build all three types refuse by default. `NewRSASigner`,
-`GenerateRSASigner`, `NewECDSASigner`, `GenerateECDSASigner`,
-`NewX25519Key` and `GenerateX25519Key` return an error wrapping
+So on a legacy build both types refuse by default. `NewRSASigner`,
+`GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` return an
+error wrapping
 `ErrHeapTransients`, and so do `ParsePrivateKey` and
 `ParsePrivateKeyWithPassphrase` for an RSA or EC key file. A caller who
 accepts the residual says so where the key is built:
@@ -120,24 +120,21 @@ makes it, not discovered later in a heap dump. It is checked before the key
 is handed to the standard library, so a refused call makes none of the
 copies it exists to prevent, and a buffer passed to a refused constructor
 stays the caller's. On a `GOEXPERIMENT=runtimesecret` build nothing is
-refused and the option has no effect. Ed25519 keys are never refused on any
-build, because Ed25519 signs in place.
+refused and the option has no effect. Ed25519 and X25519 keys are never
+refused on any build, because this module operates on both in place.
 
 When to opt in:
 
-- **Reasonable:** load a key, use it rarely — a signing key for releases, a
-  static X25519 key used once to set up a long-lived session. The key spends
-  almost all of its life with the locked copy as the only copy.
+- **Reasonable:** load a key, use it rarely — a signing key for releases.
+  The key spends almost all of its life with the locked copy as the only
+  copy.
 - **Not reasonable:** use it continuously — a TLS listener, a busy SSH agent,
-  a token-issuing service, a static X25519 key that answers every incoming
-  handshake. That process has the key on the heap at almost every moment,
-  and the option only hides that. Build with the experiment, move a signing
-  key to Ed25519, or keep the key in an HSM or KMS. For key agreement, prefer
-  a fresh ephemeral key per exchange: its scalar is worthless once the
-  exchange is over, so a residual copy costs far less.
+  a token-issuing service. That process has the key on the heap at almost
+  every moment, and the option only hides that. Build with the experiment,
+  move the key to Ed25519, or keep it in an HSM or KMS.
 
-**What the gate does not cover.** It is scoped to `RSASigner`, `ECDSASigner`
-and `X25519Key`. `MLKEM768Key` also holds a long-term secret and is not
+**What the gate does not cover.** It is scoped to `RSASigner` and
+`ECDSASigner`. `MLKEM768Key` also holds a long-term secret and is not
 gated: its expanded key is wiped after every operation, but crypto/mlkem's
 SHA3 and SHAKE states, which absorb the seed halves, and the recovered
 message are not, as the table above lists. `HKDFInto` and `HMACInto` are

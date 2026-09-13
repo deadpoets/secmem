@@ -25,7 +25,7 @@ func newLockOrderKey(t *testing.T, fill byte) *X25519Key {
 	if err != nil {
 		t.Skipf("NewBuffer: %v", err)
 	}
-	k, err := NewX25519Key(buf, AllowHeapTransients())
+	k, err := NewX25519Key(buf)
 	if err != nil {
 		_ = buf.Destroy()
 		t.Fatalf("NewX25519Key: %v", err)

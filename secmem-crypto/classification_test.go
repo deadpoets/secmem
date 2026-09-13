@@ -105,15 +105,6 @@ func TestClassification_Transient(t *testing.T) {
 	}
 	defer ec.Destroy()
 	rs := testRSASigner(t)
-	x, err := GenerateX25519Key(AllowHeapTransients())
-	if err != nil {
-		t.Skipf("GenerateX25519Key: %v", err)
-	}
-	defer x.Destroy()
-	peer, err := x.PublicKey()
-	if err != nil {
-		t.Fatal(err)
-	}
 	mk, err := GenerateMLKEM768Key()
 	if err != nil {
 		t.Skipf("GenerateMLKEM768Key: %v", err)
@@ -141,8 +132,6 @@ func TestClassification_Transient(t *testing.T) {
 	}{
 		{"ECDSASigner.Sign", func() { _, _ = ec.Sign(rand.Reader, digest[:], crypto.SHA256) }},
 		{"RSASigner.Sign", func() { _, _ = rs.Sign(rand.Reader, digest[:], crypto.SHA256) }},
-		{"X25519Key.PublicKey", func() { _, _ = x.PublicKey() }},
-		{"X25519Key.SharedSecret", func() { s, _ := x.SharedSecret(peer); s.Destroy() }},
 		{"MLKEM768Key.Decapsulate", func() { s, _ := mk.Decapsulate(ct); s.Destroy() }},
 		{"HKDFSHA256Into", func() { _ = HKDFSHA256Into(secret, nil, []byte("info"), out) }},
 		{"HMACSHA256Into", func() { _ = HMACSHA256Into(secret, []byte("info"), out) }},
@@ -151,6 +140,40 @@ func TestClassification_Transient(t *testing.T) {
 		if got := testing.AllocsPerRun(5, tc.op); got == 0 {
 			t.Errorf("%s: 0 allocs/op — it no longer copies through the heap; promote it in the README table", tc.name)
 		}
+	}
+}
+
+// TestClassification_Contained_X25519 pins X25519Key as contained: the
+// ladder runs over the borrowed scalar, so PublicKey allocates nothing and
+// SharedSecret allocates exactly what the SecureBuffer it returns costs — a
+// NewEmptyBuffer of the same size, measured alongside — and nothing more.
+func TestClassification_Contained_X25519(t *testing.T) {
+	x, err := GenerateX25519Key()
+	if err != nil {
+		t.Skipf("GenerateX25519Key: %v", err)
+	}
+	defer x.Destroy()
+	peer, err := x.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := testing.AllocsPerRun(100, func() { _, _ = x.PublicKey() }); got != 0 {
+		t.Errorf("X25519Key.PublicKey: %.1f allocs/op, want 0", got)
+	}
+	bufferOnly := testing.AllocsPerRun(100, func() {
+		b, err := secmem.NewEmptyBuffer(32)
+		if err == nil {
+			_ = b.Destroy()
+		}
+	})
+	shared := testing.AllocsPerRun(100, func() {
+		s, err := x.SharedSecret(peer)
+		if err == nil {
+			_ = s.Destroy()
+		}
+	})
+	if shared != bufferOnly {
+		t.Errorf("X25519Key.SharedSecret: %.1f allocs/op, want %.1f (the returned SecureBuffer's own, and nothing else)", shared, bufferOnly)
 	}
 }
 

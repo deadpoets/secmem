@@ -2,17 +2,17 @@
 // standard library's crypto interfaces. Key material is held in a
 // [secmem.SecureBuffer] between operations; during an operation it is
 // either kept there and on the stack of a Scrub window (Ed25519 signing,
-// the parsers, the KDFs and AEAD helpers that write in place) or copied
-// through the Go heap by a standard-library primitive that has no in-place
-// API, with every copy this module can reach wiped before return and every
-// copy it cannot named in the type's documentation (RSA, ECDSA, X25519,
+// X25519, the parsers, the KDFs and AEAD helpers that write in place) or
+// copied through the Go heap by a standard-library primitive that has no
+// in-place API, with every copy this module can reach wiped before return
+// and every copy it cannot named in the type's documentation (RSA, ECDSA,
 // ML-KEM, HKDF/HMAC). The module README classifies every entry point.
 //
 // Signers: [Ed25519Signer] (RFC 8032, signs in place), [ECDSASigner] and
 // [RSASigner] (custody at rest; each Sign re-materialises the key through
 // the standard library and wipes what it can reach — see their docs).
 // Because the copies it cannot reach are never erased on a build without
-// GOEXPERIMENT=runtimesecret, the ECDSA, RSA and X25519 constructors and the
+// GOEXPERIMENT=runtimesecret, the ECDSA and RSA constructors and the
 // parsers refuse those keys there with [ErrHeapTransients] unless the caller
 // passes [AllowHeapTransients]. Ed25519 is never refused.
 // [AsSSH] adapts any of them to an ssh.Signer without ever offering SHA-1

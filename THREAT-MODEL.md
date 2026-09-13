@@ -322,24 +322,27 @@ ECDSA cannot, because the standard library has no API that borrows key
 bytes in place, and reimplementing either scheme is where subtle bugs leak
 private keys. So `RSASigner` and `ECDSASigner` keep the durable key in a
 `SecureBuffer` and rebuild it through the standard library for each
-signature. `X25519Key` is in the same position for key agreement:
-`curve25519` copies its scalar into a `crypto/ecdh` key on every public-key
-and shared-secret computation. The copies that makes are listed in each type's documentation;
+signature. The copies that makes are listed in each type's documentation;
 on a `GOEXPERIMENT=runtimesecret` build the runtime erases them once they
 are unreachable, and on every other build the collector reclaims them
 without zeroing, one of them (ECDSA's cached FIPS-form key) a GC cycle or
 more after the signature.
 
 That makes the buffer worth much less than it looks on a legacy build: a
-process that signs or agrees keys continuously has the key on the heap at
-almost every moment. Rather than let that be discovered in a heap dump, all
-three types, and the parsers for RSA and EC key files, **refuse on a legacy
+process that signs continuously has the key on the heap at almost every
+moment. Rather than let that be discovered in a heap dump, both types, and
+the parsers for RSA and EC key files, **refuse on a legacy
 build** with `ErrHeapTransients`. A caller who accepts the residual passes
 `AllowHeapTransients()`, which makes the choice visible where the key is
 built. The refusal happens before the key reaches the standard library, so
 a refused call creates none of the copies.
 
-The gate is scoped to `RSASigner`, `ECDSASigner` and `X25519Key`.
+`X25519Key` is not in this position. The X25519 ladder needs no heap at
+all; the standard library's copies come from the `crypto/ecdh` key object
+around it, so this module calls the ladder directly over the buffer and the
+type is not gated.
+
+The gate is scoped to `RSASigner` and `ECDSASigner`.
 `MLKEM768Key` is not gated, although crypto/mlkem's hash states absorb its
 seed halves and are not wiped. `HKDFInto` and `HMACInto` take the caller's
 key as a plain argument and leave HMAC states holding it; there is no key

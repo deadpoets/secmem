@@ -186,25 +186,33 @@ mark the stability commitment.
   4 KiB, the standard-library-backed paths as allocating.
 
 - **`secmem-crypto`: `ErrHeapTransients`, `AllowHeapTransients` and
-  `Option`.** The error a refused RSA, ECDSA or X25519 key returns (see
-  Changed), and the option that accepts the residual instead. `Option` is
-  new and is taken variadically by `NewRSASigner`, `GenerateRSASigner`,
-  `NewECDSASigner`, `GenerateECDSASigner`, `NewX25519Key`,
-  `GenerateX25519Key`, `ParsePrivateKey` and `ParsePrivateKeyWithPassphrase`;
-  a nil `Option` is ignored.
+  `Option`.** The error a refused RSA or ECDSA key returns (see Changed),
+  and the option that accepts the residual instead. `Option` is new and is
+  taken variadically by `NewRSASigner`, `GenerateRSASigner`,
+  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey` and
+  `ParsePrivateKeyWithPassphrase`; a nil `Option` is ignored.
 
 ### Changed
 
-- **BREAKING — `secmem-crypto`: RSA, ECDSA and X25519 keys are refused on a
-  build where their heap copies are never erased.** `NewRSASigner`,
-  `GenerateRSASigner`, `NewECDSASigner`, `GenerateECDSASigner`,
-  `NewX25519Key` and `GenerateX25519Key` now return an error wrapping
+- **`secmem-crypto`: `X25519Key` computes in place.** `PublicKey` and
+  `SharedSecret` no longer go through `golang.org/x/crypto/curve25519`, whose
+  `crypto/ecdh` key object copied the scalar to the heap and whose result was
+  a heap slice: the standard library's own RFC 7748 ladder, copied into
+  `internal/x25519` and pinned to the toolchain's source by a test, runs over
+  the borrowed scalar inside the Scrub window and writes the shared secret
+  straight into the returned buffer. It allocates nothing. The residue test,
+  which found the scalar and the shared secret on the heap after every
+  operation, now finds neither on either build mode. No API change.
+
+- **BREAKING — `secmem-crypto`: RSA and ECDSA keys are refused on a build
+  where their heap copies are never erased.** `NewRSASigner`,
+  `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` now return
+  an error wrapping
   `ErrHeapTransients` on every build without `GOEXPERIMENT=runtimesecret` —
   Windows, macOS, and Linux without the experiment — and `ParsePrivateKey`
   and `ParsePrivateKeyWithPassphrase` do the same for an RSA or EC key file.
   `RSASigner` and `ECDSASigner` rebuild the private key through the standard
-  library on every signature, and `X25519Key` copies its scalar into a
-  `crypto/ecdh` key on every public-key and shared-secret computation. On
+  library on every signature. On
   those builds the copies are reclaimed by the collector but never zeroed, so
   a process that uses the key has it on the heap whether or not its durable
   copy is locked.
@@ -212,8 +220,8 @@ mark the stability commitment.
   buffer passed to a refused constructor stays the caller's. Callers who
   accept the residual pass `AllowHeapTransients()`; the README sets out when
   that is reasonable (load and sign rarely) and when it is not (sign
-  continuously). Ed25519 keys are never refused, and nothing changes on a
-  `GOEXPERIMENT=runtimesecret` build. `MLKEM768Key`, `HKDFInto` and
+  continuously). Ed25519 and X25519 keys are never refused, and nothing
+  changes on a `GOEXPERIMENT=runtimesecret` build. `MLKEM768Key`, `HKDFInto` and
   `HMACInto` are not gated; the README lists what each still leaves on the
   heap. The constructors and parsers gain a
   variadic `...Option` parameter: existing calls compile unchanged, but a

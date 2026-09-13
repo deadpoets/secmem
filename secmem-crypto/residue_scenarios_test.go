@@ -434,10 +434,10 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
-		name: "X25519Key", class: residueTransient,
+		name: "X25519Key", class: residueContained,
 		material: x25519Material,
 		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
-			k, err := NewX25519Key(buf, AllowHeapTransients())
+			k, err := NewX25519Key(buf)
 			if err != nil {
 				return nil, nil, err
 			}
