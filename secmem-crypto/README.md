@@ -59,7 +59,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small | **contained** |
 | `BcryptPBKDFInto` | OpenSSH's bcrypt_pbkdf, on the fork below, with its whole working state in a locked buffer; for interoperating with that format, not as a password KDF chosen fresh (it is not memory-hard — use Argon2) | **contained** |
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place. Zero allocations, both directions | **contained** |
-| `X25519Key` | key agreement with the private scalar in a buffer; the shared secret comes back in one. `curve25519` copies the scalar into a `crypto/ecdh` key and produces the shared secret on the heap first; the module wipes the copy it is handed, not the ones inside ecdh | **runtimesecret-only** |
+| `X25519Key` | key agreement with the private scalar in a buffer; the shared secret comes back in one. `curve25519` copies the scalar into a `crypto/ecdh` key and produces the shared secret on the heap first; the module wipes the copy it is handed, not the ones inside ecdh. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **runtimesecret-only** |
 | `MLKEM768Key`, `Encapsulate` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction. What remains is crypto/mlkem's SHA3 states and recovered message | **runtimesecret-only** |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string; every draw reads the whole wordlist | **contained** |
 | `WipeEd25519Scalar` | reaches `edwards25519.Scalar`'s unexported fields | — |
@@ -86,10 +86,12 @@ the collector finds it unreachable. All counts are for go1.26.
 | `Argon2Into` | output only | a heap workspace holding everything, wiped by the fork before return; dumpable and pageable during the call | same | contained, with a window during the call; use `Argon2Workspace` to close it | same |
 | `Argon2Workspace`, `BcryptPBKDFInto`, `OpenInto`, `SealFrom`, the parsers | output / working set in locked memory | none on the heap | none | contained | contained |
 
-### RSASigner and ECDSASigner on a legacy build
+### RSASigner, ECDSASigner and X25519Key on a legacy build
 
 On Windows, macOS or plain Linux, does keeping the durable key in a
-`SecureBuffer` buy anything measurable, given the per-operation copies?
+`SecureBuffer` buy anything measurable, given the per-operation copies? The
+three types share the answer: each rebuilds the private key, or copies the
+scalar, through the standard library on every operation.
 
 - **What it buys:** the key at rest is in locked, guard-paged, dump-excluded
   memory; `Destroy` and `WipeAllSecrets` reach it; nothing reaches it by
@@ -102,11 +104,12 @@ On Windows, macOS or plain Linux, does keeping the durable key in a
   its cleanup. A heap dump taken during or shortly after a signature has the
   key in it, buffer or no buffer.
 
-So on a legacy build both types refuse by default. `NewRSASigner`,
-`GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` return an
-error wrapping `ErrHeapTransients`, and so do `ParsePrivateKey` and
+So on a legacy build all three types refuse by default. `NewRSASigner`,
+`GenerateRSASigner`, `NewECDSASigner`, `GenerateECDSASigner`,
+`NewX25519Key` and `GenerateX25519Key` return an error wrapping
+`ErrHeapTransients`, and so do `ParsePrivateKey` and
 `ParsePrivateKeyWithPassphrase` for an RSA or EC key file. A caller who
-accepts the residual says so where the signer is built:
+accepts the residual says so where the key is built:
 
 ```go
 signer, err := secmemcrypto.ParsePrivateKey(file, secmemcrypto.AllowHeapTransients())
@@ -122,21 +125,26 @@ build, because Ed25519 signs in place.
 
 When to opt in:
 
-- **Reasonable:** load a key, sign rarely. The key spends almost all of its
-  life with the locked copy as the only copy.
-- **Not reasonable:** sign continuously — a TLS listener, a busy SSH agent,
-  a token-issuing service. That process has the key on the heap at almost
-  every moment, and the option only hides that. Build with the experiment,
-  move the key to Ed25519, or keep it in an HSM or KMS.
+- **Reasonable:** load a key, use it rarely — a signing key for releases, a
+  static X25519 key used once to set up a long-lived session. The key spends
+  almost all of its life with the locked copy as the only copy.
+- **Not reasonable:** use it continuously — a TLS listener, a busy SSH agent,
+  a token-issuing service, a static X25519 key that answers every incoming
+  handshake. That process has the key on the heap at almost every moment,
+  and the option only hides that. Build with the experiment, move a signing
+  key to Ed25519, or keep the key in an HSM or KMS. For key agreement, prefer
+  a fresh ephemeral key per exchange: its scalar is worthless once the
+  exchange is over, so a residual copy costs far less.
 
-**What the gate does not cover.** It is scoped to the two signer types.
-`X25519Key` has the same shape of residual — a copy of its private scalar
-inside `crypto/ecdh` on every operation — and does not refuse; treat an
-`X25519Key` on a legacy build as you would an opted-in ECDSA key.
-`MLKEM768Key`'s remaining residue is digest states and the recovered message
-rather than the seed, and `HKDFInto` and `HMACInto` leave digest states keyed
-by the caller's input. None of those refuse either. Each is listed in the
-table above.
+**What the gate does not cover.** It is scoped to `RSASigner`, `ECDSASigner`
+and `X25519Key`. `MLKEM768Key` also holds a long-term secret and is not
+gated: its expanded key is wiped after every operation, but crypto/mlkem's
+SHA3 and SHAKE states, which absorb the seed halves, and the recovered
+message are not, as the table above lists. `HKDFInto` and `HMACInto` are
+functions over inputs the caller supplies rather than key types, so there is
+no constructor to gate; their HMAC states hold the key, and a caller who
+borrows that key from a `SecureBuffer` should treat those states as a heap
+copy of it.
 
 ## The parts that should make you look twice
 

@@ -17,7 +17,7 @@ func x25519KeyFromHex(t *testing.T, hexScalar string) *X25519Key {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	k, err := NewX25519Key(buf)
+	k, err := NewX25519Key(buf, AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewX25519Key: %v", err)
 	}
@@ -93,12 +93,12 @@ func TestX25519Key_RFC7748SharedSecret(t *testing.T) {
 
 func TestX25519Key_GenerateAndAgree(t *testing.T) {
 	t.Parallel()
-	a, err := GenerateX25519Key()
+	a, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer a.Destroy()
-	b, err := GenerateX25519Key()
+	b, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
@@ -131,7 +131,7 @@ func TestX25519Key_GenerateAndAgree(t *testing.T) {
 
 func TestX25519Key_SharedSecret_LowOrderPointRejected(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateX25519Key()
+	k, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestX25519Key_SharedSecret_LowOrderPointRejected(t *testing.T) {
 
 func TestNewX25519Key_BadInputs(t *testing.T) {
 	t.Parallel()
-	if _, err := NewX25519Key(nil); err == nil {
+	if _, err := NewX25519Key(nil, AllowHeapTransients()); err == nil {
 		t.Error("expected error for nil buffer")
 	}
 
@@ -156,7 +156,7 @@ func TestNewX25519Key_BadInputs(t *testing.T) {
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer short.Destroy()
-	_, err = NewX25519Key(short)
+	_, err = NewX25519Key(short, AllowHeapTransients())
 	if !errors.Is(err, ErrBadScalarLength) {
 		t.Errorf("wrong-length scalar: error = %v, want wrap of ErrBadScalarLength", err)
 	}
@@ -166,14 +166,14 @@ func TestNewX25519Key_BadInputs(t *testing.T) {
 
 	destroyed, _ := secmem.NewEmptyBuffer(curve25519.ScalarSize)
 	_ = destroyed.Destroy()
-	if _, err := NewX25519Key(destroyed); !errors.Is(err, secmem.ErrDestroyed) {
+	if _, err := NewX25519Key(destroyed, AllowHeapTransients()); !errors.Is(err, secmem.ErrDestroyed) {
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 }
 
 func TestX25519Key_WithScalar_Persist(t *testing.T) {
 	t.Parallel()
-	k, err := GenerateX25519Key()
+	k, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
@@ -191,7 +191,7 @@ func TestX25519Key_WithScalar_Persist(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	restored, err := NewX25519Key(buf)
+	restored, err := NewX25519Key(buf, AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewX25519Key: %v", err)
 	}
@@ -220,7 +220,7 @@ func TestX25519Key_NilAndDestroyed(t *testing.T) {
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
-	live, err := GenerateX25519Key()
+	live, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}

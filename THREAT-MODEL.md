@@ -315,32 +315,35 @@ What that leaves, stated per entry point:
   §4 scopes it to settings with no cache-timing adversary). Exposing the
   variant does not change that; `Argon2id` is the default for a reason.
 
-## Signing keys that pass through the standard library
+## Private keys that pass through the standard library
 
 `Ed25519Signer` signs in place: the seed never reaches the heap. RSA and
 ECDSA cannot, because the standard library has no API that borrows key
 bytes in place, and reimplementing either scheme is where subtle bugs leak
 private keys. So `RSASigner` and `ECDSASigner` keep the durable key in a
 `SecureBuffer` and rebuild it through the standard library for each
-signature. The copies that makes are listed in each type's documentation;
+signature. `X25519Key` is in the same position for key agreement:
+`curve25519` copies its scalar into a `crypto/ecdh` key on every public-key
+and shared-secret computation. The copies that makes are listed in each type's documentation;
 on a `GOEXPERIMENT=runtimesecret` build the runtime erases them once they
 are unreachable, and on every other build the collector reclaims them
 without zeroing, one of them (ECDSA's cached FIPS-form key) a GC cycle or
 more after the signature.
 
 That makes the buffer worth much less than it looks on a legacy build: a
-process that signs continuously has the key on the heap at almost every
-moment. Rather than let that be discovered in a heap dump, both types, and
-the parsers for RSA and EC key files, **refuse on a legacy build** with
-`ErrHeapTransients`. A caller who accepts the residual passes
-`AllowHeapTransients()`, which makes the choice visible where the signer is
+process that signs or agrees keys continuously has the key on the heap at
+almost every moment. Rather than let that be discovered in a heap dump, all
+three types, and the parsers for RSA and EC key files, **refuse on a legacy
+build** with `ErrHeapTransients`. A caller who accepts the residual passes
+`AllowHeapTransients()`, which makes the choice visible where the key is
 built. The refusal happens before the key reaches the standard library, so
 a refused call creates none of the copies.
 
-The gate is scoped to those two signer types. `X25519Key` leaves a copy of
-its private scalar inside `crypto/ecdh` on every operation and does not
-refuse; `MLKEM768Key`, `HKDFInto` and `HMACInto` leave digest states and do
-not refuse either. The `secmem-crypto` README lists each.
+The gate is scoped to `RSASigner`, `ECDSASigner` and `X25519Key`.
+`MLKEM768Key` is not gated, although crypto/mlkem's hash states absorb its
+seed halves and are not wiped. `HKDFInto` and `HMACInto` take the caller's
+key as a plain argument and leave HMAC states holding it; there is no key
+type to gate. The `secmem-crypto` README lists each.
 
 ## Post-quantum posture
 

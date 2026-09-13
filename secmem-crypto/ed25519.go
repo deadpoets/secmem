@@ -12,9 +12,9 @@
 // [RSASigner] (custody at rest; each Sign re-materialises the key through
 // the standard library and wipes what it can reach — see their docs).
 // Because the copies it cannot reach are never erased on a build without
-// GOEXPERIMENT=runtimesecret, the ECDSA and RSA constructors and the parsers
-// refuse those keys there with [ErrHeapTransients] unless the caller passes
-// [AllowHeapTransients]. Ed25519 is never refused.
+// GOEXPERIMENT=runtimesecret, the ECDSA, RSA and X25519 constructors and the
+// parsers refuse those keys there with [ErrHeapTransients] unless the caller
+// passes [AllowHeapTransients]. Ed25519 is never refused.
 // [AsSSH] adapts any of them to an ssh.Signer without ever offering SHA-1
 // ssh-rsa, and [Ed25519Signer.MarshalOpenSSHPrivateKey] exports into a
 // buffer.

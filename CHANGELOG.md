@@ -168,30 +168,36 @@ mark the stability commitment.
   4 KiB, the standard-library-backed paths as allocating.
 
 - **`secmem-crypto`: `ErrHeapTransients`, `AllowHeapTransients` and
-  `Option`.** The error a refused RSA or ECDSA signer returns (see Changed),
-  and the option that accepts the residual instead. `Option` is new and is
-  taken variadically by `NewRSASigner`, `GenerateRSASigner`,
-  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey` and
-  `ParsePrivateKeyWithPassphrase`; a nil `Option` is ignored.
+  `Option`.** The error a refused RSA, ECDSA or X25519 key returns (see
+  Changed), and the option that accepts the residual instead. `Option` is
+  new and is taken variadically by `NewRSASigner`, `GenerateRSASigner`,
+  `NewECDSASigner`, `GenerateECDSASigner`, `NewX25519Key`,
+  `GenerateX25519Key`, `ParsePrivateKey` and `ParsePrivateKeyWithPassphrase`;
+  a nil `Option` is ignored.
 
 ### Changed
 
-- **BREAKING — `secmem-crypto`: RSA and ECDSA signers are refused on a build
-  where their heap copies are never erased.** `NewRSASigner`,
-  `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` now return
-  an error wrapping `ErrHeapTransients` on every build without
-  `GOEXPERIMENT=runtimesecret` — Windows, macOS, and Linux without the
-  experiment — and `ParsePrivateKey` and `ParsePrivateKeyWithPassphrase` do
-  the same for an RSA or EC key file. Both types rebuild the private key
-  through the standard library on every signature, and on those builds the
-  copies are reclaimed by the collector but never zeroed, so a process that
-  signs has the key on the heap whether or not its durable copy is locked.
+- **BREAKING — `secmem-crypto`: RSA, ECDSA and X25519 keys are refused on a
+  build where their heap copies are never erased.** `NewRSASigner`,
+  `GenerateRSASigner`, `NewECDSASigner`, `GenerateECDSASigner`,
+  `NewX25519Key` and `GenerateX25519Key` now return an error wrapping
+  `ErrHeapTransients` on every build without `GOEXPERIMENT=runtimesecret` —
+  Windows, macOS, and Linux without the experiment — and `ParsePrivateKey`
+  and `ParsePrivateKeyWithPassphrase` do the same for an RSA or EC key file.
+  `RSASigner` and `ECDSASigner` rebuild the private key through the standard
+  library on every signature, and `X25519Key` copies its scalar into a
+  `crypto/ecdh` key on every public-key and shared-secret computation. On
+  those builds the copies are reclaimed by the collector but never zeroed, so
+  a process that uses the key has it on the heap whether or not its durable
+  copy is locked.
   The refusal happens before the key is handed to the standard library, and a
   buffer passed to a refused constructor stays the caller's. Callers who
   accept the residual pass `AllowHeapTransients()`; the README sets out when
   that is reasonable (load and sign rarely) and when it is not (sign
   continuously). Ed25519 keys are never refused, and nothing changes on a
-  `GOEXPERIMENT=runtimesecret` build. The constructors and parsers gain a
+  `GOEXPERIMENT=runtimesecret` build. `MLKEM768Key`, `HKDFInto` and
+  `HMACInto` are not gated; the README lists what each still leaves on the
+  heap. The constructors and parsers gain a
   variadic `...Option` parameter: existing calls compile unchanged, but a
   function value of the old type no longer matches, which `gorelease` reports
   as incompatible. The next `secmem-crypto` release is a minor bump. The SSH

@@ -20,7 +20,7 @@ func TestX25519Key_SealedBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewBuffer: %v", err)
 	}
-	k, err := NewX25519Key(buf) // k owns buf; buf ref retained only to seal it
+	k, err := NewX25519Key(buf, AllowHeapTransients()) // k owns buf; buf ref retained only to seal it
 	if err != nil {
 		t.Fatalf("NewX25519Key: %v", err)
 	}

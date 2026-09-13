@@ -42,12 +42,12 @@ func BenchmarkOpenInto(b *testing.B) {
 }
 
 func BenchmarkX25519KeySharedSecret(b *testing.B) {
-	a, err := GenerateX25519Key()
+	a, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		b.Fatal(err)
 	}
 	defer a.Destroy()
-	peer, err := GenerateX25519Key()
+	peer, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		b.Fatal(err)
 	}

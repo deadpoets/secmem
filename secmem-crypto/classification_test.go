@@ -105,7 +105,7 @@ func TestClassification_Transient(t *testing.T) {
 	}
 	defer ec.Destroy()
 	rs := testRSASigner(t)
-	x, err := GenerateX25519Key()
+	x, err := GenerateX25519Key(AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateX25519Key: %v", err)
 	}

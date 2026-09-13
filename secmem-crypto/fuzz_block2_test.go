@@ -73,7 +73,7 @@ func FuzzX25519Key_PublicKeyMatchesStdlib(f *testing.F) {
 		if err != nil {
 			t.Skip()
 		}
-		k, err := NewX25519Key(buf)
+		k, err := NewX25519Key(buf, AllowHeapTransients())
 		if err != nil {
 			t.Fatalf("NewX25519Key: %v", err)
 		}

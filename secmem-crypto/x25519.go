@@ -20,10 +20,11 @@ import (
 // bytes for P-224/P-256/P-384/P-521).
 var ErrBadScalarLength = errors.New("secmemcrypto: bad scalar length")
 
-// X25519Key is an X25519 (Curve25519) Diffie-Hellman private key whose 32-byte
-// scalar lives in a [secmem.SecureBuffer] for its entire lifetime — read
-// only inside a borrowing closure during PublicKey and SharedSecret, never
-// copied to a plain heap-backed key.
+// X25519Key is an X25519 (Curve25519) Diffie-Hellman private key whose
+// durable 32-byte scalar lives in a [secmem.SecureBuffer] for its entire
+// lifetime, read only inside a borrowing closure during PublicKey and
+// SharedSecret. Each of those calls does copy the scalar through the heap,
+// as the caveat below sets out.
 //
 // Honesty caveat: golang.org/x/crypto/curve25519 operates on plain []byte.
 // Computing a public key or shared secret copies the scalar into
@@ -37,6 +38,13 @@ var ErrBadScalarLength = errors.New("secmemcrypto: bad scalar length")
 // discloses for its derivations. X25519Key hardens the scalar at rest and
 // minimizes the window; it does not claim the multiply runs entirely inside
 // locked memory. The computed shared secret IS returned in a hardened buffer.
+//
+// Because every PublicKey and SharedSecret leaves a copy of the scalar on
+// the heap that nothing erases on a build without GOEXPERIMENT=runtimesecret,
+// the constructors refuse there with an error wrapping [ErrHeapTransients]
+// unless the caller passes [AllowHeapTransients] — the same gate as
+// [RSASigner] and [ECDSASigner]. README, "What each signer actually buys
+// you", sets out when opting in is reasonable.
 type X25519Key struct {
 	scalarBuf *secmem.SecureBuffer
 }
@@ -47,7 +55,16 @@ type X25519Key struct {
 // [GenerateEd25519Signer] for the caveat about a replaced Reader.
 //
 // To persist the generated key, use [X25519Key.WithScalar].
-func GenerateX25519Key() (*X25519Key, error) {
+//
+// On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
+// without the experiment) this refuses with an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients], because
+// every PublicKey and SharedSecret on the key copies the scalar onto the heap
+// and nothing erases the copy there. The check runs before a scalar is drawn.
+func GenerateX25519Key(opts ...Option) (*X25519Key, error) {
+	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: generate x25519 key"); err != nil {
+		return nil, err
+	}
 	buf, err := secmem.NewEmptyBuffer(curve25519.ScalarSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate scalar buffer: %w", err)
@@ -69,7 +86,17 @@ func GenerateX25519Key() (*X25519Key, error) {
 // The scalar is stored as given; X25519 clamps it per RFC 7748 at each use,
 // so an unclamped scalar is accepted and behaves identically to its clamped
 // form for PublicKey/SharedSecret.
-func NewX25519Key(scalarBuf *secmem.SecureBuffer) (*X25519Key, error) {
+//
+// On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
+// without the experiment) this refuses with an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients], because
+// every PublicKey and SharedSecret on the key copies the scalar onto the heap
+// and nothing erases the copy there. The check runs before the buffer is inspected, and a refusal leaves the
+// buffer the caller's.
+func NewX25519Key(scalarBuf *secmem.SecureBuffer, opts ...Option) (*X25519Key, error) {
+	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: new x25519 key"); err != nil {
+		return nil, err
+	}
 	if scalarBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
