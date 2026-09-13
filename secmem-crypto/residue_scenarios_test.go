@@ -24,7 +24,9 @@ import (
 	"encoding/pem"
 	"errors"
 	"io"
+	"runtime"
 	"slices"
+	"sync/atomic"
 	"testing"
 	"unsafe"
 
@@ -109,6 +111,21 @@ var residueScenarios = []residueScenario{
 			}
 			return op, buf.Destroy, nil
 		},
+	},
+	{
+		// A 32-byte copy leaves the secret's two halves in the vector
+		// registers it moved them through; a goroutine then preempted
+		// asynchronously has its register file saved onto its stack, where
+		// nothing erases it. This is what Scrub's signal mask and register
+		// clear exist for, and the pair below proves both halves of that.
+		name: "control/preempted-copy-outside-scrub", class: residueControlPlain, nOps: 4,
+		material: randomSecret(32, "secret"),
+		victim:   preemptedCopy(false),
+	},
+	{
+		name: "control/preempted-copy-in-scrub", class: residueContained, nOps: 4,
+		material: randomSecret(32, "secret"),
+		victim:   preemptedCopy(true),
 	},
 	{
 		name: "Ed25519Signer", class: residueContained,
@@ -512,14 +529,72 @@ func destroyAll(fs ...func() error) func() error {
 	}
 }
 
-// copyWithin copies src[off:off+n] into dst, locked memory to locked memory.
+// copyWithin copies src[off:off+n] into dst, locked memory to locked memory,
+// inside a Scrub window: the copy moves the bytes through vector registers,
+// and outside a window an asynchronous preemption before they are reused
+// saves them onto the goroutine stack (control/preempted-copy-outside-scrub
+// shows it, and an earlier version of this helper left seeds there).
 func copyWithin(dst, src *secmem.SecureBuffer, off, n int) error {
-	return src.WithBytesErr(func(s []byte) error {
-		return dst.WithBytesErr(func(d []byte) error {
-			copy(d, s[off:off+n])
-			return nil
+	return secmem.ScrubErr(func() error {
+		return src.WithBytesErr(func(s []byte) error {
+			return dst.WithBytesErr(func(d []byte) error {
+				copy(d, s[off:off+n])
+				return nil
+			})
 		})
 	})
+}
+
+var residueSpinAcc uint64
+
+// residueSpin burns CPU without a call, so the scheduler can take the
+// goroutine off it only by asynchronous preemption.
+//
+//go:noinline
+func residueSpin(n int) {
+	for i := 0; i < n; i++ {
+		residueSpinAcc += uint64(i) ^ residueSpinAcc>>3
+	}
+}
+
+// preemptedCopy copies the secret between two locked buffers and, with the
+// halves still in the registers, spins while another goroutine collects
+// continuously — so the spin is asynchronously preempted — optionally
+// inside a Scrub window.
+func preemptedCopy(inScrub bool) func(buf *secmem.SecureBuffer, _ []byte) (func() error, func() error, error) {
+	return func(buf *secmem.SecureBuffer, _ []byte) (func() error, func() error, error) {
+		dst, err := secmem.NewEmptyBuffer(32)
+		if err != nil {
+			return nil, nil, err
+		}
+		var stop atomic.Bool
+		collected := make(chan struct{})
+		go func() {
+			defer close(collected)
+			for !stop.Load() {
+				runtime.GC()
+			}
+		}()
+		body := func() error {
+			return buf.WithBytesErr(func(s []byte) error {
+				return dst.WithBytesErr(func(d []byte) error {
+					copy(d, s[:32])
+					residueSpin(200_000_000)
+					return nil
+				})
+			})
+		}
+		op := body
+		if inScrub {
+			op = func() error { return secmem.ScrubErr(body) }
+		}
+		destroy := func() error {
+			stop.Store(true)
+			<-collected
+			return destroyAll(dst.Destroy, buf.Destroy)()
+		}
+		return op, destroy, nil
+	}
 }
 
 // ---------------------------------------------------------------- patterns
