@@ -314,10 +314,13 @@ What each key type leaves in memory is measured, and what could be fixed is:
 X25519, and HKDF and HMAC over SHA-2 and SHA-3, now run in place, and
 `WithAESGCM` lends an AES-GCM AEAD whose key schedule is wiped when the
 callback returns. RSA and ECDSA keys, whose standard-library copies nothing can
-reach, are refused on builds without `GOEXPERIMENT=runtimesecret` unless the
-caller passes `AllowHeapTransients()`. Also a public `BcryptPBKDFInto`, a
-configurable OpenSSH passphrase cost, and wipes of ML-KEM's expanded key and
-RSA's FIPS-form key. Minor, with breaking changes: see Changed.
+reach, and ML-KEM keys, each of whose decapsulations leaves that ciphertext's
+shared key on the heap, are refused on builds without
+`GOEXPERIMENT=runtimesecret` unless the caller passes `AllowHeapTransients()`;
+`Encapsulate` now wipes the randomness that recovered its shared key and is
+not. Also a public `BcryptPBKDFInto`, a configurable OpenSSH passphrase cost,
+and wipes of ML-KEM's expanded key and RSA's FIPS-form key. Minor, with
+breaking changes: see Changed.
 
 ### Added
 
@@ -407,12 +410,12 @@ RSA's FIPS-form key. Minor, with breaking changes: see Changed.
   4 KiB, the standard-library-backed paths as allocating.
 
 - **`secmem-crypto`: `ErrHeapTransients`, `AllowHeapTransients` and
-  `Option`.** The error a refused RSA or ECDSA key returns (see Changed),
-  and the option that accepts the residual instead. `Option` is new and is
-  taken variadically by `NewRSASigner`, `GenerateRSASigner`,
-  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey`,
-  `ParsePrivateKeyWithPassphrase`, `HKDFInto` and `HMACInto`; a nil `Option`
-  is ignored.
+  `Option`.** The error a refused RSA, ECDSA or ML-KEM key returns (see
+  Changed), and the option that accepts the residual instead. `Option` is new
+  and is taken variadically by `NewRSASigner`, `GenerateRSASigner`,
+  `NewECDSASigner`, `GenerateECDSASigner`, `NewMLKEM768Key`,
+  `GenerateMLKEM768Key`, `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase`,
+  `HKDFInto` and `HMACInto`; a nil `Option` is ignored.
 
 ### Changed
 
@@ -445,8 +448,8 @@ RSA's FIPS-form key. Minor, with breaking changes: see Changed.
   which found the scalar and the shared secret on the heap after every
   operation, now finds neither on either build mode. No API change.
 
-- **BREAKING — `secmem-crypto`: RSA and ECDSA keys are refused on a build
-  where their heap copies are never erased.** `NewRSASigner`,
+- **BREAKING — `secmem-crypto`: RSA, ECDSA and ML-KEM keys are refused on a
+  build where their heap copies are never erased.** `NewRSASigner`,
   `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` now return
   an error wrapping
   `ErrHeapTransients` on every build without `GOEXPERIMENT=runtimesecret` —
@@ -464,12 +467,16 @@ RSA's FIPS-form key. Minor, with breaking changes: see Changed.
   continuously). Ed25519 and X25519 keys are never refused, and nothing
   changes on a `GOEXPERIMENT=runtimesecret` build. `HKDFInto` and `HMACInto`
   are refused the same way when given a hash other than SHA-2 or SHA-3 (see
-  their in-place entry). `MLKEM768Key` is not gated; the README lists what it
-  still leaves on the heap. The constructors, the parsers, `HKDFInto` and
-  `HMACInto` gain a variadic `...Option` parameter: existing calls compile
-  unchanged, but a function value of the old type no longer matches, which
-  `gorelease` reports as incompatible. The next `secmem-crypto` release is a minor bump. The SSH
-  agent example follows the same default and gains `-allow-heap-transients`.
+  their in-place entry). `NewMLKEM768Key` and `GenerateMLKEM768Key` are
+  refused the same way: the decapsulation key is contained, but each
+  `Decapsulate` leaves the message it recovers on the heap, which gives that
+  ciphertext's shared key, and on those builds nothing erases it (see the
+  `MLKEM768Key` entry). `Encapsulate` leaves nothing and is not refused (see
+  Fixed). The constructors, the parsers, `HKDFInto` and `HMACInto` gain a
+  variadic `...Option` parameter: existing calls compile unchanged, but a
+  function value of the old type no longer matches, which `gorelease` reports
+  as incompatible. The SSH agent example follows the same default and gains
+  `-allow-heap-transients`.
 
 - **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
   wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
@@ -516,8 +523,9 @@ RSA's FIPS-form key. Minor, with breaking changes: see Changed.
   memory. What does reach the heap is the 32-byte message each `Decapsulate`
   recovers, which gives that ciphertext's shared key (not the long-term key):
   erased by the runtime at the next collection on a runtimesecret build and
-  left to the collector elsewhere. The doc says so, and the decapsulation key
-  is classified contained. Holding the cached key makes the
+  left to the collector elsewhere. The doc says so, the decapsulation key is
+  classified contained, and the type is refused on a legacy build for that
+  message (see the BREAKING entry). Holding the cached key makes the
   struct no longer comparable: `*MLKEM768Key` pointers, which is how the
   type is handed out, compare as before, but comparing `MLKEM768Key` values
   or using them as map keys no longer compiles, and `gorelease` reports it
@@ -573,6 +581,23 @@ RSA's FIPS-form key. Minor, with breaking changes: see Changed.
   reachable from any wipe, kept short-lived by not retaining the transient
   between operations, and named as the longest-lived residue on a legacy
   build.
+
+### Fixed
+
+- **`secmem-crypto`: `Encapsulate` wipes the randomness that recovers the
+  shared key.** crypto/mlkem returns the sender's shared key as the first half
+  of a 64-byte heap slice, SHA3-512(m || H(ek)), whose second half is the
+  encryption randomness r. `Encapsulate` wiped the first half only, and r with
+  the public ciphertext gives the message back, and the message the shared
+  key. A new residue scenario drives `Encapsulate`'s own wrapper through
+  `crypto/mlkem/mlkemtest`'s derandomized encapsulation — the same internal
+  path — with the message in locked memory, and found r after every call on
+  both build modes, surviving collections and `Destroy` on a legacy build. The
+  wipe now covers the slice to its capacity, unless that range would reach
+  into the ciphertext being returned, and the scenario finds nothing — not r,
+  the shared key or the message, which with the digest that absorbs it stays
+  on the stack in the Scrub window. Shown to fail with the old wipe; a unit
+  test pins both halves of the rule.
 
 ## [secmem-lint/v0.3.0] - 2026-09-13
 

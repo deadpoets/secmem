@@ -64,7 +64,9 @@ with `ErrHeapTransients` unless you pass `AllowHeapTransients()`. Decide per
 key: an Ed25519 or X25519 key is INTERNAL in the full sense; an RSA or
 ECDSA key used continuously is effectively on the heap for the life of the
 process unless you build with the experiment, and belongs in your residuals
-list if you opt in.
+list if you opt in. `MLKEM768Key` is refused the same way, because each
+decapsulation leaves that ciphertext's shared key on the heap; the
+decapsulation key itself stays contained.
 
 **EXTERNAL**: the plaintext has to leave the process in the clear. A bearer
 token in a request header, a passphrase the user types, a key file written

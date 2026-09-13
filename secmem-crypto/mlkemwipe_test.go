@@ -131,7 +131,7 @@ func TestMLKEM768Key_WipesLiveExpansion(t *testing.T) {
 	}
 	defer func() { wipeMLKEMDecapsulationKey = orig }()
 
-	k, err := GenerateMLKEM768Key()
+	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateMLKEM768Key: %v", err)
 	}
@@ -183,7 +183,7 @@ func TestMLKEM768Key_WipesLiveExpansion(t *testing.T) {
 // the wipe cannot locate the expansion, construction and Decapsulate return
 // the error rather than reporting success over a live heap copy.
 func TestMLKEM768Key_WipeFailureIsAnError(t *testing.T) {
-	k, err := GenerateMLKEM768Key()
+	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateMLKEM768Key: %v", err)
 	}
@@ -213,7 +213,7 @@ func TestMLKEM768Key_WipeFailureIsAnError(t *testing.T) {
 		t.Skip(err)
 	}
 	defer seed.Destroy()
-	if k2, err := NewMLKEM768Key(seed); err == nil {
+	if k2, err := NewMLKEM768Key(seed, AllowHeapTransients()); err == nil {
 		k2.Destroy()
 		t.Fatal("NewMLKEM768Key reported success although the wipe failed")
 	}

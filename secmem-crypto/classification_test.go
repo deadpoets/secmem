@@ -106,7 +106,7 @@ func TestClassification_Transient(t *testing.T) {
 	}
 	defer ec.Destroy()
 	rs := testRSASigner(t)
-	mk, err := GenerateMLKEM768Key()
+	mk, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateMLKEM768Key: %v", err)
 	}
@@ -208,7 +208,7 @@ func TestClassification_Contained_HKDFHMAC(t *testing.T) {
 // the public key costs one allocation (the returned copy) and no seed
 // expansion — TestMLKEM768Key_WipesLiveExpansion pins the second half.
 func TestClassification_EncapsulationKeyBytesDoesNotExpand(t *testing.T) {
-	mk, err := GenerateMLKEM768Key()
+	mk, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateMLKEM768Key: %v", err)
 	}

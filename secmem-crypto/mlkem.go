@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"unsafe"
 
 	"github.com/deadpoets/secmem"
 )
@@ -57,6 +58,15 @@ import (
 // SecureBuffer and its heap copy wiped. The encapsulation key is public and
 // is computed once at construction, so EncapsulationKeyBytes performs no
 // expansion at all.
+//
+// # Refused on a legacy build
+//
+// Because of that message, [GenerateMLKEM768Key] and [NewMLKEM768Key] refuse
+// with [ErrHeapTransients] on every build without GOEXPERIMENT=runtimesecret
+// on linux/amd64 or linux/arm64, the same way [RSASigner] and [ECDSASigner]
+// are refused, unless the caller passes [AllowHeapTransients]. The refusal
+// comes before the seed is read. [Encapsulate], the sender side, leaves
+// nothing behind and is never refused.
 type MLKEM768Key struct {
 	seedBuf *secmem.SecureBuffer
 	ek      []byte // public encapsulation key, captured at construction
@@ -69,7 +79,14 @@ type MLKEM768Key struct {
 // replaced Reader, and the type comment for the expansion that follows.
 //
 // To persist the generated key, use [MLKEM768Key.WithSeed].
-func GenerateMLKEM768Key() (*MLKEM768Key, error) {
+//
+// On a build without GOEXPERIMENT=runtimesecret it returns an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients]; see the
+// type comment.
+func GenerateMLKEM768Key(opts ...Option) (*MLKEM768Key, error) {
+	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: generate ML-KEM seed"); err != nil {
+		return nil, err
+	}
 	buf, err := secmem.NewEmptyBuffer(mlkem.SeedSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate seed buffer: %w", err)
@@ -81,7 +98,7 @@ func GenerateMLKEM768Key() (*MLKEM768Key, error) {
 		_ = buf.Destroy()
 		return nil, fmt.Errorf("secmemcrypto: generate seed: %w", err)
 	}
-	k, err := NewMLKEM768Key(buf)
+	k, err := newMLKEM768Key(buf)
 	if err != nil {
 		_ = buf.Destroy()
 		return nil, err
@@ -95,7 +112,18 @@ func GenerateMLKEM768Key() (*MLKEM768Key, error) {
 // comment). On success, the MLKEM768Key owns seedBuf — call
 // [MLKEM768Key.Destroy] to release it. On failure, ownership is not
 // transferred.
-func NewMLKEM768Key(seedBuf *secmem.SecureBuffer) (*MLKEM768Key, error) {
+//
+// On a build without GOEXPERIMENT=runtimesecret it returns an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients]; see the
+// type comment.
+func NewMLKEM768Key(seedBuf *secmem.SecureBuffer, opts ...Option) (*MLKEM768Key, error) {
+	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: new ML-KEM key"); err != nil {
+		return nil, err
+	}
+	return newMLKEM768Key(seedBuf)
+}
+
+func newMLKEM768Key(seedBuf *secmem.SecureBuffer) (*MLKEM768Key, error) {
 	if seedBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -190,31 +218,52 @@ func (k *MLKEM768Key) Decapsulate(ciphertext []byte) (*secmem.SecureBuffer, erro
 // public; the shared secret is not.
 //
 // crypto/mlkem's Encapsulate returns the shared key as a plain heap []byte,
-// so this copies it into protected memory and wipes the heap copy inside
-// [secmem.ScrubErr]. What it cannot reach is crypto/mlkem's own working
-// state — the SHA3 digest that produces the shared key and the encryption
-// randomness, and the 32-byte message m — which is erased by the runtime
-// on a runtimesecret build and left for the collector elsewhere. It does
-// not require (and has no access to) a decapsulation key, which is why it
-// is a free function rather than a method.
+// the first half of a 64-byte slice whose second half is the encryption
+// randomness, which recovers the shared key from the public ciphertext. This
+// copies the shared key into protected memory and wipes the whole slice
+// inside [secmem.ScrubErr]. The random message m and the SHA3 digest that
+// absorbs it stay on the stack in go1.26, inside the window, and the residue
+// test finds none of m, the shared key or the randomness outside locked
+// memory on either kind of build, so Encapsulate is not refused on a legacy
+// build. It does not require (and has no access to) a decapsulation key,
+// which is why it is a free function rather than a method.
 func Encapsulate(encapsulationKey []byte) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
 	ek, err := mlkem.NewEncapsulationKey768(encapsulationKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("secmemcrypto: encapsulate: %w", err)
 	}
+	return encapsulateInto(func() ([]byte, []byte, error) {
+		shared, ct := ek.Encapsulate()
+		return shared, ct, nil
+	})
+}
+
+// encapsulateInto runs kem inside a Scrub window, copies the shared key it
+// returns into a new buffer and wipes the heap slice it came in — to its
+// capacity, not its length. In go1.26 crypto/mlkem returns the shared key as
+// the first half of G = SHA3-512(m || H(ek)), a 64-byte heap slice whose
+// second half is the encryption randomness r; r and the public ciphertext
+// give m back, and m the shared key, so a wipe of the first 32 bytes left
+// the shared key recoverable. The residue test drives this function with
+// crypto/mlkem/mlkemtest's derandomized encapsulation, which reaches the same
+// kemEncaps, so the scan knows m.
+func encapsulateInto(kem func() (shared, ct []byte, err error)) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
 	out, err := secmem.NewEmptyBuffer(mlkem.SharedKeySize)
 	if err != nil {
 		return nil, nil, fmt.Errorf("secmemcrypto: allocate shared key buffer: %w", err)
 	}
 	var ct []byte
 	err = secmem.ScrubErr(func() error {
-		shared, c := ek.Encapsulate()
+		shared, c, e := kem()
+		if e != nil {
+			return e
+		}
 		ct = c
-		e := out.WithBytesErr(func(dst []byte) error {
+		e = out.WithBytesErr(func(dst []byte) error {
 			copy(dst, shared)
 			return nil
 		})
-		secmem.SecureWipe(shared)
+		secmem.SecureWipe(sharedKeyBacking(shared, ct))
 		return e
 	})
 	if err != nil {
@@ -222,6 +271,24 @@ func Encapsulate(encapsulationKey []byte) (ciphertext []byte, sharedSecret *secm
 		return nil, nil, fmt.Errorf("secmemcrypto: encapsulate: %w", err)
 	}
 	return ct, out, nil
+}
+
+// sharedKeyBacking is shared extended to its capacity, which in go1.26 also
+// covers the encryption randomness — unless that range would reach into ct,
+// which the caller is about to return, in which case it is shared alone.
+func sharedKeyBacking(shared, ct []byte) []byte {
+	full := shared[:cap(shared)]
+	if len(full) == 0 || cap(ct) == 0 {
+		return full
+	}
+	//nolint:gosec // G103: addresses compared for overlap only; nothing is dereferenced.
+	fs := uintptr(unsafe.Pointer(unsafe.SliceData(full)))
+	//nolint:gosec // G103: as above.
+	cs := uintptr(unsafe.Pointer(unsafe.SliceData(ct)))
+	if fs < cs+uintptr(cap(ct)) && cs < fs+uintptr(len(full)) {
+		return shared
+	}
+	return full
 }
 
 // WithSeed borrows the 64-byte seed for the duration of fn — the deliberate
