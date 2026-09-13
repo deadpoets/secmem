@@ -54,17 +54,23 @@ import (
 // scratch is returned to a sync.Pool unwiped.
 //
 // On a runtimesecret build every one of those objects is allocated inside
-// the surrounding [secmem.ScrubErr] and erased by the runtime once
-// unreachable; on every other build they are reclaimed by the collector,
+// the surrounding [secmem.ScrubErr] and erased by the runtime at the first
+// garbage collection after it becomes unreachable, not when Sign returns; on
+// every other build they are reclaimed by the collector,
 // not zeroed. RSA has no compact secret form — no 32-byte seed to guard —
 // so custody at rest means custody of the whole DER blob, and the
 // per-operation heap exposure is proportionally larger than
 // [ECDSASigner]'s. If transient heap copies of the full private key are
 // outside your threat model's tolerance, keep RSA keys in an HSM or KMS;
-// this type's job is to be honest about that line, not to blur it. The
-// constructors consult [ErrHeapTransients]'s policy, so that gating this
-// type to runtimesecret builds is a one-line decision (README, "What each
-// signer actually buys you").
+// this type's job is to be honest about that line, not to blur it.
+//
+// Because of that, the constructors refuse on a build where those copies
+// are never erased — every build without GOEXPERIMENT=runtimesecret — with
+// an error wrapping [ErrHeapTransients], unless the caller passes
+// [AllowHeapTransients]. The refusal is the default so that choosing this
+// residual is visible at the call site rather than discovered in a heap
+// dump. README, "What each signer actually buys you", sets out when opting
+// in is reasonable.
 //
 // Each Sign re-runs DER parsing, key validation, and CRT precomputation —
 // the price of not keeping a live heap key; the benchmarks measure it. The
@@ -98,8 +104,20 @@ type RSASigner struct {
 // Key size is not checked here: the standard library rejects keys smaller
 // than 1024 bits at Sign time (see the crypto/rsa package documentation,
 // including the rsa1024min GODEBUG escape hatch for tests).
-func NewRSASigner(derBuf *secmem.SecureBuffer) (*RSASigner, error) {
-	if err := checkHeapTransients("secmemcrypto: new rsa signer"); err != nil {
+//
+// On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
+// without the experiment) this refuses with an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients], because
+// every signature this type makes leaves copies of the private key on the
+// heap that nothing erases there. The check runs before the key is read.
+func NewRSASigner(derBuf *secmem.SecureBuffer, opts ...Option) (*RSASigner, error) {
+	return newRSASigner(derBuf, resolveOptions(opts))
+}
+
+// newRSASigner is NewRSASigner with its options already resolved, shared with
+// GenerateRSASigner and the parsers so the gate is decided once per call.
+func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
+	if err := o.checkHeapTransients("secmemcrypto: new rsa signer"); err != nil {
 		return nil, err
 	}
 	if derBuf == nil {
@@ -152,8 +170,15 @@ func NewRSASigner(derBuf *secmem.SecureBuffer) (*RSASigner, error) {
 // the DER instead.
 //
 // The standard library rejects bits < 1024.
-func GenerateRSASigner(bits int) (*RSASigner, error) {
-	if err := checkHeapTransients("secmemcrypto: generate rsa key"); err != nil {
+//
+// On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
+// without the experiment) this refuses with an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients], because
+// every signature this type makes leaves copies of the private key on the
+// heap that nothing erases there. The check runs before a key is generated.
+func GenerateRSASigner(bits int, opts ...Option) (*RSASigner, error) {
+	o := resolveOptions(opts)
+	if err := o.checkHeapTransients("secmemcrypto: generate rsa key"); err != nil {
 		return nil, err
 	}
 	var buf *secmem.SecureBuffer
@@ -177,7 +202,7 @@ func GenerateRSASigner(bits int) (*RSASigner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: generate rsa key: %w", err)
 	}
-	s, err := NewRSASigner(buf)
+	s, err := newRSASigner(buf, o)
 	if err != nil {
 		_ = buf.Destroy()
 		return nil, err

@@ -30,8 +30,9 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // private key ("OPENSSH PRIVATE KEY", PEM-armoured or raw; the format
 // ssh-keygen writes for every key type when given a passphrase) and returns
 // a signer that holds it in a [secmem.SecureBuffer]. The caller owns the
-// result and must call Destroy. Key types, the public-key cross-check, and
-// the error and ownership rules are [ParsePrivateKey]'s.
+// result and must call Destroy. Key types, the public-key cross-check, the
+// error and ownership rules, and the [ErrHeapTransients] refusal of RSA and
+// EC keys without [AllowHeapTransients] are [ParsePrivateKey]'s.
 //
 // Supported protection is what ssh-keygen and x/crypto/ssh write and read:
 // KDF bcrypt, cipher aes256-ctr or aes256-cbc, up to 2048 rounds (x/crypto's
@@ -56,7 +57,7 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // outputs, about 4 KiB), the derived key and IV, and the cipher's scratch
 // live in one SecureBuffer for the call. data and passphrase are the
 // caller's: neither is wiped nor retained.
-func ParsePrivateKeyWithPassphrase(data, passphrase []byte) (Signer, error) {
+func ParsePrivateKeyWithPassphrase(data, passphrase []byte, opts ...Option) (Signer, error) {
 	if len(data) == 0 {
 		return nil, errors.New("secmemcrypto: parse private key: empty input")
 	}
@@ -66,7 +67,7 @@ func ParsePrivateKeyWithPassphrase(data, passphrase []byte) (Signer, error) {
 	var s Signer
 	err := secmem.ScrubErr(func() error {
 		var perr error
-		s, perr = parseEncryptedPrivateKey(data, passphrase)
+		s, perr = parseEncryptedPrivateKey(data, passphrase, resolveOptions(opts))
 		return perr
 	})
 	if err != nil {
@@ -80,7 +81,7 @@ func ParsePrivateKeyWithPassphrase(data, passphrase []byte) (Signer, error) {
 // opened here; every other shape is named as unsupported or as not
 // encrypted. The container goes into a SecureBuffer before its header is
 // read, because until the header is read it may be an unencrypted key.
-func parseEncryptedPrivateKey(data, passphrase []byte) (Signer, error) {
+func parseEncryptedPrivateKey(data, passphrase []byte, o options) (Signer, error) {
 	var (
 		blob *secmem.SecureBuffer
 		err  error
@@ -116,7 +117,7 @@ func parseEncryptedPrivateKey(data, passphrase []byte) (Signer, error) {
 	if err != nil {
 		return nil, err
 	}
-	return parseOpenSSHEncrypted(blob, passphrase)
+	return parseOpenSSHEncrypted(blob, passphrase, o)
 }
 
 // derEncryptionError classifies a bare DER SEQUENCE by its first element:
@@ -137,7 +138,7 @@ func derEncryptionError(data []byte) error {
 
 // parseOpenSSHEncrypted opens a protected "openssh-key-v1" container held
 // in blob and returns the signer. blob is destroyed on every path.
-func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte) (Signer, error) {
+func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o options) (Signer, error) {
 	var (
 		s   Signer
 		der *secmem.SecureBuffer
@@ -160,10 +161,10 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte) (Signer
 		if h.numKeys != 1 {
 			return fmt.Errorf("%w: OpenSSH file holds %d keys, want 1", ErrUnsupportedKey, h.numKeys)
 		}
-		o := sshReader{h.kdfOpts}
-		salt, ok1 := o.str()
-		rounds, ok2 := o.uint32()
-		if !ok1 || !ok2 || len(o.b) != 0 || len(salt) == 0 || rounds == 0 {
+		kdf := sshReader{h.kdfOpts}
+		salt, ok1 := kdf.str()
+		rounds, ok2 := kdf.uint32()
+		if !ok1 || !ok2 || len(kdf.b) != 0 || len(salt) == 0 || rounds == 0 {
 			return fmt.Errorf("%w: bcrypt KDF options", errMalformed)
 		}
 		if rounds > opensshMaxRounds {
@@ -185,7 +186,7 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte) (Signer
 				return err
 			}
 			var err error
-			s, der, err = parseOpenSSHPrivateBlock(p, h.pubBlob)
+			s, der, err = parseOpenSSHPrivateBlock(p, h.pubBlob, o)
 			if errors.Is(err, errCheckMismatch) {
 				// The check integers are the format's passphrase test; a
 				// mismatch after decryption is a wrong passphrase, not a
@@ -201,7 +202,7 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte) (Signer
 		return nil, err
 	}
 	if der != nil {
-		return rsaFromDER(der)
+		return rsaFromDER(der, o)
 	}
 	return s, nil
 }

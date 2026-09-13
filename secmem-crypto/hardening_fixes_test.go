@@ -31,7 +31,7 @@ func TestNewRSASigner_RejectsECDHKey(t *testing.T) {
 	}
 	defer func() { _ = buf.Destroy() }()
 
-	if _, err := NewRSASigner(buf); err == nil {
+	if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil {
 		t.Fatal("NewRSASigner accepted an X25519 key; want rejection")
 	} else if !strings.Contains(err.Error(), "ECDH") && !strings.Contains(err.Error(), "not RSA") {
 		t.Fatalf("unexpected rejection error: %v", err)

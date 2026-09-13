@@ -40,3 +40,15 @@ func DumpZMMHi(buf *[1024]byte)
 //
 //go:noescape
 func FillZMMHi(buf *[1024]byte)
+
+// DumpGP copies BX, CX, DX, SI, DI, R8–R13 and R15 into buf, 8 bytes each in
+// that order — every general-purpose register the Go ABI lets a callee
+// clobber except AX, which carries buf.
+//
+//go:noescape
+func DumpGP(buf *[96]byte)
+
+// FillGP loads the same registers from buf, in the same order.
+//
+//go:noescape
+func FillGP(buf *[96]byte)

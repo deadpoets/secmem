@@ -12,6 +12,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"hash"
 	"io"
 	"testing"
 
@@ -99,21 +100,12 @@ func TestClassification_Contained_Ed25519Sign(t *testing.T) {
 // the top of this file.
 func TestClassification_Transient(t *testing.T) {
 	digest := sha256.Sum256([]byte("classify me"))
-	ec, err := GenerateECDSASigner(elliptic.P256())
+	ec, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
 		t.Skipf("GenerateECDSASigner: %v", err)
 	}
 	defer ec.Destroy()
 	rs := testRSASigner(t)
-	x, err := GenerateX25519Key()
-	if err != nil {
-		t.Skipf("GenerateX25519Key: %v", err)
-	}
-	defer x.Destroy()
-	peer, err := x.PublicKey()
-	if err != nil {
-		t.Fatal(err)
-	}
 	mk, err := GenerateMLKEM768Key()
 	if err != nil {
 		t.Skipf("GenerateMLKEM768Key: %v", err)
@@ -128,28 +120,86 @@ func TestClassification_Transient(t *testing.T) {
 		t.Fatal(err)
 	}
 	ss.Destroy()
-	out, err := secmem.NewEmptyBuffer(32)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
-	}
-	defer out.Destroy()
-	secret := []byte("0123456789abcdef0123456789abcdef")
-
 	for _, tc := range []struct {
 		name string
 		op   func()
 	}{
 		{"ECDSASigner.Sign", func() { _, _ = ec.Sign(rand.Reader, digest[:], crypto.SHA256) }},
 		{"RSASigner.Sign", func() { _, _ = rs.Sign(rand.Reader, digest[:], crypto.SHA256) }},
-		{"X25519Key.PublicKey", func() { _, _ = x.PublicKey() }},
-		{"X25519Key.SharedSecret", func() { s, _ := x.SharedSecret(peer); s.Destroy() }},
 		{"MLKEM768Key.Decapsulate", func() { s, _ := mk.Decapsulate(ct); s.Destroy() }},
-		{"HKDFSHA256Into", func() { _ = HKDFSHA256Into(secret, nil, []byte("info"), out) }},
-		{"HMACSHA256Into", func() { _ = HMACSHA256Into(secret, []byte("info"), out) }},
 	} {
 		tc.op()
 		if got := testing.AllocsPerRun(5, tc.op); got == 0 {
 			t.Errorf("%s: 0 allocs/op — it no longer copies through the heap; promote it in the README table", tc.name)
+		}
+	}
+}
+
+// TestClassification_Contained_X25519 pins X25519Key as contained: the
+// ladder runs over the borrowed scalar, so PublicKey allocates nothing and
+// SharedSecret allocates exactly what the SecureBuffer it returns costs — a
+// NewEmptyBuffer of the same size, measured alongside — and nothing more.
+func TestClassification_Contained_X25519(t *testing.T) {
+	x, err := GenerateX25519Key()
+	if err != nil {
+		t.Skipf("GenerateX25519Key: %v", err)
+	}
+	defer x.Destroy()
+	peer, err := x.PublicKey()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := testing.AllocsPerRun(100, func() { _, _ = x.PublicKey() }); got != 0 {
+		t.Errorf("X25519Key.PublicKey: %.1f allocs/op, want 0", got)
+	}
+	bufferOnly := testing.AllocsPerRun(100, func() {
+		b, err := secmem.NewEmptyBuffer(32)
+		if err == nil {
+			_ = b.Destroy()
+		}
+	})
+	shared := testing.AllocsPerRun(100, func() {
+		s, err := x.SharedSecret(peer)
+		if err == nil {
+			_ = s.Destroy()
+		}
+	})
+	if shared != bufferOnly {
+		t.Errorf("X25519Key.SharedSecret: %.1f allocs/op, want %.1f (the returned SecureBuffer's own, and nothing else)", shared, bufferOnly)
+	}
+}
+
+var (
+	classificationCtor = sha256.New
+	classificationSink hash.Hash
+)
+
+// TestClassification_Contained_HKDFHMAC pins HKDF and HMAC over SHA-256 as
+// contained: the only allocation either makes is the one digest instance it
+// asks the caller's constructor for, to identify the hash — measured
+// alongside, so the count is "the probe, and nothing else".
+func TestClassification_Contained_HKDFHMAC(t *testing.T) {
+	out, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		t.Skipf("NewEmptyBuffer: %v", err)
+	}
+	defer out.Destroy()
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	info := []byte("info")
+	// The probe through a constructor value, stored where it escapes, the
+	// way the library receives it — a direct sha256.New() would stay on the
+	// stack and count as nothing.
+	probeOnly := testing.AllocsPerRun(100, func() { classificationSink = classificationCtor() })
+	for _, tc := range []struct {
+		name string
+		op   func()
+	}{
+		{"HKDFSHA256Into", func() { _ = HKDFSHA256Into(secret, nil, info, out) }},
+		{"HMACSHA256Into", func() { _ = HMACSHA256Into(secret, info, out) }},
+	} {
+		tc.op()
+		if got := testing.AllocsPerRun(100, tc.op); got != probeOnly {
+			t.Errorf("%s: %.1f allocs/op, want %.1f (the hash probe alone)", tc.name, got, probeOnly)
 		}
 	}
 }

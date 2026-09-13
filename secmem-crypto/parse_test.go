@@ -177,7 +177,7 @@ func TestParsePrivateKey_RoundTrip(t *testing.T) {
 	for _, k := range parseTestKeys(t) {
 		for _, enc := range encodings(t, k) {
 			t.Run(k.name+"/"+enc.name, func(t *testing.T) {
-				s, err := ParsePrivateKey(enc.data)
+				s, err := ParsePrivateKey(enc.data, AllowHeapTransients())
 				if err != nil {
 					t.Fatalf("ParsePrivateKey: %v", err)
 				}
@@ -207,7 +207,7 @@ func TestParsePrivateKey_FromSecureBuffer(t *testing.T) {
 	var s Signer
 	err = buf.WithBytesErr(func(b []byte) error {
 		var perr error
-		s, perr = ParsePrivateKey(b)
+		s, perr = ParsePrivateKey(b, AllowHeapTransients())
 		return perr
 	})
 	if err != nil {
@@ -230,7 +230,7 @@ func TestParsePrivateKey_PEMVariants(t *testing.T) {
 	}
 	for name, v := range variants {
 		t.Run(name, func(t *testing.T) {
-			s, err := ParsePrivateKey(v)
+			s, err := ParsePrivateKey(v, AllowHeapTransients())
 			if err != nil {
 				t.Fatalf("ParsePrivateKey: %v", err)
 			}
@@ -289,7 +289,7 @@ func TestParsePrivateKey_Rejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")
@@ -313,7 +313,7 @@ func TestParsePrivateKey_Truncations(t *testing.T) {
 			continue
 		}
 		for i := 1; i < len(enc.data); i++ {
-			if s, err := ParsePrivateKey(enc.data[:i]); err == nil {
+			if s, err := ParsePrivateKey(enc.data[:i], AllowHeapTransients()); err == nil {
 				s.Destroy()
 				t.Fatalf("%s: prefix of %d/%d bytes parsed", enc.name, i, len(enc.data))
 			}
@@ -329,7 +329,7 @@ func TestParsePrivateKey_ErrorsCarryNoKeyBytes(t *testing.T) {
 	data := encodings(t, k)[1].data // openssh-raw
 	corrupt := append([]byte{}, data...)
 	corrupt[len(corrupt)-1] ^= 0xff // breaks the padding
-	_, err := ParsePrivateKey(corrupt)
+	_, err := ParsePrivateKey(corrupt, AllowHeapTransients())
 	if err == nil {
 		t.Fatal("expected an error")
 	}

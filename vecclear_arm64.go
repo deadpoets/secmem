@@ -16,3 +16,12 @@ package secmem
 //
 //go:noescape
 func clearVectorRegs()
+
+// clearGPRegs zeroes the general-purpose registers a callee may clobber:
+// R0–R17 and R19–R27 — every one but R18 (the platform register), R28 (g),
+// R29 (the frame pointer), R30 (the link register) and RSP. See
+// vecclear_amd64.go for the reasoning; on arm64 it is where the residue was
+// measured, memmove moving a 17–32 byte copy through R6/R7 and R12/R13.
+//
+//go:noescape
+func clearGPRegs()

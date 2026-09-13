@@ -6,7 +6,7 @@ package secmem
 // the vector-clear proof can run its controls (scrub_vecclear_test.go).
 const vecClearControlAvailable = true
 
-// legacyWindowNoClear is Scrub's legacy body with the vector clear left out and
+// legacyWindowNoClear is Scrub's legacy body with the register clear left out and
 // nothing else changed: same pin, same reserve-then-wipe, same recover-then-
 // re-raise through scrubCall. It is the control for the vector-clear proof —
 // what the window's exit sequence leaves in the registers when nothing clears

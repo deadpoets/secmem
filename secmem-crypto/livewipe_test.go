@@ -24,7 +24,7 @@ import (
 // non-parallel tests to completion before releasing parallel ones).
 
 func TestECDSASigner_SignWipesLiveTransient(t *testing.T) {
-	signer, err := GenerateECDSASigner(elliptic.P256())
+	signer, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
@@ -63,7 +63,7 @@ func TestECDSASigner_SignWipesLiveTransient(t *testing.T) {
 }
 
 func TestRSASigner_SignWipesLiveTransient(t *testing.T) {
-	signer, err := NewRSASigner(cloneRSADER(t))
+	signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewRSASigner: %v", err)
 	}

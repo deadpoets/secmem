@@ -85,3 +85,39 @@ TEXT ·FillZMMHi(SB), NOSPLIT, $0-8
 	VMOVDQU64 896(AX), Z30
 	VMOVDQU64 960(AX), Z31
 	RET
+
+// func FillGP(buf *[96]byte)
+// BX CX DX SI DI R8–R13 R15, 8 bytes each in that order. AX carries the
+// pointer and is not planted.
+TEXT ·FillGP(SB), NOSPLIT, $0-8
+	MOVQ buf+0(FP), AX
+	MOVQ 0(AX), BX
+	MOVQ 8(AX), CX
+	MOVQ 16(AX), DX
+	MOVQ 24(AX), SI
+	MOVQ 32(AX), DI
+	MOVQ 40(AX), R8
+	MOVQ 48(AX), R9
+	MOVQ 56(AX), R10
+	MOVQ 64(AX), R11
+	MOVQ 72(AX), R12
+	MOVQ 80(AX), R13
+	MOVQ 88(AX), R15
+	RET
+
+// func DumpGP(buf *[96]byte)
+TEXT ·DumpGP(SB), NOSPLIT, $0-8
+	MOVQ buf+0(FP), AX
+	MOVQ BX, 0(AX)
+	MOVQ CX, 8(AX)
+	MOVQ DX, 16(AX)
+	MOVQ SI, 24(AX)
+	MOVQ DI, 32(AX)
+	MOVQ R8, 40(AX)
+	MOVQ R9, 48(AX)
+	MOVQ R10, 56(AX)
+	MOVQ R11, 64(AX)
+	MOVQ R12, 72(AX)
+	MOVQ R13, 80(AX)
+	MOVQ R15, 88(AX)
+	RET

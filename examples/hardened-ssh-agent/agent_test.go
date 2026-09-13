@@ -25,11 +25,21 @@ import (
 
 	"golang.org/x/crypto/ssh"
 	"golang.org/x/crypto/ssh/agent"
+
+	"github.com/deadpoets/secmem"
 )
 
 // startAgent runs a fresh keyring on a unix socket and returns a connected
-// reference-implementation client.
+// reference-implementation client. The keyring has the agent's default
+// policy: ECDSA identities refused wherever their signatures would leave the
+// scalar on the heap.
 func startAgent(t *testing.T) (agent.Agent, *Keyring) {
+	t.Helper()
+	return startAgentWith(t, false)
+}
+
+// startAgentWith is startAgent with the -allow-heap-transients setting.
+func startAgentWith(t *testing.T, allowHeapTransients bool) (agent.Agent, *Keyring) {
 	t.Helper()
 	sock := filepath.Join(t.TempDir(), "agent.sock")
 	ln, err := net.Listen("unix", sock)
@@ -38,7 +48,7 @@ func startAgent(t *testing.T) (agent.Agent, *Keyring) {
 	}
 	t.Cleanup(func() { ln.Close() })
 
-	keyring := NewKeyring()
+	keyring := NewKeyring(allowHeapTransients)
 	t.Cleanup(keyring.DestroyAll)
 
 	go func() {
@@ -121,8 +131,41 @@ func TestInterop_Ed25519_AddListSignVerify(t *testing.T) {
 	}
 }
 
-func TestInterop_ECDSA_P256_AddListSignVerify(t *testing.T) {
+// TestAdd_ECDSARefusedWithoutOptIn pins the agent's default: an ECDSA
+// identity is refused on every build where its signatures would leave the
+// scalar on the heap, and accepted where runtime/secret erases those copies.
+// A refused add leaves nothing in the keyring.
+func TestAdd_ECDSARefusedWithoutOptIn(t *testing.T) {
 	client, keyring := startAgent(t)
+
+	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	err = client.Add(agent.AddedKey{PrivateKey: priv, Comment: "refused@p256"})
+	if secmem.RuntimeSecretActive() {
+		if err != nil {
+			t.Fatalf("Add on a runtimesecret build: %v, want success", err)
+		}
+		return
+	}
+	if err == nil {
+		t.Fatal("ECDSA identity accepted without -allow-heap-transients on a build where its signatures leave the scalar on the heap")
+	}
+	if ids, lerr := client.List(); lerr != nil || len(ids) != 0 {
+		t.Fatalf("refused add left %d identities (err %v), want 0", len(ids), lerr)
+	}
+	keyring.mu.Lock()
+	n := len(keyring.keys)
+	keyring.mu.Unlock()
+	if n != 0 {
+		t.Fatalf("refused add left %d records in the keyring", n)
+	}
+}
+
+func TestInterop_ECDSA_P256_AddListSignVerify(t *testing.T) {
+	// Opted in, so the ECDSA path is exercised on every build.
+	client, keyring := startAgentWith(t, true)
 
 	priv, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {

@@ -3,6 +3,8 @@
 This document states plainly what secmem does **not** protect against. The
 per-platform matrix of what it *does* provide is in [README.md](README.md) and,
 authoritatively, in the godoc; this is the other half of the honesty contract.
+[PROTECTION.md](PROTECTION.md) puts the two together per key type and per
+attack.
 
 ## What secmem is for
 
@@ -103,9 +105,14 @@ are.
   `EnsureMemlockLimit`, which raises the ceiling this guard rests on.
 
 - **GC timing of `runtime/secret` heap erasure.** When `Scrub` runs under
-  `GOEXPERIMENT=runtimesecret`, heap allocations made inside it are erased once
-  the collector observes them unreachable — best-effort timing, never a
-  synchronous guarantee. Do not cite it as a compliance control.
+  `GOEXPERIMENT=runtimesecret`, heap allocations made inside it are erased at
+  the first garbage collection after they become unreachable — not when `Scrub`
+  returns. In a process that allocates little that is up to two minutes, the
+  period after which the runtime forces a collection; a key whose operation
+  leaves heap copies and runs even once a second therefore has one on the heap
+  almost all the time. The residue test finds such copies after use on a
+  runtime/secret build, and gone only once collections have run. It is not a
+  synchronous guarantee; do not cite it as a compliance control.
 
 ## Stack residue: what `Scrub` reaches, and what it does not
 
@@ -192,13 +199,23 @@ Constraints of the Go runtime, not defects in this library:
   descheduled at a call boundary and have its stack scanned, and possibly
   copied. Suppressing the signal removes the arbitrary-instruction register
   dump, not every stack copy.
-- **The general-purpose registers at `Scrub`'s return.** The ABI keeps live
-  values in them across the very call that would do the clearing, so a Go-level
-  clear cannot be shown to reach anything, and an unverifiable scrub is worse
-  than none; the legacy path does not pretend to one. Vector registers are the
-  exception and are cleared (above) because their reach *can* be shown;
-  `runtime/secret` erases both classes properly, with the runtime's
-  cooperation.
+- **A preemption inside a borrow callback.** `WithBytes` and the other
+  borrow and copy paths clear the registers when they return, so a copy that
+  finishes there leaves nothing for a later preemption to save. A preemption
+  that lands while the callback is still running saves the registers as they
+  are at that instant, onto the goroutine stack; only a `Scrub` window blocks
+  it. Wrap code that holds a secret in registers for more than an instant — a
+  loop over the bytes, a cipher — in `Scrub`.
+- **Registers on architectures other than amd64 and arm64.** There the window
+  clears neither the vector nor the general-purpose registers, and
+  `Capabilities` reports both gaps. On amd64 and arm64 both are cleared after
+  `fn` returns, each with a proof that the clear reaches what `fn` left. (An
+  earlier version of this document said the general-purpose registers could
+  not be cleared verifiably because the ABI keeps live values in them across
+  the call. The Go ABI has no callee-saved general-purpose registers, and the
+  register-dump proof shows the clear reaching them; the residue was measured
+  on linux/arm64, where a secret copied inside a window was saved to the stack
+  by a preemption after it.)
 - **A preemption that lands inside the window where it cannot be masked.** On
   Windows and Darwin the vector clear runs on the working thread, but a
   preemption before it can still copy the live register file into runtime
@@ -315,6 +332,43 @@ What that leaves, stated per entry point:
   §4 scopes it to settings with no cache-timing adversary). Exposing the
   variant does not change that; `Argon2id` is the default for a reason.
 
+## Private keys that pass through the standard library
+
+`Ed25519Signer` signs in place: the seed never reaches the heap. RSA and
+ECDSA cannot, because the standard library has no API that borrows key
+bytes in place, and reimplementing either scheme is where subtle bugs leak
+private keys. So `RSASigner` and `ECDSASigner` keep the durable key in a
+`SecureBuffer` and rebuild it through the standard library for each
+signature. The copies that makes are listed in each type's documentation;
+on a `GOEXPERIMENT=runtimesecret` build the runtime erases them at the first
+garbage collection after they become unreachable, and on every other build
+the collector reclaims them without zeroing, one of them (ECDSA's cached
+FIPS-form key) a GC cycle or more after the signature.
+
+That makes the buffer worth much less than it looks: a process that signs
+continuously has the key on the heap at almost every moment on a legacy
+build, and on a runtime/secret build has the copies of every signature since
+the last collection. Rather than let that be discovered in a heap dump, both types, and
+the parsers for RSA and EC key files, **refuse on a legacy
+build** with `ErrHeapTransients`. A caller who accepts the residual passes
+`AllowHeapTransients()`, which makes the choice visible where the key is
+built. The refusal happens before the key reaches the standard library, so
+a refused call creates none of the copies.
+
+`X25519Key` is not in this position. The X25519 ladder needs no heap at
+all; the standard library's copies come from the `crypto/ecdh` key object
+around it, so this module calls the ladder directly over the buffer and the
+type is not gated.
+
+The gate is scoped to `RSASigner` and `ECDSASigner`. It does not make them
+safe to use continuously on a runtime/secret build either — it only stops a
+legacy build from using them without saying so. `MLKEM768Key` is not gated:
+its decapsulation key is contained, but each `Decapsulate` leaves the message
+it recovers on the heap, and that message gives the ciphertext's shared key. `HKDFInto` and `HMACInto` run in place over
+SHA-2 and SHA-3, the standard library's one-shot hash calls keeping their
+state on the stack, and are gated only when given another hash. The
+`secmem-crypto` README lists each.
+
 ## Post-quantum posture
 
 The `secmem-crypto` module ships `MLKEM768Key`, at-rest custody for an
@@ -330,11 +384,14 @@ and is not.
   key that holds the seed verbatim and the secret polynomial `s`; that
   object is wiped by reflection through its unexported fields before the
   call returns, with a tripwire test on the layout and a call that fails
-  closed. What remains on the heap — the SHA3/SHAKE states that absorbed
-  the seed halves and the recovered message — is erased by the runtime on
-  a `GOEXPERIMENT=runtimesecret` build and left to the collector elsewhere.
-  The type's godoc states this inline, and the module README classifies
-  every entry point the same way.
+  closed. crypto/mlkem's hash states and polynomials stay on the stack in
+  the Scrub window, and the out-of-process residue test finds none of the
+  key's secrets outside locked memory. What remains on the heap is the
+  message each decapsulation recovers, which gives that ciphertext's shared
+  key: erased by the runtime at the next collection on a
+  `GOEXPERIMENT=runtimesecret` build, left to the collector elsewhere. The
+  type's godoc states this inline, and [PROTECTION.md](PROTECTION.md)
+  classifies it with every other entry point.
 
 - **The urgent PQ threat is a transport concern secmem does not own.**
   "Harvest now, decrypt later" — recording ciphertext today to break with a

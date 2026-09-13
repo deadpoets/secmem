@@ -15,7 +15,7 @@ import (
 // recomputation), which is disclosed in the type docs.
 
 func BenchmarkECDSASignerSignP256(b *testing.B) {
-	s, err := GenerateECDSASigner(elliptic.P256())
+	s, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
 		b.Fatal(err)
 	}

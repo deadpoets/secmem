@@ -112,6 +112,14 @@ var (
 // an error wrapping [ErrEncryptedKey] (see [ParsePrivateKeyWithPassphrase]);
 // other kinds, [ErrUnsupportedKey]. Errors never quote the input.
 //
+// An RSA or EC key is refused with an error wrapping [ErrHeapTransients] on
+// a build without GOEXPERIMENT=runtimesecret, unless opts include
+// [AllowHeapTransients]: the signer it would return copies the private key
+// through the heap on every signature, and nothing erases those copies
+// there. The refusal comes before the key is handed to the standard library.
+// An Ed25519 key signs in place and is never refused, so a program that only
+// holds Ed25519 keys needs no option on any build.
+//
 // What the parser itself puts on the heap: the PEM type, the algorithm
 // identifiers, the public key, and the returned error — none secret. The
 // decoded key structure lives in a SecureBuffer for the duration of the
@@ -136,14 +144,14 @@ var (
 // SecureBuffer with [secmem.NewBufferFromReader] and call this from inside its
 // WithBytesErr, then Destroy it — or, for an ordinary []byte, wipe it with
 // [secmem.SecureWipe] afterwards.
-func ParsePrivateKey(data []byte) (Signer, error) {
+func ParsePrivateKey(data []byte, opts ...Option) (Signer, error) {
 	if len(data) == 0 {
 		return nil, errors.New("secmemcrypto: parse private key: empty input")
 	}
 	var s Signer
 	err := secmem.ScrubErr(func() error {
 		var perr error
-		s, perr = parsePrivateKey(data)
+		s, perr = parsePrivateKey(data, resolveOptions(opts))
 		return perr
 	})
 	if err != nil {
@@ -175,20 +183,20 @@ var (
 // start with '0', which is 0x30, is not mistaken for DER); and otherwise a
 // PEM block anywhere in the input, as encoding/pem finds it — tools do write
 // text before the block.
-func parsePrivateKey(data []byte) (Signer, error) {
+func parsePrivateKey(data []byte, o options) (Signer, error) {
 	switch {
 	case bytes.HasPrefix(data, opensshMagic):
 		blob, err := copyToBuffer(data)
 		if err != nil {
 			return nil, err
 		}
-		return parseOpenSSH(blob)
+		return parseOpenSSH(blob, o)
 	case looksLikeDER(data):
 		blob, err := copyToBuffer(data)
 		if err != nil {
 			return nil, err
 		}
-		return parseDER(blob)
+		return parseDER(blob, o)
 	case bytes.Contains(data, pemBegin):
 		typ, body, err := pemBlock(data)
 		if err != nil {
@@ -200,13 +208,13 @@ func parsePrivateKey(data []byte) (Signer, error) {
 		}
 		switch string(typ) { // comparison only: no string is allocated
 		case "OPENSSH PRIVATE KEY":
-			return parseOpenSSH(blob)
+			return parseOpenSSH(blob, o)
 		case "PRIVATE KEY":
-			return parsePKCS8(blob)
+			return parsePKCS8(blob, o)
 		case "EC PRIVATE KEY":
-			return parseSEC1(blob)
+			return parseSEC1(blob, o)
 		case "RSA PRIVATE KEY":
-			return rsaFromDER(blob)
+			return rsaFromDER(blob, o)
 		case "ENCRYPTED PRIVATE KEY":
 			_ = blob.Destroy()
 			return nil, ErrEncryptedKey
@@ -371,7 +379,7 @@ func copyToBuffer(data []byte) (*secmem.SecureBuffer, error) {
 // the version integer — SEQUENCE (AlgorithmIdentifier) for PKCS#8, OCTET
 // STRING (the scalar) for SEC 1, INTEGER (the modulus) for PKCS#1 — and
 // dispatches. The version alone cannot: PKCS#8 v2 and SEC 1 both use 1.
-func parseDER(blob *secmem.SecureBuffer) (Signer, error) {
+func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	var next cbasn1.Tag
 	err := blob.WithBytesErr(func(der []byte) error {
 		in := cryptobyte.String(der)
@@ -392,11 +400,11 @@ func parseDER(blob *secmem.SecureBuffer) (Signer, error) {
 	}
 	switch next {
 	case cbasn1.SEQUENCE:
-		return parsePKCS8(blob)
+		return parsePKCS8(blob, o)
 	case cbasn1.OCTET_STRING:
-		return parseSEC1(blob)
+		return parseSEC1(blob, o)
 	case cbasn1.INTEGER:
-		return rsaFromDER(blob)
+		return rsaFromDER(blob, o)
 	default:
 		_ = blob.Destroy()
 		return nil, fmt.Errorf("%w: unrecognised DER structure", errMalformed)
@@ -405,8 +413,8 @@ func parseDER(blob *secmem.SecureBuffer) (Signer, error) {
 
 // rsaFromDER hands a PKCS#1 or PKCS#8 RSA DER buffer to NewRSASigner, which
 // takes ownership; the DER is the durable form an RSASigner keeps.
-func rsaFromDER(blob *secmem.SecureBuffer) (Signer, error) {
-	s, err := NewRSASigner(blob)
+func rsaFromDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
+	s, err := newRSASigner(blob, o)
 	if err != nil {
 		_ = blob.Destroy()
 		return nil, err
@@ -418,7 +426,7 @@ func rsaFromDER(blob *secmem.SecureBuffer) (Signer, error) {
 // place. RSA keys keep the whole buffer (NewRSASigner wants the DER); EC and
 // Ed25519 keys have their scalar or seed copied into a fresh buffer and the
 // structure is then destroyed.
-func parsePKCS8(blob *secmem.SecureBuffer) (Signer, error) {
+func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	var (
 		s     Signer
 		isRSA bool
@@ -478,7 +486,7 @@ func parsePKCS8(blob *secmem.SecureBuffer) (Signer, error) {
 				return fmt.Errorf("%w: EC curve %v", ErrUnsupportedKey, curveOID)
 			}
 			var err error
-			s, err = ecdsaFromSEC1(priv, curve, pub)
+			s, err = ecdsaFromSEC1(priv, curve, pub, o)
 			return err
 		case oid.Equal(oidEd25519):
 			// CurvePrivateKey ::= OCTET STRING — the seed, wrapped once more.
@@ -500,7 +508,7 @@ func parsePKCS8(blob *secmem.SecureBuffer) (Signer, error) {
 		return nil, err
 	}
 	if isRSA {
-		return rsaFromDER(blob)
+		return rsaFromDER(blob, o)
 	}
 	_ = blob.Destroy()
 	return s, nil
@@ -508,11 +516,11 @@ func parsePKCS8(blob *secmem.SecureBuffer) (Signer, error) {
 
 // parseSEC1 reads a bare SEC 1 ECPrivateKey; the curve must be named in its
 // parameters field.
-func parseSEC1(blob *secmem.SecureBuffer) (Signer, error) {
+func parseSEC1(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	var s Signer
 	err := blob.WithBytesErr(func(der []byte) error {
 		var err error
-		s, err = ecdsaFromSEC1(der, nil, nil)
+		s, err = ecdsaFromSEC1(der, nil, nil, o)
 		return err
 	})
 	_ = blob.Destroy()
@@ -527,7 +535,7 @@ func parseSEC1(blob *secmem.SecureBuffer) (Signer, error) {
 // structure stands alone and must name its own; when both name one they must
 // agree. outerPub is the PKCS#8 v2 public key, if any; it and the SEC 1
 // publicKey field are both checked against the derived public key.
-func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte) (Signer, error) {
+func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte, o options) (Signer, error) {
 	in := cryptobyte.String(der)
 	var seq cryptobyte.String
 	var version int64
@@ -569,7 +577,7 @@ func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte) (Signer, e
 	if havePub && !pubWrap.ReadASN1BitStringAsBytes(&innerPub) {
 		return nil, errMalformed
 	}
-	s, err := ecdsaFromScalar(d, curve, innerPub)
+	s, err := ecdsaFromScalar(d, curve, innerPub, o)
 	if err != nil {
 		return nil, err
 	}
@@ -585,7 +593,7 @@ func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte) (Signer, e
 // OpenSSH mpint form, a sign byte), builds the signer — NewECDSASigner
 // validates the range and derives the public key — and, when pub is given,
 // checks it against the derived one.
-func ecdsaFromScalar(d []byte, curve elliptic.Curve, pub []byte) (*ECDSASigner, error) {
+func ecdsaFromScalar(d []byte, curve elliptic.Curve, pub []byte, o options) (*ECDSASigner, error) {
 	for len(d) > 0 && d[0] == 0 {
 		d = d[1:]
 	}
@@ -601,7 +609,7 @@ func ecdsaFromScalar(d []byte, curve elliptic.Curve, pub []byte) (*ECDSASigner, 
 		_ = out.Destroy()
 		return nil, err
 	}
-	s, err := NewECDSASigner(curve, out)
+	s, err := newECDSASigner(curve, out, o)
 	if err != nil {
 		_ = out.Destroy()
 		return nil, err

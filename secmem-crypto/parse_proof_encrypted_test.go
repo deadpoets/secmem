@@ -78,7 +78,7 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 		for form, data := range map[string][]byte{"pem": pemEncodeToMemory(block), "raw": block.Bytes} {
 			t.Run(k.name+"/"+form, func(t *testing.T) {
 				proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
-					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
+					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {
 						t.Fatal(err)
 					}

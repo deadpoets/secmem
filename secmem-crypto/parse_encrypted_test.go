@@ -126,7 +126,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			pemBytes, raw, pub := fixture(t, name)
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
-				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
+				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
 					t.Fatalf("%s: %v", form, err)
 				}
@@ -134,7 +134,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 				s.Destroy()
 
 				// The plain parser must still name the condition.
-				if _, err := ParsePrivateKey(data); !errors.Is(err, ErrEncryptedKey) {
+				if _, err := ParsePrivateKey(data, AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
 					t.Errorf("%s: ParsePrivateKey = %v, want ErrEncryptedKey", form, err)
 				}
 			}
@@ -142,7 +142,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 	}
 	t.Run("ed25519-chacha-a1", func(t *testing.T) {
 		pemBytes, _, _ := fixture(t, "ed25519-chacha-a1")
-		s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
+		s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 		if err == nil {
 			s.Destroy()
 			t.Fatal("chacha20-poly1305 file was accepted")
@@ -167,7 +167,7 @@ func TestParsePrivateKeyWithPassphrase_XCryptoRoundTrip(t *testing.T) {
 				t.Fatal(err)
 			}
 			for form, data := range map[string][]byte{"pem": pemEncodeToMemory(block), "raw": block.Bytes} {
-				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
+				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
 					t.Fatalf("%s: %v", form, err)
 				}
@@ -227,7 +227,7 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKeyWithPassphrase(tc.data, []byte(tc.pass))
+			s, err := ParsePrivateKeyWithPassphrase(tc.data, []byte(tc.pass), AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")
@@ -238,10 +238,10 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		})
 	}
 
-	if _, err := ParsePrivateKeyWithPassphrase(pemBytes, nil); err == nil || !strings.Contains(err.Error(), "empty passphrase") {
+	if _, err := ParsePrivateKeyWithPassphrase(pemBytes, nil, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "empty passphrase") {
 		t.Errorf("empty passphrase: got %v", err)
 	}
-	if _, err := ParsePrivateKeyWithPassphrase(nil, []byte("x")); err == nil || !strings.Contains(err.Error(), "empty input") {
+	if _, err := ParsePrivateKeyWithPassphrase(nil, []byte("x"), AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "empty input") {
 		t.Errorf("empty input: got %v", err)
 	}
 }
@@ -259,7 +259,7 @@ func TestParsePrivateKeyWithPassphrase_ErrorsCarryNoSecret(t *testing.T) {
 	const wrong = "a-distinctive-wrong-passphrase"
 	body := strings.Join(strings.Fields(string(pemBytes[bytes.IndexByte(pemBytes, '\n')+1:])), "")
 	for _, data := range [][]byte{pemBytes, raw, raw[:60]} {
-		_, err := ParsePrivateKeyWithPassphrase(data, []byte(wrong))
+		_, err := ParsePrivateKeyWithPassphrase(data, []byte(wrong), AllowHeapTransients())
 		if err == nil {
 			t.Fatal("expected an error")
 		}
@@ -298,7 +298,7 @@ func TestParsePrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
 	}
 	defer func() { wipeAESBlock = orig }()
 
-	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
+	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -325,7 +325,7 @@ func TestParsePrivateKeyWithPassphrase_FailsClosedWhenWipeCannot(t *testing.T) {
 	orig := wipeAESBlock
 	wipeAESBlock = func(cipher.Block) error { return errors.New("simulated: round keys NOT wiped") }
 	defer func() { wipeAESBlock = orig }()
-	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
+	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 	if err == nil {
 		s.Destroy()
 		t.Fatal("parse succeeded although the AES schedule could not be wiped")
@@ -347,7 +347,7 @@ func TestParsePrivateKeyWithPassphrase_FromSecureBuffer(t *testing.T) {
 	err := file.WithBytesErr(func(f []byte) error {
 		return pass.WithBytesErr(func(p []byte) error {
 			var perr error
-			s, perr = ParsePrivateKeyWithPassphrase(f, p)
+			s, perr = ParsePrivateKeyWithPassphrase(f, p, AllowHeapTransients())
 			return perr
 		})
 	})
@@ -372,7 +372,7 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 		if _, rounds, ok := readKDFOpts(data); ok && rounds > 4 {
 			t.Skip("rounds > 4")
 		}
-		s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
+		s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 		if err != nil {
 			if s != nil {
 				t.Fatal("error with a non-nil signer")

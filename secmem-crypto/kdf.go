@@ -3,10 +3,10 @@
 // could forget to wipe.
 //
 // Argon2 runs on an in-tree fork of golang.org/x/crypto/argon2 that wipes
-// its whole working state (see [Argon2Into]). The HKDF and HMAC paths are
-// not fully off-heap end-to-end — see the caveat on each function. All are
-// hardened at the boundary that matters most in practice: the derived key,
-// once these functions return, lives only in SecureBuffer, not in a slice
+// its whole working state (see [Argon2Into]). HKDF and HMAC over a SHA-2 or
+// SHA-3 hash run in place (hmac_inplace.go); over any other hash they use
+// the standard library's heap objects and are gated like RSA and ECDSA. In
+// every case the derived key lands only in the SecureBuffer, not in a slice
 // the caller has to remember to wipe.
 package secmemcrypto
 
@@ -262,15 +262,26 @@ func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer)
 // out.Len() must equal h().Size() exactly (32 for SHA-256) — a raw HMAC's
 // output length is fixed by the hash, unlike HKDF's variable-length Expand.
 //
-// Heap caveat: crypto/hmac.New allocates its inner/outer hash state from
-// secret (verified: 5 allocations, entirely construction — writing the
-// digest into out via Sum(dst[:0]) adds none beyond those). That state
-// lives in unexported heap fields this package cannot reach to wipe
-// directly — the same disclosure [HKDFInto] makes for its own reader state.
-// The call is wrapped in [secmem.ScrubErr], which erases it once
-// unreachable on GOEXPERIMENT=runtimesecret builds; elsewhere it is
-// reclaimed by the GC but not explicitly zeroed.
-func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer) error {
+// # Where the key goes
+//
+// Over a SHA-2 or SHA-3 hash — sha256.New, sha256.New224, sha512.New,
+// sha512.New384, sha512.New512_224, sha512.New512_256, and crypto/sha3's
+// New224/256/384/512, or anything returning those same digest types and
+// agreeing with them on a fixed input — HMAC is computed in place: two of
+// the standard library's one-shot hash calls, whose digest state is a stack
+// local, over a working region that holds the padded key and the message.
+// The region is a stack array inside a [secmem.ScrubErr] window for an info
+// up to about 1 KiB and a locked buffer beyond that. The residue test finds
+// neither the key, nor the key XORed into either pad, nor either digest
+// state, outside locked memory.
+//
+// Over any other hash, crypto/hmac's heap object holds the padded key and
+// both digest states, where nothing here can wipe them. On a build without
+// GOEXPERIMENT=runtimesecret that returns an error wrapping
+// [ErrHeapTransients] unless opts include [AllowHeapTransients]; on a
+// runtimesecret build the objects are erased at the first garbage collection
+// after they become unreachable, not when HMACInto returns.
+func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
 	if h == nil {
 		return errors.New("secmemcrypto: nil hash function")
 	}
@@ -280,11 +291,29 @@ func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer)
 	if out.IsDestroyed() {
 		return fmt.Errorf("secmemcrypto: hmac derive: %w", secmem.ErrDestroyed)
 	}
-	want := h().Size()
+	probe := h()
+	if probe == nil {
+		return errors.New("secmemcrypto: hash function returned nil")
+	}
+	want := probe.Size()
 	if size := out.Len(); size != want {
 		return fmt.Errorf("secmemcrypto: hmac derive: output buffer is %d bytes, want exactly %d (the hash's fixed size)", size, want)
 	}
 
+	if id := inPlaceHashOf(probe); id != hashNone {
+		err := secmem.ScrubErr(func() error {
+			return out.WithBytesErr(func(dst []byte) error {
+				return hmacIntoInPlace(id, dst, secret, info)
+			})
+		})
+		if err != nil {
+			return fmt.Errorf("secmemcrypto: hmac derive: %w", err)
+		}
+		return nil
+	}
+	if err := resolveOptions(opts).checkHeapTransientsHash("secmemcrypto: hmac derive"); err != nil {
+		return err
+	}
 	err := secmem.ScrubErr(func() error {
 		mac := hmac.New(h, secret)
 		mac.Write(info)
@@ -323,18 +352,26 @@ func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer) error {
 // The output length is capped at 255×Hash.Size() bytes (RFC 5869 §2.3 —
 // 8160 bytes for SHA-256); larger buffers are rejected up front.
 //
-// This intentionally builds on golang.org/x/crypto/hkdf rather than the
-// stdlib crypto/hkdf: x/crypto's io.Reader model lets the derivation write
-// directly into the locked SecureBuffer mapping, where stdlib's Key()
-// returns a heap-allocated slice. The reader's internal extract/expand
-// state (the pseudorandom key and the last HMAC block) lives in unexported
-// heap fields it provides no way to wipe; the derivation — including the
-// Extract step that computes the PRK, which hkdf.New performs — is therefore
-// wrapped in [secmem.ScrubErr], which on GOEXPERIMENT=runtimesecret builds
-// erases those allocations once unreachable. On other builds that state is
-// reclaimed by the GC but not explicitly zeroed — a residue window this
-// library can narrow but not close from outside the hkdf package.
-func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureBuffer) error {
+// # Where the key goes
+//
+// Over a SHA-2 or SHA-3 hash (the same set, identified the same way, as
+// [HMACInto]) the whole derivation runs in place: Extract and every Expand
+// block are HMACs computed with the standard library's one-shot hash calls
+// over a working region that holds the pseudorandom key, the running T block
+// and the padded key and message — a stack array inside a [secmem.ScrubErr]
+// window for a secret and info up to about 1 KiB, a locked buffer beyond
+// that — and the output is written straight into out. The residue test finds
+// neither the secret, nor the pseudorandom key or its padded forms, nor the
+// digest states, outside locked memory.
+//
+// Over any other hash the derivation uses golang.org/x/crypto/hkdf, whose
+// reader keeps the pseudorandom key and HMAC state in heap fields nothing
+// here can wipe. On a build without GOEXPERIMENT=runtimesecret that returns
+// an error wrapping [ErrHeapTransients] unless opts include
+// [AllowHeapTransients]; on a runtimesecret build the objects are erased at
+// the first garbage collection after they become unreachable, not when
+// HKDFInto returns.
+func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
 	if h == nil {
 		return errors.New("secmemcrypto: nil hash function")
 	}
@@ -348,17 +385,31 @@ func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureB
 	if size <= 0 {
 		return errors.New("secmemcrypto: empty output buffer")
 	}
-	if maxOut := 255 * h().Size(); size > maxOut {
+	probe := h()
+	if probe == nil {
+		return errors.New("secmemcrypto: hash function returned nil")
+	}
+	if maxOut := 255 * probe.Size(); size > maxOut {
 		return fmt.Errorf("secmemcrypto: hkdf derive: output %d exceeds the RFC 5869 limit of %d bytes (255 x hash size)", size, maxOut)
 	}
 
+	if id := inPlaceHashOf(probe); id != hashNone {
+		err := secmem.ScrubErr(func() error {
+			return out.WithBytesErr(func(dst []byte) error {
+				return hkdfInPlace(id, dst, secret, salt, info)
+			})
+		})
+		if err != nil {
+			return fmt.Errorf("secmemcrypto: hkdf derive: %w", err)
+		}
+		return nil
+	}
+	if err := resolveOptions(opts).checkHeapTransientsHash("secmemcrypto: hkdf derive"); err != nil {
+		return err
+	}
 	err := secmem.ScrubErr(func() error {
-		// hkdf.New INSIDE the window, not before it. New performs the Extract
-		// step — PRK = HMAC(salt, secret) — and the PRK is key-equivalent for
-		// every byte Expand goes on to produce. Constructing the reader outside
-		// the scrub left that computation's stack residue and the PRK allocation
-		// outside the very window this function's doc says covers the
-		// derivation, which is the one value it most needed to cover.
+		// hkdf.New inside the window: it performs Extract, and the PRK is
+		// key-equivalent for every byte Expand produces.
 		r := hkdf.New(h, secret, salt, info)
 		return out.WithBytesErr(func(dst []byte) error {
 			_, err := io.ReadFull(r, dst)

@@ -9,9 +9,8 @@ import (
 	"fmt"
 	"io"
 
-	"golang.org/x/crypto/curve25519"
-
 	"github.com/deadpoets/secmem"
+	"github.com/deadpoets/secmem/secmem-crypto/internal/x25519"
 )
 
 // ErrBadScalarLength is returned when a raw private scalar does not have
@@ -20,23 +19,32 @@ import (
 // bytes for P-224/P-256/P-384/P-521).
 var ErrBadScalarLength = errors.New("secmemcrypto: bad scalar length")
 
-// X25519Key is an X25519 (Curve25519) Diffie-Hellman private key whose 32-byte
-// scalar lives in a [secmem.SecureBuffer] for its entire lifetime — read
-// only inside a borrowing closure during PublicKey and SharedSecret, never
-// copied to a plain heap-backed key.
+// errLowOrderPoint is returned by SharedSecret for a peer public key whose
+// shared secret would be all zero.
+var errLowOrderPoint = errors.New("bad input point: low order point")
+
+// x25519Basepoint is the canonical base point, u = 9.
+var x25519Basepoint = [x25519.PointSize]byte{9}
+
+// X25519Key is an X25519 (Curve25519) Diffie-Hellman private key whose
+// 32-byte scalar lives in a [secmem.SecureBuffer] for its entire lifetime
+// and is used where it lies: PublicKey and SharedSecret run the RFC 7748
+// ladder directly over the borrowed scalar, inside [secmem.ScrubErr], and
+// SharedSecret writes the result straight into the SecureBuffer it returns.
 //
-// Honesty caveat: golang.org/x/crypto/curve25519 operates on plain []byte.
-// Computing a public key or shared secret copies the scalar into
-// curve25519's (and crypto/ecdh's) own internal arrays, and the shared
-// secret is first produced as a heap []byte inside crypto/ecdh before X25519Key
-// copies it into a hardened buffer and wipes the copy it can reach — the
-// intermediate copies inside the dependency it cannot. Both PublicKey and
-// SharedSecret run inside [secmem.ScrubErr], which erases that residue on
-// GOEXPERIMENT=runtimesecret builds and otherwise leaves it for the garbage
-// collector (reclaimed, not explicitly zeroed) — the same window kdf.go
-// discloses for its derivations. X25519Key hardens the scalar at rest and
-// minimizes the window; it does not claim the multiply runs entirely inside
-// locked memory. The computed shared secret IS returned in a hardened buffer.
+// The ladder is the standard library's own (crypto/ecdh's x25519ScalarMult,
+// copied verbatim into internal/x25519 and pinned to the toolchain's source
+// by a test). It is called directly because everything around it in the
+// standard library puts the key on the heap: crypto/ecdh copies the scalar
+// into a heap PrivateKey, and golang.org/x/crypto/curve25519 builds one per
+// call and returns the shared secret as a fresh heap slice. With the ladder
+// called in place, the clamped scalar and the field elements are locals of a
+// function that allocates nothing, so they live only on the stack the
+// Scrub window wipes. The out-of-process residue test finds neither the
+// scalar nor the shared secret outside locked memory, on either build mode.
+//
+// What is left is the operation itself: while PublicKey or SharedSecret is
+// running, its stack holds key-dependent state, as any implementation's does.
 type X25519Key struct {
 	scalarBuf *secmem.SecureBuffer
 }
@@ -48,7 +56,7 @@ type X25519Key struct {
 //
 // To persist the generated key, use [X25519Key.WithScalar].
 func GenerateX25519Key() (*X25519Key, error) {
-	buf, err := secmem.NewEmptyBuffer(curve25519.ScalarSize)
+	buf, err := secmem.NewEmptyBuffer(x25519.ScalarSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate scalar buffer: %w", err)
 	}
@@ -76,8 +84,8 @@ func NewX25519Key(scalarBuf *secmem.SecureBuffer) (*X25519Key, error) {
 	if scalarBuf.IsDestroyed() {
 		return nil, fmt.Errorf("secmemcrypto: new x25519 key: %w", secmem.ErrDestroyed)
 	}
-	if n := scalarBuf.Len(); n != curve25519.ScalarSize {
-		return nil, fmt.Errorf("%w: got %d, want %d", ErrBadScalarLength, n, curve25519.ScalarSize)
+	if n := scalarBuf.Len(); n != x25519.ScalarSize {
+		return nil, fmt.Errorf("%w: got %d, want %d", ErrBadScalarLength, n, x25519.ScalarSize)
 	}
 	return &X25519Key{scalarBuf: scalarBuf}, nil
 }
@@ -93,11 +101,7 @@ func (k *X25519Key) PublicKey() ([32]byte, error) {
 	var pub [32]byte
 	err := secmem.ScrubErr(func() error {
 		return k.scalarBuf.WithBytesErr(func(scalar []byte) error {
-			out, e := curve25519.X25519(scalar, curve25519.Basepoint)
-			if e != nil {
-				return e
-			}
-			copy(pub[:], out) // out is the public key — not secret
+			x25519.ScalarMult(&pub, (*[x25519.ScalarSize]byte)(scalar), &x25519Basepoint)
 			return nil
 		})
 	})
@@ -108,10 +112,10 @@ func (k *X25519Key) PublicKey() ([32]byte, error) {
 }
 
 // SharedSecret computes the X25519 shared secret with peerPub and returns it
-// in a new SecureBuffer (the caller owns and must Destroy it). It errors if
-// peerPub is a low-order point — X25519 would yield an all-zero shared
-// secret, which must never be used as key material — or if this key is
-// destroyed or sealed.
+// in a new SecureBuffer (the caller owns and must Destroy it). The secret is
+// computed directly into that buffer. It errors if peerPub is a low-order
+// point — X25519 would yield an all-zero shared secret, which must never be
+// used as key material — or if this key is destroyed or sealed.
 func (k *X25519Key) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error) {
 	if k == nil || k.scalarBuf == nil || k.scalarBuf.IsDestroyed() {
 		return nil, fmt.Errorf("secmemcrypto: shared secret: %w", secmem.ErrDestroyed)
@@ -119,22 +123,20 @@ func (k *X25519Key) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error)
 	if k.scalarBuf.IsSealed() {
 		return nil, fmt.Errorf("secmemcrypto: shared secret: %w", secmem.ErrSealed)
 	}
-	out, err := secmem.NewEmptyBuffer(curve25519.PointSize)
+	out, err := secmem.NewEmptyBuffer(x25519.PointSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate shared secret buffer: %w", err)
 	}
 	err = secmem.ScrubErr(func() error {
 		return k.scalarBuf.WithBytesErr(func(scalar []byte) error {
-			shared, e := curve25519.X25519(scalar, peerPub[:])
-			if e != nil {
-				return e
-			}
-			e = out.WithBytesErr(func(dst []byte) error {
-				copy(dst, shared)
+			return out.WithBytesErr(func(dst []byte) error {
+				x25519.ScalarMult((*[x25519.PointSize]byte)(dst), (*[x25519.ScalarSize]byte)(scalar), &peerPub)
+				var zero [x25519.PointSize]byte
+				if subtle.ConstantTimeCompare(dst, zero[:]) == 1 {
+					return errLowOrderPoint
+				}
 				return nil
 			})
-			secmem.SecureWipe(shared)
-			return e
 		})
 	})
 	if err != nil {

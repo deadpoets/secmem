@@ -19,9 +19,11 @@ import (
 // the whole point of the window is that nothing runs between fn's return and
 // the clear — so this test compares their source instead: Scrub's statement
 // list, less the nil guard (the control is never handed nil), the direct
-// clearVectorRegs call (the line under test) and the Goexit backstop (a
+// clearRegisters call (the line under test) and the Goexit backstop (a
 // no-op on the paths the proof measures), must print identically to the
-// control's. Comments are not compared; statements are.
+// control's. The line under test is clearRegisters, which clears the vector
+// and the general-purpose registers, so the same control serves both register
+// proofs. Comments are not compared; statements are.
 func TestVecClearControl_IsScrubMinusTheClear(t *testing.T) {
 	t.Parallel()
 	fset := token.NewFileSet()
@@ -35,9 +37,9 @@ func TestVecClearControl_IsScrubMinusTheClear(t *testing.T) {
 			removedNilGuard = true
 			continue
 		}
-		if isCallTo(st, "clearVectorRegs") {
+		if isCallTo(st, "clearRegisters") {
 			if removedClear {
-				t.Fatal("Scrub's body calls clearVectorRegs more than once; the pin removes exactly one")
+				t.Fatal("Scrub's body calls clearRegisters more than once; the pin removes exactly one")
 			}
 			removedClear = true
 			continue
@@ -56,7 +58,7 @@ func TestVecClearControl_IsScrubMinusTheClear(t *testing.T) {
 		t.Fatal("Scrub's body no longer opens with the `if fn == nil { return }` guard this pin removes; update the pin with the control")
 	}
 	if !removedClear {
-		t.Fatal("Scrub's body no longer calls clearVectorRegs; the control has nothing to be a control for")
+		t.Fatal("Scrub's body no longer calls clearRegisters; the control has nothing to be a control for")
 	}
 
 	want := printStmts(t, fset, kept)

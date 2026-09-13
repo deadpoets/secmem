@@ -86,7 +86,7 @@ func TestParsePKCS8_Ed25519V2(t *testing.T) {
 	otherPub, _, _ := ed25519.GenerateKey(rand.Reader)
 	seed := priv.Seed()
 
-	s, err := ParsePrivateKey(pkcs8Ed25519(1, seed, pub))
+	s, err := ParsePrivateKey(pkcs8Ed25519(1, seed, pub), AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("v2 with matching public key: %v", err)
 	}
@@ -110,7 +110,7 @@ func TestParsePKCS8_Ed25519V2(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")
@@ -151,7 +151,7 @@ func TestParseSEC1_Variants(t *testing.T) {
 	}
 	for _, tc := range good {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err != nil {
 				t.Fatalf("ParsePrivateKey: %v", err)
 			}
@@ -177,7 +177,7 @@ func TestParseSEC1_Variants(t *testing.T) {
 	}
 	for _, tc := range bad {
 		t.Run(tc.name, func(t *testing.T) {
-			s, err := ParsePrivateKey(tc.data)
+			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err == nil {
 				s.Destroy()
 				t.Fatal("expected an error")

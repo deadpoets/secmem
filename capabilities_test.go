@@ -162,6 +162,7 @@ func TestCapabilities_Warnings(t *testing.T) {
 		NoDump: true, NoFork: true,
 		FlushedWipe: true, RegisterScrub: true, GuardPages: true,
 		FrameScrub: true, AsyncPreemptSuppressed: true, VectorRegisterClear: true,
+		GPRegisterClear: true,
 	}
 	if w := full.Warnings(); len(w) != 0 {
 		t.Errorf("fully protected Capabilities still warned: %q", w)
