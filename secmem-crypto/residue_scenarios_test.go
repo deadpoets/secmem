@@ -57,6 +57,11 @@ const (
 	// residueControlPlain: a heap copy made outside Scrub survives the
 	// collector on every build.
 	residueControlPlain
+	// residueControlSpill: a copy the runtime saved onto a goroutine stack by
+	// preempting it outside Scrub is there after use, on every build. Whether
+	// it is still there after GC depends on what reuses that stack, so only
+	// its presence is asserted.
+	residueControlSpill
 )
 
 type residueScenario struct {
@@ -119,7 +124,7 @@ var residueScenarios = []residueScenario{
 		// asynchronously has its register file saved onto its stack, where
 		// nothing erases it. This is what Scrub's signal mask and register
 		// clear exist for, and the pair below proves both halves of that.
-		name: "control/preempted-copy-outside-scrub", class: residueControlPlain, nOps: 4,
+		name: "control/preempted-copy-outside-scrub", class: residueControlSpill, nOps: 4,
 		material: randomSecret(32, "secret"),
 		victim:   preemptedCopy(false),
 	},
@@ -881,7 +886,10 @@ func marshalEncryptedOpenSSH(t *testing.T, seed, pass []byte, rounds int) []byte
 	}
 	defer out.Destroy()
 	var file []byte
-	if err := out.WithBytesErr(func(p []byte) error { file = slices.Clone(p); return nil }); err != nil {
+	if err := out.WithBytesErr(func(p []byte) error {
+		file = slices.Clone(p) //nolint:secmem-lint // parent side: the scan needs the file it hunts the victim's memory for
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return file

@@ -327,8 +327,8 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 		none("use", r)
 	case residueTransient:
 		some("use", "this entry point is classified transient: every operation copies the key through the heap", r)
-	case residueControlScrub, residueControlPlain:
-		some("use", "the control copies the secret to the heap on every operation", r)
+	case residueControlScrub, residueControlPlain, residueControlSpill:
+		some("use", "the control puts a copy of the secret outside locked memory on every operation", r)
 	}
 
 	// Settle: GC cycles, scanning after each.
@@ -345,6 +345,10 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 		none("after GC", r)
 	case sc.class == residueControlPlain:
 		some("after GC", "a heap copy made outside Scrub is never erased by the runtime, on any build", r)
+	case sc.class == residueControlSpill:
+		// Not asserted: a spill made outside any Scrub window is not the
+		// runtime's to erase, and whether it outlives GC depends on what
+		// reuses that stack.
 	case rs:
 		// runtime/secret erases allocations made inside Scrub once the
 		// collector finds them unreachable; that is the whole of its promise.

@@ -93,7 +93,10 @@ func randBytes(t *testing.T, n int) []byte {
 func readOut(t *testing.T, b *secmem.SecureBuffer) []byte {
 	t.Helper()
 	var out []byte
-	if err := b.WithBytesErr(func(p []byte) error { out = append([]byte(nil), p...); return nil }); err != nil {
+	if err := b.WithBytesErr(func(p []byte) error {
+		out = append([]byte(nil), p...) //nolint:secmem-lint // test oracle: the derived bytes are compared with the reference implementation's
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	return out
