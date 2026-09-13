@@ -267,14 +267,18 @@ func TestWithAESGCM_BadInputs(t *testing.T) {
 // trust is an error, never a partial layout.
 func TestResolveAESGCMLayout_RefusesUnexpectedShapes(t *testing.T) {
 	// Fake layouts: only their reflected shape is used, never their fields.
+	//lint:ignore U1000 only the reflected shape matters
 	type noCipher struct{ x int } //nolint:unused // reflected shape only
+	//lint:ignore U1000 only the reflected shape matters
 	type badRounds struct {
 		cipher struct{ enc, dec []uint32 } //nolint:unused // reflected shape only
 	}
+	//lint:ignore U1000 only the reflected shape matters
 	type badTable struct {
 		cipher       struct{ enc, dec [60]uint32 } //nolint:unused // reflected shape only
 		productTable []byte                        //nolint:unused // reflected shape only
 	}
+	//lint:ignore U1000 only the reflected shape matters
 	type portable struct {
 		cipher struct{ enc, dec [60]uint32 } //nolint:unused // reflected shape only
 	}

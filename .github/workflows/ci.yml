@@ -71,7 +71,7 @@ jobs:
         uses: ./.github/actions/test-audited
         with:
           allowlist: ${{ runner.os == 'Linux' && 'linux' || runner.os == 'macOS' && 'darwin' || 'windows' }}
-          args: "-count=1 -run ^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$"
+          args: "-count=1 -run '^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$'"
       - uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto
@@ -94,7 +94,7 @@ jobs:
         uses: ./.github/actions/test-audited
         with:
           allowlist: linux
-          args: "-count=1 -run ^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$"
+          args: "-count=1 -run '^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$'"
       - uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto
@@ -127,7 +127,7 @@ jobs:
         uses: ./.github/actions/test-audited
         with:
           allowlist: linux
-          args: "-count=1 -run ^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$"
+          args: "-count=1 -run '^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$'"
       - uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto
