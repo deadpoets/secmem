@@ -13,6 +13,19 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [0.6.0] - 2026-09-13
+
+Registers and residue. `Scrub` and `ScrubErr` clear the general-purpose
+registers as well as the vector ones, and the borrow and copy paths clear both
+when they return — each found by `secmem-crypto`'s new out-of-process residue
+test and proven by a register dump. The `Scrub` panic path, a janitor race that
+could strand a locked mapping and a stale arena handle are fixed.
+`secmem/redact` redacts by attribute key and `secmem/httpauth` refuses to send
+a credential over cleartext http. `PROTECTION.md` sets out what each key type
+is protected against. Minor, with breaking changes: `redact.NewHandler` takes
+options, `redact.Handler` and `redact.Rule` are no longer comparable, and
+`httpauth` refuses cleartext injection unless the caller opts in.
+
 ### Added
 
 - **Independent oracles for claims that rested on a syscall's return value,
@@ -35,23 +48,6 @@ mark the stability commitment.
   so: the WER exclusion is reported by the registration call, not verified by
   a dump, and the wipe's cache flush is structural, not measured.
 
-- **`secmem-crypto`: `WithAESGCM` and `ErrAEADOutOfScope`.** An AES key in a
-  `SecureBuffer` still ended up on the heap the moment it was used:
-  `aes.NewCipher` expands it into a heap `Block`, and `cipher.NewGCM` copies
-  that expansion into its own object beside a key-derived GHASH table, and
-  nothing exported clears either — the residue test found the round keys after
-  every use, whether the AEAD was kept for a session or built per call.
-  `WithAESGCM(key, fn)` builds AES-GCM inside a Scrub window, lends it to `fn`,
-  and when `fn` returns, errors or panics wipes both round-key arrays of the
-  `Block`, their copy in the GCM object and the GHASH table, through unexported
-  fields resolved by reflection and pinned by a tripwire; a layout it does not
-  recognise is an error before the key is expanded. The lent AEAD panics with
-  `ErrAEADOutOfScope` if it is kept and used afterwards, rather than encrypting
-  under a wiped schedule. The residue test finds nothing after a call. Sealing
-  1 KiB costs about 2.4 µs this way against 0.2 µs on a kept AEAD on a Core
-  Ultra 7 265KF, mostly the cache-flushing wipe (`BenchmarkAESGCM`). New API:
-  a minor bump.
-
 - **`PROTECTION.md`: what each key type is protected against, and by how
   much.** One page with three levels — protected, protected at rest only, not
   protected — for every key type and algorithm entry point, the residue
@@ -60,59 +56,6 @@ mark the stability commitment.
   code execution, kernel and physical attacks, accelerators, side channels),
   with the measurement's own limits. Linked from the README, the threat model,
   the adoption guide and the `secmem-crypto` README.
-
-- **`secmem-crypto`: what each key type leaves in memory is measured.** A new
-  out-of-process test (`residue_linux_test.go`) hands a victim subprocess known
-  key material, has it build and use each key type, freezes it, and scans its
-  whole address space for every encoding that recovers the key — raw bytes,
-  limbs, the Ed25519 nonce and scalars in their internal layout, HMAC pads
-  and chaining values, ML-KEM's secret polynomial and SHAKE state, AES round
-  keys — outside locked memory. Contained entry points must leave nothing;
-  transient ones must leave copies, and on a `GOEXPERIMENT=runtimesecret`
-  build must lose them to the collector. A new `test-residue` CI job runs it
-  on linux/amd64 and linux/arm64 in both build modes with no skip allowed.
-  Test and CI only.
-
-- **`secmem-crypto`: `BcryptPBKDFInto` — OpenSSH's bcrypt_pbkdf as a KDF in
-  its own right.** The algorithm lives in `golang.org/x/crypto/ssh/internal/bcrypt_pbkdf`,
-  where nothing outside x/crypto can call it, so a program that has to
-  reproduce ssh-keygen's derivation — opening or writing a key file's
-  protection by hand, or matching a derivation performed elsewhere — had to
-  vendor it. This module already carries a wiping fork for its own passphrase
-  paths; the new function is that fork behind the same `*Into` shape the rest
-  of the KDFs use, deriving `out.Len()` bytes — up to `MaxBcryptPBKDFKeyLen`,
-  upstream's 1024 — into a `SecureBuffer`. Nothing
-  holding secret state touches the heap: the whole working set is one locked
-  workspace allocated for the call and wiped before it returns. The doc says
-  plainly that this is an interoperability primitive and not the password KDF
-  to choose fresh — bcrypt_pbkdf's working set is a 4 KiB Blowfish schedule
-  whatever cost you ask for, so `Argon2Into` is the memory-hard answer.
-
-- **`secmem-crypto`: the OpenSSH passphrase cost is configurable.**
-  `Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphraseParams` takes
-  `OpenSSHPassphraseParams{Rounds}` — ssh-keygen's `-a` — where the existing
-  method always wrote ssh-keygen's default of 16, now exported as
-  `OpenSSHKDFRounds`. Rounds are capped at `MaxOpenSSHKDFRounds` (2048), and
-  the cap is there for one reason: `x/crypto/ssh` and this package's own
-  parser both refuse a file above it, so writing higher would produce a file
-  nothing could open. A test anchors that constant to x/crypto's own maximum
-  rather than to itself, so the two cannot drift apart unnoticed. A higher
-  cost buys time-hardness only, which the doc says plainly.
-
-- **`secmem-crypto`: `ErrRetiredAlgorithm` separates a refusal that is a
-  decision from one that is a gap.** Both looked identical to a caller: an
-  error wrapping `ErrUnsupportedKey` could mean "convert your file" or "wait
-  for a release", and the only way to tell was to read the message. Legacy
-  PEM encryption (the `Proc-Type` / `DEK-Info` headers, whatever cipher they
-  name) now wraps this marker as well as the sentinel it already wrapped, and
-  the error from either entry point says which command rewrites the file. It
-  will not gain support:
-  the key comes from one pass of MD5 over the passphrase and an 8-byte salt,
-  so there is no cost to raise, and the ciphertext is unauthenticated CBC.
-  Keeping such a file openable is what lets it stay unconverted. Refusals
-  that are only unimplemented — PBES2, `chacha20-poly1305@openssh.com`,
-  aes128/192 — deliberately do not wrap it, and a test enforces that
-  distinction so the marker cannot decay into a synonym.
 
 - **`ADOPTION.md`, and two more pitfalls.** An adoption guide for putting the
   library into an existing service: inventory the secrets, classify each as
@@ -171,110 +114,7 @@ mark the stability commitment.
   anywhere in the process) and `httptrace.WroteHeaderField`. A test proves
   the recipe produces an HTTP/1.1 request against an h2-enabled server.
 
-- **`secmem-lint`: the escape check follows the bytes, not just the
-  identifier.** A borrowed slice now taints every local derived from it —
-  aliases, elements, conversions (`any(b)`, `[]byte(b)`), composites
-  (`holder{b}`, `msg{b}` on a channel, `&myErr{b}` returned), element-wise
-  copy loops, closures that capture it, `unsafe.String` / `SliceData` /
-  `Pointer`, `reflect.ValueOf`, `bytes.NewReader` — and a finding fires
-  where a tainted value reaches memory outside the closure. The accessor call
-  is resolved through more shapes too: a closure held in a local assigned
-  once, a package-level function passed by name, a method value
-  (`f := buf.WithBytes`), an interface receiver with a borrowing-shaped
-  method, and a `type raw = []byte` parameter. `-strict` now also reports a
-  closure it cannot resolve, so coverage gaps are visible instead of silent.
-  The sink table gains `os.WriteFile`, the `Write` methods of `bytes.Buffer`
-  / `strings.Builder` / `bufio.Writer` / `os.File`, the `json` / `xml` /
-  `gob` decoders, `hex.Dump` / `AppendEncode`, `base64` / `base32`
-  `AppendEncode`, `slices.Concat`, `bytes.Join` / `Repeat`, `slog.Any` /
-  `String` / `Group` and `Logger.With`, the `testing` log methods, and the
-  stdlib / `x/crypto` ciphers, key parsers and KDFs that copy a key into heap
-  state. `io.Writer` / `net.Conn` interface values stay unflagged by design.
-  Reentrancy resolves aliases (`b2 := buf`) and method values (`l := buf.Len`),
-  and covers `ArenaSlot.Release` and the arena's exclusive-lock methods
-  (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow. No API changed,
-  but code that vetted clean against v0.2.0 can now report findings, so a CI
-  step running the analyzer may start failing on upgrade.
-
-- **`secmem-crypto`: every entry point is classified, and the README says
-  what each signer buys you.** The module's headline claimed key material
-  stays in a `SecureBuffer` "for the whole of the operation"; that is true of
-  Ed25519 signing, the parsers, the KDFs and AEAD helpers that write in
-  place, and false — admitted a paragraph later — of everything that hands a
-  copy to a standard-library primitive. The README now carries a class per
-  entry point (**contained**, or **runtimesecret-only**: contained on
-  linux/amd64|arm64 with `GOEXPERIMENT=runtimesecret`, transient on the heap
-  everywhere else), a table of what is protected at rest and what copies
-  each operation leaves on each kind of build after the fixes below, and a
-  recommendation on `RSASigner` and `ECDSASigner` for legacy builds.
-  `classification_test.go` pins the classes: `SealFrom` at zero allocations,
-  `Ed25519Signer.Sign` at exactly one (the signature) for messages up to
-  4 KiB, the standard-library-backed paths as allocating.
-
-- **`secmem-crypto`: `ErrHeapTransients`, `AllowHeapTransients` and
-  `Option`.** The error a refused RSA or ECDSA key returns (see Changed),
-  and the option that accepts the residual instead. `Option` is new and is
-  taken variadically by `NewRSASigner`, `GenerateRSASigner`,
-  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey`,
-  `ParsePrivateKeyWithPassphrase`, `HKDFInto` and `HMACInto`; a nil `Option`
-  is ignored.
-
 ### Changed
-
-- **`secmem-crypto`: `HKDFInto` and `HMACInto` run in place over SHA-2 and
-  SHA-3.** `crypto/hmac` kept the key XORed into both pads and the inner and
-  outer digest states — each enough to compute the MAC — in heap objects, and
-  `x/crypto/hkdf` added the pseudorandom key; the residue test found all of
-  them after every call. Over SHA-224/256/384/512, SHA-512/224 and /256 and
-  SHA3-224/256/384/512, each HMAC is now two of the standard library's
-  one-shot hash calls, whose state is a stack local, over a working region
-  that is a stack array in the Scrub window up to about 1 KiB and a locked
-  buffer beyond; the output is written straight into the buffer, and the only
-  allocation is the digest instance asked of the caller's constructor to
-  identify the hash (which must also agree with the one-shot on a fixed
-  input). The residue test now finds nothing. Over any other hash the old path
-  remains, and on a build without `GOEXPERIMENT=runtimesecret` it returns
-  `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` — a
-  behaviour change for callers using, say, BLAKE2b there. Measured cost: an
-  `HKDFSHA256Into` call went from about 1.4 µs and 15 allocations to about
-  3.4 µs and one on a Core Ultra 7, the difference being the cache-flushing
-  wipe of each working region.
-
-- **`secmem-crypto`: `X25519Key` computes in place.** `PublicKey` and
-  `SharedSecret` no longer go through `golang.org/x/crypto/curve25519`, whose
-  `crypto/ecdh` key object copied the scalar to the heap and whose result was
-  a heap slice: the standard library's own RFC 7748 ladder, copied into
-  `internal/x25519` and pinned to the toolchain's source by a test, runs over
-  the borrowed scalar inside the Scrub window and writes the shared secret
-  straight into the returned buffer. It allocates nothing. The residue test,
-  which found the scalar and the shared secret on the heap after every
-  operation, now finds neither on either build mode. No API change.
-
-- **BREAKING — `secmem-crypto`: RSA and ECDSA keys are refused on a build
-  where their heap copies are never erased.** `NewRSASigner`,
-  `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` now return
-  an error wrapping
-  `ErrHeapTransients` on every build without `GOEXPERIMENT=runtimesecret` —
-  Windows, macOS, and Linux without the experiment — and `ParsePrivateKey`
-  and `ParsePrivateKeyWithPassphrase` do the same for an RSA or EC key file.
-  `RSASigner` and `ECDSASigner` rebuild the private key through the standard
-  library on every signature. On
-  those builds the copies are reclaimed by the collector but never zeroed, so
-  a process that uses the key has it on the heap whether or not its durable
-  copy is locked.
-  The refusal happens before the key is handed to the standard library, and a
-  buffer passed to a refused constructor stays the caller's. Callers who
-  accept the residual pass `AllowHeapTransients()`; the README sets out when
-  that is reasonable (load and sign rarely) and when it is not (sign
-  continuously). Ed25519 and X25519 keys are never refused, and nothing
-  changes on a `GOEXPERIMENT=runtimesecret` build. `HKDFInto` and `HMACInto`
-  are refused the same way when given a hash other than SHA-2 or SHA-3 (see
-  their in-place entry). `MLKEM768Key` is not gated; the README lists what it
-  still leaves on the heap. The constructors, the parsers, `HKDFInto` and
-  `HMACInto` gain a variadic `...Option` parameter: existing calls compile
-  unchanged, but a function value of the old type no longer matches, which
-  `gorelease` reports as incompatible. The next `secmem-crypto` release is a minor bump. The SSH
-  agent example follows the same default and gains `-allow-heap-transients`.
 
 - **`secmem/httpauth`: the credential is no longer sent over cleartext http
   unless the caller opts in.** `Transport.Hosts` compared only the host, so
@@ -314,40 +154,6 @@ mark the stability commitment.
   the default base64 heuristic no longer needs `=` padding and would
   otherwise tag a real provider token as `base64_secret` first.
 
-- **`secmem-lint`: the recommended idioms no longer report.** `copy` / `append`
-  into another borrowed slice (the decrypt-into pattern, nested either way),
-  into an array or struct declared inside the closure, or into a local slice
-  made with `make` / a literal is not an escape; a func literal that calls the
-  buffer but is only assigned or returned runs after the lease and is not
-  reentrant; the slice's address as a `uintptr` is not the secret. The README
-  and package doc now say exactly what the analyzer resolves and what it does
-  not, and the `-strict` flag is documented in the form `go vet` accepts.
-
-- **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
-  wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
-  used to return `ErrEncryptedKey` itself; it now returns an error that wraps
-  it, together with `ErrRetiredAlgorithm` and the conversion hint. `errors.Is`
-  keeps working. A caller comparing with `==` stops matching for this one
-  input — the other encrypted forms still return the bare sentinel — which
-  is recorded here because no signature changed and `gorelease` cannot see
-  it.
-
-- **`secmem-crypto`: the Argon2 fork's own vector-register clear is gone, and
-  so is the passphrase path's use of it.** The follow-up the v0.6.0 floor
-  raise promised. Since core v0.5.0 every `Scrub` and `ScrubErr` window pins
-  its goroutine and clears the vector file on the way out, so the fork's
-  amd64 `VZEROALL`/`PXOR` helper, the `runtime.LockOSThread` pairs around
-  its three windows and the temporary `argon2.ClearVectorRegs` export that
-  `opensshCrypt` deferred were all a second copy of what the window already
-  does. Nothing observable changes: the same registers are cleared at the
-  same point, on the same thread, by the core's proven routine instead of
-  the module's. The tests move with it — `scrubclear_amd64_test.go` shows
-  the core's clear reaches what blamka and a whole `Derive` leave, and
-  `vecclear_amd64_test.go` shows the same for the passphrase path inside
-  the window its callers use, each with a bare-run control that must show
-  residue. The test-only register probe moves to `internal/regprobe` so both
-  packages can use it.
-
 - **`Capabilities.Warnings` says what `VirtualLock` does not do.** On
   Windows a locked report now carries one more line: `VirtualLock` pins pages
   into the process working set, not into physical memory, and when the
@@ -357,20 +163,14 @@ mark the stability commitment.
   records why the working-set minimum stays soft (a hard minimum does not
   reach locked pages, which the trimmer already skips).
 
-- **Documentation: `runtime/secret` erases at the next garbage collection,
-  and ML-KEM's residue is the recovered message.** Several places said a
-  runtime/secret build made the standard-library-backed types "contained one GC
-  cycle late" and that building with the experiment was the fix for a busy
-  RSA or ECDSA signer. The erasure happens at the first collection after the
+- **Documentation: `runtime/secret` erases at the next garbage
+  collection.** Several places said a runtime/secret build made the
+  standard-library-backed types "contained one GC cycle late" and that
+  building with the experiment was the fix for a busy RSA or ECDSA signer. The erasure happens at the first collection after the
   copies become unreachable — up to two minutes in a quiet process — so a key
   used even once a second has copies on the heap almost all the time; the
-  README, the threat model, pitfall 11 and the type docs now say that. Earlier
-  drafts of this release's `MLKEM768Key` docs said crypto/mlkem's SHA3 and
-  SHAKE states and σ were left on the heap; in go1.26 they stay on the stack in the Scrub window, and the
-  residue test finds none of them. What does escape is the 32-byte message each
-  `Decapsulate` recovers, which gives that ciphertext's shared key: the
-  decapsulation key is now classified contained, and each decapsulation's
-  shared key as exposed until the next collection.
+  README, the threat model, pitfall 11 and the `secmem-crypto` type docs now
+  say that.
 
 - **Documentation corrections.** `DESIGN.md` and `PITFALLS.md` no longer say
   the garbage collector moves heap objects (it is non-moving for the heap, as
@@ -385,81 +185,6 @@ mark the stability commitment.
   longer calls the wipe "architecture-specific assembly" on every platform;
   and the `SecureBuffer` header lists every method that takes the exclusive
   lock instead of claiming only `Destroy` does.
-
-- **`secmem-crypto`: `MLKEM768Key` wipes the expanded key, and the
-  encapsulation key is cached.** The type doc said the seed "lives in a
-  SecureBuffer for its entire lifetime" and only the expanded key touched
-  the heap. In go1.26 that expansion — the `crypto/internal/fips140/mlkem`
-  key `NewDecapsulationKey768` allocates — stores the seed halves d and z
-  verbatim and the secret polynomial `s`, so every operation put the seed on
-  the heap and left it there. The expansion is now wiped by reflection
-  through its unexported fields after construction and after every
-  `Decapsulate`, with a tripwire test pinning the layout (`dk.Bytes()` reads
-  zero and the key no longer decapsulates afterwards) and a call that returns
-  an error rather than succeeding over a live copy. The 1184-byte
-  encapsulation key is public and is computed once at construction:
-  `EncapsulationKeyBytes` no longer expands the seed, and — like
-  `Ed25519Signer.Public` — keeps working after `Destroy` and while the seed
-  is sealed, where it used to return `ErrDestroyed` / `ErrSealed`. The doc
-  now names what still transits the heap: the message each decapsulation
-  recovers (see the documentation entry above for how that was measured),
-  erased by the runtime at the next collection on a runtimesecret build and
-  left to the collector elsewhere. Holding the cached key makes the
-  struct no longer comparable: `*MLKEM768Key` pointers, which is how the
-  type is handed out, compare as before, but comparing `MLKEM768Key` values
-  or using them as map keys no longer compiles, and `gorelease` reports it
-  as incompatible.
-
-- **`secmem-crypto`: `RSASigner` wipes the standard library's FIPS-form
-  key, and a wipe it cannot perform is an error.** The type doc said the
-  unexported FIPS-form key inside `Precomputed` was "not reachable"; it is
-  reachable the same way the AES schedule and the ECDH scalar already were,
-  and it holds a second copy of every secret integer as `bigmod` limbs —
-  d and qInv, p and q with the Montgomery constants derived from them, dP
-  and dQ — which every `Sign` uses and nothing zeroed. `wipeRSAPrivateKey`
-  now reaches it by reflection, with a tripwire test that uses
-  `crypto/rsa`'s own `Validate` consistency check as the independent oracle,
-  and returns an error when the layout is not the one it expects; `Sign`,
-  `NewRSASigner` and `GenerateRSASigner` fold that error into their result
-  instead of reporting success over a live key. The doc now lists what
-  remains — the parse's `big.Int.Bytes()` copies, `Validate`'s comparison
-  copies, and the signature's Montgomery scratch — and corrects the claim
-  that `math/big` scratch is "left to `ScrubErr` and the collector":
-  `math/big`'s division scratch is a `sync.Pool` returned unwiped, which
-  stays reachable, so `runtime/secret` does not erase it either. Two-prime
-  keys no longer touch it at all (next entry); a deprecated multi-prime key
-  still does, and the doc says so.
-
-- **`secmem-crypto`: an OpenSSH RSA key's CRT exponents are computed over
-  stack arrays, not with `math/big`.** `pkcs1DER` derived dp and dq with
-  `big.Int.Mod`, pushing limbs of d, p and q through the pooled scratch
-  above. It now uses a shift-and-subtract reduction (`modreduce.go`, about
-  a hundred lines, one conditional subtraction per bit of d, no
-  value-dependent branches) over fixed-size stack arrays inside the parse's
-  Scrub window, wiped before return; the differential test compares it
-  against `math/big` on random operands across the accepted size range and
-  the edges, and the parser's allocation proof now covers the OpenSSH RSA
-  container it used to exclude. The DER is unchanged byte for byte.
-
-- **`secmem-crypto`: Ed25519 signing assembles the nonce pre-image on the
-  stack.** The 32-byte secret prefix and the message were concatenated into
-  a heap slice (wiped) for every signature; for messages up to 4 KiB that
-  now happens in a stack array inside the Scrub window, so a signature makes
-  exactly one heap allocation — the signature. The file doc also corrects
-  "the seed itself is never copied": it is copied twice on the stack inside
-  `sha512.Sum512`, in frames the window wipes, and says why a streaming
-  digest would be worse (a heap block buffer that `Reset` does not clear).
-
-- **`secmem-crypto`: the parser and `ECDSASigner` docs are true.**
-  `ParsePrivateKey` said only non-secret material touched the heap with one
-  exception; every EC path ends in `ecdsa.ParseRawPrivateKey`, which builds
-  a `bigmod.Nat` and a FIPS-form key holding the scalar before the `big.Int`
-  the module wipes. The `ECDSASigner` doc now lists every copy `Sign` leaves
-  in go1.26, including the FIPS-form key `crypto/ecdsa` keeps in a
-  package-level weak-pointer cache until the collector evicts it — not
-  reachable from any wipe, kept short-lived by not retaining the transient
-  between operations, and named as the longest-lived residue on a legacy
-  build.
 
 ### Fixed
 
@@ -582,6 +307,318 @@ mark the stability commitment.
   allocator, which `Probe` uses to report what the platform provides; it now
   fires from the constructor gate, only when `WithInsecureFallback` is
   actually used.
+
+## [secmem-crypto/v0.7.0] - 2026-09-13
+
+What each key type leaves in memory is measured, and what could be fixed is:
+X25519, and HKDF and HMAC over SHA-2 and SHA-3, now run in place, and
+`WithAESGCM` lends an AES-GCM AEAD whose key schedule is wiped when the
+callback returns. RSA and ECDSA keys, whose standard-library copies nothing can
+reach, are refused on builds without `GOEXPERIMENT=runtimesecret` unless the
+caller passes `AllowHeapTransients()`. Also a public `BcryptPBKDFInto`, a
+configurable OpenSSH passphrase cost, and wipes of ML-KEM's expanded key and
+RSA's FIPS-form key. Minor, with breaking changes: see Changed.
+
+### Added
+
+- **`secmem-crypto`: `WithAESGCM` and `ErrAEADOutOfScope`.** An AES key in a
+  `SecureBuffer` still ended up on the heap the moment it was used:
+  `aes.NewCipher` expands it into a heap `Block`, and `cipher.NewGCM` copies
+  that expansion into its own object beside a key-derived GHASH table, and
+  nothing exported clears either — the residue test found the round keys after
+  every use, whether the AEAD was kept for a session or built per call.
+  `WithAESGCM(key, fn)` builds AES-GCM inside a Scrub window, lends it to `fn`,
+  and when `fn` returns, errors or panics wipes both round-key arrays of the
+  `Block`, their copy in the GCM object and the GHASH table, through unexported
+  fields resolved by reflection and pinned by a tripwire; a layout it does not
+  recognise is an error before the key is expanded. The lent AEAD panics with
+  `ErrAEADOutOfScope` if it is kept and used afterwards, rather than encrypting
+  under a wiped schedule. The residue test finds nothing after a call. Sealing
+  1 KiB costs about 2.4 µs this way against 0.2 µs on a kept AEAD on a Core
+  Ultra 7 265KF, mostly the cache-flushing wipe (`BenchmarkAESGCM`). New API:
+  a minor bump.
+
+- **`secmem-crypto`: what each key type leaves in memory is measured.** A new
+  out-of-process test (`residue_linux_test.go`) hands a victim subprocess known
+  key material, has it build and use each key type, freezes it, and scans its
+  whole address space for every encoding that recovers the key — raw bytes,
+  limbs, the Ed25519 nonce and scalars in their internal layout, HMAC pads
+  and chaining values, ML-KEM's secret polynomial and SHAKE state, AES round
+  keys — outside locked memory. Contained entry points must leave nothing;
+  transient ones must leave copies, and on a `GOEXPERIMENT=runtimesecret`
+  build must lose them to the collector. A new `test-residue` CI job runs it
+  on linux/amd64 and linux/arm64 in both build modes with no skip allowed.
+  Test and CI only.
+
+- **`secmem-crypto`: `BcryptPBKDFInto` — OpenSSH's bcrypt_pbkdf as a KDF in
+  its own right.** The algorithm lives in `golang.org/x/crypto/ssh/internal/bcrypt_pbkdf`,
+  where nothing outside x/crypto can call it, so a program that has to
+  reproduce ssh-keygen's derivation — opening or writing a key file's
+  protection by hand, or matching a derivation performed elsewhere — had to
+  vendor it. This module already carries a wiping fork for its own passphrase
+  paths; the new function is that fork behind the same `*Into` shape the rest
+  of the KDFs use, deriving `out.Len()` bytes — up to `MaxBcryptPBKDFKeyLen`,
+  upstream's 1024 — into a `SecureBuffer`. Nothing
+  holding secret state touches the heap: the whole working set is one locked
+  workspace allocated for the call and wiped before it returns. The doc says
+  plainly that this is an interoperability primitive and not the password KDF
+  to choose fresh — bcrypt_pbkdf's working set is a 4 KiB Blowfish schedule
+  whatever cost you ask for, so `Argon2Into` is the memory-hard answer.
+
+- **`secmem-crypto`: the OpenSSH passphrase cost is configurable.**
+  `Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphraseParams` takes
+  `OpenSSHPassphraseParams{Rounds}` — ssh-keygen's `-a` — where the existing
+  method always wrote ssh-keygen's default of 16, now exported as
+  `OpenSSHKDFRounds`. Rounds are capped at `MaxOpenSSHKDFRounds` (2048), and
+  the cap is there for one reason: `x/crypto/ssh` and this package's own
+  parser both refuse a file above it, so writing higher would produce a file
+  nothing could open. A test anchors that constant to x/crypto's own maximum
+  rather than to itself, so the two cannot drift apart unnoticed. A higher
+  cost buys time-hardness only, which the doc says plainly.
+
+- **`secmem-crypto`: `ErrRetiredAlgorithm` separates a refusal that is a
+  decision from one that is a gap.** Both looked identical to a caller: an
+  error wrapping `ErrUnsupportedKey` could mean "convert your file" or "wait
+  for a release", and the only way to tell was to read the message. Legacy
+  PEM encryption (the `Proc-Type` / `DEK-Info` headers, whatever cipher they
+  name) now wraps this marker as well as the sentinel it already wrapped, and
+  the error from either entry point says which command rewrites the file. It
+  will not gain support:
+  the key comes from one pass of MD5 over the passphrase and an 8-byte salt,
+  so there is no cost to raise, and the ciphertext is unauthenticated CBC.
+  Keeping such a file openable is what lets it stay unconverted. Refusals
+  that are only unimplemented — PBES2, `chacha20-poly1305@openssh.com`,
+  aes128/192 — deliberately do not wrap it, and a test enforces that
+  distinction so the marker cannot decay into a synonym.
+
+- **`secmem-crypto`: every entry point is classified, and the README says
+  what each signer buys you.** The module's headline claimed key material
+  stays in a `SecureBuffer` "for the whole of the operation"; that is true of
+  Ed25519 signing, the parsers, the KDFs and AEAD helpers that write in
+  place, and false — admitted a paragraph later — of everything that hands a
+  copy to a standard-library primitive. The README now carries a class per
+  entry point (**contained**, or **runtimesecret-only**: contained on
+  linux/amd64|arm64 with `GOEXPERIMENT=runtimesecret`, transient on the heap
+  everywhere else), a table of what is protected at rest and what copies
+  each operation leaves on each kind of build after the fixes below, and when
+  `RSASigner` and `ECDSASigner` are worth accepting on a legacy build.
+  `classification_test.go` pins the classes: `SealFrom` at zero allocations,
+  `Ed25519Signer.Sign` at exactly one (the signature) for messages up to
+  4 KiB, the standard-library-backed paths as allocating.
+
+- **`secmem-crypto`: `ErrHeapTransients`, `AllowHeapTransients` and
+  `Option`.** The error a refused RSA or ECDSA key returns (see Changed),
+  and the option that accepts the residual instead. `Option` is new and is
+  taken variadically by `NewRSASigner`, `GenerateRSASigner`,
+  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey`,
+  `ParsePrivateKeyWithPassphrase`, `HKDFInto` and `HMACInto`; a nil `Option`
+  is ignored.
+
+### Changed
+
+- **`secmem-crypto`: `HKDFInto` and `HMACInto` run in place over SHA-2 and
+  SHA-3.** `crypto/hmac` kept the key XORed into both pads and the inner and
+  outer digest states — each enough to compute the MAC — in heap objects, and
+  `x/crypto/hkdf` added the pseudorandom key; the residue test found all of
+  them after every call. Over SHA-224/256/384/512, SHA-512/224 and /256 and
+  SHA3-224/256/384/512, each HMAC is now two of the standard library's
+  one-shot hash calls, whose state is a stack local, over a working region
+  that is a stack array in the Scrub window up to about 1 KiB and a locked
+  buffer beyond; the output is written straight into the buffer, and the only
+  allocation is the digest instance asked of the caller's constructor to
+  identify the hash (which must also agree with the one-shot on a fixed
+  input). The residue test now finds nothing. Over any other hash the old path
+  remains, and on a build without `GOEXPERIMENT=runtimesecret` it returns
+  `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` — a
+  behaviour change for callers using, say, BLAKE2b there. Measured cost: an
+  `HKDFSHA256Into` call went from about 1.4 µs and 15 allocations to about
+  3.4 µs and one on a Core Ultra 7, the difference being the cache-flushing
+  wipe of each working region.
+
+- **`secmem-crypto`: `X25519Key` computes in place.** `PublicKey` and
+  `SharedSecret` no longer go through `golang.org/x/crypto/curve25519`, whose
+  `crypto/ecdh` key object copied the scalar to the heap and whose result was
+  a heap slice: the standard library's own RFC 7748 ladder, copied into
+  `internal/x25519` and pinned to the toolchain's source by a test, runs over
+  the borrowed scalar inside the Scrub window and writes the shared secret
+  straight into the returned buffer. It allocates nothing. The residue test,
+  which found the scalar and the shared secret on the heap after every
+  operation, now finds neither on either build mode. No API change.
+
+- **BREAKING — `secmem-crypto`: RSA and ECDSA keys are refused on a build
+  where their heap copies are never erased.** `NewRSASigner`,
+  `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` now return
+  an error wrapping
+  `ErrHeapTransients` on every build without `GOEXPERIMENT=runtimesecret` —
+  Windows, macOS, and Linux without the experiment — and `ParsePrivateKey`
+  and `ParsePrivateKeyWithPassphrase` do the same for an RSA or EC key file.
+  `RSASigner` and `ECDSASigner` rebuild the private key through the standard
+  library on every signature. On
+  those builds the copies are reclaimed by the collector but never zeroed, so
+  a process that uses the key has it on the heap whether or not its durable
+  copy is locked.
+  The refusal happens before the key is handed to the standard library, and a
+  buffer passed to a refused constructor stays the caller's. Callers who
+  accept the residual pass `AllowHeapTransients()`; the README sets out when
+  that is reasonable (load and sign rarely) and when it is not (sign
+  continuously). Ed25519 and X25519 keys are never refused, and nothing
+  changes on a `GOEXPERIMENT=runtimesecret` build. `HKDFInto` and `HMACInto`
+  are refused the same way when given a hash other than SHA-2 or SHA-3 (see
+  their in-place entry). `MLKEM768Key` is not gated; the README lists what it
+  still leaves on the heap. The constructors, the parsers, `HKDFInto` and
+  `HMACInto` gain a variadic `...Option` parameter: existing calls compile
+  unchanged, but a function value of the old type no longer matches, which
+  `gorelease` reports as incompatible. The next `secmem-crypto` release is a minor bump. The SSH
+  agent example follows the same default and gains `-allow-heap-transients`.
+
+- **`secmem-crypto`: the legacy-PEM refusal from `ParsePrivateKey` is a
+  wrapped error, not the bare sentinel.** A `Proc-Type` / `DEK-Info` file
+  used to return `ErrEncryptedKey` itself; it now returns an error that wraps
+  it, together with `ErrRetiredAlgorithm` and the conversion hint. `errors.Is`
+  keeps working. A caller comparing with `==` stops matching for this one
+  input — the other encrypted forms still return the bare sentinel — which
+  is recorded here because no signature changed and `gorelease` cannot see
+  it.
+
+- **`secmem-crypto`: the Argon2 fork's own vector-register clear is gone, and
+  so is the passphrase path's use of it.** The follow-up the v0.6.0 floor
+  raise promised. Since core v0.5.0 every `Scrub` and `ScrubErr` window pins
+  its goroutine and clears the vector file on the way out, so the fork's
+  amd64 `VZEROALL`/`PXOR` helper, the `runtime.LockOSThread` pairs around
+  its three windows and the temporary `argon2.ClearVectorRegs` export that
+  `opensshCrypt` deferred were all a second copy of what the window already
+  does. Nothing observable changes: the same registers are cleared at the
+  same point, on the same thread, by the core's proven routine instead of
+  the module's. The tests move with it — `scrubclear_amd64_test.go` shows
+  the core's clear reaches what blamka and a whole `Derive` leave, and
+  `vecclear_amd64_test.go` shows the same for the passphrase path inside
+  the window its callers use, each with a bare-run control that must show
+  residue. The test-only register probe moves to `internal/regprobe` so both
+  packages can use it.
+
+- **`secmem-crypto`: `MLKEM768Key` wipes the expanded key, and the
+  encapsulation key is cached.** The type doc said the seed "lives in a
+  SecureBuffer for its entire lifetime" and only the expanded key touched
+  the heap. In go1.26 that expansion — the `crypto/internal/fips140/mlkem`
+  key `NewDecapsulationKey768` allocates — stores the seed halves d and z
+  verbatim and the secret polynomial `s`, so every operation put the seed on
+  the heap and left it there. The expansion is now wiped by reflection
+  through its unexported fields after construction and after every
+  `Decapsulate`, with a tripwire test pinning the layout (`dk.Bytes()` reads
+  zero and the key no longer decapsulates afterwards) and a call that returns
+  an error rather than succeeding over a live copy. The 1184-byte
+  encapsulation key is public and is computed once at construction:
+  `EncapsulationKeyBytes` no longer expands the seed, and — like
+  `Ed25519Signer.Public` — keeps working after `Destroy` and while the seed
+  is sealed, where it used to return `ErrDestroyed` / `ErrSealed`.
+  crypto/mlkem's hash states and polynomials stay on the stack in the Scrub
+  window, and the residue test finds none of the key's secrets outside locked
+  memory. What does reach the heap is the 32-byte message each `Decapsulate`
+  recovers, which gives that ciphertext's shared key (not the long-term key):
+  erased by the runtime at the next collection on a runtimesecret build and
+  left to the collector elsewhere. The doc says so, and the decapsulation key
+  is classified contained. Holding the cached key makes the
+  struct no longer comparable: `*MLKEM768Key` pointers, which is how the
+  type is handed out, compare as before, but comparing `MLKEM768Key` values
+  or using them as map keys no longer compiles, and `gorelease` reports it
+  as incompatible.
+
+- **`secmem-crypto`: `RSASigner` wipes the standard library's FIPS-form
+  key, and a wipe it cannot perform is an error.** The type doc said the
+  unexported FIPS-form key inside `Precomputed` was "not reachable"; it is
+  reachable the same way the AES schedule and the ECDH scalar already were,
+  and it holds a second copy of every secret integer as `bigmod` limbs —
+  d and qInv, p and q with the Montgomery constants derived from them, dP
+  and dQ — which every `Sign` uses and nothing zeroed. `wipeRSAPrivateKey`
+  now reaches it by reflection, with a tripwire test that uses
+  `crypto/rsa`'s own `Validate` consistency check as the independent oracle,
+  and returns an error when the layout is not the one it expects; `Sign`,
+  `NewRSASigner` and `GenerateRSASigner` fold that error into their result
+  instead of reporting success over a live key. The doc now lists what
+  remains — the parse's `big.Int.Bytes()` copies, `Validate`'s comparison
+  copies, and the signature's Montgomery scratch — and corrects the claim
+  that `math/big` scratch is "left to `ScrubErr` and the collector":
+  `math/big`'s division scratch is a `sync.Pool` returned unwiped, which
+  stays reachable, so `runtime/secret` does not erase it either. Two-prime
+  keys no longer touch it at all (next entry); a deprecated multi-prime key
+  still does, and the doc says so.
+
+- **`secmem-crypto`: an OpenSSH RSA key's CRT exponents are computed over
+  stack arrays, not with `math/big`.** `pkcs1DER` derived dp and dq with
+  `big.Int.Mod`, pushing limbs of d, p and q through the pooled scratch
+  above. It now uses a shift-and-subtract reduction (`modreduce.go`, about
+  a hundred lines, one conditional subtraction per bit of d, no
+  value-dependent branches) over fixed-size stack arrays inside the parse's
+  Scrub window, wiped before return; the differential test compares it
+  against `math/big` on random operands across the accepted size range and
+  the edges, and the parser's allocation proof now covers the OpenSSH RSA
+  container it used to exclude. The DER is unchanged byte for byte.
+
+- **`secmem-crypto`: Ed25519 signing assembles the nonce pre-image on the
+  stack.** The 32-byte secret prefix and the message were concatenated into
+  a heap slice (wiped) for every signature; for messages up to 4 KiB that
+  now happens in a stack array inside the Scrub window, so a signature makes
+  exactly one heap allocation — the signature. The file doc also corrects
+  "the seed itself is never copied": it is copied twice on the stack inside
+  `sha512.Sum512`, in frames the window wipes, and says why a streaming
+  digest would be worse (a heap block buffer that `Reset` does not clear).
+
+- **`secmem-crypto`: the parser and `ECDSASigner` docs are true.**
+  `ParsePrivateKey` said only non-secret material touched the heap with one
+  exception; every EC path ends in `ecdsa.ParseRawPrivateKey`, which builds
+  a `bigmod.Nat` and a FIPS-form key holding the scalar before the `big.Int`
+  the module wipes. The `ECDSASigner` doc now lists every copy `Sign` leaves
+  in go1.26, including the FIPS-form key `crypto/ecdsa` keeps in a
+  package-level weak-pointer cache until the collector evicts it — not
+  reachable from any wipe, kept short-lived by not retaining the transient
+  between operations, and named as the longest-lived residue on a legacy
+  build.
+
+## [secmem-lint/v0.3.0] - 2026-09-13
+
+The escape check follows the borrowed bytes through aliases, conversions,
+composites and closures, resolves the accessor through more call shapes and
+knows many more sinks, and the recommended idioms stop reporting. No exported
+API changed, but code that vetted clean against v0.2.0 can now report
+findings. Minor: analyzer behaviour changed, as for v0.2.0.
+
+### Added
+
+- **`secmem-lint`: the escape check follows the bytes, not just the
+  identifier.** A borrowed slice now taints every local derived from it —
+  aliases, elements, conversions (`any(b)`, `[]byte(b)`), composites
+  (`holder{b}`, `msg{b}` on a channel, `&myErr{b}` returned), element-wise
+  copy loops, closures that capture it, `unsafe.String` / `SliceData` /
+  `Pointer`, `reflect.ValueOf`, `bytes.NewReader` — and a finding fires
+  where a tainted value reaches memory outside the closure. The accessor call
+  is resolved through more shapes too: a closure held in a local assigned
+  once, a package-level function passed by name, a method value
+  (`f := buf.WithBytes`), an interface receiver with a borrowing-shaped
+  method, and a `type raw = []byte` parameter. `-strict` now also reports a
+  closure it cannot resolve, so coverage gaps are visible instead of silent.
+  The sink table gains `os.WriteFile`, the `Write` methods of `bytes.Buffer`
+  / `strings.Builder` / `bufio.Writer` / `os.File`, the `json` / `xml` /
+  `gob` decoders, `hex.Dump` / `AppendEncode`, `base64` / `base32`
+  `AppendEncode`, `slices.Concat`, `bytes.Join` / `Repeat`, `slog.Any` /
+  `String` / `Group` and `Logger.With`, the `testing` log methods, and the
+  stdlib / `x/crypto` ciphers, key parsers and KDFs that copy a key into heap
+  state. `io.Writer` / `net.Conn` interface values stay unflagged by design.
+  Reentrancy resolves aliases (`b2 := buf`) and method values (`l := buf.Len`),
+  and covers `ArenaSlot.Release` and the arena's exclusive-lock methods
+  (`Destroy`, `ReadOnly`, `ReadWrite`) inside a slot borrow. No API changed,
+  but code that vetted clean against v0.2.0 can now report findings, so a CI
+  step running the analyzer may start failing on upgrade.
+
+### Changed
+
+- **`secmem-lint`: the recommended idioms no longer report.** `copy` / `append`
+  into another borrowed slice (the decrypt-into pattern, nested either way),
+  into an array or struct declared inside the closure, or into a local slice
+  made with `make` / a literal is not an escape; a func literal that calls the
+  buffer but is only assigned or returned runs after the lease and is not
+  reentrant; the slice's address as a `uintptr` is not the secret. The README
+  and package doc now say exactly what the analyzer resolves and what it does
+  not, and the `-strict` flag is documented in the form `go vet` accepts.
 
 ## [0.5.0] - 2026-09-07
 
