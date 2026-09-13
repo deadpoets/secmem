@@ -40,6 +40,14 @@ import (
 // a deadlock. Nesting access to a DIFFERENT buffer (e.g. the decrypt-into
 // pattern: key.WithBytesErr → out.WithBytesErr) is safe and expected.
 //
+// When it returns, the vector and general-purpose registers are cleared (on
+// amd64 and arm64), as they are after CopyIn, CopyOut, ConstantTimeEqual,
+// WriteTo, ReadFrom and the copying constructors. A copy of the secret moves
+// through registers, and left there it would be saved onto a goroutine stack by
+// the next asynchronous preemption on the thread — measured by secmem-crypto's
+// residue test. That covers what fn leaves behind; a preemption landing while
+// fn is still running is only prevented inside a [Scrub] window.
+//
 // Returns ErrDestroyed if the buffer has been destroyed.
 func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if fn == nil {
@@ -48,6 +56,7 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if s == nil {
 		return ErrDestroyed
 	}
+	defer clearRegisters() // registered first, so it runs last, after the unlock
 	s.mu.rLock()
 	defer s.mu.rUnlock()
 	if s.data == nil {
@@ -73,6 +82,7 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	if s == nil {
 		return ErrDestroyed
 	}
+	defer clearRegisters() // see WithBytes
 	s.mu.rLock()
 	defer s.mu.rUnlock()
 	if s.data == nil {
@@ -135,6 +145,7 @@ func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
+	defer clearRegisters() // see WithBytes
 	s.mu.rLock()
 	defer s.mu.rUnlock()
 	if s.data == nil {
@@ -160,6 +171,7 @@ func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
+	defer clearRegisters() // see WithBytes
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.data == nil {
@@ -241,6 +253,7 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 	if s == nil {
 		return false, ErrDestroyed
 	}
+	defer clearRegisters() // see WithBytes
 	s.mu.rLock()
 	defer s.mu.rUnlock()
 	if s.data == nil {
@@ -268,6 +281,7 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
+	defer clearRegisters() // see WithBytes
 	s.mu.rLock()
 	if s.data == nil {
 		s.mu.rUnlock()
@@ -300,6 +314,7 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
+	defer clearRegisters() // see WithBytes
 	// Determine buffer size under rLock (brief, non-blocking).
 	s.mu.rLock()
 	if s.data == nil {

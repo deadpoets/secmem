@@ -139,6 +139,7 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	// path that used to hand the caller back their plaintext intact. A defer
 	// also means a future error path cannot forget it.
 	defer secureWipeSlice(raw)
+	defer clearRegisters() // the copy below moves the secret through registers; see SecureBuffer.WithBytes
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
@@ -183,6 +184,7 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, errors.New("secmem.NewSyscallSafeBuffer: empty input")
 	}
 	defer secureWipeSlice(raw) // on failure too — see NewBuffer
+	defer clearRegisters()     // see NewBuffer
 	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}

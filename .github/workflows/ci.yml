@@ -67,11 +67,11 @@ jobs:
       # The general-purpose register clear's proof is //go:build !race: the
       # race detector's instrumentation overwrites the registers between the
       # probe's fill and dump. Run it without -race on every target.
-      - name: general-purpose register clear proof (no -race)
+      - name: register clear proofs (no -race)
         uses: ./.github/actions/test-audited
         with:
           allowlist: ${{ runner.os == 'Linux' && 'linux' || runner.os == 'macOS' && 'darwin' || 'windows' }}
-          args: "-count=1 -run ^TestScrub_ClearsGeneralPurposeRegisters$"
+          args: "-count=1 -run ^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$"
       - uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto
@@ -90,11 +90,11 @@ jobs:
       - uses: ./.github/actions/test-audited
         with:
           allowlist: linux
-      - name: general-purpose register clear proof (no -race)
+      - name: register clear proofs (no -race)
         uses: ./.github/actions/test-audited
         with:
           allowlist: linux
-          args: "-count=1 -run ^TestScrub_ClearsGeneralPurposeRegisters$"
+          args: "-count=1 -run ^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$"
       - uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto
@@ -123,11 +123,11 @@ jobs:
       - uses: ./.github/actions/test-audited
         with:
           allowlist: linux
-      - name: general-purpose register clear proof (no -race)
+      - name: register clear proofs (no -race)
         uses: ./.github/actions/test-audited
         with:
           allowlist: linux
-          args: "-count=1 -run ^TestScrub_ClearsGeneralPurposeRegisters$"
+          args: "-count=1 -run ^(TestScrub_ClearsGeneralPurposeRegisters|TestBorrowPaths_ClearRegistersOnReturn)$"
       - uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto

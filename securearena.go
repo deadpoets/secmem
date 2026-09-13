@@ -652,6 +652,7 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 	if s == nil {
 		return ErrSlotReleased
 	}
+	defer clearRegisters() // see SecureBuffer.WithBytes
 
 	// Fail fast on a destroyed arena rather than queue behind the Destroy
 	// that is draining callbacks. Advisory: the authoritative gate is the

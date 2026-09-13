@@ -192,6 +192,13 @@ Constraints of the Go runtime, not defects in this library:
   descheduled at a call boundary and have its stack scanned, and possibly
   copied. Suppressing the signal removes the arbitrary-instruction register
   dump, not every stack copy.
+- **A preemption inside a borrow callback.** `WithBytes` and the other
+  borrow and copy paths clear the registers when they return, so a copy that
+  finishes there leaves nothing for a later preemption to save. A preemption
+  that lands while the callback is still running saves the registers as they
+  are at that instant, onto the goroutine stack; only a `Scrub` window blocks
+  it. Wrap code that holds a secret in registers for more than an instant — a
+  loop over the bytes, a cipher — in `Scrub`.
 - **Registers on architectures other than amd64 and arm64.** There the window
   clears neither the vector nor the general-purpose registers, and
   `Capabilities` reports both gaps. On amd64 and arm64 both are cleared after

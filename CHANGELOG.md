@@ -438,6 +438,23 @@ mark the stability commitment.
 
 ### Fixed
 
+- **The borrow and copy paths clear the registers when they return.**
+  `WithBytes`, `WithBytesErr`, `ArenaSlot.WithBytesErr`, `CopyIn`, `CopyOut`,
+  `ConstantTimeEqual`, `WriteTo`, `ReadFrom`, `NewBuffer` and
+  `NewSyscallSafeBuffer` left whatever the copy or the callback had moved
+  through the vector and general-purpose registers in place. `secmem-crypto`'s
+  residue test copied a 32-byte secret between two locked buffers with nested
+  `WithBytesErr` calls and no `Scrub`, then let the goroutine be preempted after
+  they returned: about forty fragments of the secret were saved onto its stack
+  on every run, on both build modes. Each of those paths now clears both
+  register files (on amd64 and arm64) as the last thing before it returns, and
+  the same test finds nothing. A preemption landing while a `WithBytes` callback
+  is still running is not covered — only a `Scrub` window blocks that — and
+  `ByteAt` and `SetByteAt`, which move one byte, are unchanged. Proven by a
+  register dump after each path with a plain-call control, shown to fail with
+  the clear removed from `WithBytes` and `CopyIn`. Cost: about 2.6 ns per borrow
+  (15.4 to 18.0 ns for a `WithBytes` on a Core Ultra 7 265KF).
+
 - **`Scrub` and `ScrubErr` clear the general-purpose registers too.** On the
   legacy path they cleared only the vector registers, on the stated grounds
   that a clear of the general-purpose ones could not be shown to reach
