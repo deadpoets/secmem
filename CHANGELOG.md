@@ -309,7 +309,11 @@ mark the stability commitment.
   is sealed, where it used to return `ErrDestroyed` / `ErrSealed`. The doc
   now names what still transits the heap: crypto/mlkem's SHA3/SHAKE states
   and the recovered message, erased by the runtime on a runtimesecret build
-  and left to the collector elsewhere.
+  and left to the collector elsewhere. Holding the cached key makes the
+  struct no longer comparable: `*MLKEM768Key` pointers, which is how the
+  type is handed out, compare as before, but comparing `MLKEM768Key` values
+  or using them as map keys no longer compiles, and `gorelease` reports it
+  as incompatible.
 
 - **`secmem-crypto`: `RSASigner` wipes the standard library's FIPS-form
   key, and a wipe it cannot perform is an error.** The type doc said the
