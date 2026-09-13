@@ -189,10 +189,30 @@ mark the stability commitment.
   `Option`.** The error a refused RSA or ECDSA key returns (see Changed),
   and the option that accepts the residual instead. `Option` is new and is
   taken variadically by `NewRSASigner`, `GenerateRSASigner`,
-  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey` and
-  `ParsePrivateKeyWithPassphrase`; a nil `Option` is ignored.
+  `NewECDSASigner`, `GenerateECDSASigner`, `ParsePrivateKey`,
+  `ParsePrivateKeyWithPassphrase`, `HKDFInto` and `HMACInto`; a nil `Option`
+  is ignored.
 
 ### Changed
+
+- **`secmem-crypto`: `HKDFInto` and `HMACInto` run in place over SHA-2 and
+  SHA-3.** `crypto/hmac` kept the key XORed into both pads and the inner and
+  outer digest states — each enough to compute the MAC — in heap objects, and
+  `x/crypto/hkdf` added the pseudorandom key; the residue test found all of
+  them after every call. Over SHA-224/256/384/512, SHA-512/224 and /256 and
+  SHA3-224/256/384/512, each HMAC is now two of the standard library's
+  one-shot hash calls, whose state is a stack local, over a working region
+  that is a stack array in the Scrub window up to about 1 KiB and a locked
+  buffer beyond; the output is written straight into the buffer, and the only
+  allocation is the digest instance asked of the caller's constructor to
+  identify the hash (which must also agree with the one-shot on a fixed
+  input). The residue test now finds nothing. Over any other hash the old path
+  remains, and on a build without `GOEXPERIMENT=runtimesecret` it returns
+  `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` — a
+  behaviour change for callers using, say, BLAKE2b there. Measured cost: an
+  `HKDFSHA256Into` call went from about 1.4 µs and 15 allocations to about
+  3.4 µs and one on a Core Ultra 7, the difference being the cache-flushing
+  wipe of each working region.
 
 - **`secmem-crypto`: `X25519Key` computes in place.** `PublicKey` and
   `SharedSecret` no longer go through `golang.org/x/crypto/curve25519`, whose
@@ -221,9 +241,10 @@ mark the stability commitment.
   accept the residual pass `AllowHeapTransients()`; the README sets out when
   that is reasonable (load and sign rarely) and when it is not (sign
   continuously). Ed25519 and X25519 keys are never refused, and nothing
-  changes on a `GOEXPERIMENT=runtimesecret` build. `MLKEM768Key`, `HKDFInto` and
-  `HMACInto` are not gated; the README lists what each still leaves on the
-  heap. The constructors and parsers gain a
+  changes on a `GOEXPERIMENT=runtimesecret` build. `HKDFInto` and `HMACInto`
+  are refused the same way when given a hash other than SHA-2 or SHA-3 (see
+  their in-place entry). `MLKEM768Key` is not gated; the README lists what it
+  still leaves on the heap. The constructors and parsers gain a
   variadic `...Option` parameter: existing calls compile unchanged, but a
   function value of the old type no longer matches, which `gorelease` reports
   as incompatible. The next `secmem-crypto` release is a minor bump. The SSH

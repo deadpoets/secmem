@@ -344,9 +344,10 @@ type is not gated.
 
 The gate is scoped to `RSASigner` and `ECDSASigner`.
 `MLKEM768Key` is not gated, although crypto/mlkem's hash states absorb its
-seed halves and are not wiped. `HKDFInto` and `HMACInto` take the caller's
-key as a plain argument and leave HMAC states holding it; there is no key
-type to gate. The `secmem-crypto` README lists each.
+seed halves and are not wiped. `HKDFInto` and `HMACInto` run in place over
+SHA-2 and SHA-3, the standard library's one-shot hash calls keeping their
+state on the stack, and are gated only when given another hash. The
+`secmem-crypto` README lists each.
 
 ## Post-quantum posture
 

@@ -23,6 +23,7 @@ import (
 	"encoding/binary"
 	"encoding/pem"
 	"errors"
+	"hash"
 	"io"
 	"runtime"
 	"slices"
@@ -452,7 +453,7 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
-		name: "HKDFSHA256Into", class: residueTransient,
+		name: "HKDFSHA256Into", class: residueContained,
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
 			secret, salt := residueRandom(t, 32), residueRandom(t, 16)
 			prk := hmacSHA256(salt, secret)
@@ -460,7 +461,7 @@ var residueScenarios = []residueScenario{
 			if _, err := io.ReadFull(hkdf.New(sha256.New, secret, salt, []byte(residueMessage)), out); err != nil {
 				t.Fatal(err)
 			}
-			pats := append([]residuePattern{{"secret", secret}, {"output", out}}, hmacKeyPatterns(t, "prk", prk)...)
+			pats := append([]residuePattern{{"secret", secret}, {"output", out}}, hmacKeyPatterns(t, "prk", prk, "sha256")...)
 			return secret, salt, pats
 		},
 		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
@@ -478,10 +479,10 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
-		name: "HMACSHA256Into", class: residueTransient,
+		name: "HMACSHA256Into", class: residueContained,
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
 			secret := residueRandom(t, 32)
-			pats := append([]residuePattern{{"output", hmacSHA256(secret, []byte(residueMessage))}}, hmacKeyPatterns(t, "key", secret)...)
+			pats := append([]residuePattern{{"output", hmacSHA256(secret, []byte(residueMessage))}}, hmacKeyPatterns(t, "key", secret, "sha256")...)
 			return secret, nil, pats
 		},
 		victim: func(buf *secmem.SecureBuffer, _ []byte) (func() error, func() error, error) {
@@ -493,6 +494,61 @@ var residueScenarios = []residueScenario{
 				defer out.Destroy()
 				return buf.WithBytesErr(func(secret []byte) error {
 					return HMACSHA256Into(secret, []byte(residueMessage), out)
+				})
+			}
+			return op, buf.Destroy, nil
+		},
+	},
+	{
+		// A secret too long for the stack region: the working region is a
+		// locked buffer, and SHA-512's state is 64-bit words.
+		name: "HKDFInto/SHA-512-long-secret", class: residueContained, nOps: 8,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			secret, salt := residueRandom(t, 3000), residueRandom(t, 16)
+			m := hmac.New(sha512.New, salt)
+			m.Write(secret)
+			prk := m.Sum(nil)
+			out := make([]byte, 64)
+			if _, err := io.ReadFull(hkdf.New(sha512.New, secret, salt, []byte(residueMessage)), out); err != nil {
+				t.Fatal(err)
+			}
+			pats := append([]residuePattern{{"secret", secret}, {"output", out}}, hmacKeyPatterns(t, "prk", prk, "sha512")...)
+			return secret, salt, pats
+		},
+		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+			op := func() error {
+				out, err := secmem.NewEmptyBuffer(64)
+				if err != nil {
+					return err
+				}
+				defer out.Destroy()
+				return buf.WithBytesErr(func(secret []byte) error {
+					return HKDFInto(sha512.New, secret, aux, []byte(residueMessage), out)
+				})
+			}
+			return op, buf.Destroy, nil
+		},
+	},
+	{
+		// An info too long for the stack region, over SHA3-256, whose HMAC
+		// block is its 136-byte rate and whose state is the Keccak lanes.
+		name: "HMACInto/SHA3-256-long-info", class: residueContained, nOps: 8,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			key, info := residueRandom(t, 32), residueRandom(t, 3000)
+			m := hmac.New(func() hash.Hash { return sha3.New256() }, key)
+			m.Write(info)
+			pats := append([]residuePattern{{"output", m.Sum(nil)}}, hmacKeyPatterns(t, "key", key, "sha3-256")...)
+			return key, info, pats
+		},
+		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+			op := func() error {
+				out, err := secmem.NewEmptyBuffer(32)
+				if err != nil {
+					return err
+				}
+				defer out.Destroy()
+				return buf.WithBytesErr(func(key []byte) error {
+					return HMACInto(func() hash.Hash { return sha3.New256() }, key, aux, out)
 				})
 			}
 			return op, buf.Destroy, nil
@@ -637,32 +693,58 @@ func hmacSHA256(key, msg []byte) []byte {
 	return m.Sum(nil)
 }
 
-// hmacKeyPatterns covers everything an HMAC-SHA256 implementation derives
-// from a key of at most 64 bytes that recovers the MAC: the key, the key
-// XORed into the inner and outer pads, and the SHA-256 chaining value after
-// each pad block, in marshalled (big-endian) and in-memory (native
-// little-endian uint32) order. The chaining values are key-equivalent: with
-// them, anyone can compute the MAC.
-func hmacKeyPatterns(t *testing.T, label string, key []byte) []residuePattern {
+// hmacKeyPatterns covers everything an HMAC implementation derives from a
+// key no longer than the hash's block that recovers the MAC: the key, the key
+// XORed into the inner and outer pads, and the hash state after each pad
+// block — SHA-2's chaining value in marshalled (big-endian) and in-memory
+// (native little-endian words) order, or SHA-3's whole Keccak state. The
+// states are key-equivalent: with them, anyone can compute the MAC.
+func hmacKeyPatterns(t *testing.T, label string, key []byte, alg string) []residuePattern {
 	t.Helper()
+	var (
+		newHash func() hash.Hash
+		state   func(st []byte) []residuePattern
+	)
+	switch alg {
+	case "sha256":
+		newHash = sha256.New
+		state = func(st []byte) []residuePattern { // "sha\x03", h[0..7] as big-endian uint32
+			cv := slices.Clone(st[4:36])
+			return []residuePattern{{"state-be", cv}, {"state-mem", wordSwap(cv, 4)}}
+		}
+	case "sha512":
+		newHash = sha512.New
+		state = func(st []byte) []residuePattern { // "sha\x07", h[0..7] as big-endian uint64
+			cv := slices.Clone(st[4:68])
+			return []residuePattern{{"state-be", cv}, {"state-mem", wordSwap(cv, 8)}}
+		}
+	case "sha3-256":
+		newHash = func() hash.Hash { return sha3.New256() }
+		state = func(st []byte) []residuePattern { // "sha\x08", rate, a[200]
+			return []residuePattern{{"state", slices.Clone(st[5:205])}}
+		}
+	default:
+		t.Fatalf("hmacKeyPatterns: unknown hash %q", alg)
+	}
 	pats := []residuePattern{{label, key}, {label + "^ipad", xorAll(key, 0x36)}, {label + "^opad", xorAll(key, 0x5c)}}
 	for _, pad := range []struct {
 		name string
 		x    byte
 	}{{"inner", 0x36}, {"outer", 0x5c}} {
-		block := make([]byte, 64)
+		h := newHash()
+		block := make([]byte, h.BlockSize())
 		copy(block, key)
 		for i := range block {
 			block[i] ^= pad.x
 		}
-		h := sha256.New()
 		h.Write(block)
 		st, err := h.(encoding.BinaryMarshaler).MarshalBinary()
 		if err != nil {
 			t.Fatal(err)
 		}
-		cv := st[4:36] // "sha\x03" then h[0..7] big-endian
-		pats = append(pats, residuePattern{label + "-" + pad.name + "-state-be", slices.Clone(cv)}, residuePattern{label + "-" + pad.name + "-state-mem", wordSwap(cv, 4)})
+		for _, p := range state(st) {
+			pats = append(pats, residuePattern{label + "-" + pad.name + "-" + p.label, p.b})
+		}
 	}
 	return pats
 }

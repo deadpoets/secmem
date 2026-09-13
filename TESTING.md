@@ -126,7 +126,7 @@ that is said outright rather than dressed up.
 | Ed25519 matches RFC 8032 | All 5 official vectors, byte-identical differential vs `crypto/ed25519`, differential fuzz, and an S < L malleability check | `ed25519direct_test.go`, `fuzz_test.go` |
 | ECDSA deterministic mode matches RFC 6979 | Six appendix vectors (P-256/384/521, SHA-256), byte-identical differential vs `crypto/ecdsa`, differential fuzz | `ecdsa_test.go`, `fuzz_block3_test.go` |
 | X25519 matches RFC 7748 | The in-place ladder against RFC 7748 §5.2's vectors, single and 1000-times iterated; a differential and a fuzz target against `curve25519` over random, non-canonical and low-order points (an all-zero output exactly where the standard library reports low order); zero allocations; and the ladder text-identical to the toolchain's own `crypto/ecdh`, shown to fail on a changed constant. Through `X25519Key`: §6.1 vectors both directions, differential fuzz, low-order-point rejection | `internal/x25519/x25519_test.go`, `alloc_test.go`, `upstream_identity_test.go`; `x25519_test.go`, `fuzz_block2_test.go` |
-| HKDF matches RFC 5869 | Test cases 1–3 (SHA-256), differential vs `x/crypto/hkdf`, hash agility | `kdf_test.go` |
+| HKDF matches RFC 5869, and HMAC RFC 2104, in place | Test cases 1–3 (SHA-256); differentials against `x/crypto/hkdf` and `crypto/hmac` for all ten in-place hashes (SHA-224/256/384/512, SHA-512/224 and /256, SHA3-224/256/384/512) over key, salt, secret, info and output lengths either side of the hash's block and of the stack region — so both the stack and the locked-buffer working region run — up to the RFC's 255-block maximum; each standard constructor identified as its one-shot and SHA-1, MD5, BLAKE2b and a wrapped SHA-256 not; the heap path for those refused under a refusing policy and correct when admitted; and the in-place calls allocating nothing but the hash probe, attributed by memory profile. Shown to fail against a wrong inner pad and an off-by-one block counter | `kdf_test.go`, `hmac_inplace_test.go`, `classification_test.go` |
 | Argon2 is the standard function | RFC 9106 §5 vectors for Argon2d/i/id (K and X set), the `x/crypto/argon2` reference KAT, and a differential table plus fuzz target against `x/crypto` | `secmem-crypto/argon2_public_test.go`, `secmem-crypto/kdf_test.go`, `secmem-crypto/internal/argon2/argon2_test.go` |
 | Argon2's working state is wiped | The test owns the workspace and asserts every region is non-zero after the derivation (control) and zero after the wipe, and that the named views tile the region exactly | `secmem-crypto/internal/argon2/wipe_test.go` |
 | The core's vector-register clear reaches what `secmem-crypto`'s windows leave | The fork's own clear is gone; these tests show the clear at the end of the `Scrub` window covers it. Argon2: the SSE blamka run bare must leave block state visible in X0–X15 (control; a zero is a failure, not a skip), the same step inside a worker-shaped `Scrub` window and a whole `Derive` must leave the file all zero. The passphrase path: `opensshCrypt` (SHA-512 and AES-NI) run bare must leave residue, run inside the `ScrubErr` window its callers use must leave none. Pinned to one thread for the whole sequence; the dump is a test-only assembly probe (`secmem-crypto/internal/regprobe`) | `secmem-crypto/internal/argon2/scrubclear_amd64_test.go`, `secmem-crypto/vecclear_amd64_test.go` |
@@ -236,10 +236,12 @@ stand-in rather than measured directly.
   sets it with `fcntl` is likewise unexercised on the kernels the suite has
   run on. The flag is passed at creation in `mlock_linux.go`, and that is the
   extent of the evidence.
-- **That `HKDFInto`'s Extract step runs inside its scrub window is a code
-  property, not a measured one.** The v0.4.0 fix moved the `hkdf.New` call
-  under `secmem.ScrubErr`; nothing observes from outside which code ran
-  inside the window, so the ordering is reviewed, not tested.
+- **That `HKDFInto`'s heap path runs Extract inside its scrub window is a
+  code property, not a measured one.** The v0.4.0 fix moved the `hkdf.New`
+  call under `secmem.ScrubErr`; the residue test measures the in-place path
+  (SHA-2, SHA-3) and finds no pseudorandom key, but the heap path for other
+  hashes is refused on a legacy build and not scanned, so its ordering is
+  reviewed, not tested.
 - **Argon2 is pinned to RFC 9106's §5 vectors and to `x/crypto`.** The RFC
   vectors set a secret key and associated data, which `Argon2Into` exposes
   (`golang.org/x/crypto/argon2` does not); the in-tree fork is additionally

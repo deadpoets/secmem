@@ -21,8 +21,10 @@ import (
 // contains the key whether or not the durable copy lives in a SecureBuffer.
 //
 // Returned by [NewRSASigner], [GenerateRSASigner], [NewECDSASigner] and
-// [GenerateECDSASigner], and by [ParsePrivateKey] and
-// [ParsePrivateKeyWithPassphrase] for an RSA or EC key file. The refusal
+// [GenerateECDSASigner], by [ParsePrivateKey] and
+// [ParsePrivateKeyWithPassphrase] for an RSA or EC key file, and by
+// [HKDFInto] and [HMACInto] given a hash other than SHA-2 or SHA-3, which
+// have no in-place implementation. The refusal
 // happens before the key is handed to the standard library, so a refused
 // call makes none of the heap copies it exists to prevent. A caller who
 // accepts that residual passes [AllowHeapTransients]; a caller who does not
@@ -38,7 +40,8 @@ type options struct {
 	allowHeapTransients bool
 }
 
-// AllowHeapTransients lets [RSASigner] and [ECDSASigner] be built on a build where their per-operation heap copies of the private key
+// AllowHeapTransients lets [RSASigner] and [ECDSASigner] be built, and
+// [HKDFInto] and [HMACInto] run over a hash other than SHA-2 or SHA-3, on a build where their per-operation heap copies of the private key
 // are never erased. Without it, the constructors and the parsers refuse such
 // keys there with [ErrHeapTransients].
 //
@@ -74,6 +77,16 @@ func resolveOptions(opts []Option) options {
 // on any build; policy_test.go pins that its default is
 // secmem.RuntimeSecretActive, so this cannot quietly become permissive.
 var heapTransientsAllowed = secmem.RuntimeSecretActive
+
+// checkHeapTransientsHash is the same gate for HMACInto and HKDFInto given
+// a hash that has no in-place implementation; its remedy names the hashes
+// that do.
+func (o options) checkHeapTransientsHash(op string) error {
+	if o.allowHeapTransients || heapTransientsAllowed() {
+		return nil
+	}
+	return fmt.Errorf("%s: %w (use a SHA-2 or SHA-3 hash, which run in place, build with GOEXPERIMENT=runtimesecret on linux/amd64 or linux/arm64, or pass AllowHeapTransients to accept the residual)", op, ErrHeapTransients)
+}
 
 // checkHeapTransients is the gate every RSA and ECDSA constructor calls
 // before touching key material; op names the constructor for the error.

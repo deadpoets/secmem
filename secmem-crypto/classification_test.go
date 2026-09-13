@@ -12,6 +12,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"hash"
 	"io"
 	"testing"
 
@@ -119,13 +120,6 @@ func TestClassification_Transient(t *testing.T) {
 		t.Fatal(err)
 	}
 	ss.Destroy()
-	out, err := secmem.NewEmptyBuffer(32)
-	if err != nil {
-		t.Skipf("NewEmptyBuffer: %v", err)
-	}
-	defer out.Destroy()
-	secret := []byte("0123456789abcdef0123456789abcdef")
-
 	for _, tc := range []struct {
 		name string
 		op   func()
@@ -133,8 +127,6 @@ func TestClassification_Transient(t *testing.T) {
 		{"ECDSASigner.Sign", func() { _, _ = ec.Sign(rand.Reader, digest[:], crypto.SHA256) }},
 		{"RSASigner.Sign", func() { _, _ = rs.Sign(rand.Reader, digest[:], crypto.SHA256) }},
 		{"MLKEM768Key.Decapsulate", func() { s, _ := mk.Decapsulate(ct); s.Destroy() }},
-		{"HKDFSHA256Into", func() { _ = HKDFSHA256Into(secret, nil, []byte("info"), out) }},
-		{"HMACSHA256Into", func() { _ = HMACSHA256Into(secret, []byte("info"), out) }},
 	} {
 		tc.op()
 		if got := testing.AllocsPerRun(5, tc.op); got == 0 {
@@ -174,6 +166,41 @@ func TestClassification_Contained_X25519(t *testing.T) {
 	})
 	if shared != bufferOnly {
 		t.Errorf("X25519Key.SharedSecret: %.1f allocs/op, want %.1f (the returned SecureBuffer's own, and nothing else)", shared, bufferOnly)
+	}
+}
+
+var (
+	classificationCtor = sha256.New
+	classificationSink hash.Hash
+)
+
+// TestClassification_Contained_HKDFHMAC pins HKDF and HMAC over SHA-256 as
+// contained: the only allocation either makes is the one digest instance it
+// asks the caller's constructor for, to identify the hash — measured
+// alongside, so the count is "the probe, and nothing else".
+func TestClassification_Contained_HKDFHMAC(t *testing.T) {
+	out, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		t.Skipf("NewEmptyBuffer: %v", err)
+	}
+	defer out.Destroy()
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	info := []byte("info")
+	// The probe through a constructor value, stored where it escapes, the
+	// way the library receives it — a direct sha256.New() would stay on the
+	// stack and count as nothing.
+	probeOnly := testing.AllocsPerRun(100, func() { classificationSink = classificationCtor() })
+	for _, tc := range []struct {
+		name string
+		op   func()
+	}{
+		{"HKDFSHA256Into", func() { _ = HKDFSHA256Into(secret, nil, info, out) }},
+		{"HMACSHA256Into", func() { _ = HMACSHA256Into(secret, info, out) }},
+	} {
+		tc.op()
+		if got := testing.AllocsPerRun(100, tc.op); got != probeOnly {
+			t.Errorf("%s: %.1f allocs/op, want %.1f (the hash probe alone)", tc.name, got, probeOnly)
+		}
 	}
 }
 
