@@ -33,14 +33,18 @@ func (p *regProbe) plant() {
 }
 
 // survivors dumps both files and reports what still holds the pattern: the
-// number of planted vector bytes, and the names of planted GP registers.
-// Nothing may run between the caller's operation and this call.
+// number of vector registers whose whole 16 bytes are still the planted
+// value, and the names of general-purpose registers still holding their
+// planted word. Matching whole registers matters: code that runs after a
+// subject (a Destroy, say) legitimately leaves its own values in the
+// registers, and over hundreds of bytes some will equal a planted byte by
+// chance.
 func (p *regProbe) survivors() (int, []string) {
 	p.dumpV()
 	p.dumpGP()
 	v := 0
-	for i := range p.vPlanted {
-		if p.vGot[i] == p.vPlanted[i] {
+	for off := 0; off+16 <= len(p.vPlanted); off += 16 {
+		if bytes.Equal(p.vGot[off:off+16], p.vPlanted[off:off+16]) {
 			v++
 		}
 	}
@@ -71,9 +75,9 @@ func TestBorrowPaths_ClearRegistersOnReturn(t *testing.T) {
 
 	borrowControlCall(fill)
 	if v, gp := p.survivors(); v == 0 || len(gp) == 0 {
-		t.Fatalf("control: %d planted vector bytes and %v planted registers survive a plain call; the probe cannot show a clear doing anything", v, gp)
+		t.Fatalf("control: %d planted vector registers and %v survive a plain call; the probe cannot show a clear doing anything", v, gp)
 	} else {
-		t.Logf("control: %d planted vector bytes and %v survive a plain call", v, gp)
+		t.Logf("control: %d planted vector registers and %v survive a plain call", v, gp)
 	}
 
 	buf, err := NewBuffer(bytes.Repeat([]byte{0x42}, 64))
@@ -114,7 +118,7 @@ func TestBorrowPaths_ClearRegistersOnReturn(t *testing.T) {
 	} {
 		sub.run()
 		if v, gp := p.survivors(); v != 0 || len(gp) != 0 {
-			t.Errorf("%s: %d planted vector bytes and planted %v survive its return", sub.name, v, gp)
+			t.Errorf("%s: %d planted vector registers and planted %v survive its return", sub.name, v, gp)
 		}
 	}
 }
