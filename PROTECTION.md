@@ -89,14 +89,54 @@ the stack and registers of the goroutine running it, for as long as it runs.
 | **An on-die accelerator on a unified-memory SoC** | not protected: locking constrains the CPU's view, not a GPU's or NPU's | not protected | not protected |
 | **Timing and cache side channels** | not addressed by secmem, and not measured: the arithmetic is the standard library's, or `filippo.io/edwards25519`'s, called or copied unchanged, and inherits their constant-time properties. secmem's own code over key bytes — the HMAC pad XOR, X25519 clamping, comparison through `crypto/subtle`, Diceware word selection (shown to read every entry) — is written not to branch or index on their values. Argon2d, and Argon2id after its first half pass, index memory by data by design of the algorithm | same | same |
 
+## RSA and ECDSA stay gated
+
+This is a decision, not a gap waiting to be filled. The copies that leak those
+keys are made inside the standard library's own `crypto/internal/fips140`
+code, which rebuilds the private key on the heap for every signature; nothing
+exported can reach them. The only fix would be to fork that code — the ECDSA
+and RSA signing paths and the `bigmod` arithmetic under them — into this
+module, several thousand lines of the most consequential code in Go, where a
+mistake does not fail a test but silently weakens or leaks the key it was
+written to protect. That trade is not worth making, so it will not be made,
+and these types stay refused on a build that cannot erase the copies.
+
+What that means if you need RSA or ECDSA:
+
+- **Preferred:** keep the key where it is never in this process's memory — a
+  TPM, an HSM, a KMS, or a signing service. secmem's own guarantees stop at
+  the process boundary; those move the key outside it.
+- **Acceptable:** a short-lived process that loads the key, signs, and exits,
+  so the copies die with it and the window is seconds rather than the life of
+  a service.
+- **A deliberate residual:** pass `AllowHeapTransients()` for a key that is
+  loaded once and used rarely — a release-signing key, say. Write it down as a
+  residual. The buffer still gives real at-rest custody: the durable copy is
+  locked, guard-paged, wiped on `Destroy` and excluded from dumps. What it
+  does not give is protection during and after each signature.
+- **Not reasonable:** a service that signs continuously on a build without
+  `GOEXPERIMENT=runtimesecret`. It has an unwiped copy of the key on the heap
+  at almost every moment, and opting in only silences the error that says so.
+  A runtime/secret build is better but not a fix: the copies are erased at the
+  next garbage collection, and a busy signer makes new ones faster than that.
+
+Ed25519 and X25519 have in-place implementations here and are never refused,
+so where the protocol allows a choice, they are the choice that this library
+can actually protect.
+
 ## How the levels are measured
 
-`secmem-crypto`'s out-of-process residue test (`residue_linux_test.go`,
-`residue_scenarios_test.go`) runs each entry point in a victim process that
-received known key material straight into a `SecureBuffer`, freezes it with
-`SIGSTOP` after construction, after use, after garbage collection and after
-`Destroy`, and reads every readable page through `/proc/<pid>/mem`, counting
-matches outside the mappings the kernel reports as locked. It searches for
+`secmem-crypto`'s out-of-process residue test (`residue_test.go` and its
+per-OS halves, with `residue_scenarios_test.go`) runs each entry point in a
+victim process that received known key material straight into a
+`SecureBuffer`, freezes it after construction, after use, after garbage
+collection and after `Destroy`, and reads every readable page of it, counting
+matches outside the memory the kernel reports as locked. On Linux it freezes
+the victim with `SIGSTOP`, reads it through `/proc/<pid>/mem` and takes the
+locked mappings from `smaps`; on Windows it suspends every thread of the
+victim, reads it with `VirtualQueryEx` and `ReadProcessMemory`, and asks
+`QueryWorkingSetEx` per page whether the kernel has that page locked in
+physical memory — the kernel's answer in both cases, never the victim's. It searches for
 every encoding it can derive that recovers the key: raw and little-endian
 integers, the RSA FIPS-form limbs and Montgomery constants, the Ed25519 scalars
 in `edwards25519`'s internal layout and the nonce digest, the HMAC pads and
@@ -104,14 +144,30 @@ chaining values, the ML-KEM secret polynomial and SHAKE state, the AES round
 keys and GHASH table, Argon2's H0, and each output. Every scan must also find a
 heap canary the victim keeps alive, so a scan that sees nothing fails. Controls
 show the scan finding a heap copy, a copy made outside `Scrub`, and a copy the
-runtime saved to the stack by preemption. CI runs it on linux/amd64 and
-linux/arm64, on both kinds of build, with no skip allowed.
+runtime saved to the stack by preemption, and on Windows a control that a
+locked page is reported locked and a heap page is not — without which the scan
+could call everything locked and find nothing anywhere. CI runs it on
+linux/amd64 and linux/arm64 on both kinds of build, and on windows/amd64, with
+no skip allowed.
 
 Its limits, which are the limits of the levels above:
 
-- **Linux only.** Windows and macOS run the same Go code as a Linux legacy
-  build, so the legacy column is what to expect there, but the scan has not
-  been run on them.
+- **macOS is not measured.** It runs the same Go code as a Linux legacy build,
+  so the legacy column is what to expect there, but the scan has not been run
+  on it. Linux and Windows are measured.
+- **Windows is measured, and differs in two ways.** Every entry point the
+  table calls *Protected* leaves nothing there either, and the *Protected at
+  rest only* rows leave the same copies as a Linux legacy build. But: locked
+  pages are readable by any process with `PROCESS_VM_READ` (there is no
+  `memfd_secret` equivalent), so the scan finds the buffers' own contents and
+  counts them as locked hits — the row "another process reading this one's
+  memory" is weaker there, as it says. And `Scrub` cannot block Go's
+  asynchronous preemption on Windows, because there is no signal to block: a
+  control that deliberately spins inside a window with a secret in registers
+  leaves about thirty copies of it in memory the window does not wipe, and
+  they survive collection and `Destroy`. No real entry point showed that in
+  the scan — their operations are too short to be preempted often — but it is
+  not ruled out for a long operation, and it cannot be fixed from this side.
 - **What it cannot search for.** The ECDSA nonce (random per signature), the
   RSA signature's intermediate Montgomery tables, Argon2's memory blocks, the
   Blowfish schedule inside bcrypt_pbkdf, and the key a passphrase export derives
@@ -127,9 +183,10 @@ Its limits, which are the limits of the levels above:
 ## Choosing
 
 - **Signing:** Ed25519 is protected; ECDSA and RSA are not beyond at-rest
-  custody. Keys that must be ECDSA or RSA — a WebPKI certificate, UEFI Secure
-  Boot's RSA-2048, a TPM policy key — belong in an HSM, a TPM, or a KMS, or in a
-  short-lived process that loads the key, signs, and exits.
+  custody, and that is settled rather than pending — see below. Keys that must
+  be ECDSA or RSA — a WebPKI certificate, UEFI Secure Boot's RSA-2048, a TPM
+  policy key — belong in an HSM, a TPM, or a KMS, or in a short-lived process
+  that loads the key, signs, and exits.
 - **Key agreement:** X25519 is protected. For ML-KEM the decapsulation key and
   the sender side are protected, but each decapsulation's shared key is exposed
   as the table says, so `MLKEM768Key` is refused on a legacy build like RSA and

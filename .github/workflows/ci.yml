@@ -187,10 +187,10 @@ jobs:
       - run: go test -run TestNoHeapEscape ./...
         working-directory: secmem-crypto
 
-  # The out-of-process key residue proof (secmem-crypto/residue_linux_test.go):
-  # a parent freezes a victim subprocess and scans its whole address space for
-  # every encoding of each entry point's key, which is what the README's
-  # protection table is measured against. It is //go:build !race — the race
+  # The out-of-process key residue proof (secmem-crypto/residue_test.go and
+  # its per-OS halves): a parent freezes a victim subprocess and scans its
+  # whole address space for every encoding of each entry point's key, which is
+  # what the README's protection table is measured against. It is //go:build !race — the race
   # detector's shadow reservations make an address-space scan meaningless —
   # so none of the -race jobs above run it. Both build modes on both deployed
   # architectures, because what a transient entry point leaves behind is
@@ -217,6 +217,27 @@ jobs:
           allowlist: linux-residue
           memlock: unlimited
           args: "-count=1 -run ^TestKeyResidue$"
+
+  # The same proof on windows/amd64, where the scan is a different mechanism:
+  # every thread of the victim is suspended to freeze it, VirtualQueryEx and
+  # ReadProcessMemory read it, and QueryWorkingSetEx answers per page whether
+  # the kernel has it locked. It runs the locked-page control too, which pins
+  # that answer — without it the scan could call every page locked and find
+  # nothing anywhere. There is no GOEXPERIMENT=runtimesecret here (it is
+  # linux/amd64 and linux/arm64 only), so one lane covers the platform.
+  test-residue-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+      - uses: ./.github/actions/test-audited
+        with:
+          working-directory: secmem-crypto
+          allowlist: windows-residue
+          args: "-count=1 -run '^(TestKeyResidue|TestResidueLockedPages_Detected)$'"
 
   # The isolation proofs as ROOT. memfd_secret's claim is that the pages are
   # unreadable through /proc/<pid>/mem and process_vm_readv even by a reader
