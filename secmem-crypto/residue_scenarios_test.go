@@ -1,4 +1,4 @@
-//go:build linux && (amd64 || arm64) && !race
+//go:build (linux || windows) && (amd64 || arm64) && !race
 
 package secmemcrypto
 
@@ -74,6 +74,14 @@ type residueScenario struct {
 	// scenario is skipped with the reason; against a local or workspace tree
 	// (no release version) it always runs.
 	minCore string
+	// needsPreemptSuppression marks a scenario whose class holds only where
+	// Scrub blocks Go's asynchronous preemption — Linux, through the signal
+	// mask. Where Capabilities.AsyncPreemptSuppressed is false (Windows and
+	// Darwin, which have no signal to block), a preemption inside the window
+	// copies the register file somewhere the window does not wipe, so the
+	// scenario asserts the spill class there instead: the copies are present,
+	// which is the platform's documented limit, measured rather than assumed.
+	needsPreemptSuppression bool
 	// material runs in the parent: the secret the victim receives in a
 	// SecureBuffer, public inputs, and every encoding to hunt for.
 	material func(t *testing.T) (secret, aux []byte, pats []residuePattern)
@@ -146,9 +154,10 @@ var residueScenarios = []residueScenario{
 	},
 	{
 		name: "control/preempted-copy-in-scrub", class: residueContained, nOps: 4,
-		minCore:  "v0.6.0", // Scrub clears the general-purpose registers (arm64 memmove uses them) from this release
-		material: randomSecret(32, "secret"),
-		victim:   preemptedCopy(true),
+		minCore:                 "v0.6.0", // Scrub clears the general-purpose registers (arm64 memmove uses them) from this release
+		needsPreemptSuppression: true,
+		material:                randomSecret(32, "secret"),
+		victim:                  preemptedCopy(true),
 	},
 	{
 		name: "Ed25519Signer", class: residueContained,

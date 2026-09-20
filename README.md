@@ -127,8 +127,9 @@ registers inside a window and reading them back zero after it, with a control
 that must show the pattern surviving when the clear is left out, and the
 general-purpose and borrow-path clears the same way, per register. What each
 key type leaves in memory after use is measured from a separate process on
-linux/amd64 and linux/arm64; [`PROTECTION.md`](PROTECTION.md) has the result
-per key type and per attack.
+linux/amd64, linux/arm64 and windows/amd64 — where the scan also measures what
+the absence of a preemption block costs;
+[`PROTECTION.md`](PROTECTION.md) has the result per key type and per attack.
 
 † Whether `memfd_secret` is live is **not** decided by the kernel version, and
 not even by `CONFIG_SECRETMEM` alone. It needs the kernel to be able to split

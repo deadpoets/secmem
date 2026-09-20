@@ -360,9 +360,13 @@ all; the standard library's copies come from the `crypto/ecdh` key object
 around it, so this module calls the ladder directly over the buffer and the
 type is not gated.
 
-The gate does not make these types safe to use continuously on a
-runtime/secret build either — it only stops a legacy build from using them
-without saying so. `MLKEM768Key` is gated the same way for a smaller copy:
+The gate is permanent, not a placeholder: the copies are made inside the
+standard library's own fips140 code, and the only fix would be forking the
+ECDSA, RSA and bigmod paths into this module — thousands of lines where a
+mistake leaks the key rather than failing a test. [PROTECTION.md](PROTECTION.md)
+sets out what to do instead. The gate does not make these types safe to use
+continuously on a runtime/secret build either — it only stops a legacy build
+from using them without saying so. `MLKEM768Key` is gated the same way for a smaller copy:
 its decapsulation key is contained, but each `Decapsulate` leaves the message
 it recovers on the heap, and that message gives the ciphertext's shared key.
 `Encapsulate` leaves nothing and is not gated. `HKDFInto` and `HMACInto` run
