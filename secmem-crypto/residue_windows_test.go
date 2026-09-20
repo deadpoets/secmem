@@ -143,9 +143,12 @@ func residueReadableProtect(protect uint32) bool {
 // residueWSEntry mirrors PSAPI_WORKING_SET_EX_INFORMATION: a page address and
 // the flags the kernel reports for it. It is declared here rather than using
 // x/sys/windows' own type because that type's address field is a Pointer,
-// which a remote process's address is not, and because its Locked accessor
-// cannot work as written: it tests `b&(1<<22) == 1`, which that bit can
-// never equal, so it always reports false. The bit is read directly below.
+// which a remote process's address is not, and because its single-bit
+// accessors above bit 0 cannot work as written: Shared, Locked, LargePage and
+// Bad each test `b&(1<<n) == 1`, which a bit at n > 0 can never equal, so all
+// four always report false. Only Valid (bit 0) and the multi-bit fields
+// (ShareCount, Win32Protection, Node), which mask and shift, are usable. Read
+// the bits directly, as below, until that is fixed upstream.
 type residueWSEntry struct {
 	addr  uintptr
 	attrs uint64
