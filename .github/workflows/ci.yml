@@ -412,10 +412,14 @@ jobs:
           go build ./...
           cd secmem-crypto && go build ./...
       # vet type-checks the test files too, which `go build` does not.
-      # unsafeptr is off: it has no exemption for non-stdlib syscall wrappers
-      # and flags the VirtualAlloc conversion and the dead-stack probes on
-      # every amd64 target (see the mlock_windows.go header); golangci-lint
-      # carries the same, scoped, exclusions.
+      # unsafeptr is off: it has no exemption for non-stdlib syscall wrappers,
+      # so it flags four sites wherever their files build — the VirtualAlloc
+      # conversion on Windows (see the mlock_windows.go header), the two
+      # guard-page probes, and the dead-stack read. Each reads memory the GC
+      # does not own, or holds the collector off while it reads what it does;
+      # `go vet` honours no suppression comment, so the flag is the only way
+      # to say so here. golangci-lint carries the same exclusions, scoped by
+      # path, and the //nolint:govet comments at those sites say why.
       - name: vet
         env:
           GOOS: ${{ matrix.goos }}
