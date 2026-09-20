@@ -118,11 +118,19 @@ func fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.Public
 }
 
 // TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures opens files a real
-// ssh-keygen wrote — the default profile, one round, CBC, and every key
-// type — and proves each parsed signer is the key the .pub advertises.
+// ssh-keygen wrote — the default profile, one round, every AES key size in
+// both modes, and every key type — and proves each parsed signer is the key
+// the .pub advertises. The aes128 and aes192 files matter because OpenSSH
+// derives exactly key||IV from the KDF, so a shorter key is a shorter
+// derivation: a parser that always asked for 32+16 bytes would decrypt them
+// to nothing that parses.
 // The chacha20-poly1305 file must be refused by name.
 func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
-	for _, name := range []string{"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1", "ecdsa-a1", "rsa-a1"} {
+	for _, name := range []string{
+		"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1",
+		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1", "ed25519-aes128-cbc-a1",
+		"ecdsa-a1", "rsa-a1",
+	} {
 		t.Run(name, func(t *testing.T) {
 			pemBytes, raw, pub := fixture(t, name)
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
@@ -215,7 +223,7 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		{"kdf none", testContainer("aes256-ctr", "none", nil, 16), testPassphrase, ErrNotEncrypted},
 		{"cipher none", testContainer("none", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrNotEncrypted},
 		{"unknown kdf", testContainer("aes256-ctr", "scrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
-		{"aes128", testContainer("aes128-ctr", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
+		{"unsupported cipher", testContainer("aes256-gcm@openssh.com", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
 		{"rounds over cap", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, opensshMaxRounds+1), 16), testPassphrase, ErrUnsupportedKey},
 		{"rounds zero", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 0), 16), testPassphrase, errMalformed},
 		{"empty salt", testContainer("aes256-ctr", "bcrypt", testKDFOpts(0, 1), 16), testPassphrase, errMalformed},
@@ -363,7 +371,10 @@ func TestParsePrivateKeyWithPassphrase_FromSecureBuffer(t *testing.T) {
 // Files that name more than four KDF rounds are skipped — cost is linear in
 // rounds and the mutator would otherwise spend its time in bcrypt.
 func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
-	for _, name := range []string{"ed25519-a1", "ed25519-cbc-a1", "ecdsa-a1", "rsa-a1", "ed25519-chacha-a1"} {
+	for _, name := range []string{
+		"ed25519-a1", "ed25519-cbc-a1", "ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
+		"ecdsa-a1", "rsa-a1", "ed25519-chacha-a1",
+	} {
 		pemBytes, raw, _ := fixture(f, name)
 		f.Add(pemBytes)
 		f.Add(raw)

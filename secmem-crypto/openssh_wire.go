@@ -22,6 +22,10 @@ const (
 	opensshCipherNone  = "none"
 	opensshCipherCTR   = "aes256-ctr"
 	opensshCipherCBC   = "aes256-cbc"
+	opensshCipher128C  = "aes128-ctr"
+	opensshCipher192C  = "aes192-ctr"
+	opensshCipher128B  = "aes128-cbc"
+	opensshCipher192B  = "aes192-cbc"
 	opensshKDFNone     = "none"
 	opensshKDFBcrypt   = "bcrypt"
 	opensshSaltLen     = 16   // what ssh-keygen writes
@@ -30,7 +34,8 @@ const (
 	opensshAESBlock    = 16
 	opensshNoneBlock   = 8
 	opensshKeyEd25519  = "ssh-ed25519"
-	opensshKeyIVLen    = 32 + 16 // AES-256 key || CTR/CBC IV
+	opensshMaxKeyLen   = 32                    // AES-256; the scratch is sized for the largest
+	opensshKeyIVLen    = opensshMaxKeyLen + 16 // key || CTR/CBC IV
 	opensshKDFOptsSize = 4 + opensshSaltLen + 4
 )
 
@@ -41,9 +46,38 @@ type opensshCipher uint8
 
 const (
 	cipherUnsupported opensshCipher = iota
+	cipherAES128CTR
+	cipherAES192CTR
 	cipherAES256CTR
+	cipherAES128CBC
+	cipherAES192CBC
 	cipherAES256CBC
 )
+
+// keyLen is the cipher's key length in bytes. OpenSSH derives exactly
+// keyLen+ivLen bytes from the KDF, so this decides what bcrypt_pbkdf is asked
+// for; the IV is one AES block for every mode here.
+func (c opensshCipher) keyLen() int {
+	switch c {
+	case cipherAES128CTR, cipherAES128CBC:
+		return 16
+	case cipherAES192CTR, cipherAES192CBC:
+		return 24
+	case cipherAES256CTR, cipherAES256CBC:
+		return 32
+	}
+	return 0
+}
+
+// cbc reports whether the cipher is a CBC mode, which this package decrypts
+// but never writes (see marshalOpenSSH).
+func (c opensshCipher) cbc() bool {
+	switch c {
+	case cipherAES128CBC, cipherAES192CBC, cipherAES256CBC:
+		return true
+	}
+	return false
+}
 
 // opensshCipherByName maps a container's cipher name to the enum;
 // cipherUnsupported for anything this package does not run.
@@ -53,6 +87,14 @@ func opensshCipherByName(name []byte) opensshCipher {
 		return cipherAES256CTR
 	case opensshCipherCBC:
 		return cipherAES256CBC
+	case opensshCipher128C:
+		return cipherAES128CTR
+	case opensshCipher192C:
+		return cipherAES192CTR
+	case opensshCipher128B:
+		return cipherAES128CBC
+	case opensshCipher192B:
+		return cipherAES192CBC
 	}
 	return cipherUnsupported
 }

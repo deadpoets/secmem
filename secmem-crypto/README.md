@@ -267,9 +267,8 @@ and Ed25519ctx (above). `ErrRetiredAlgorithm` is for input this package
 refuses to read; those two are things it refuses to produce.
 
 What is **not** in this category, and may yet arrive: PKCS#8 PBES2
-(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, and the aes128 and aes192
-OpenSSH ciphers. Those need forks that wipe their working state, which is
-work, not a judgement.
+(PBKDF2/scrypt) and `chacha20-poly1305@openssh.com`. Those need forks that
+wipe their working state, which is work, not a judgement.
 
 ## Versioning
 

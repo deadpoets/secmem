@@ -17,6 +17,9 @@ public key `ssh-keygen` wrote alongside.
 | `ed25519-a16` | `ssh-keygen -t ed25519` | ssh-keygen's defaults: aes256-ctr, bcrypt, 16 rounds |
 | `ed25519-a1` | `ssh-keygen -t ed25519 -a 1` | one round, for the tests that parse many times |
 | `ed25519-cbc-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes256-cbc` | the CBC mode |
+| `ed25519-aes128-ctr-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes128-ctr` | a 16-byte key: the KDF derives key\|\|IV, so the length is part of the format |
+| `ed25519-aes192-ctr-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes192-ctr` | a 24-byte key |
+| `ed25519-aes128-cbc-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes128-cbc` | a short key in CBC mode |
 | `ed25519-chacha-a1` | `ssh-keygen -t ed25519 -a 1 -Z chacha20-poly1305@openssh.com` | an unsupported cipher: must be refused, not misread |
 | `ecdsa-a1` | `ssh-keygen -t ecdsa -b 256 -a 1` | the ECDSA private block after decryption |
 | `rsa-a1` | `ssh-keygen -t rsa -b 2048 -a 1` | the RSA private block after decryption |
