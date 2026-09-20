@@ -13,6 +13,42 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`secmem-crypto`: the key residue scan runs on Windows too.** The
+  out-of-process proof was Linux-only, so the protection table's Windows
+  column was an inference from "it runs the same Go code" rather than a
+  measurement. The harness now splits into a shared part and per-OS halves:
+  the Windows half suspends every thread of the victim to freeze it, reads it
+  with `VirtualQueryEx` and `ReadProcessMemory`, and asks `QueryWorkingSetEx`,
+  per page, whether the kernel has that page locked in physical memory — the
+  kernel's answer, not the victim's, as `smaps` is on Linux. A control pins
+  that answer (a `SecureBuffer` page must be reported locked and a heap page
+  must not); without it the scan could call every page locked and find nothing
+  anywhere, and it is shown to fail both ways. A new `test-residue-windows` CI
+  job runs it against an empty skip allowlist. Test and CI only.
+
+### Changed
+
+- **Documentation: what Windows measures, and that RSA and ECDSA stay
+  gated.** Every entry point classified *Protected* leaves nothing on
+  windows/amd64 either, and the *Protected at rest only* rows leave the same
+  copies as a Linux legacy build. Two platform differences are now stated from
+  measurement rather than reasoning: locked pages there are readable by any
+  process with `PROCESS_VM_READ`, so the scan finds the buffers' own contents
+  (there is no `memfd_secret` equivalent), and `Scrub` cannot block Go's
+  asynchronous preemption, because Windows has no signal to block — a control
+  that spins inside a window with a secret in the registers leaves about
+  thirty copies of it in memory the window does not wipe, surviving collection
+  and `Destroy`. No real entry point showed that, their operations being too
+  short, but it is not ruled out for a long one. `PROTECTION.md` also records
+  the decision on RSA and ECDSA: they stay refused on a build that cannot
+  erase their copies, because the only fix is forking the standard library's
+  fips140 signing paths and `bigmod` into this module — thousands of lines
+  where a mistake leaks the key rather than failing a test — and it sets out
+  what to do instead (a TPM, HSM or KMS; a short-lived signing process; or
+  `AllowHeapTransients()` recorded as a residual for a rarely-used key).
+
 ## [0.6.0] - 2026-09-13
 
 Registers and residue. `Scrub` and `ScrubErr` clear the general-purpose

@@ -141,6 +141,12 @@ When to opt in:
   every moment, and the option only hides that. Build with the experiment,
   move the key to Ed25519, or keep it in an HSM or KMS.
 
+This gate is permanent. Fixing RSA and ECDSA properly would mean forking the
+standard library's `crypto/internal/fips140` signing paths and the `bigmod`
+arithmetic under them into this module — thousands of lines where a mistake
+leaks the key instead of failing a test — and that trade is not worth making.
+[PROTECTION.md](../PROTECTION.md) states the decision and what to do instead.
+
 **ML-KEM is gated too, for a different copy.** `MLKEM768Key`'s decapsulation
 key is contained, but each `Decapsulate` leaves the message it recovers on the
 heap, and that message gives the ciphertext's shared key — the session key,
