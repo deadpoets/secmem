@@ -126,7 +126,7 @@ func TestMarshalOpenSSHPrivateKey_AllocatesOnlyTheAESBlock(t *testing.T) {
 // different package — is never the owner here, and an allocation inside
 // the fork would be reported against its own caller rather than hidden.
 func TestBcryptPBKDFInto_AllocatesNothing(t *testing.T) {
-	out := newTestBuffer(t, opensshKeyIVLen)
+	out := newTestBuffer(t, aes256KeyIVLen)
 	password, salt := []byte(testPassphrase), []byte("0123456789abcdef")
 	files := map[string]bool{"bcrypt_pbkdf.go": true, "openssh_wire.go": true}
 	allowed := []string{"github.com/deadpoets/secmem."} // SecureBuffer bookkeeping; the contents are off-heap

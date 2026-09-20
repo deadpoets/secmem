@@ -15,6 +15,28 @@ mark the stability commitment.
 
 ### Added
 
+- **`secmem-crypto`: OpenSSH files encrypted with
+  `chacha20-poly1305@openssh.com` open.** ssh-keygen writes this one on
+  request (`-Z`), and it was refused. It is not the IETF AEAD that
+  `crypto/cipher` or `x/crypto/chacha20poly1305` implement: the key is 64
+  bytes (two ChaCha20 keys, the second of which encrypts packet lengths and
+  so goes unused by a key file), it is the original ChaCha20 with a 64-bit
+  counter and a 64-bit nonce rather than the 96-bit-nonce variant, the
+  Poly1305 key is the keystream at counter 0 with the payload encrypted from
+  counter 1, and the authenticator follows the private block in the
+  container rather than sitting inside it. The core is written out here for
+  the reason the AES modes are: `x/crypto/chacha20`'s cipher is a heap
+  object holding the key and a keystream buffer that nothing exported
+  clears, while these state words, the keystream block and the Poly1305 key
+  are stack locals wiped before return — pinned at zero allocations. The
+  core is checked against RFC 8439's vector and differentially against
+  `x/crypto/chacha20` over random keys, nonces, counters and lengths; the
+  end-to-end proof is the `ssh-keygen` fixture, which the residue scan also
+  runs as its own scenario and finds nothing for. A wrong passphrase fails
+  at the authenticator rather than at the format's check integers, and
+  returns the same `x509.IncorrectPasswordError`. Shown to fail with the two
+  keys swapped and with the payload counter left at 0.
+
 - **`secmem-crypto`: OpenSSH files encrypted with AES-128 or AES-192 open.**
   `ParsePrivateKeyWithPassphrase` read only the aes256 ciphers, so a file
   written with `ssh-keygen -Z aes128-ctr` (or aes192, or their CBC forms) was
