@@ -35,9 +35,11 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // EC keys without [AllowHeapTransients] are [ParsePrivateKey]'s.
 //
 // Supported protection is what ssh-keygen and x/crypto/ssh write and read:
-// KDF bcrypt, cipher aes256-ctr or aes256-cbc, up to 2048 rounds (x/crypto's
-// cap: cost is linear in rounds and the count comes from the file). Other
-// ciphers (chacha20-poly1305@openssh.com, the aes128 and aes192 variants),
+// KDF bcrypt, cipher AES-128/192/256 in CTR or CBC mode, up to 2048 rounds
+// (x/crypto's cap: cost is linear in rounds and the count comes from the
+// file). OpenSSH derives exactly key||IV from the KDF, so the key length is
+// part of the format, not a local choice. Other ciphers
+// (chacha20-poly1305@openssh.com),
 // PKCS#8 "ENCRYPTED PRIVATE KEY" (PBES2), and legacy PEM Proc-Type /
 // DEK-Info encryption return an error wrapping [ErrUnsupportedKey]; the
 // legacy form additionally wraps [ErrRetiredAlgorithm], because that one is

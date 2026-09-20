@@ -284,9 +284,9 @@ cannot wipe, which is the exact thing these paths exist to prevent. A build
 that needs those paths needs the standard library's AES.
 
 What is **not** in either category, and may yet arrive: PKCS#8 PBES2
-(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, the aes128 and aes192
-OpenSSH ciphers, and PKCS#8 export for Ed25519. Those need forks that wipe
-their working state, which is work, not a judgement.
+(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, and PKCS#8 export for
+Ed25519. Those need forks that wipe their working state, which is work, not a
+judgement.
 
 ## Versioning
 

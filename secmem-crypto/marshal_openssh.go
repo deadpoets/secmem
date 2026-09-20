@@ -265,13 +265,19 @@ const (
 func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
 	return withScratch(scratchSize, func(mem []byte) (err error) {
 		ws := bcryptpbkdf.Bind(mem[:bcryptpbkdf.Size])
-		kiv := mem[scratchKIV:scratchCipher]
+		keyLen := mode.keyLen()
+		if keyLen == 0 {
+			return fmt.Errorf("%w: OpenSSH cipher", ErrUnsupportedKey)
+		}
+		// OpenSSH derives exactly key||IV from the KDF, so a shorter key means
+		// a shorter derivation, not a truncated 32-byte one.
+		kiv := mem[scratchKIV : scratchKIV+keyLen+opensshAESBlock]
 		cipherMem := mem[scratchCipher:scratchSize]
 
 		if err := bcryptpbkdf.Derive(kiv, passphrase, salt, rounds, ws); err != nil {
 			return err
 		}
-		key, iv := kiv[:32], kiv[32:]
+		key, iv := kiv[:keyLen], kiv[keyLen:]
 		blk, err := aes.NewCipher(key)
 		if err != nil {
 			return err
@@ -281,16 +287,14 @@ func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCip
 				err = errors.Join(err, werr)
 			}
 		}()
-		switch mode {
-		case cipherAES256CTR:
-			ctrXOR(blk, iv, dst, src, cipherMem)
-		case cipherAES256CBC:
+		switch {
+		case mode.cbc():
 			if !decrypt {
-				return fmt.Errorf("%w: aes256-cbc for encryption", ErrUnsupportedKey)
+				return fmt.Errorf("%w: CBC for encryption", ErrUnsupportedKey)
 			}
 			cbcDecrypt(blk, iv, dst, src, cipherMem)
 		default:
-			return fmt.Errorf("%w: OpenSSH cipher", ErrUnsupportedKey)
+			ctrXOR(blk, iv, dst, src, cipherMem)
 		}
 		return nil
 	})

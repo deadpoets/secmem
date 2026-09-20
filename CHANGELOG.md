@@ -15,6 +15,18 @@ mark the stability commitment.
 
 ### Added
 
+- **`secmem-crypto`: OpenSSH files encrypted with AES-128 or AES-192 open.**
+  `ParsePrivateKeyWithPassphrase` read only the aes256 ciphers, so a file
+  written with `ssh-keygen -Z aes128-ctr` (or aes192, or their CBC forms) was
+  refused as unsupported. The key length is part of the format rather than a
+  local choice — OpenSSH derives exactly key||IV from bcrypt_pbkdf, so a
+  16-byte key means a 32-byte derivation, and a parser that always asked for
+  48 bytes decrypts such a file to nothing that parses. The cipher's key
+  length now drives the derivation. Fixtures from a real `ssh-keygen` cover
+  aes128-ctr, aes192-ctr and aes128-cbc, and the fuzz corpus gains two of
+  them; shown to fail against a parser that assumes 32 bytes. Writing is
+  unchanged: this package still exports aes256-ctr only.
+
 - **`secmem-crypto`: the key residue scan runs on Windows too.** The
   out-of-process proof was Linux-only, so the protection table's Windows
   column was an inference from "it runs the same Go code" rather than a
