@@ -463,6 +463,58 @@ var residueScenarios = []residueScenario{
 		victim: mlkemVictim,
 	},
 	{
+		// The sender side. crypto/mlkem derives G = SHA3-512(m || H(ek)) and
+		// returns the shared key as G's first half; the second half is the
+		// encryption randomness r, which with the public ciphertext gives m
+		// back, and m the shared key. The victim drives Encapsulate's own
+		// wrapper through mlkemtest's derandomized encapsulation — the same
+		// kemEncaps — with m in locked memory, so the scan knows m.
+		name: "Encapsulate/shared-key", class: residueContained,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			seed, _, m, shared := mlkemMaterial(t)
+			dk, err := mlkem.NewDecapsulationKey768(seed)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ek := dk.EncapsulationKey().Bytes()
+			// The digest state that absorbed m || H(ek) is not a pattern of
+			// its own: SHA3-512's rate is 72 bytes, so it holds m in the
+			// clear, which "m" already hunts, next to H(ek), which is public
+			// and stored in every encapsulation key.
+			h := sha3.Sum256(ek)
+			sum := sha3.Sum512(append(slices.Clone(m), h[:]...))
+			if !bytes.Equal(sum[:32], shared) {
+				t.Fatal("SHA3-512(m || H(ek)) does not start with the shared key; the derivation this scenario hunts for has changed")
+			}
+			return m, ek, []residuePattern{
+				{"m", m},
+				{"shared-key", sum[:32]},
+				{"r", sum[32:]},
+			}
+		},
+		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+			ek, err := mlkem.NewEncapsulationKey768(aux)
+			if err != nil {
+				return nil, nil, err
+			}
+			op := func() error {
+				_, ss, err := encapsulateInto(func() (shared, ct []byte, err error) {
+					err = buf.WithBytesErr(func(m []byte) error {
+						var e error
+						shared, ct, e = mlkemtest.Encapsulate768(ek, m)
+						return e
+					})
+					return shared, ct, err
+				})
+				if err != nil {
+					return err
+				}
+				return ss.Destroy()
+			}
+			return op, buf.Destroy, nil
+		},
+	},
+	{
 		name: "ECDSASigner/P-256", class: residueTransient,
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
 			k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -665,7 +717,7 @@ func mlkemMaterial(t *testing.T) (seed, ct, m, shared []byte) {
 }
 
 func mlkemVictim(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
-	k, err := NewMLKEM768Key(buf)
+	k, err := NewMLKEM768Key(buf, AllowHeapTransients())
 	if err != nil {
 		return nil, nil, err
 	}

@@ -42,12 +42,13 @@ func TestHeapTransientsPolicy_DefaultIsRuntimeSecret(t *testing.T) {
 }
 
 // TestHeapTransientsPolicy_LegacyRefusesConstructors: with the policy
-// refusing, as on every build without GOEXPERIMENT=runtimesecret, all four
-// gated constructors (RSA and ECDSA, new and generate) refuse with
+// refusing, as on every build without GOEXPERIMENT=runtimesecret, all six
+// gated constructors (RSA, ECDSA and ML-KEM, new and generate) refuse with
 // ErrHeapTransients — before they look at their input, and without taking
-// ownership of a buffer they were handed — and all four succeed once the
-// caller passes AllowHeapTransients. X25519, which runs in place, is not
-// gated: its constructors succeed under the same refusing policy.
+// ownership of a buffer they were handed — and all six succeed once the
+// caller passes AllowHeapTransients. X25519, which runs in place, and
+// Encapsulate, which leaves nothing behind, are not gated: they succeed under
+// the same refusing policy.
 func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 	withPolicy(t, false, func() {
 		// Before the input is read: a nil buffer is refused by the gate, not
@@ -102,6 +103,42 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		}
 		if k, err := GenerateX25519Key(); err != nil {
 			t.Errorf("GenerateX25519Key under a refusing policy: %v, want success (X25519 is not gated)", err)
+		} else {
+			_ = k.Destroy()
+		}
+
+		// ML-KEM: refused before the seed is read, the caller's buffer left
+		// alone, accepted with the opt-in; the sender side is not gated.
+		if _, err := NewMLKEM768Key(nil); !errors.Is(err, ErrHeapTransients) {
+			t.Errorf("NewMLKEM768Key(nil): %v, want ErrHeapTransients before input validation", err)
+		}
+		if _, err := GenerateMLKEM768Key(); !errors.Is(err, ErrHeapTransients) {
+			t.Errorf("GenerateMLKEM768Key: %v, want ErrHeapTransients", err)
+		}
+		seed := mustBuffer(t, bytes.Repeat([]byte{0x5A}, 64))
+		defer func() { _ = seed.Destroy() }()
+		if _, err := NewMLKEM768Key(seed); !errors.Is(err, ErrHeapTransients) {
+			t.Fatalf("NewMLKEM768Key: %v, want ErrHeapTransients", err)
+		}
+		if seed.IsDestroyed() {
+			t.Error("a refused NewMLKEM768Key destroyed the caller's buffer; ownership must not transfer on failure")
+		}
+		if mk, err := NewMLKEM768Key(seed, AllowHeapTransients()); err != nil {
+			t.Errorf("NewMLKEM768Key with AllowHeapTransients: %v", err)
+		} else {
+			ekb, err := mk.EncapsulationKeyBytes()
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, ss, err := Encapsulate(ekb); err != nil {
+				t.Errorf("Encapsulate under a refusing policy: %v, want success (Encapsulate is not gated)", err)
+			} else {
+				_ = ss.Destroy()
+			}
+			_ = mk.Destroy()
+		}
+		if k, err := GenerateMLKEM768Key(AllowHeapTransients()); err != nil {
+			t.Errorf("GenerateMLKEM768Key with AllowHeapTransients: %v", err)
 		} else {
 			_ = k.Destroy()
 		}

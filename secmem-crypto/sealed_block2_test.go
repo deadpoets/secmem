@@ -66,7 +66,7 @@ func TestMLKEM768_SealedBuffer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
-	k, err := NewMLKEM768Key(buf)
+	k, err := NewMLKEM768Key(buf, AllowHeapTransients())
 	if err != nil {
 		t.Fatalf("NewMLKEM768Key: %v", err)
 	}
@@ -117,8 +117,8 @@ func TestNewMLKEM768Key_SealedBuffer(t *testing.T) {
 	}
 	// NewMLKEM768Key reads the seed to validate expansion, so a sealed buffer
 	// must fail with ErrSealed and not transfer ownership.
-	if _, err := NewMLKEM768Key(buf); !errors.Is(err, secmem.ErrSealed) {
-		t.Errorf("NewMLKEM768Key(sealed): error = %v, want ErrSealed", err)
+	if _, err := NewMLKEM768Key(buf, AllowHeapTransients()); !errors.Is(err, secmem.ErrSealed) {
+		t.Errorf("NewMLKEM768Key(sealed, AllowHeapTransients()): error = %v, want ErrSealed", err)
 	}
 	if buf.IsDestroyed() {
 		t.Error("ownership transferred on failure")
