@@ -44,6 +44,10 @@ type opensshHeader struct {
 	cipher, kdf, kdfOpts []byte
 	numKeys              uint32
 	pubBlob, privBlock   []byte
+	// trailer is whatever follows the private block. For an authenticated
+	// cipher that is the authenticator, which OpenSSH appends after the
+	// string rather than inside it; for every other cipher it is empty.
+	trailer []byte
 }
 
 // readOpenSSHHeader reads the "openssh-key-v1" container's outer fields
@@ -62,6 +66,7 @@ func readOpenSSHHeader(b []byte) (opensshHeader, error) {
 	h.numKeys, ok4 = r.uint32()
 	h.pubBlob, ok5 = r.str()
 	h.privBlock, ok6 = r.str()
+	h.trailer = r.b
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
 		return h, errMalformed
 	}

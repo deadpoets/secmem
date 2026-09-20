@@ -13,6 +13,7 @@ import (
 	"crypto/aes"
 	"crypto/ed25519"
 	"crypto/rand"
+	"crypto/x509"
 	"errors"
 	"fmt"
 
@@ -219,7 +220,7 @@ func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds
 				return nil
 			}
 			block := c[start : start+privPadded]
-			return opensshCrypt(block, block, passphrase, kdfOpts[4:4+opensshSaltLen], rounds, cipherAES256CTR, false)
+			return opensshCrypt(block, block, nil, passphrase, kdfOpts[4:4+opensshSaltLen], rounds, cipherAES256CTR, false)
 		})
 	})
 	if err != nil {
@@ -246,13 +247,18 @@ func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds
 // workspace, then the derived key and IV, then the cipher's two blocks.
 const (
 	scratchKIV    = bcryptpbkdf.Size
-	scratchCipher = scratchKIV + opensshKeyIVLen
+	scratchCipher = scratchKIV + opensshMaxKeyIVLen
 	scratchSize   = scratchCipher + cipherScratch
 )
 
-// opensshCrypt derives the AES-256 key and IV from passphrase with
+// opensshCrypt derives the cipher's key and IV from passphrase with
 // bcrypt_pbkdf and applies mode to src, writing dst: CTR in either
-// direction (dst may be src), CBC for decryption only, as OpenSSH uses it.
+// direction (dst may be src), CBC for decryption only, as OpenSSH uses it,
+// and chacha20-poly1305 for decryption, where tag is the authenticator that
+// followed the ciphertext in the file and a mismatch returns
+// [x509.IncorrectPasswordError] — for that cipher a wrong passphrase fails
+// here rather than at the format's check integers. tag is nil for the AES
+// modes, which authenticate nothing.
 // Every byte of secret state it creates is in one SecureBuffer allocated
 // for the call — the KDF workspace, the key and IV, the cipher's keystream
 // and chaining blocks — and is wiped before return; the AES round keys,
@@ -262,16 +268,31 @@ const (
 // inside a [secmem.ScrubErr] window, which clears the vector file on the
 // way out, on the thread that ran it (vecclear_amd64_test.go proves the
 // clear reaches this function's residue).
-func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
+func opensshCrypt(dst, src, tag, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
 	return withScratch(scratchSize, func(mem []byte) (err error) {
 		ws := bcryptpbkdf.Bind(mem[:bcryptpbkdf.Size])
-		kiv := mem[scratchKIV:scratchCipher]
+		keyLen := mode.keyLen()
+		if keyLen == 0 {
+			return fmt.Errorf("%w: OpenSSH cipher", ErrUnsupportedKey)
+		}
+		// OpenSSH derives exactly key||IV from the KDF, so a shorter key means
+		// a shorter derivation, not a truncated 32-byte one.
+		kiv := mem[scratchKIV : scratchKIV+keyLen+mode.ivLen()]
 		cipherMem := mem[scratchCipher:scratchSize]
 
 		if err := bcryptpbkdf.Derive(kiv, passphrase, salt, rounds, ws); err != nil {
 			return err
 		}
-		key, iv := kiv[:32], kiv[32:]
+		if mode == cipherChaCha20Poly1305 {
+			if !decrypt {
+				return fmt.Errorf("%w: chacha20-poly1305 for encryption", ErrUnsupportedKey)
+			}
+			if !opensshChaChaOpen(dst, src, tag, kiv) {
+				return x509.IncorrectPasswordError
+			}
+			return nil
+		}
+		key, iv := kiv[:keyLen], kiv[keyLen:]
 		blk, err := aes.NewCipher(key)
 		if err != nil {
 			return err
@@ -281,16 +302,14 @@ func opensshCrypt(dst, src, passphrase, salt []byte, rounds int, mode opensshCip
 				err = errors.Join(err, werr)
 			}
 		}()
-		switch mode {
-		case cipherAES256CTR:
-			ctrXOR(blk, iv, dst, src, cipherMem)
-		case cipherAES256CBC:
+		switch {
+		case mode.cbc():
 			if !decrypt {
-				return fmt.Errorf("%w: aes256-cbc for encryption", ErrUnsupportedKey)
+				return fmt.Errorf("%w: CBC for encryption", ErrUnsupportedKey)
 			}
 			cbcDecrypt(blk, iv, dst, src, cipherMem)
 		default:
-			return fmt.Errorf("%w: OpenSSH cipher", ErrUnsupportedKey)
+			ctrXOR(blk, iv, dst, src, cipherMem)
 		}
 		return nil
 	})
