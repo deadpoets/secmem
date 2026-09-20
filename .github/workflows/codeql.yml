@@ -43,7 +43,7 @@ jobs:
       # bump breaks the job rather than degrading it. Dependabot treats the two
       # subpaths as separate dependencies and will bump them in separate PRs —
       # dependabot.yml groups them to stop that.
-      - uses: github/codeql-action/init@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - uses: github/codeql-action/init@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           languages: go
           build-mode: manual
@@ -51,6 +51,6 @@ jobs:
         run: |
           go build ./...
           cd examples && GOWORK=off go build ./...
-      - uses: github/codeql-action/analyze@cdf488f595d80d6e07e03d4674febd5ab45fa938 # v4.37.9
+      - uses: github/codeql-action/analyze@b96794f015dfd88f77b49b1c93e0fa7110f94c63 # v4.38.0
         with:
           category: "/language:go"
