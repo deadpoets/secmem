@@ -320,7 +320,8 @@ shared key on the heap, are refused on builds without
 `Encapsulate` now wipes the randomness that recovered its shared key and is
 not. Also a public `BcryptPBKDFInto`, a configurable OpenSSH passphrase cost,
 and wipes of ML-KEM's expanded key and RSA's FIPS-form key. Minor, with
-breaking changes: see Changed.
+breaking changes (see Changed), and the core floor rises to v0.6.0 for the
+register clears the residue scenarios depend on.
 
 ### Added
 
