@@ -266,10 +266,27 @@ never offers SHA-1 `ssh-rsa`, and `Sign` returns a plain error for Ed25519ph
 and Ed25519ctx (above). `ErrRetiredAlgorithm` is for input this package
 refuses to read; those two are things it refuses to produce.
 
-What is **not** in this category, and may yet arrive: PKCS#8 PBES2
-(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, and the aes128 and aes192
-OpenSSH ciphers. Those need forks that wipe their working state, which is
-work, not a judgement.
+**Private-key export stays Ed25519-only.** `MarshalOpenSSHPrivateKey` and its
+passphrase forms exist for `Ed25519Signer`, and ECDSA and RSA equivalents will
+not be added: those types are refused by default on a build that cannot erase
+the copies each operation makes (above), so an export path for them would be a
+way to write out a key this module declines to operate on in the first place.
+A second export format for Ed25519 — PKCS#8 — is not there either, but that
+one is a gap rather than a decision.
+
+**A non-standard AES block makes the passphrase paths refuse.** The round-key
+wipe resolves the unexported schedule inside `crypto/aes`'s concrete block
+type. Where that type is something else — a BoringCrypto build, or s390x's
+unexpanded block — the wipe cannot locate the schedule, and the affected paths
+return an error instead of continuing. That is deliberate and will stay:
+the alternative is proceeding with a key schedule on the heap that this module
+cannot wipe, which is the exact thing these paths exist to prevent. A build
+that needs those paths needs the standard library's AES.
+
+What is **not** in either category, and may yet arrive: PKCS#8 PBES2
+(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, the aes128 and aes192
+OpenSSH ciphers, and PKCS#8 export for Ed25519. Those need forks that wipe
+their working state, which is work, not a judgement.
 
 ## Versioning
 
