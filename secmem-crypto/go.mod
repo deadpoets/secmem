@@ -5,10 +5,10 @@ go 1.26.0
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/deadpoets/secmem v0.5.0
-	golang.org/x/crypto v0.56.0
+	golang.org/x/crypto v0.57.0
 )
 
-require golang.org/x/sys v0.47.0
+require golang.org/x/sys v0.48.0
 
 // The comment attached to a retract directive is shown to users by `go get`
 // and `go list -m -retracted`, so it is kept to one actionable line. Background
