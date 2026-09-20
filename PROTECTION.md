@@ -60,9 +60,9 @@ it.
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | **Protected** after the call | nothing: not the password, H0, or the output. During the call the working set is a heap allocation, pageable and dumpable, wiped before return | `Argon2IDKeyInto` |
 | `Argon2Workspace`, `Argon2Pool` | **Protected** | nothing; the working set is locked memory | `Argon2Workspace` |
 | `BcryptPBKDFInto` | **Protected** | nothing: not the password or the output | `BcryptPBKDFInto` |
-| `MLKEM768Key` — the decapsulation key | **Protected** | nothing: not the seed halves, the secret polynomial s, σ, or the SHAKE state that absorbed z | `MLKEM768Key/decapsulation-key` |
-| `Encapsulate` | **Protected** for the returned shared secret, which is copied into a buffer and its heap copy wiped | not scanned: the message and the shared secret are random | — |
-| `MLKEM768Key.Decapsulate` — the per-ciphertext message | **Protected at rest only** for that ciphertext's shared key (not gated) | the 32-byte message decapsulation recovers, which with the public key's hash gives that ciphertext's shared key; the decapsulation key is not exposed | `MLKEM768Key/recovered-message` |
+| `MLKEM768Key` — the decapsulation key | **Protected** (but the type is refused on a legacy build without the opt-in, for the next row) | nothing: not the seed halves, the secret polynomial s, σ, or the SHAKE state that absorbed z | `MLKEM768Key/decapsulation-key` |
+| `MLKEM768Key.Decapsulate` — each ciphertext's shared key | **Protected at rest only** (refused on a legacy build without the opt-in) | the 32-byte message decapsulation recovers, which with the public key's hash gives that ciphertext's shared key; the decapsulation key is not exposed | `MLKEM768Key/recovered-message` |
+| `Encapsulate` | **Protected** | nothing: not the message, the shared key, or the encryption randomness returned beside it, which with the public ciphertext recovers the shared key | `Encapsulate/shared-key` |
 | `ECDSASigner`, `GenerateECDSASigner`, EC key files | **Protected at rest only** (refused on a legacy build without the opt-in) | the private scalar, in several standard-library objects per signature | `ECDSASigner/P-256` |
 | `RSASigner`, `GenerateRSASigner`, RSA key files | **Protected at rest only** (refused on a legacy build without the opt-in) | d, p, q, dP, dQ, qInv and the FIPS-form key's limbs, per signature | `RSASigner/2048` |
 | `GenerateDicewarePassphrase` | **Protected** by construction | not scanned: the passphrase is random, so the parent cannot know what to search for. It is assembled in the buffer's own memory with no intermediate string, and word selection reads every entry of the list whatever index is drawn | — |
@@ -130,8 +130,10 @@ Its limits, which are the limits of the levels above:
   custody. Keys that must be ECDSA or RSA — a WebPKI certificate, UEFI Secure
   Boot's RSA-2048, a TPM policy key — belong in an HSM, a TPM, or a KMS, or in a
   short-lived process that loads the key, signs, and exits.
-- **Key agreement:** X25519 is protected, and so is the ML-KEM decapsulation
-  key; each ML-KEM decapsulation's shared key is exposed as the table says.
+- **Key agreement:** X25519 is protected. For ML-KEM the decapsulation key and
+  the sender side are protected, but each decapsulation's shared key is exposed
+  as the table says, so `MLKEM768Key` is refused on a legacy build like RSA and
+  ECDSA.
 - **Derivation:** HKDF and HMAC over SHA-2 or SHA-3, Argon2 and bcrypt_pbkdf
   are protected.
 - **Encryption:** use `WithAESGCM` per use, with `OpenInto` and `SealFrom` for

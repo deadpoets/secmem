@@ -360,14 +360,15 @@ all; the standard library's copies come from the `crypto/ecdh` key object
 around it, so this module calls the ladder directly over the buffer and the
 type is not gated.
 
-The gate is scoped to `RSASigner` and `ECDSASigner`. It does not make them
-safe to use continuously on a runtime/secret build either — it only stops a
-legacy build from using them without saying so. `MLKEM768Key` is not gated:
+The gate does not make these types safe to use continuously on a
+runtime/secret build either — it only stops a legacy build from using them
+without saying so. `MLKEM768Key` is gated the same way for a smaller copy:
 its decapsulation key is contained, but each `Decapsulate` leaves the message
-it recovers on the heap, and that message gives the ciphertext's shared key. `HKDFInto` and `HMACInto` run in place over
-SHA-2 and SHA-3, the standard library's one-shot hash calls keeping their
-state on the stack, and are gated only when given another hash. The
-`secmem-crypto` README lists each.
+it recovers on the heap, and that message gives the ciphertext's shared key.
+`Encapsulate` leaves nothing and is not gated. `HKDFInto` and `HMACInto` run
+in place over SHA-2 and SHA-3, the standard library's one-shot hash calls
+keeping their state on the stack, and are gated only when given another
+hash. The `secmem-crypto` README lists each.
 
 ## Post-quantum posture
 
@@ -389,7 +390,10 @@ and is not.
   key's secrets outside locked memory. What remains on the heap is the
   message each decapsulation recovers, which gives that ciphertext's shared
   key: erased by the runtime at the next collection on a
-  `GOEXPERIMENT=runtimesecret` build, left to the collector elsewhere. The
+  `GOEXPERIMENT=runtimesecret` build, left to the collector elsewhere, which
+  is why the type is refused on a legacy build unless the caller opts in.
+  The sender side, `Encapsulate`, wipes the heap slice that holds both the
+  shared key and the randomness that recovers it, and leaves nothing. The
   type's godoc states this inline, and [PROTECTION.md](PROTECTION.md)
   classifies it with every other entry point.
 

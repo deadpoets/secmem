@@ -65,7 +65,8 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place. Zero allocations, both directions. They keep the **plaintext** off the heap; the AEAD's key is wherever the caller's `cipher.AEAD` keeps it — on the heap, for as long as that object lives, unless it came from `WithAESGCM` | **contained** (plaintext) |
 | `WithAESGCM` | lends AES-GCM built from a key in a buffer to a callback, then wipes every copy of the key schedule — both round-key arrays of the `aes.Block`, their copy inside the GCM object, and its GHASH table — by reflection with a tripwire, on return, error or panic; the layout is checked before the key is expanded. The lent AEAD panics with `ErrAEADOutOfScope` if kept and used after the callback. Build it per use; sealing 1 KiB costs about 2.4 µs against 0.2 µs on a kept AEAD (`BenchmarkAESGCM`), mostly the cache-flushing wipe | **contained** (between uses) |
 | `X25519Key` | key agreement with the private scalar in a buffer, used in place: the RFC 7748 ladder (the standard library's own, copied into `internal/x25519` and pinned to the toolchain's source) runs over the borrowed scalar inside a Scrub window and writes the shared secret straight into the buffer it returns. Nothing is allocated beyond that buffer | **contained** |
-| `MLKEM768Key`, `Encapsulate` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction; crypto/mlkem's hash states and polynomials stay on the stack in the Scrub window. What remains is the 32-byte message each `Decapsulate` recovers, a heap slice nothing can reach, which gives that ciphertext's shared key | **contained** (the decapsulation key); **runtimesecret-only** (each decapsulation's shared key) |
+| `MLKEM768Key` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction; crypto/mlkem's hash states and polynomials stay on the stack in the Scrub window. What remains is the 32-byte message each `Decapsulate` recovers, a heap slice nothing can reach, which gives that ciphertext's shared key. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **contained** (the decapsulation key); **runtimesecret-only** (each decapsulation's shared key) |
+| `Encapsulate` | the sender side: the shared key crypto/mlkem returns shares a heap slice with the encryption randomness, which recovers it from the public ciphertext, and the whole slice is wiped; the message and the digest that absorbs it stay on the stack in the Scrub window | **contained** |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string; every draw reads the whole wordlist | **contained** |
 | `WipeEd25519Scalar` | reaches `edwards25519.Scalar`'s unexported fields | — |
 
@@ -86,7 +87,8 @@ first collection after it becomes unreachable. All counts are for go1.26.
 | `ECDSASigner` | the scalar (28–66 bytes) | **wiped:** the `big.Int` D limbs. **not wiped:** the scalar's bytes in a fresh `[]byte`, in a `bigmod.Nat`, and in two FIPS-form keys — one dropped after the parse, one kept in `crypto/ecdsa`'s package-level cache until the collector evicts it, one to two GC cycles after `Sign` | the same objects, erased by the runtime at the first collection after they become unreachable; the cached one a collection after its eviction | The at-rest custody is real (the durable copy is locked, guard-paged, wiped on `Destroy`, and covered by `WipeAllSecrets`), but every signature leaves several unwiped copies of the scalar on the heap, one of them for a GC cycle or more. On a legacy build the buffer changes *where* the scalar is at rest, not whether it is in the heap dump of a process that signs | At rest; the copies of the last signatures are on the heap until the next collection, which for a key that signs often means almost always |
 | `RSASigner` | the whole DER (1–2 KB) | **wiped:** all the `big.Int` limbs and the FIPS-form key (d, p, q with their Montgomery constants, dP, dQ, qInv). **not wiped:** the parse's `big.Int.Bytes()` copies of D, P, Q and Qinv, `Validate`'s comparison copies, and the signature's modular-arithmetic scratch (Montgomery tables built from p and q). `math/big`'s pooled scratch is not used for two-prime keys | the same, erased at the first collection after they become unreachable | As ECDSA, at a larger scale: the whole private key is rebuilt on the heap per signature and the copies nothing wipes are the size of the key. Same verdict — real at rest, not during use | same as ECDSA |
 | `X25519Key` | 32-byte scalar | none on the heap: the clamped scalar and the ladder's field elements on the stack, in the Scrub band; the shared secret written into its buffer | same | contained | contained |
-| `MLKEM768Key` | 64-byte seed | **wiped:** the expanded key (seed halves and `s`). **on the stack, in the Scrub band:** the SHA3/SHAKE states, σ and the key-generation polynomials. **not wiped:** the 32-byte message each decapsulation recovers, which gives that ciphertext's shared key | the message erased at the first collection after the call | the decapsulation key contained; each decapsulation's shared key exposed | the decapsulation key contained; each shared key exposed until the next collection |
+| `MLKEM768Key` | 64-byte seed | **wiped:** the expanded key (seed halves and `s`). **on the stack, in the Scrub band:** the SHA3/SHAKE states, σ and the key-generation polynomials. **not wiped:** the 32-byte message each decapsulation recovers, which gives that ciphertext's shared key | the message erased at the first collection after the call | the decapsulation key contained; each decapsulation's shared key exposed; refused unless opted in | the decapsulation key contained; each shared key exposed until the next collection |
+| `Encapsulate` | the shared key it returns | none on the heap: the slice holding the shared key and the encryption randomness is wiped whole; the message and the digest that absorbs it are on the stack, in the Scrub band | same | contained | contained |
 | `HKDFInto`, `HMACInto` | the output (the secret is the caller's to hold in a buffer) | SHA-2 / SHA-3: none on the heap — the padded key, the pseudorandom key and the digest states are on the stack in the Scrub band or in a locked buffer. Other hashes: refused unless opted in; then the key XORed into both pads and both digest states, in heap objects | SHA-2 / SHA-3: same. Other hashes: erased once unreachable | contained over SHA-2 and SHA-3 | contained over SHA-2 and SHA-3 |
 | `Argon2Into` | output only | a heap workspace holding everything, wiped by the fork before return; dumpable and pageable during the call | same | contained, with a window during the call; use `Argon2Workspace` to close it | same |
 | `Argon2Workspace`, `BcryptPBKDFInto`, `OpenInto`, `SealFrom`, the parsers | output / working set in locked memory | none on the heap | none | contained | contained |
@@ -112,9 +114,9 @@ standard library on every signature.
 
 So on a legacy build both types refuse by default. `NewRSASigner`,
 `GenerateRSASigner`, `NewECDSASigner` and `GenerateECDSASigner` return an
-error wrapping
-`ErrHeapTransients`, and so do `ParsePrivateKey` and
-`ParsePrivateKeyWithPassphrase` for an RSA or EC key file. A caller who
+error wrapping `ErrHeapTransients`, and so do `ParsePrivateKey` and
+`ParsePrivateKeyWithPassphrase` for an RSA or EC key file, and
+`NewMLKEM768Key` and `GenerateMLKEM768Key` (below). A caller who
 accepts the residual says so where the key is built:
 
 ```go
@@ -139,14 +141,16 @@ When to opt in:
   every moment, and the option only hides that. Build with the experiment,
   move the key to Ed25519, or keep it in an HSM or KMS.
 
-**What the gate does not cover.** It is scoped to `RSASigner` and
-`ECDSASigner`, the types whose long-term key is copied onto the heap.
-`MLKEM768Key` is not gated: its decapsulation key is contained, and what each
-`Decapsulate` leaves on the heap is that ciphertext's recovered message — its
-shared key, not the long-term one — as the table above lists. `HKDFInto` and `HMACInto` are
-gated per call rather than per type: over SHA-2 and SHA-3 they run in place
-and are never refused, and over any other hash they refuse on a legacy build
-unless given `AllowHeapTransients()`.
+**ML-KEM is gated too, for a different copy.** `MLKEM768Key`'s decapsulation
+key is contained, but each `Decapsulate` leaves the message it recovers on the
+heap, and that message gives the ciphertext's shared key — the session key,
+not the long-term one. On a legacy build nothing erases it, so the type is
+refused the same way, and the same rule for opting in applies with "session
+keys" in place of "the key". `Encapsulate`, the sender side, leaves nothing
+and is never refused. `HKDFInto` and `HMACInto` are gated per call rather
+than per type: over SHA-2 and SHA-3 they run in place and are never refused,
+and over any other hash they refuse on a legacy build unless given
+`AllowHeapTransients()`.
 
 ## The parts that should make you look twice
 
