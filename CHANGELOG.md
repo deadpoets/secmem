@@ -30,6 +30,19 @@ mark the stability commitment.
 
 ### Changed
 
+- **`secmem-crypto` documentation: two roadmap items are now decisions.**
+  Private-key export stays Ed25519-only — ECDSA and RSA export will not be
+  added, because those types are refused by default on a build that cannot
+  erase the copies their operations make, so exporting one would write out a
+  key the module declines to operate on. And a build whose AES block is not
+  the standard library's (BoringCrypto, s390x) keeps failing closed in the
+  passphrase paths rather than gaining a fallback: the alternative is
+  proceeding with a key schedule that cannot be wiped, which is what those
+  paths exist to prevent. Both were listed as gaps; they are refusals with
+  reasons now. What remains a gap: PKCS#8 PBES2,
+  `chacha20-poly1305@openssh.com`, the aes128/192 OpenSSH ciphers, and PKCS#8
+  export for Ed25519.
+
 - **Documentation: what Windows measures, and that RSA and ECDSA stay
   gated.** Every entry point classified *Protected* leaves nothing on
   windows/amd64 either, and the *Protected at rest only* rows leave the same
