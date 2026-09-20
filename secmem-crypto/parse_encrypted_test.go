@@ -129,6 +129,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 	for _, name := range []string{
 		"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1",
 		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1", "ed25519-aes128-cbc-a1",
+		"ed25519-chacha-a1",
 		"ecdsa-a1", "rsa-a1",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -148,15 +149,28 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			}
 		})
 	}
-	t.Run("ed25519-chacha-a1", func(t *testing.T) {
+	// chacha20-poly1305 authenticates the ciphertext, so a wrong passphrase
+	// fails at the tag rather than at the format's check integers, and a
+	// corrupted tag fails the same way. Both must look like a bad passphrase
+	// to the caller, not like a malformed file.
+	t.Run("ed25519-chacha-a1/wrong passphrase", func(t *testing.T) {
 		pemBytes, _, _ := fixture(t, "ed25519-chacha-a1")
-		s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
-		if err == nil {
+		if s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte("not it"), AllowHeapTransients()); err == nil {
 			s.Destroy()
-			t.Fatal("chacha20-poly1305 file was accepted")
+			t.Fatal("a wrong passphrase was accepted")
+		} else if !errors.Is(err, x509.IncorrectPasswordError) {
+			t.Fatalf("got %v, want IncorrectPasswordError", err)
 		}
-		if !errors.Is(err, ErrUnsupportedKey) || !strings.Contains(err.Error(), "chacha20-poly1305@openssh.com") {
-			t.Fatalf("got %v, want ErrUnsupportedKey naming the cipher", err)
+	})
+	t.Run("ed25519-chacha-a1/corrupted tag", func(t *testing.T) {
+		_, raw, _ := fixture(t, "ed25519-chacha-a1")
+		bad := bytes.Clone(raw)
+		bad[len(bad)-1] ^= 1 // the last byte of the trailing authenticator
+		if s, err := ParsePrivateKeyWithPassphrase(bad, []byte(testPassphrase), AllowHeapTransients()); err == nil {
+			s.Destroy()
+			t.Fatal("a corrupted authenticator was accepted")
+		} else if !errors.Is(err, x509.IncorrectPasswordError) {
+			t.Fatalf("got %v, want IncorrectPasswordError", err)
 		}
 	})
 }

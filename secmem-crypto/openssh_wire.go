@@ -18,26 +18,31 @@ import (
 
 // Names in the container.
 const (
-	opensshPEMType     = "OPENSSH PRIVATE KEY"
-	opensshCipherNone  = "none"
-	opensshCipherCTR   = "aes256-ctr"
-	opensshCipherCBC   = "aes256-cbc"
-	opensshCipher128C  = "aes128-ctr"
-	opensshCipher192C  = "aes192-ctr"
-	opensshCipher128B  = "aes128-cbc"
-	opensshCipher192B  = "aes192-cbc"
-	opensshKDFNone     = "none"
-	opensshKDFBcrypt   = "bcrypt"
-	opensshSaltLen     = 16   // what ssh-keygen writes
-	opensshRounds      = 16   // ssh-keygen's default (-a)
-	opensshMaxRounds   = 2048 // x/crypto/ssh's cap on files it will open; see parse_encrypted.go
-	opensshAESBlock    = 16
-	opensshNoneBlock   = 8
-	opensshKeyEd25519  = "ssh-ed25519"
-	opensshMaxKeyLen   = 32                    // AES-256; the scratch is sized for the largest
-	opensshKeyIVLen    = opensshMaxKeyLen + 16 // key || CTR/CBC IV
-	opensshKDFOptsSize = 4 + opensshSaltLen + 4
+	opensshPEMType      = "OPENSSH PRIVATE KEY"
+	opensshCipherNone   = "none"
+	opensshCipherCTR    = "aes256-ctr"
+	opensshCipherCBC    = "aes256-cbc"
+	opensshCipher128C   = "aes128-ctr"
+	opensshCipher192C   = "aes192-ctr"
+	opensshCipher128B   = "aes128-cbc"
+	opensshCipher192B   = "aes192-cbc"
+	opensshCipherChaCha = "chacha20-poly1305@openssh.com"
+	opensshKDFNone      = "none"
+	opensshKDFBcrypt    = "bcrypt"
+	opensshSaltLen      = 16   // what ssh-keygen writes
+	opensshRounds       = 16   // ssh-keygen's default (-a)
+	opensshMaxRounds    = 2048 // x/crypto/ssh's cap on files it will open; see parse_encrypted.go
+	opensshAESBlock     = 16
+	opensshNoneBlock    = 8
+	opensshKeyEd25519   = "ssh-ed25519"
+	opensshMaxKeyLen    = chachaOpenSSHKeyLen   // the largest key of any cipher here
+	opensshMaxKeyIVLen  = opensshMaxKeyLen + 16 // the largest key || IV; sizes the scratch
+	opensshKDFOptsSize  = 4 + opensshSaltLen + 4
 )
+
+// aes256KeyIVLen is what the aes256 profile derives: the tests that
+// reproduce ssh-keygen's derivation for those files ask for exactly it.
+const aes256KeyIVLen = 32 + opensshAESBlock
 
 // opensshCipher is a supported private-block cipher, resolved from its name
 // by the caller so the crypt routine formats no name into an error (a
@@ -52,6 +57,7 @@ const (
 	cipherAES128CBC
 	cipherAES192CBC
 	cipherAES256CBC
+	cipherChaCha20Poly1305
 )
 
 // keyLen is the cipher's key length in bytes. OpenSSH derives exactly
@@ -65,6 +71,34 @@ func (c opensshCipher) keyLen() int {
 		return 24
 	case cipherAES256CTR, cipherAES256CBC:
 		return 32
+	case cipherChaCha20Poly1305:
+		return chachaOpenSSHKeyLen
+	}
+	return 0
+}
+
+// ivLen is what OpenSSH derives after the key: one AES block for the AES
+// modes, nothing for chacha20-poly1305, whose nonce is the sequence number.
+func (c opensshCipher) ivLen() int {
+	if c == cipherChaCha20Poly1305 {
+		return 0
+	}
+	return opensshAESBlock
+}
+
+// blockLen is the padding granularity of the private section.
+func (c opensshCipher) blockLen() int {
+	if c == cipherChaCha20Poly1305 {
+		return opensshNoneBlock // 8, as OpenSSH's chachapoly cipher declares
+	}
+	return opensshAESBlock
+}
+
+// tagLen is the length of the authenticator that follows the ciphertext, or
+// zero for the unauthenticated modes.
+func (c opensshCipher) tagLen() int {
+	if c == cipherChaCha20Poly1305 {
+		return chachaTagLen
 	}
 	return 0
 }
@@ -95,6 +129,8 @@ func opensshCipherByName(name []byte) opensshCipher {
 		return cipherAES128CBC
 	case opensshCipher192B:
 		return cipherAES192CBC
+	case opensshCipherChaCha:
+		return cipherChaCha20Poly1305
 	}
 	return cipherUnsupported
 }

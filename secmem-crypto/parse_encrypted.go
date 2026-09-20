@@ -37,9 +37,10 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // Supported protection is what ssh-keygen and x/crypto/ssh write and read:
 // KDF bcrypt, cipher AES-128/192/256 in CTR or CBC mode, up to 2048 rounds
 // (x/crypto's cap: cost is linear in rounds and the count comes from the
-// file). OpenSSH derives exactly key||IV from the KDF, so the key length is
-// part of the format, not a local choice. Other ciphers
-// (chacha20-poly1305@openssh.com),
+// file), and chacha20-poly1305@openssh.com, whose authenticator follows the
+// private block and whose 64-byte key material is two ChaCha20 keys, only
+// the first of which a key file uses. OpenSSH derives exactly key||IV from
+// the KDF, so the key length is part of the format, not a local choice.
 // PKCS#8 "ENCRYPTED PRIVATE KEY" (PBES2), and legacy PEM Proc-Type /
 // DEK-Info encryption return an error wrapping [ErrUnsupportedKey]; the
 // legacy form additionally wraps [ErrRetiredAlgorithm], because that one is
@@ -174,17 +175,24 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o optio
 			// caller up for a very long time, not fail. Same cap as x/crypto.
 			return fmt.Errorf("%w: bcrypt KDF rounds %d exceed the maximum %d this parser will run", ErrUnsupportedKey, rounds, opensshMaxRounds)
 		}
-		if len(h.privBlock) == 0 || len(h.privBlock)%opensshAESBlock != 0 {
+		// An authenticated cipher's tag follows the private block's string
+		// rather than sitting inside it, and the padding granularity is the
+		// cipher's, not always an AES block.
+		ct, tag := h.privBlock, h.trailer
+		if len(tag) != mode.tagLen() {
+			return fmt.Errorf("%w: %d bytes follow the encrypted block, want %d for this cipher's authenticator", errMalformed, len(tag), mode.tagLen())
+		}
+		if len(ct) == 0 || len(ct)%mode.blockLen() != 0 {
 			return fmt.Errorf("%w: encrypted block is not a multiple of the cipher block size", errMalformed)
 		}
 
-		plain, err := secmem.NewEmptyBuffer(len(h.privBlock))
+		plain, err := secmem.NewEmptyBuffer(len(ct))
 		if err != nil {
 			return fmt.Errorf("allocate key buffer: %w", err)
 		}
 		defer func() { _ = plain.Destroy() }()
 		return plain.WithBytesErr(func(p []byte) error {
-			if err := opensshCrypt(p, h.privBlock, passphrase, salt, int(rounds), mode, true); err != nil {
+			if err := opensshCrypt(p, ct, tag, passphrase, salt, int(rounds), mode, true); err != nil {
 				return err
 			}
 			var err error
