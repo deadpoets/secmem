@@ -21,6 +21,7 @@ import (
 	"golang.org/x/crypto/ssh"
 
 	"github.com/deadpoets/secmem"
+	"github.com/deadpoets/secmem/secmem-crypto/internal/bcryptpbkdf"
 )
 
 // pemEncodeToMemory is encoding/pem's, named so the tests read as what they
@@ -212,8 +213,8 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		{"pkcs8 encrypted pem", []byte(pemOfType(epk, "", "MAAA")), testPassphrase, ErrUnsupportedKey},
 		{"pkcs8 encrypted raw", []byte{0x30, 0x04, 0x30, 0x02, 0x05, 0x00}, testPassphrase, ErrUnsupportedKey},
 		{"legacy pem encryption", legacy, testPassphrase, ErrUnsupportedKey},
-		{"kdf none", testContainer("aes256-ctr", "none", nil, 16), testPassphrase, ErrNotEncrypted},
-		{"cipher none", testContainer("none", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrNotEncrypted},
+		{"kdf none", testContainer("aes256-ctr", "none", nil, 16), testPassphrase, errMalformed},               // half-encrypted: see TestParseOpenSSH_HeaderConsistency
+		{"cipher none", testContainer("none", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, errMalformed}, // likewise
 		{"unknown kdf", testContainer("aes256-ctr", "scrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
 		{"aes128", testContainer("aes128-ctr", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
 		{"rounds over cap", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, opensshMaxRounds+1), 16), testPassphrase, ErrUnsupportedKey},
@@ -244,6 +245,245 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 	if _, err := ParsePrivateKeyWithPassphrase(nil, []byte("x"), AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "empty input") {
 		t.Errorf("empty input: got %v", err)
 	}
+}
+
+// TestParsePrivateKeyWithPassphrase_SaltBound: the KDF's salt bound is the
+// file's error. A salt over bcryptpbkdf.MaxSaltLen used to surface as a
+// bare bcrypt_pbkdf error matching no sentinel of this package; now it is
+// malformed, refused before the KDF. A salt exactly at the bound goes
+// through to the KDF, whose output then fails the block as a wrong
+// passphrase would — proving the bound sits where the KDF's does.
+func TestParsePrivateKeyWithPassphrase_SaltBound(t *testing.T) {
+	// A public-key block the pre-KDF type check admits, so the at-bound
+	// case is decided by the KDF and the block, not by the header.
+	pubBlob := ssh.Marshal(struct {
+		T string
+		P []byte
+	}{opensshKeyEd25519, make([]byte, ed25519.PublicKeySize)})
+	container := func(saltLen int) []byte {
+		outer := sshOuter{CipherName: opensshCipherCTR, KdfName: opensshKDFBcrypt, KdfOpts: string(testKDFOpts(saltLen, 1)), NumKeys: 1, PubKey: pubBlob, PrivKeyBlock: make([]byte, 16)}
+		return append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
+	}
+	_, err := ParsePrivateKeyWithPassphrase(container(bcryptpbkdf.MaxSaltLen+1), []byte(testPassphrase), AllowHeapTransients())
+	if !errors.Is(err, errMalformed) {
+		t.Fatalf("salt of MaxSaltLen+1: %v, want errMalformed", err)
+	}
+	if errors.Is(err, bcryptpbkdf.ErrSalt) || errors.Is(err, x509.IncorrectPasswordError) {
+		t.Fatalf("salt of MaxSaltLen+1 reached the KDF: %v", err)
+	}
+	_, err = ParsePrivateKeyWithPassphrase(container(bcryptpbkdf.MaxSaltLen), []byte(testPassphrase), AllowHeapTransients())
+	if !errors.Is(err, x509.IncorrectPasswordError) {
+		t.Fatalf("salt of MaxSaltLen: %v, want the post-decryption error", err)
+	}
+}
+
+// TestParsePrivateKeyWithPassphrase_DecidesBeforeKDF: what the cleartext
+// public-key block settles is settled before the KDF runs. The proof is the
+// passphrase: every case is parsed with a WRONG one, and after decryption
+// every failure is the one post-decryption error, so any other verdict can
+// only have been reached before the derivation. An unsupported type is
+// ErrUnsupportedKey; an RSA or EC key on a build that cannot erase the
+// signer's heap copies is ErrHeapTransients, which the plain parser reports
+// for the same key, so the two entry points say the same thing; Ed25519 is
+// never refused. Swaps the package policy, so no t.Parallel.
+func TestParsePrivateKeyWithPassphrase_DecidesBeforeKDF(t *testing.T) {
+	const wrong = "not the passphrase"
+	t.Run("unsupported type", func(t *testing.T) {
+		pubBlob := ssh.Marshal(struct{ T string }{"ssh-dss"})
+		outer := sshOuter{CipherName: opensshCipherCTR, KdfName: opensshKDFBcrypt, KdfOpts: string(testKDFOpts(opensshSaltLen, 1)), NumKeys: 1, PubKey: pubBlob, PrivKeyBlock: make([]byte, 64)}
+		data := append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
+		_, err := ParsePrivateKeyWithPassphrase(data, []byte(wrong), AllowHeapTransients())
+		if !errors.Is(err, ErrUnsupportedKey) || !strings.Contains(err.Error(), `"ssh-dss"`) {
+			t.Fatalf("%v, want ErrUnsupportedKey naming ssh-dss", err)
+		}
+		if errors.Is(err, x509.IncorrectPasswordError) {
+			t.Fatal("the KDF ran for an unsupported key type")
+		}
+	})
+	for _, name := range []string{"rsa-a1", "ecdsa-a1"} {
+		t.Run(name+" heap gate", func(t *testing.T) {
+			pemBytes, raw, pub := fixture(t, name)
+			withPolicy(t, false, func() {
+				for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
+					_, err := ParsePrivateKeyWithPassphrase(data, []byte(wrong), nil)
+					if !errors.Is(err, ErrHeapTransients) {
+						t.Fatalf("%s: %v, want ErrHeapTransients", form, err)
+					}
+					if errors.Is(err, x509.IncorrectPasswordError) {
+						t.Fatalf("%s: the KDF ran for a refused key", form)
+					}
+					// The refusal is the constructors' own: the plain parser
+					// on the same kind of key reads the same.
+					_, perr := ParsePrivateKey(encodings(t, testKeyNamed(t, map[string]string{"rsa-a1": "rsa2048", "ecdsa-a1": "p256"}[name]))[1].data)
+					if !errors.Is(perr, ErrHeapTransients) || perr.Error() != err.Error() {
+						t.Fatalf("%s: entry points disagree:\n  plain:      %v\n  passphrase: %v", form, perr, err)
+					}
+				}
+				// With the option, the same file opens under the same policy.
+				s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
+				if err != nil {
+					t.Fatal(err)
+				}
+				verifySigner(t, s, pub)
+				s.Destroy()
+			})
+		})
+	}
+	t.Run("ed25519 never refused", func(t *testing.T) {
+		pemBytes, _, pub := fixture(t, "ed25519-a1")
+		withPolicy(t, false, func() {
+			s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifySigner(t, s, pub)
+			s.Destroy()
+		})
+	})
+}
+
+// testKeyNamed is the parseTestKeys entry with the given name.
+func testKeyNamed(t *testing.T, name string) parseTestKey {
+	t.Helper()
+	for _, k := range parseTestKeys(t) {
+		if k.name == name {
+			return k
+		}
+	}
+	t.Fatalf("no test key named %q", name)
+	return parseTestKey{}
+}
+
+// TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary is the proof
+// behind the entry point's promise that, once the block is decrypted, the
+// only thing an error says is that it did not become a key. For each
+// ssh-keygen fixture — aes256-cbc and aes256-ctr, Ed25519, ECDSA and RSA —
+// the private block's ciphertext is modified one byte at a time, at every
+// offset (Ed25519) or a stride of them (the larger keys), and parsed with
+// the CORRECT passphrase. Depending on where the damage lands the parser
+// sees a check-integer mismatch, a length that overruns, a bad pad, halves
+// that disagree, a scalar out of range or an RSA key the standard library
+// rejects; every one of those must come back as the same error string, the
+// one a wrong passphrase gives, wrapping x509.IncorrectPasswordError.
+//
+// The comment is the residual: no reader validates it, so under CTR a flip
+// inside it leaves a key that opens, and the test requires exactly that —
+// success at every comment offset (proving the flips do reach the
+// plaintext) and at no other. Under CBC a flip garbles its whole plaintext
+// block and one byte of the next, and the fixtures' comments never fill a
+// block, so every offset must fail. The comment's position is read from
+// the plaintext the test decrypts itself, not assumed.
+func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
+	_, raw, _ := fixture(t, "ed25519-a1")
+	_, wrongErr := ParsePrivateKeyWithPassphrase(raw, []byte("not it"), AllowHeapTransients())
+	if !errors.Is(wrongErr, x509.IncorrectPasswordError) {
+		t.Fatalf("wrong passphrase: %v", wrongErr)
+	}
+	want := wrongErr.Error()
+
+	for _, tc := range []struct {
+		name   string
+		stride int
+	}{{"ed25519-cbc-a1", 1}, {"ed25519-a1", 1}, {"ecdsa-a1", 3}, {"rsa-a1", 7}} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel() // a few hundred derivations per fixture; the fixtures share nothing
+			_, raw, pub := fixture(t, tc.name)
+			h, err := readOpenSSHHeader(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			cbc := string(h.cipher) == opensshCipherCBC
+			commentStart, commentEnd := commentRange(t, raw)
+			n := len(h.privBlock)
+			var opened, failed int
+			for off := 0; off < n; off += tc.stride {
+				d := append([]byte(nil), raw...)
+				hh, _ := readOpenSSHHeader(d)
+				hh.privBlock[off] ^= 0x01
+				s, err := ParsePrivateKeyWithPassphrase(d, []byte(testPassphrase), AllowHeapTransients())
+				inComment := off >= commentStart && off < commentEnd
+				if err == nil {
+					opened++
+					verifySigner(t, s, pub)
+					s.Destroy()
+					if cbc {
+						t.Errorf("cbc: flip at %d opened (a garbled block passed every check)", off)
+					} else if !inComment {
+						t.Errorf("ctr: flip at %d, outside the comment [%d,%d), opened", off, commentStart, commentEnd)
+					}
+					continue
+				}
+				failed++
+				if !cbc && inComment {
+					t.Errorf("ctr: flip at %d, inside the comment, failed: %v", off, err)
+				}
+				if got := err.Error(); got != want {
+					t.Errorf("flip at %d: error differs from the wrong-passphrase error:\n  got:  %s\n  want: %s", off, got, want)
+				}
+				if !errors.Is(err, x509.IncorrectPasswordError) {
+					t.Errorf("flip at %d: %v does not wrap x509.IncorrectPasswordError", off, err)
+				}
+			}
+			if failed == 0 {
+				t.Fatal("no flip failed; the test is not reaching the block")
+			}
+			if !cbc && opened == 0 {
+				t.Fatal("ctr: no flip in the comment opened; the comment range is wrong")
+			}
+			t.Logf("%d offsets: %d opened (comment), %d failed identically", (n+tc.stride-1)/tc.stride, opened, failed)
+		})
+	}
+}
+
+// commentRange decrypts a protected fixture with the test passphrase and
+// walks the plaintext to the comment field, returning the offsets of its
+// bytes within the private block: [start, end). It reads the type-specific
+// field count off the key type, as the parser does.
+func commentRange(t *testing.T, raw []byte) (start, end int) {
+	t.Helper()
+	h, err := readOpenSSHHeader(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	salt, rounds := kdfOptsOf(t, raw)
+	plain := make([]byte, len(h.privBlock))
+	defer secmem.SecureWipe(plain)
+	if err := opensshCrypt(plain, h.privBlock, []byte(testPassphrase), salt, int(rounds), opensshCipherByName(h.cipher), true); err != nil {
+		t.Fatal(err)
+	}
+	r := sshReader{plain}
+	if _, ok := r.uint32(); !ok {
+		t.Fatal("short block")
+	}
+	if _, ok := r.uint32(); !ok {
+		t.Fatal("short block")
+	}
+	keyType, ok := r.str()
+	if !ok {
+		t.Fatal("short block")
+	}
+	var fields int
+	switch string(keyType) {
+	case "ssh-ed25519":
+		fields = 2
+	case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
+		fields = 3
+	case "ssh-rsa":
+		fields = 6
+	default:
+		t.Fatalf("unexpected key type %q in fixture", keyType)
+	}
+	for range fields {
+		if _, ok := r.str(); !ok {
+			t.Fatal("short block")
+		}
+	}
+	start = len(plain) - len(r.b) + 4
+	comment, ok := r.str()
+	if !ok || len(comment) == 0 {
+		t.Fatal("fixture has no comment; the test needs one to find the residual")
+	}
+	return start, start + len(comment)
 }
 
 // pemOfType renders a PEM block with optional header lines from parts, so

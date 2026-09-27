@@ -260,6 +260,26 @@ file is not a service to whoever holds it — keeping it openable is what lets
 it stay unconverted. `ssh-keygen -p -f key` and `openssl pkey -in key -out
 key` both rewrite one into a format this package reads, and the error says so.
 
+The OpenSSH containers this package does open — `aes256-ctr` and
+`aes256-cbc` under `bcrypt_pbkdf` — carry no authenticator either, and that
+is not glossed over. Two things make them acceptable where the legacy form is
+not. The KDF is a real one: bcrypt with a cost the file names and
+`ssh-keygen -a` raises, so an offline guess costs what the owner chose rather
+than one MD5. And the parser gives the malleability nothing to work with.
+Everything it can decide without the passphrase — the container's structure,
+the KDF parameters, and from the cleartext public-key block the key type and
+whether this build may hold it — it decides before the derivation runs, so a
+refused file costs nothing and none of it is decrypted. After decryption the
+outcome is one bit: whether the block failed at the check integers, a length,
+the padding, the public half against the private, or the standard library's
+consistency checks on an RSA key, `ParsePrivateKeyWithPassphrase` returns the
+same error, wrapping `x509.IncorrectPasswordError` and reading the same for a
+wrong passphrase as for a corrupt file. Someone who can hand the holder a
+modified file and read the error learns that it did not open, and nothing
+about where in the block their change landed. The residual is success: a
+change confined to the comment, which no reader validates, still yields the
+key — here exactly as in OpenSSH.
+
 Two other refusals are decisions of the same kind but do not carry the
 marker, because there is no file to convert and nothing to wait for: `AsSSH`
 never offers SHA-1 `ssh-rsa`, and `Sign` returns a plain error for Ed25519ph
