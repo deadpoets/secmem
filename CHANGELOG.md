@@ -62,6 +62,260 @@ mark the stability commitment.
   what to do instead (a TPM, HSM or KMS; a short-lived signing process; or
   `AllowHeapTransients()` recorded as a residual for a rarely-used key).
 
+- **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` decides what it can
+  before the KDF and is binary after it.** The OpenSSH aes256-ctr and
+  aes256-cbc containers carry no MAC, so the ciphertext is malleable, and the
+  parser used to report different errors depending on where in the decrypted
+  block a modification landed (a wrong check integer, bad padding, a length
+  that no longer fit, a public/private disagreement) — the format-oracle
+  shape the module's own README gives as its reason for refusing legacy PEM.
+  The key type and the `ErrHeapTransients` gate are now read off the
+  cleartext public-key block, so an unsupported or refused key costs no
+  bcrypt derivation and none of it is decrypted; after decryption every
+  failure is one error wrapping `x509.IncorrectPasswordError` that reads the
+  same for a wrong passphrase as for a corrupt file. The README explains why
+  those containers remain accepted (a bcrypt-derived key, and now a binary
+  outcome). One cost, stated: a failure to lock memory for the key's own
+  buffer at that point reads as the same error; `ParsePrivateKey` on the
+  unprotected form names it.
+
+- **`secmem-crypto`: stricter OpenSSH container parsing.** The private
+  block's pad must be shorter than the cipher block (8 for `none`, 16 for
+  AES) as well as in sequence — a 200-byte pad was accepted; an unencrypted
+  block must be a multiple of 8 bytes; bytes after the private block, and KDF
+  options with KDF `none`, are refused; a bcrypt salt over 1 MiB is refused as
+  malformed rather than surfacing as a bare `bcrypt_pbkdf` error; an OpenSSH
+  RSA key's `iqmp` is bounded like the primes. `x/crypto/ssh` agrees on the
+  KDF-options rule; block alignment and the trailing-bytes rule follow
+  OpenSSH's own reader, which is stricter than `x/crypto/ssh` on both; the
+  pad-length bound is stricter than either reader (OpenSSH checks only the
+  sequence), but no writer ever emits a whole block of padding, so nothing
+  well-formed is refused.
+
+- **CI: the `test-noescape` job runs the no-heap-escape gates through the
+  skip audit**, so a rename that empties the `-run` pattern fails the step
+  instead of passing as "no tests to run". The header comment now names
+  exactly which test steps are audited and which run plain `go test`, and
+  why; the skip-allowlist README's lane table gained `test-noescape` and the
+  `windows-residue.txt` row.
+
+- **`examples/hardened-ssh-agent`: bounded connections.** Each request has
+  30 s to arrive in full (a per-message read deadline, re-armed every message,
+  with a matching write deadline) and at most 64 connections are served at
+  once, excess connections waiting in the kernel backlog, so a client that
+  connects and sends nothing can no longer pin a goroutine indefinitely;
+  shutdown closes live connections and returns promptly. The LOCK/UNLOCK
+  Argon2id derivations deliberately stay serialised under the keyring lock,
+  and the code and README now say what that bounds (one 64 MiB working set,
+  one guess per derivation time) and what it costs. A new test file proves
+  the deadline, the cap and the shutdown on the wire against the real accept
+  loop; the README's threat model gained an availability section.
+
+- **`examples/password-login`: one answer for a refused login.** The example
+  returned "no such user" before any Argon2 work, so both the message and the
+  timing revealed whether an account existed, in a file whose stated lesson
+  is constant-time verification. A refused login now returns the single error
+  "login failed" whether the user is unknown or the password is wrong, an
+  unknown user costs the same Argon2id derivation (against a fixed dummy
+  record), and the reason is available only at debug log level; tests pin
+  both properties.
+
+### Fixed
+
+- **`redact`: the Handler no longer takes a `SecureBuffer` or `Secret` apart
+  when it finds one in an unexported field.** The reflection walk that renders
+  a `KindAny` value follows pointers at every depth, and could not call the
+  redacting `Format`/`String` of a value reached through an unexported field,
+  so it rendered the value's fields instead. For a struct such as
+  `conn{id string; key *secmem.SecureBuffer}` that meant printing the secret's
+  bytes as decimal numbers into the log line, then indexing `region.outer`,
+  whose first element is the PROT_NONE guard page: an unrecoverable fault on
+  a single `slog.Info` call, or — for a secret of about 16 KiB and up, where
+  the render cap was reached first — the secret in the sink. The stdlib text
+  handler on the same struct logs a pointer address, so the handler
+  PITFALLS.md recommends as the backstop was worse than none for this shape.
+  A value the walk cannot Interface() whose type (or pointer type) implements
+  `fmt.Formatter`, `fmt.Stringer`, `fmt.GoStringer`, `error`,
+  `slog.LogValuer`, `encoding.TextMarshaler` or `json.Marshaler` is now
+  replaced by `[REDACTED:unexported]` and never descended into; a value it can
+  Interface() honours `fmt.Formatter` as well as `error` and `fmt.Stringer`
+  (only the latter two were honoured before). And a pointer reached through
+  an unexported field is no longer dereferenced at all — it renders as
+  `<ptr>`, as fmt renders any nested pointer as an address — so even a
+  defined type with the methods stripped (`type mine secmem.SecureBuffer`)
+  behind such a field is not taken apart; only a value of such a type held
+  directly in a nested struct still is, exactly as fmt would. Regression tests log every
+  secmem type from unexported fields through the handler, in text and JSON,
+  and assert nothing of the secret reaches the sink in either form. The
+  render cap now also bounds a single `[]byte`, `String()` or `MarshalText`
+  result, where it bounded only their sum.
+
+- **`InstallTerminationWipe` terminates a process that inherited its signal
+  as ignored.** The Go runtime respects an inherited `SIG_IGN` for `SIGINT`
+  and `SIGHUP`: `Notify` still delivers the signal, so the wipe ran, but
+  `Stop` restored the ignore, and the re-raise then succeeded as a system call
+  and was discarded by the kernel. The handler concluded the disposition owned
+  the exit, and the process ran on with every buffer reading as zeros — the
+  state the installer's documentation called worse than not wiping and
+  believed only Windows could reach. Any `cmd &` in a non-interactive shell
+  script hands its child SIGINT ignored in exactly this way. The installer now
+  records, before `Notify`, which of its signals are ignored at install time
+  (the only moment `os/signal.Ignored` reports the inherited state) and treats
+  such a signal as impossible to re-raise: the default installer exits with
+  `forcedExitStatus` (130 on unix, the shell convention for SIGINT, whichever
+  of the handler's signals it was; `STATUS_CONTROL_C_EXIT` on Windows), the
+  NoExit one warns and stays installed. A unix test re-executes the test
+  binary through
+  `sh -c 'trap "" INT; exec …'`, confirms the child inherited the ignore,
+  signals it after the handler is installed, and requires it to exit with that
+  status rather than report survival.
+
+- **Every secret byte written into a `SecureBuffer` is written into a
+  registered one.** `NewBuffer` and `NewSyscallSafeBuffer` copied the caller's
+  bytes into the region and registered it with the janitor afterwards, so a
+  `WipeAllSecrets` landing in between could not see the buffer, while the
+  caller's copy had already been wiped. They now register first and copy
+  under the exclusive lock; a copy that finds the region already
+  emergency-wiped destroys the buffer and returns `ErrWiped`, the same refusal
+  every other mutator gives a dead buffer.
+
+- **A read-only arena slab and the emergency wipe compose.** The janitor
+  restores write access to wipe and deliberately leaves the slab writable so a
+  slot acquired before the wipe can still be released, but the arena's own
+  read-only flag stayed set: `ArenaSlot.Release` refused with `ErrReadOnly`
+  for a protection no longer in force, so the slot could never be returned,
+  and `SecureArena.ReadOnly` was still accepted on the dead slab,
+  re-protecting the page the janitor had left writable for that release.
+  `ReadOnly` and `ReadWrite` now return `ErrWiped` after the emergency wipe,
+  like every other state change on a dead object, and `Release` of a pre-wipe
+  slot succeeds. The wiped flag is set only when the wipe actually ran: a pass
+  that cannot restore write access leaves the region exactly as it was and
+  reports it, so `Release` keeps refusing on a slab that is still read-only
+  (pinned through a test seam, since `mprotect` does not fail on a live
+  private mapping in practice).
+
+- **`ByteAt` and `SetByteAt` clear the registers on return**, as every other
+  accessor does; they were the two that did not, and one secret byte still
+  passes through a register. The borrow-path register proof covers them.
+
+- **`Truncate` clamps the borrowed slice's capacity to the new length**, so a
+  callback cannot re-slice back over the tail it just wiped. The tail was zero
+  and inside the buffer's own allocation, so nothing was exposed; the borrow
+  now reaches exactly the live bytes.
+
+- **Documentation: a write through a borrowed slice on a read-only buffer or
+  slab faults.** `ErrReadOnly`'s doc said misuse "never crashes", which is
+  true of the mutating methods and not of a write made through the slice
+  `WithBytes` hands out — no supported OS has sub-page protection, and the
+  accessor cannot know what the closure will do. `ReadOnly`, `ErrReadOnly` and
+  PITFALLS.md §5 now say so.
+
+- **`secmem-lint`: a local struct or array value is no longer a blanket
+  "inside".** `inner()` returned true for any local whose type was a struct or
+  array before looking at what its fields held, so a write through a slice or
+  pointer field or element that aliased outer memory was silent:
+  `l := holder{b: sink}; copy(l.b, b)`, `arr[0] = out; copy(arr[0], b)`,
+  `q := pholder{p: outp}; *q.p = b`, `m.dst = out; copy(m.dst, b)` — while the
+  README promised that an unproven local is reported as outside. A reference
+  held in a field or element of a local aggregate is now followed to what was
+  stored at that path (an access-path index over assignments, composite
+  literals and implicit address-taking — `&s`, a slice of an array `arr[:]`,
+  a pointer-receiver method call or method value on `s`), and is inside only
+  when every value ever stored there is fresh or a borrowed slice. Values
+  written directly, and fields made fresh inside the closure
+  (`s.b = make(...)`, `holder{b: make(...)}`), stay clean. A reference
+  reached through a pointer, slice or map (`p.buf`, `hs[i].buf`, `*pp`) is
+  not followed and is therefore outside, which also makes a fresh heap
+  container (`p := &holder{b: make(...)}`) a reported shape where it used to
+  be accepted along with `&holder{b: out}`; the README says so and names the
+  remedy (hold the scratch in a local value, an array, or a fresh slice held
+  directly in a local).
+
+- **`secmem-lint`: the `bytes` and `slices` helpers are covered.** Only
+  `bytes.Clone/Join/Repeat` and `slices.Clone/Concat/Repeat` were sinks and no
+  `bytes` function carried taint, so `sink = bytes.TrimSpace(b)` — the
+  strip-the-newline-off-a-password idiom — and `TrimSuffix`, `Cut`, `Split`,
+  `Fields`, `Lines`, the `*Seq` iterators, `slices.Clip`, `Grow`, `Delete*`,
+  `Compact*`, `Insert` and `Replace` were silent. Their results now carry
+  taint (they return a window onto their argument), and the helpers that
+  return a heap copy — `ToUpper`, `ToLower`, `ToTitle`, `Title`, `Map`,
+  `Replace`, `ReplaceAll`, `ToValidUTF8`, `Runes` — are sinks.
+
+- **`secmem-lint`: sink-table holes closed.** `log/slog.With` (every other
+  slog package function was listed); `math/big.Int.SetBytes` and `SetString`
+  (so `&ecdsa.PrivateKey{D: new(big.Int).SetBytes(b)}` is reported — the
+  copy the ssh-agent example goes out of its way to avoid);
+  `crypto/ed25519.PrivateKey.Sign` and `Seed` (the same FIPS-cache path as
+  the `ed25519.Sign` sink); the `encoding/json`, `xml` and `gob`
+  `Encoder.Encode` methods (`json.Marshal` was a sink, the encoders were
+  not); `sync.Map` and `sync/atomic.Value`/`Pointer` `Store`, `LoadOrStore`,
+  `Swap` and `CompareAndSwap` (the concurrency-safe forms of the map store
+  already reported); and `context.WithValue` as a retaining constructor. A
+  method sink also fires when its receiver is the borrowed slice. A sink's
+  result is deliberately not re-tainted, so one leak yields one finding.
+
+- **`secmem-lint`: shapes that were silent even under `-strict`.** A generic
+  borrowing function passed by name (`func leak[T ~[]byte](b T)`) had no
+  `[]byte` parameters resolved from its declared type parameter and its body
+  was never checked; the method-expression spelling
+  `(*secmem.SecureBuffer).WithBytes(buf, fn)` was not recognised as a borrow;
+  a method value bound more than once left its inline literal unchecked;
+  `for c := range seq` over a tainted iterator tainted nothing (the element
+  arrives in the range's first variable); reentrancy through an embedded
+  buffer matched `e.Len()` but not `e.SecureBuffer.Len()`; `//nolint:all`
+  was not honoured; strict L1 never saw `var buf, _ = secmem.NewBuffer(...)`.
+  Each is now resolved (a generic's parameters come from the instantiated
+  signature at the call, including an explicit `leak[[]byte]`; a method value
+  bound only to borrowing accessors has its closure checked with the
+  receiver's identity left undecided, and one that is only sometimes a
+  borrowing accessor gets a strict diagnostic), and each is pinned by a
+  testdata case. The README and package documentation were rewritten so every
+  sentence about what is and is not resolved is exactly true.
+
+- **`secmem-crypto`: parser errors no longer repeat unbounded input.**
+  `ParsePrivateKey`'s doc said "errors never quote the input", but six error
+  sites quoted the PEM block type and the OpenSSH key type, curve, cipher and
+  KDF names with `%q` at whatever length the file supplied — a hostile file put a
+  4 KiB label, or terminal control sequences, into the caller's log through
+  the error. A label is now quoted only when it is at most 32 bytes of
+  printable ASCII; a longer printable one is quoted to 32 bytes with its
+  length noted, and one with any other byte is described by its length alone.
+
+- **`secmem-crypto`: a half-encrypted OpenSSH header is malformed, not
+  misclassified.** A container naming a cipher with KDF `none`, or `none`
+  with `bcrypt`, was "passphrase-protected" to `ParsePrivateKey` and "not
+  protected" to `ParsePrivateKeyWithPassphrase`, each pointing at the other,
+  so the documented prompt-and-retry flow looped. Both now return the
+  malformed-key error. OpenSSH's own reader refuses a cipher without a KDF as
+  invalid format; refusing a KDF without a cipher, and KDF options with KDF
+  `none`, is this parser's rule (the latter shared with `x/crypto/ssh`),
+  adopted so that neither entry point sends the caller to the other.
+
+- **`secmem-crypto`: the internal DER length encoder used by OpenSSH RSA
+  import is correct for any length.** It encoded lengths modulo 2^24; no
+  accepted key could reach that size, and the new `iqmp` bound (above, under
+  Changed) keeps
+  it that way.
+
+- **CI: the nightly fuzz workflow fails when it fuzzes nothing.** The target
+  listing ran under `|| true`, so a module that stopped compiling, or a
+  failing `go list`, produced a green run with zero fuzzing; discovery
+  failures and a run with no target now fail the job.
+
+- **CI: the `argon2-workspace-ran` check cannot pass vacuously.** It grepped
+  only for `--- SKIP` lines, so a renamed test matched nothing and passed; it
+  now also requires at least one passing test per `-run` pattern
+  (`ScrubClearsVectorRegs` only on amd64, the sole architecture whose files
+  define it).
+
+- **`release.sh` signs the tag and cleans up after a failed verify.** The
+  tag was created with `git tag -a` (unsigned unless `tag.gpgSign` is set)
+  and then verified; on failure the script died with the tag in place, and
+  every later run died at "already exists locally" until it was deleted by
+  hand. It now uses `git tag -s` and deletes the tag before dying. The
+  `curl ... || echo "000"` fallbacks, which turned an unreachable proxy into
+  HTTP "000000" and the wrong error message, are gone.
+
 ## [0.6.0] - 2026-09-13
 
 Registers and residue. `Scrub` and `ScrubErr` clear the general-purpose
