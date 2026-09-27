@@ -5,7 +5,9 @@ name: Nightly Fuzz
 # jobs on every PR; THIS workflow hunts for NEW failing inputs over a longer
 # budget. Targets are discovered at run time, per PACKAGE, so a new FuzzXxx
 # anywhere in the module - not only its root package - is picked up without
-# editing this file.
+# editing this file. Discovery failing is itself a failure: a package that no
+# longer compiles, or a module in which no target ran at all, goes red rather
+# than passing as a nightly that fuzzed nothing.
 #
 # On a crash or hang, Go writes the minimized failing input to
 # <pkg>/testdata/fuzz/<Target>/<hash> and prints a `go test -run=<Target>/<hash>`
@@ -57,8 +59,24 @@ jobs:
           ran=0
           # `go test -fuzz` accepts exactly one package, and `-list` over a
           # multi-package pattern drops the package boundary, so walk packages.
-          for pkg in $(go list ./...); do
-            mapfile -t targets < <(go test -list '^Fuzz' "$pkg" | grep '^Fuzz' || true)
+          if ! pkgs=$(go list ./...); then
+            echo "::error::go list ./... failed in ${{ matrix.module }}; nothing was fuzzed"
+            exit 1
+          fi
+          for pkg in $pkgs; do
+            # List, THEN filter, with a verdict for each. A package that no
+            # longer compiles fails the listing; a package with no FuzzXxx makes
+            # the filter match nothing. Both leave the target set empty, and an
+            # earlier `list | grep || true` folded them into one green outcome:
+            # a module that had stopped compiling fuzzed nothing and passed.
+            # Only the second is fine.
+            if ! list=$(go test -list '^Fuzz' "$pkg" 2>&1); then
+              echo "::error::listing fuzz targets in $pkg failed"
+              echo "$list"
+              failed=1
+              continue
+            fi
+            mapfile -t targets < <(grep '^Fuzz' <<<"$list" || true)
             for t in "${targets[@]}"; do
               ran=$((ran + 1))
               echo "::group::fuzz $t in $pkg for $FUZZTIME"
@@ -69,8 +87,12 @@ jobs:
               echo "::endgroup::"
             done
           done
+          # Both fuzzed modules have targets, so zero targets is never an empty
+          # module: discovery broke, or every package stopped compiling. A
+          # nightly that fuzzed nothing must not be green.
           if [ "$ran" -eq 0 ]; then
-            echo "no fuzz targets in ${{ matrix.module }}"
+            echo "::error::no fuzz target ran in ${{ matrix.module }}"
+            failed=1
           fi
           # Stage every NEW file under testdata/fuzz. Committed seeds are
           # tracked, so the untracked set is exactly the inputs Go just wrote.
