@@ -14,10 +14,12 @@ import (
 //     deliberately absent — writing a secret to a connection is the egress the
 //     program exists for, and the analyzer has no way to tell a socket from a
 //     bytes.Buffer behind the interface. Name the concrete type to be told.
-//   - aliasFuncs: constructors whose result holds a reference to (or a copy of)
-//     the argument without being a leak in themselves — bytes.NewReader(b) fed
-//     straight to io.Copy stays inside the lease. Their result is tainted and
-//     reported where it escapes.
+//   - aliasFuncs: functions whose result holds a reference to the argument
+//     without being a leak in themselves — bytes.NewReader(b) fed straight to
+//     io.Copy stays inside the lease, and bytes.TrimSpace(b) is a sub-slice of
+//     the same secure memory. Their result is tainted and reported where it
+//     escapes. Helpers that return a fresh HEAP copy instead (bytes.ToUpper,
+//     bytes.Clone) are sinks: the copy is the leak, wherever it goes.
 
 const (
 	reasonHeapCopy = "it copies the secret to the heap outside the buffer lifecycle"
@@ -27,6 +29,9 @@ const (
 	reasonKeyCopy  = "it copies the key into heap memory it never wipes"
 	reasonKDF      = "it copies the secret into heap working state — use secmem-crypto's *Into KDFs"
 	reasonDecode   = "it decodes the secret into heap values"
+	reasonEncode   = "it serialises the secret through a heap buffer it never wipes"
+	reasonRetain   = "it retains the secret in a container that outlives the closure"
+	reasonBigInt   = "it copies the secret into a heap big.Int that is never wiped"
 )
 
 // funcSinks maps "import/path.Func" to the reason passing borrowed secret bytes
@@ -69,10 +74,24 @@ var funcSinks = map[string]string{ //nolint:gochecknoglobals // immutable lookup
 	"golang.org/x/crypto/bcrypt.GenerateFromPassword":   reasonKDF,
 	"golang.org/x/crypto/bcrypt.CompareHashAndPassword": reasonKDF,
 
-	// heap copies outside the buffer lifecycle.
+	// heap copies outside the buffer lifecycle. The bytes helpers that
+	// RETURN A NEW SLICE are here; the ones that return a sub-slice of their
+	// argument (TrimSpace, Cut, Split, …) are in aliasFuncs instead.
 	"bytes.Clone":                 reasonHeapCopy,
 	"bytes.Join":                  reasonHeapCopy,
 	"bytes.Repeat":                reasonHeapCopy,
+	"bytes.ToUpper":               reasonHeapCopy,
+	"bytes.ToLower":               reasonHeapCopy,
+	"bytes.ToTitle":               reasonHeapCopy,
+	"bytes.ToUpperSpecial":        reasonHeapCopy,
+	"bytes.ToLowerSpecial":        reasonHeapCopy,
+	"bytes.ToTitleSpecial":        reasonHeapCopy,
+	"bytes.Title":                 reasonHeapCopy,
+	"bytes.Map":                   reasonHeapCopy,
+	"bytes.Replace":               reasonHeapCopy,
+	"bytes.ReplaceAll":            reasonHeapCopy,
+	"bytes.ToValidUTF8":           reasonHeapCopy,
+	"bytes.Runes":                 reasonHeapCopy,
 	"slices.Clone":                reasonHeapCopy,
 	"slices.Concat":               reasonHeapCopy,
 	"slices.Repeat":               reasonHeapCopy,
@@ -126,6 +145,7 @@ var funcSinks = map[string]string{ //nolint:gochecknoglobals // immutable lookup
 	"log/slog.DebugContext": reasonLog,
 	"log/slog.Log":          reasonLog,
 	"log/slog.LogAttrs":     reasonLog,
+	"log/slog.With":         reasonLog,
 	"log/slog.Any":          reasonLog,
 	"log/slog.String":       reasonLog,
 	"log/slog.Group":        reasonLog,
@@ -151,8 +171,9 @@ var (
 	testLogMethods = []string{ //nolint:gochecknoglobals // immutable.
 		"Log", "Logf", "Error", "Errorf", "Fatal", "Fatalf", "Skip", "Skipf",
 	}
-	writeMethods  = []string{"Write", "WriteString"}                     //nolint:gochecknoglobals // immutable.
-	encodeMethods = []string{"EncodeToString", "Encode", "AppendEncode"} //nolint:gochecknoglobals // immutable.
+	writeMethods  = []string{"Write", "WriteString"}                           //nolint:gochecknoglobals // immutable.
+	encodeMethods = []string{"EncodeToString", "Encode", "AppendEncode"}       //nolint:gochecknoglobals // immutable.
+	storeMethods  = []string{"Store", "LoadOrStore", "Swap", "CompareAndSwap"} //nolint:gochecknoglobals // immutable.
 )
 
 var methodSinkSpecs = []methodSinkSpec{ //nolint:gochecknoglobals // immutable lookup table.
@@ -168,7 +189,26 @@ var methodSinkSpecs = []methodSinkSpec{ //nolint:gochecknoglobals // immutable l
 	{"os", "File", []string{"Write", "WriteString", "WriteAt"}, "it writes the secret to a file"},
 	{"encoding/base64", "Encoding", encodeMethods, reasonHeapCopy},
 	{"encoding/base32", "Encoding", encodeMethods, reasonHeapCopy},
+	{"encoding/json", "Encoder", []string{"Encode"}, reasonEncode},
+	{"encoding/xml", "Encoder", []string{"Encode", "EncodeElement", "EncodeToken"}, reasonEncode},
+	{"encoding/gob", "Encoder", []string{"Encode", "EncodeValue"}, reasonEncode},
 	{"crypto/ecdh", "Curve", []string{"NewPrivateKey"}, reasonKeyCopy},
+	// crypto/ed25519.PrivateKey is a []byte: converting the borrowed slice to
+	// it is free, and its methods then take the same paths as the package
+	// functions — Sign goes through the FIPS private-key cache, Seed returns a
+	// heap copy of the first half.
+	{"crypto/ed25519", "PrivateKey", []string{"Sign"}, "the FIPS cache panics on off-heap memory — sign in place with secmem-crypto's Ed25519Signer"},
+	{"crypto/ed25519", "PrivateKey", []string{"Seed"}, reasonHeapCopy},
+	// math/big.Int keeps its magnitude in a heap []Word that no method wipes;
+	// SetBytes copies the scalar in, which is exactly the copy
+	// secmem-crypto's ECDSASigner exists to avoid.
+	{"math/big", "Int", []string{"SetBytes", "SetString"}, reasonBigInt},
+	// The concurrency-safe forms of storing into a map or variable outside
+	// the closure: the value is retained past the lease just as
+	// outerMap["k"] = b retains it.
+	{"sync", "Map", storeMethods, reasonRetain},
+	{"sync/atomic", "Value", storeMethods, reasonRetain},
+	{"sync/atomic", "Pointer", storeMethods, reasonRetain},
 }
 
 // methodSinks is methodSinkSpecs flattened to "import/path.Type.Method".
@@ -182,7 +222,12 @@ var methodSinks = func() map[string]string { //nolint:gochecknoglobals // immuta
 	return m
 }()
 
-// aliasFuncs are the constructors whose result retains its argument.
+// aliasFuncs are the functions whose result retains or aliases an argument:
+// the reader / buffer constructors, context.WithValue (the value lives in the
+// context for as long as it does), and the bytes / slices helpers that return
+// a sub-slice of their input — trimming the newline off a password with
+// bytes.TrimSpace(b) yields a window onto the same secure memory, which is a
+// leak only where that window escapes.
 var aliasFuncs = map[string]bool{ //nolint:gochecknoglobals // immutable lookup table.
 	"bytes.NewReader":   true,
 	"bytes.NewBuffer":   true,
@@ -190,12 +235,49 @@ var aliasFuncs = map[string]bool{ //nolint:gochecknoglobals // immutable lookup 
 	"bufio.NewReader":   true,
 	"io.NopCloser":      true,
 	"reflect.ValueOf":   true,
+	"context.WithValue": true,
+
+	// bytes: sub-slices of the argument.
+	"bytes.TrimSpace":     true,
+	"bytes.Trim":          true,
+	"bytes.TrimLeft":      true,
+	"bytes.TrimRight":     true,
+	"bytes.TrimPrefix":    true,
+	"bytes.TrimSuffix":    true,
+	"bytes.TrimFunc":      true,
+	"bytes.TrimLeftFunc":  true,
+	"bytes.TrimRightFunc": true,
+	"bytes.Cut":           true,
+	"bytes.CutPrefix":     true,
+	"bytes.CutSuffix":     true,
+	"bytes.Split":         true,
+	"bytes.SplitN":        true,
+	"bytes.SplitAfter":    true,
+	"bytes.SplitAfterN":   true,
+	"bytes.Fields":        true,
+	"bytes.FieldsFunc":    true,
+	"bytes.Lines":         true,
+	"bytes.SplitSeq":      true,
+	"bytes.SplitAfterSeq": true,
+	"bytes.FieldsSeq":     true,
+	"bytes.FieldsFuncSeq": true,
+
+	// slices: the same backing array (or, when they must grow, a heap copy
+	// carrying the same bytes — tainted either way).
+	"slices.Clip":        true,
+	"slices.Grow":        true,
+	"slices.Delete":      true,
+	"slices.DeleteFunc":  true,
+	"slices.Compact":     true,
+	"slices.CompactFunc": true,
+	"slices.Insert":      true,
+	"slices.Replace":     true,
 }
 
 // sinkFor resolves a call to a sink, returning its display name and the reason
 // it is dangerous, or "" if it is not one.
 func (c *checker) sinkFor(call *ast.CallExpr) (name, reason string) {
-	sel, ok := unparen(call.Fun).(*ast.SelectorExpr)
+	sel, ok := calleeSelector(call.Fun)
 	if !ok {
 		return "", ""
 	}
@@ -214,7 +296,7 @@ func (c *checker) sinkFor(call *ast.CallExpr) (name, reason string) {
 }
 
 func (c *checker) isAliasFunc(call *ast.CallExpr) bool {
-	sel, ok := unparen(call.Fun).(*ast.SelectorExpr)
+	sel, ok := calleeSelector(call.Fun)
 	if !ok {
 		return false
 	}

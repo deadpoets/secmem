@@ -186,3 +186,42 @@ func slotUnknownArenaDefaultSilent(slot *secmem.ArenaSlot, arena *secmem.SecureA
 		_ = arena.Destroy()
 	})
 }
+
+// --- embedded buffers ---
+
+type embeds struct{ *secmem.SecureBuffer }
+
+// embeddedPromotion: the buffer embedded in e is the same buffer whether its
+// methods are reached through the promotion (e.Len) or on the field
+// (e.SecureBuffer.Len), and whichever spelling the borrow itself uses.
+func embeddedPromotion(e embeds) {
+	_ = e.WithBytes(func(b []byte) {
+		_ = e.Len()              // want `secmem-lint: Len called on the same buffer`
+		_ = e.SecureBuffer.Len() // want `secmem-lint: Len called on the same buffer`
+	})
+	_ = e.SecureBuffer.WithBytes(func(b []byte) {
+		_ = e.IsSealed()              // want `secmem-lint: IsSealed called on the same buffer`
+		_ = e.SecureBuffer.IsSealed() // want `secmem-lint: IsSealed called on the same buffer`
+	})
+	x := e.SecureBuffer
+	_ = e.WithBytes(func(b []byte) {
+		_ = x.Len() // want `secmem-lint: Len called on the same buffer`
+	})
+}
+
+type twoBuffers struct {
+	*secmem.SecureBuffer
+	other *secmem.SecureBuffer
+}
+
+// embeddedDifferentFieldOK: the promoted buffer and a named field are two
+// buffers, so the decrypt-into pattern survives the promotion handling.
+func embeddedDifferentFieldOK(t twoBuffers) {
+	_ = t.WithBytes(func(b []byte) {
+		_ = t.other.Len()
+		_ = t.other.WithBytes(func(o []byte) { copy(o, b) })
+	})
+	_ = t.other.WithBytes(func(b []byte) {
+		_ = t.Len()
+	})
+}
