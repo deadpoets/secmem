@@ -96,10 +96,7 @@ func (s *escapeScan) rangeTaint(st *ast.RangeStmt) bool {
 	if !s.tainted(st.X) {
 		return false
 	}
-	changed := false
-	if st.Value != nil && s.taintTarget(st.Value) {
-		changed = true
-	}
+	changed := st.Value != nil && s.taintTarget(st.Value)
 	if st.Key == nil {
 		return changed
 	}

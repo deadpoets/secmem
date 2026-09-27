@@ -374,7 +374,7 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 			// What fmt's %v honours, in fmt's order: Format first, then Error
 			// and String. Through fmt rather than a direct call, because fmt
 			// recovers a panicking method and this would not.
-			fmt.Fprint(w, x)
+			_, _ = fmt.Fprint(w, x)
 			return
 		case encoding.TextMarshaler:
 			if text, err := x.MarshalText(); err == nil {
@@ -467,7 +467,7 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		// fmt prints the value a reflect.Value holds, unexported or not.
 		// Through the capped writer: a string field is the most common
 		// carrier of large text, and the cap must bound it too.
-		fmt.Fprint(w, rv)
+		_, _ = fmt.Fprint(w, rv)
 	}
 }
 

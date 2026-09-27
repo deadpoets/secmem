@@ -46,7 +46,7 @@ type openConn struct {
 // decimalBytes is how fmt prints a []byte element by element — the form the
 // walk used to emit for a secret it had taken apart.
 func decimalBytes(b []byte) string {
-	s := fmt.Sprint(b)
+	s := fmt.Sprintf("%d", b)
 	return strings.TrimSuffix(strings.TrimPrefix(s, "["), "]")
 }
 
