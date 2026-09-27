@@ -586,6 +586,16 @@ func (a *SecureArena) SlotSize() int {
 // rather than faulting. [SecureArena.Destroy] needs no such call — its wipe
 // path makes the slab writable first.
 //
+// As for [SecureBuffer.ReadOnly], the guard is at the API boundary. A write
+// made through the slice [ArenaSlot.WithBytes] hands out while the slab is
+// read-only is not intercepted — it faults the process. Treat a borrowed
+// slice as read-only for as long as the slab is.
+//
+// After [WipeAllSecrets] the arena is dead and this returns [ErrWiped]: the
+// emergency wipe leaves the slab mapped read-write so that a slot acquired
+// before it can still be released (wiped) without faulting, and re-protecting
+// a dead slab would only put that fault back.
+//
 // The exclusive lock is held to drain all in-flight WithBytes callbacks
 // before the mprotect, preventing a SIGSEGV from a concurrent write hitting
 // a PROT_READ page.
@@ -598,6 +608,9 @@ func (a *SecureArena) ReadOnly() error {
 	if a.region.inner == nil {
 		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", ErrArenaDestroyed)
 	}
+	if a.wiped.Load() {
+		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", ErrWiped)
+	}
 	if err := mprotectSecretMem(a.region, 1 /*PROT_READ*/); err != nil {
 		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", err)
 	}
@@ -606,6 +619,10 @@ func (a *SecureArena) ReadOnly() error {
 }
 
 // ReadWrite restores read-write access to the entire slab.
+//
+// After [WipeAllSecrets] it returns [ErrWiped], like every other state change
+// on a dead object; the slab is already writable then (see ReadOnly), so a
+// slot acquired before the wipe can be released without it.
 //
 // The exclusive lock is held to drain all in-flight callbacks before the
 // mprotect (arena SB-3 equivalent fix).
@@ -617,6 +634,9 @@ func (a *SecureArena) ReadWrite() error {
 	defer a.mu.unlock()
 	if a.region.inner == nil {
 		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", ErrArenaDestroyed)
+	}
+	if a.wiped.Load() {
+		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", ErrWiped)
 	}
 	if err := mprotectSecretMem(a.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", err)
@@ -634,6 +654,11 @@ func (a *SecureArena) ReadWrite() error {
 // The slice is valid ONLY for the duration of fn.  Never store or pass it to
 // a goroutine.  Returns [ErrSlotReleased] if the slot has been released.
 // Returns [ErrArenaDestroyed] if the arena has been destroyed.
+//
+// While the slab is read-only ([SecureArena.ReadOnly]) the slice is backed by
+// a PROT_READ page: a write through it is not intercepted and faults the
+// process, where the mutating methods return [ErrReadOnly]. Treat the slice as
+// read-only for as long as the slab is.
 func (s *ArenaSlot) WithBytes(fn func([]byte)) error {
 	if fn == nil {
 		return errors.New("secmem.ArenaSlot.WithBytes: nil fn")
@@ -644,7 +669,9 @@ func (s *ArenaSlot) WithBytes(fn func([]byte)) error {
 	})
 }
 
-// WithBytesErr is like [ArenaSlot.WithBytes] but fn may return an error.
+// WithBytesErr is like [ArenaSlot.WithBytes] but fn may return an error. The
+// same caution applies: a write through the slice while the slab is read-only
+// faults rather than returning [ErrReadOnly].
 func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 	if fn == nil {
 		return errors.New("secmem.ArenaSlot.WithBytesErr: nil fn")
@@ -742,7 +769,7 @@ func (s *ArenaSlot) Release() error {
 	var violated bool
 	s.arena.mu.rLock()
 	if s.arena.region.inner != nil {
-		if s.arena.readOnly {
+		if s.arena.readOnly && !s.arena.wiped.Load() {
 			// The slab is PROT_READ; the canary re-arm and slot wipe below are
 			// writes that would fault the process. Refuse cleanly instead. The
 			// slot stays in use and un-wiped — still protected by the read-only
@@ -751,6 +778,16 @@ func (s *ArenaSlot) Release() error {
 			// "ReadWrite before a slot write" contract on ReadOnly. Checked
 			// inside the live-region guard so a Release after Destroy (region
 			// already nil) stays an idempotent no-op, never ErrReadOnly.
+			//
+			// Not after an emergency wipe, though: the janitor restores write
+			// access to wipe and deliberately leaves the slab that way, and
+			// ReadOnly refuses to re-protect a wiped slab, so a set readOnly
+			// flag then describes a protection that is no longer in force.
+			// Refusing here would leave the slot un-releasable for no reason
+			// — the wipe below is exactly what the caller asked for. The flag
+			// is set only when the wipe ran (registry.go, markWiped): a pass
+			// that could not restore write access leaves the slab PROT_READ
+			// and the flag clear, and this refusal stands.
 			s.arena.mu.rUnlock()
 			return fmt.Errorf("secmem.ArenaSlot.Release: %w", ErrReadOnly)
 		}

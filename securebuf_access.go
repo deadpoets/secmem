@@ -40,9 +40,16 @@ import (
 // a deadlock. Nesting access to a DIFFERENT buffer (e.g. the decrypt-into
 // pattern: key.WithBytesErr → out.WithBytesErr) is safe and expected.
 //
+// READ-ONLY BUFFERS: while the buffer is read-only ([SecureBuffer.ReadOnly])
+// the slice is backed by a PROT_READ page. A write through it is not
+// intercepted — no supported OS has sub-page protection and this method
+// cannot know what fn does — and faults the process. Treat the slice as
+// read-only for as long as the buffer is; the mutating methods return
+// [ErrReadOnly] instead.
+//
 // When it returns, the vector and general-purpose registers are cleared (on
-// amd64 and arm64), as they are after CopyIn, CopyOut, ConstantTimeEqual,
-// WriteTo, ReadFrom and the copying constructors. A copy of the secret moves
+// amd64 and arm64), as they are after CopyIn, CopyOut, ByteAt, SetByteAt,
+// ConstantTimeEqual, WriteTo, ReadFrom and the copying constructors. A copy of the secret moves
 // through registers, and left there it would be saved onto a goroutine stack by
 // the next asynchronous preemption on the thread — measured by secmem-crypto's
 // residue test. That covers what fn leaves behind; a preemption landing while
@@ -74,7 +81,9 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 //
 // NOT REENTRANT: as with [SecureBuffer.WithBytes], fn must not call another
 // access method on the same buffer (deadlock risk under a concurrent writer);
-// nesting onto a different buffer is safe.
+// nesting onto a different buffer is safe. As there too, a write through the
+// slice while the buffer is read-only faults rather than returning
+// [ErrReadOnly].
 func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytesErr: nil fn")
@@ -202,6 +211,7 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 	if s == nil {
 		return 0, ErrDestroyed
 	}
+	defer clearRegisters() // one secret byte still moves through a register; see WithBytes
 	s.mu.rLock()
 	defer s.mu.rUnlock()
 	if s.data == nil {
@@ -225,6 +235,7 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	if s == nil {
 		return ErrDestroyed
 	}
+	defer clearRegisters() // see ByteAt
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.data == nil {
