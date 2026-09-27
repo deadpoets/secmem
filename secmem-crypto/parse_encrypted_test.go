@@ -119,11 +119,20 @@ func fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.Public
 }
 
 // TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures opens files a real
-// ssh-keygen wrote — the default profile, one round, CBC, and every key
-// type — and proves each parsed signer is the key the .pub advertises.
+// ssh-keygen wrote — the default profile, one round, every AES key size in
+// both modes, and every key type — and proves each parsed signer is the key
+// the .pub advertises. The aes128 and aes192 files matter because OpenSSH
+// derives exactly key||IV from the KDF, so a shorter key is a shorter
+// derivation: a parser that always asked for 32+16 bytes would decrypt them
+// to nothing that parses.
 // The chacha20-poly1305 file must be refused by name.
 func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
-	for _, name := range []string{"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1", "ecdsa-a1", "rsa-a1"} {
+	for _, name := range []string{
+		"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1",
+		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1", "ed25519-aes128-cbc-a1",
+		"ed25519-chacha-a1",
+		"ecdsa-a1", "rsa-a1",
+	} {
 		t.Run(name, func(t *testing.T) {
 			pemBytes, raw, pub := fixture(t, name)
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
@@ -141,15 +150,54 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			}
 		})
 	}
-	t.Run("ed25519-chacha-a1", func(t *testing.T) {
+	// chacha20-poly1305 authenticates the ciphertext, so a wrong passphrase
+	// fails at the tag rather than at the format's check integers, and a
+	// corrupted tag fails the same way. Both must look like a bad passphrase
+	// to the caller, not like a malformed file.
+	t.Run("ed25519-chacha-a1/wrong passphrase", func(t *testing.T) {
 		pemBytes, _, _ := fixture(t, "ed25519-chacha-a1")
-		s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
-		if err == nil {
+		if s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte("not it"), AllowHeapTransients()); err == nil {
 			s.Destroy()
-			t.Fatal("chacha20-poly1305 file was accepted")
+			t.Fatal("a wrong passphrase was accepted")
+		} else if !errors.Is(err, x509.IncorrectPasswordError) {
+			t.Fatalf("got %v, want IncorrectPasswordError", err)
 		}
-		if !errors.Is(err, ErrUnsupportedKey) || !strings.Contains(err.Error(), "chacha20-poly1305@openssh.com") {
-			t.Fatalf("got %v, want ErrUnsupportedKey naming the cipher", err)
+	})
+	t.Run("ed25519-chacha-a1/corrupted tag", func(t *testing.T) {
+		_, raw, _ := fixture(t, "ed25519-chacha-a1")
+		bad := bytes.Clone(raw)
+		bad[len(bad)-1] ^= 1 // the last byte of the trailing authenticator
+		if s, err := ParsePrivateKeyWithPassphrase(bad, []byte(testPassphrase), AllowHeapTransients()); err == nil {
+			s.Destroy()
+			t.Fatal("a corrupted authenticator was accepted")
+		} else if !errors.Is(err, x509.IncorrectPasswordError) {
+			t.Fatalf("got %v, want IncorrectPasswordError", err)
+		}
+	})
+	// The authenticator's length is part of the container's shape, judged
+	// with the header before the KDF runs: one byte too few or too many
+	// after the block is a malformed file, not a wrong passphrase, and the
+	// error names what it wanted.
+	t.Run("ed25519-chacha-a1/authenticator length", func(t *testing.T) {
+		_, raw, _ := fixture(t, "ed25519-chacha-a1")
+		if h, err := readOpenSSHHeader(raw); err != nil || len(h.rest) != chachaTagLen {
+			t.Fatalf("fixture: header %v, %d bytes after the block, want %d", err, len(h.rest), chachaTagLen)
+		}
+		for name, data := range map[string][]byte{
+			"short": raw[:len(raw)-1],
+			"long":  append(bytes.Clone(raw), 0),
+		} {
+			s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
+			if err == nil {
+				s.Destroy()
+				t.Fatalf("%s: a mis-sized authenticator was accepted", name)
+			}
+			if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
+				t.Errorf("%s: %v, want errMalformed before the KDF", name, err)
+			}
+			if !strings.Contains(err.Error(), "authenticator") {
+				t.Errorf("%s: %v does not say what it wanted", name, err)
+			}
 		}
 	})
 }
@@ -183,7 +231,9 @@ func TestParsePrivateKeyWithPassphrase_XCryptoRoundTrip(t *testing.T) {
 // error identity: the wrong passphrase is x509.IncorrectPasswordError as in
 // x/crypto; a file that is not protected is ErrNotEncrypted, whatever its
 // container; the encryption schemes this parser does not run are named as
-// unsupported; and hostile KDF parameters are refused before any work.
+// unsupported; what follows the private block must be exactly the cipher's
+// authenticator (nothing for AES, 16 bytes for chacha20-poly1305); and
+// hostile KDF parameters are refused before any work.
 func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 	pemBytes, raw, _ := fixture(t, "ed25519-a1")
 	plain := parseTestKeys(t)[0]
@@ -216,13 +266,19 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		{"kdf none", testContainer("aes256-ctr", "none", nil, 16), testPassphrase, errMalformed},               // half-encrypted: see TestParseOpenSSH_HeaderConsistency
 		{"cipher none", testContainer("none", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, errMalformed}, // likewise
 		{"unknown kdf", testContainer("aes256-ctr", "scrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
-		{"aes128", testContainer("aes128-ctr", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
+		{"unsupported cipher", testContainer("aes256-gcm@openssh.com", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, ErrUnsupportedKey},
 		{"rounds over cap", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, opensshMaxRounds+1), 16), testPassphrase, ErrUnsupportedKey},
 		{"rounds zero", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 0), 16), testPassphrase, errMalformed},
 		{"empty salt", testContainer("aes256-ctr", "bcrypt", testKDFOpts(0, 1), 16), testPassphrase, errMalformed},
 		{"kdf options trailing bytes", testContainer("aes256-ctr", "bcrypt", append(testKDFOpts(16, 1), 0), 16), testPassphrase, errMalformed},
 		{"block not multiple of 16", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 1), 24), testPassphrase, errMalformed},
 		{"empty block", testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 1), 0), testPassphrase, errMalformed},
+		{"aes: bytes after the block", append(testContainer("aes256-ctr", "bcrypt", testKDFOpts(16, 1), 16), 0), testPassphrase, errMalformed},
+		{"aes128: bytes after the block", append(testContainer(opensshCipher128C, "bcrypt", testKDFOpts(16, 1), 16), make([]byte, 16)...), testPassphrase, errMalformed}, // a tag-sized tail is still junk for AES
+		{"chacha: no authenticator", testContainer(opensshCipherChaCha, "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, errMalformed},
+		{"chacha: short authenticator", append(testContainer(opensshCipherChaCha, "bcrypt", testKDFOpts(16, 1), 16), make([]byte, chachaTagLen-1)...), testPassphrase, errMalformed},
+		{"chacha: long authenticator", append(testContainer(opensshCipherChaCha, "bcrypt", testKDFOpts(16, 1), 16), make([]byte, chachaTagLen+1)...), testPassphrase, errMalformed},
+		{"chacha: block not multiple of 8", append(testContainer(opensshCipherChaCha, "bcrypt", testKDFOpts(16, 1), 12), make([]byte, chachaTagLen)...), testPassphrase, errMalformed},
 		{"not a key", []byte("hello"), testPassphrase, errMalformed},
 		{"truncated container", raw[:40], testPassphrase, errMalformed},
 	}
@@ -355,8 +411,8 @@ func testKeyNamed(t *testing.T, name string) parseTestKey {
 }
 
 // TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary is the proof
-// behind the entry point's promise that, once the block is decrypted, the
-// only thing an error says is that it did not become a key. For each
+// behind the entry point's promise that, once the KDF has run, the only
+// thing an error says is that the block did not become a key. For each
 // ssh-keygen fixture — aes256-cbc and aes256-ctr, Ed25519, ECDSA and RSA —
 // the private block's ciphertext is modified one byte at a time, at every
 // offset (Ed25519) or a stride of them (the larger keys), and parsed with
@@ -373,6 +429,11 @@ func testKeyNamed(t *testing.T, name string) parseTestKey {
 // block and one byte of the next, and the fixtures' comments never fill a
 // block, so every offset must fail. The comment's position is read from
 // the plaintext the test decrypts itself, not assumed.
+//
+// The chacha20-poly1305 fixture is held to the same string: there the
+// authenticator catches every flip, the comment included, so no offset may
+// open and every failure must read exactly as the AES files' do — the
+// cipher is not visible in the answer.
 func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 	_, raw, _ := fixture(t, "ed25519-a1")
 	_, wrongErr := ParsePrivateKeyWithPassphrase(raw, []byte("not it"), AllowHeapTransients())
@@ -384,7 +445,7 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
 		stride int
-	}{{"ed25519-cbc-a1", 1}, {"ed25519-a1", 1}, {"ecdsa-a1", 3}, {"rsa-a1", 7}} {
+	}{{"ed25519-cbc-a1", 1}, {"ed25519-a1", 1}, {"ed25519-chacha-a1", 1}, {"ecdsa-a1", 3}, {"rsa-a1", 7}} {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel() // a few hundred derivations per fixture; the fixtures share nothing
 			_, raw, pub := fixture(t, tc.name)
@@ -392,7 +453,8 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			cbc := string(h.cipher) == opensshCipherCBC
+			mode := opensshCipherByName(h.cipher)
+			cbc, aead := mode.cbc(), mode.tagLen() != 0
 			commentStart, commentEnd := commentRange(t, raw)
 			n := len(h.privBlock)
 			var opened, failed int
@@ -406,15 +468,18 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 					opened++
 					verifySigner(t, s, pub)
 					s.Destroy()
-					if cbc {
+					switch {
+					case aead:
+						t.Errorf("aead: flip at %d opened (the authenticator passed a modified ciphertext)", off)
+					case cbc:
 						t.Errorf("cbc: flip at %d opened (a garbled block passed every check)", off)
-					} else if !inComment {
+					case !inComment:
 						t.Errorf("ctr: flip at %d, outside the comment [%d,%d), opened", off, commentStart, commentEnd)
 					}
 					continue
 				}
 				failed++
-				if !cbc && inComment {
+				if !cbc && !aead && inComment {
 					t.Errorf("ctr: flip at %d, inside the comment, failed: %v", off, err)
 				}
 				if got := err.Error(); got != want {
@@ -427,7 +492,7 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 			if failed == 0 {
 				t.Fatal("no flip failed; the test is not reaching the block")
 			}
-			if !cbc && opened == 0 {
+			if !cbc && !aead && opened == 0 {
 				t.Fatal("ctr: no flip in the comment opened; the comment range is wrong")
 			}
 			t.Logf("%d offsets: %d opened (comment), %d failed identically", (n+tc.stride-1)/tc.stride, opened, failed)
@@ -448,7 +513,7 @@ func commentRange(t *testing.T, raw []byte) (start, end int) {
 	salt, rounds := kdfOptsOf(t, raw)
 	plain := make([]byte, len(h.privBlock))
 	defer secmem.SecureWipe(plain)
-	if err := opensshCrypt(plain, h.privBlock, []byte(testPassphrase), salt, int(rounds), opensshCipherByName(h.cipher), true); err != nil {
+	if err := opensshCrypt(plain, h.privBlock, h.rest, []byte(testPassphrase), salt, int(rounds), opensshCipherByName(h.cipher), true); err != nil {
 		t.Fatal(err)
 	}
 	r := sshReader{plain}
@@ -603,7 +668,10 @@ func TestParsePrivateKeyWithPassphrase_FromSecureBuffer(t *testing.T) {
 // Files that name more than four KDF rounds are skipped — cost is linear in
 // rounds and the mutator would otherwise spend its time in bcrypt.
 func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
-	for _, name := range []string{"ed25519-a1", "ed25519-cbc-a1", "ecdsa-a1", "rsa-a1", "ed25519-chacha-a1"} {
+	for _, name := range []string{
+		"ed25519-a1", "ed25519-cbc-a1", "ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
+		"ecdsa-a1", "rsa-a1", "ed25519-chacha-a1",
+	} {
 		pemBytes, raw, _ := fixture(f, name)
 		f.Add(pemBytes)
 		f.Add(raw)

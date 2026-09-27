@@ -220,7 +220,8 @@ func TestParseOpenSSH_FormatStrictness(t *testing.T) {
 		refuses(t, append(data, 0xde, 0xad, 0xbe, 0xef))
 		refuses(t, append(data, 0))
 		// The passphrase path reads the same header: a protected file with
-		// bytes after it is malformed, not a wrong passphrase.
+		// bytes after it is malformed, not a wrong passphrase (the fixture is
+		// aes256-ctr, which carries no authenticator, so nothing may follow).
 		_, raw, _ := fixture(t, "ed25519-a1")
 		_, err := ParsePrivateKeyWithPassphrase(append(append([]byte(nil), raw...), 0), []byte(testPassphrase), AllowHeapTransients())
 		if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {

@@ -98,7 +98,7 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			}
 			salt, rounds := kdfOptsOf(t, raw)
 
-			kiv := newTestBuffer(t, opensshKeyIVLen)
+			kiv := newTestBuffer(t, aes256KeyIVLen)
 			if err := BcryptPBKDFInto([]byte(testPassphrase), salt, int(rounds), kiv); err != nil {
 				t.Fatal(err)
 			}
@@ -118,7 +118,7 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			// A negative control: the same derivation at a different cost
 			// must NOT open the file, or the check above would pass on
 			// anything.
-			other := newTestBuffer(t, opensshKeyIVLen)
+			other := newTestBuffer(t, aes256KeyIVLen)
 			if err := BcryptPBKDFInto([]byte(testPassphrase), salt, int(rounds)+1, other); err != nil {
 				t.Fatal(err)
 			}

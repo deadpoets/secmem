@@ -260,10 +260,10 @@ file is not a service to whoever holds it — keeping it openable is what lets
 it stay unconverted. `ssh-keygen -p -f key` and `openssl pkey -in key -out
 key` both rewrite one into a format this package reads, and the error says so.
 
-The OpenSSH containers this package does open — `aes256-ctr` and
-`aes256-cbc` under `bcrypt_pbkdf` — carry no authenticator either, and that
-is not glossed over. Two things make them acceptable where the legacy form is
-not. The KDF is a real one: bcrypt with a cost the file names and
+The AES containers this package does open — `aes128`, `aes192` and `aes256`
+in CTR or CBC mode under `bcrypt_pbkdf` — carry no authenticator either, and
+that is not glossed over. Two things make them acceptable where the legacy
+form is not. The KDF is a real one: bcrypt with a cost the file names and
 `ssh-keygen -a` raises, so an offline guess costs what the owner chose rather
 than one MD5. And the parser gives the malleability nothing to work with.
 Everything it can decide without the passphrase — the container's structure,
@@ -278,7 +278,11 @@ wrong passphrase as for a corrupt file. Someone who can hand the holder a
 modified file and read the error learns that it did not open, and nothing
 about where in the block their change landed. The residual is success: a
 change confined to the comment, which no reader validates, still yields the
-key — here exactly as in OpenSSH.
+key — here exactly as in OpenSSH. The one OpenSSH cipher that is
+authenticated, `chacha20-poly1305@openssh.com`, has none of this to answer
+for: a wrong passphrase and a modified file both fail at the tag before
+anything is decrypted, and that failure is reported as the same error, so
+the answer reads the same whichever cipher the file names.
 
 Two other refusals are decisions of the same kind but do not carry the
 marker, because there is no file to convert and nothing to wait for: `AsSSH`
@@ -304,8 +308,7 @@ cannot wipe, which is the exact thing these paths exist to prevent. A build
 that needs those paths needs the standard library's AES.
 
 What is **not** in either category, and may yet arrive: PKCS#8 PBES2
-(PBKDF2/scrypt), `chacha20-poly1305@openssh.com`, the aes128 and aes192
-OpenSSH ciphers, and PKCS#8 export for Ed25519. Those need forks that wipe
+(PBKDF2/scrypt) and PKCS#8 export for Ed25519. Those need forks that wipe
 their working state, which is work, not a judgement.
 
 ## Versioning

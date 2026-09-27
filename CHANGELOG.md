@@ -15,6 +15,40 @@ mark the stability commitment.
 
 ### Added
 
+- **`secmem-crypto`: OpenSSH files encrypted with
+  `chacha20-poly1305@openssh.com` open.** ssh-keygen writes this one on
+  request (`-Z`), and it was refused. It is not the IETF AEAD that
+  `crypto/cipher` or `x/crypto/chacha20poly1305` implement: the key is 64
+  bytes (two ChaCha20 keys, the second of which encrypts packet lengths and
+  so goes unused by a key file), it is the original ChaCha20 with a 64-bit
+  counter and a 64-bit nonce rather than the 96-bit-nonce variant, the
+  Poly1305 key is the keystream at counter 0 with the payload encrypted from
+  counter 1, and the authenticator follows the private block in the
+  container rather than sitting inside it. The core is written out here for
+  the reason the AES modes are: `x/crypto/chacha20`'s cipher is a heap
+  object holding the key and a keystream buffer that nothing exported
+  clears, while these state words, the keystream block and the Poly1305 key
+  are stack locals wiped before return — pinned at zero allocations. The
+  core is checked against RFC 8439's vector and differentially against
+  `x/crypto/chacha20` over random keys, nonces, counters and lengths; the
+  end-to-end proof is the `ssh-keygen` fixture, which the residue scan also
+  runs as its own scenario and finds nothing for. A wrong passphrase fails
+  at the authenticator rather than at the format's check integers, and
+  returns the same `x509.IncorrectPasswordError`. Shown to fail with the two
+  keys swapped and with the payload counter left at 0.
+
+- **`secmem-crypto`: OpenSSH files encrypted with AES-128 or AES-192 open.**
+  `ParsePrivateKeyWithPassphrase` read only the aes256 ciphers, so a file
+  written with `ssh-keygen -Z aes128-ctr` (or aes192, or their CBC forms) was
+  refused as unsupported. The key length is part of the format rather than a
+  local choice — OpenSSH derives exactly key||IV from bcrypt_pbkdf, so a
+  16-byte key means a 32-byte derivation, and a parser that always asked for
+  48 bytes decrypts such a file to nothing that parses. The cipher's key
+  length now drives the derivation. Fixtures from a real `ssh-keygen` cover
+  aes128-ctr, aes192-ctr and aes128-cbc, and the fuzz corpus gains two of
+  them; shown to fail against a parser that assumes 32 bytes. Writing is
+  unchanged: this package still exports aes256-ctr only.
+
 - **`secmem-crypto`: the key residue scan runs on Windows too.** The
   out-of-process proof was Linux-only, so the protection table's Windows
   column was an inference from "it runs the same Go code" rather than a
@@ -39,9 +73,9 @@ mark the stability commitment.
   passphrase paths rather than gaining a fallback: the alternative is
   proceeding with a key schedule that cannot be wiped, which is what those
   paths exist to prevent. Both were listed as gaps; they are refusals with
-  reasons now. What remains a gap: PKCS#8 PBES2,
-  `chacha20-poly1305@openssh.com`, the aes128/192 OpenSSH ciphers, and PKCS#8
-  export for Ed25519.
+  reasons now. What remains a gap: PKCS#8 PBES2 and PKCS#8 export for
+  Ed25519 (`chacha20-poly1305@openssh.com` and the aes128/192 OpenSSH ciphers
+  were listed too; they open now — see *Added*).
 
 - **Documentation: what Windows measures, and that RSA and ECDSA stay
   gated.** Every entry point classified *Protected* leaves nothing on
@@ -63,34 +97,38 @@ mark the stability commitment.
   `AllowHeapTransients()` recorded as a residual for a rarely-used key).
 
 - **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` decides what it can
-  before the KDF and is binary after it.** The OpenSSH aes256-ctr and
-  aes256-cbc containers carry no MAC, so the ciphertext is malleable, and the
-  parser used to report different errors depending on where in the decrypted
-  block a modification landed (a wrong check integer, bad padding, a length
-  that no longer fit, a public/private disagreement) — the format-oracle
-  shape the module's own README gives as its reason for refusing legacy PEM.
-  The key type and the `ErrHeapTransients` gate are now read off the
-  cleartext public-key block, so an unsupported or refused key costs no
-  bcrypt derivation and none of it is decrypted; after decryption every
-  failure is one error wrapping `x509.IncorrectPasswordError` that reads the
-  same for a wrong passphrase as for a corrupt file. The README explains why
-  those containers remain accepted (a bcrypt-derived key, and now a binary
-  outcome). One cost, stated: a failure to lock memory for the key's own
-  buffer at that point reads as the same error; `ParsePrivateKey` on the
-  unprotected form names it.
+  before the KDF and is binary after it.** The OpenSSH AES containers
+  (aes128/192/256, CTR or CBC) carry no MAC, so the ciphertext is malleable,
+  and the parser used to report different errors depending on where in the
+  decrypted block a modification landed (a wrong check integer, bad padding,
+  a length that no longer fit, a public/private disagreement) — the
+  format-oracle shape the module's own README gives as its reason for
+  refusing legacy PEM. The key type and the `ErrHeapTransients` gate are now
+  read off the cleartext public-key block, so an unsupported or refused key
+  costs no bcrypt derivation and none of it is decrypted; after decryption
+  every failure is one error wrapping `x509.IncorrectPasswordError` that
+  reads the same for a wrong passphrase as for a corrupt file; a
+  `chacha20-poly1305@openssh.com` authenticator that does not verify, which
+  is what both look like under that cipher, is folded into the same error.
+  The README explains why the AES containers remain accepted (a
+  bcrypt-derived key, and now a binary outcome). One cost, stated: a failure
+  to lock memory for the key's own buffer at that point reads as the same
+  error; `ParsePrivateKey` on the unprotected form names it.
 
 - **`secmem-crypto`: stricter OpenSSH container parsing.** The private
   block's pad must be shorter than the cipher block (8 for `none`, 16 for
-  AES) as well as in sequence — a 200-byte pad was accepted; an unencrypted
-  block must be a multiple of 8 bytes; bytes after the private block, and KDF
-  options with KDF `none`, are refused; a bcrypt salt over 1 MiB is refused as
-  malformed rather than surfacing as a bare `bcrypt_pbkdf` error; an OpenSSH
-  RSA key's `iqmp` is bounded like the primes. `x/crypto/ssh` agrees on the
-  KDF-options rule; block alignment and the trailing-bytes rule follow
-  OpenSSH's own reader, which is stricter than `x/crypto/ssh` on both; the
-  pad-length bound is stricter than either reader (OpenSSH checks only the
-  sequence), but no writer ever emits a whole block of padding, so nothing
-  well-formed is refused.
+  AES, 8 for chacha20-poly1305) as well as in sequence — a 200-byte pad was
+  accepted; an unencrypted block must be a multiple of 8 bytes; what follows
+  the private block must be exactly the cipher's authenticator — the 16-byte
+  tag for `chacha20-poly1305@openssh.com`, nothing for `none` and the AES
+  modes — and KDF options with KDF `none` are refused; a bcrypt salt over
+  1 MiB is refused as malformed rather than surfacing as a bare
+  `bcrypt_pbkdf` error; an OpenSSH RSA key's `iqmp` is bounded like the
+  primes. `x/crypto/ssh` agrees on the KDF-options rule; block alignment and
+  the trailing-bytes rule follow OpenSSH's own reader, which is stricter than
+  `x/crypto/ssh` on both; the pad-length bound is stricter than either reader
+  (OpenSSH checks only the sequence), but no writer ever emits a whole block
+  of padding, so nothing well-formed is refused.
 
 - **CI: the `test-noescape` job runs the no-heap-escape gates through the
   skip audit**, so a rename that empties the `-run` pattern fails the step

@@ -35,18 +35,23 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // error and ownership rules, and the [ErrHeapTransients] refusal of RSA and
 // EC keys without [AllowHeapTransients] are [ParsePrivateKey]'s.
 //
-// Supported protection is what ssh-keygen and x/crypto/ssh write and read:
-// KDF bcrypt, cipher aes256-ctr or aes256-cbc, up to 2048 rounds (x/crypto's
-// cap: cost is linear in rounds and the count comes from the file). Other
-// ciphers (chacha20-poly1305@openssh.com, the aes128 and aes192 variants),
-// PKCS#8 "ENCRYPTED PRIVATE KEY" (PBES2), and legacy PEM Proc-Type /
-// DEK-Info encryption return an error wrapping [ErrUnsupportedKey]; the
-// legacy form additionally wraps [ErrRetiredAlgorithm], because that one is
-// refused on purpose and will not arrive in a later release, while the
-// others are simply not implemented yet. A key that is not protected at all
-// returns [ErrNotEncrypted]; a header that names a cipher without a KDF, or
-// a KDF without a cipher, is malformed rather than either; an empty
-// passphrase is an error before anything is read.
+// Supported protection is what ssh-keygen writes and reads: KDF bcrypt,
+// cipher AES-128/192/256 in CTR or CBC mode, up to 2048 rounds (x/crypto's
+// cap: cost is linear in rounds and the count comes from the file), and
+// chacha20-poly1305@openssh.com, whose authenticator follows the private
+// block and whose 64-byte key material is two ChaCha20 keys, only the first
+// of which a key file uses. OpenSSH derives exactly key||IV from the KDF, so
+// the key length is part of the format, not a local choice. Of these,
+// x/crypto/ssh reads only aes256-ctr and aes256-cbc, the pair ssh-keygen
+// writes by default. PKCS#8 "ENCRYPTED PRIVATE KEY" (PBES2) and legacy PEM
+// Proc-Type / DEK-Info encryption return an error wrapping
+// [ErrUnsupportedKey]; the legacy form additionally wraps
+// [ErrRetiredAlgorithm], because that one is refused on purpose and will not
+// arrive in a later release, while PBES2 is simply not implemented yet. A
+// key that is not protected at all returns [ErrNotEncrypted]; a header that
+// names a cipher without a KDF, or a KDF without a cipher, is malformed
+// rather than either; an empty passphrase is an error before anything is
+// read.
 //
 // Everything that can be decided without the passphrase is decided before
 // the KDF runs: the container's structure and header, the KDF parameters,
@@ -56,30 +61,34 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // [AllowHeapTransients]) at no bcrypt cost and before any of the key is
 // handed to the standard library.
 //
-// After decryption the outcome is binary. The two AES modes are
-// unauthenticated, so a file can be altered without the passphrase, and a
-// parser that reported which check failed — the check integers, the
-// padding, a length, the public half against the private — would tell
-// whoever altered it where in the block the damage landed. This one
-// reports every failure to turn the decrypted block into a key as one
-// error, wrapping [x509.IncorrectPasswordError] (the value x/crypto/ssh
-// returns for a wrong passphrase, so a caller migrating from
-// ssh.ParseRawPrivateKeyWithPassphrase keeps its errors.Is check) and
-// reading the same for a wrong passphrase as for a corrupt file. What stays
-// observable is success: damage confined to the comment, which no reader
-// validates, leaves a key that opens — here as in OpenSSH. One cost of the
-// single answer: a failure to lock memory for the key's own buffer at that
-// point is reported as this error too; [ParsePrivateKey] on the unprotected
-// form of the same key names it.
+// After the KDF the outcome is binary. The AES modes are unauthenticated,
+// so a file can be altered without the passphrase, and a parser that
+// reported which check failed — the check integers, the padding, a length,
+// the public half against the private — would tell whoever altered it
+// where in the block the damage landed. This one reports every failure to
+// turn the decrypted block into a key as one error, wrapping
+// [x509.IncorrectPasswordError] (the value x/crypto/ssh returns for a wrong
+// passphrase, so a caller migrating from ssh.ParseRawPrivateKeyWithPassphrase
+// keeps its errors.Is check) and reading the same for a wrong passphrase as
+// for a corrupt file. chacha20-poly1305@openssh.com is authenticated, so
+// there a wrong passphrase and an altered file both fail at the tag, before
+// anything is decrypted; that failure is reported as the same error, so the
+// answer reads the same whichever cipher the file names. What stays
+// observable, for the AES modes, is success: damage confined to the
+// comment, which no reader validates, leaves a key that opens — here as in
+// OpenSSH. One cost of the single answer: a failure to lock memory for the
+// key's own buffer at that point is reported as this error too;
+// [ParsePrivateKey] on the unprotected form of the same key names it.
 //
-// What touches the heap: everything ParsePrivateKey's doc lists, plus the
-// AES key schedule crypto/aes allocates — wiped through the type's
-// unexported fields before return, and if that wipe cannot locate the
-// schedule on the running toolchain the call fails rather than leave it
-// behind. The KDF's working state (the Blowfish schedule and both SHA-512
-// outputs, about 4 KiB), the derived key and IV, and the cipher's scratch
-// live in one SecureBuffer for the call. data and passphrase are the
-// caller's: neither is wiped nor retained.
+// What touches the heap: everything ParsePrivateKey's doc lists, plus, for
+// the AES modes, the key schedule crypto/aes allocates — wiped through the
+// type's unexported fields before return, and if that wipe cannot locate
+// the schedule on the running toolchain the call fails rather than leave it
+// behind. The chacha20-poly1305 core is written out in this package and
+// allocates nothing. The KDF's working state (the Blowfish schedule and
+// both SHA-512 outputs, about 4 KiB), the derived key and IV, and the
+// cipher's scratch live in one SecureBuffer for the call. data and
+// passphrase are the caller's: neither is wiped nor retained.
 func ParsePrivateKeyWithPassphrase(data, passphrase []byte, opts ...Option) (Signer, error) {
 	if len(data) == 0 {
 		return nil, errors.New("secmemcrypto: parse private key: empty input")
@@ -163,13 +172,18 @@ func derEncryptionError(data []byte) error {
 // the private block is decrypted: the check integers disagreeing (the
 // format's own passphrase test), a length that overruns, a bad pad, halves
 // that disagree, a key type other than the public block's, a scalar out of
-// range, an RSA key the standard library finds inconsistent. aes256-ctr and
-// aes256-cbc carry no authenticator, so a wrong passphrase and a modified
-// file produce the same kind of noise, and a parser that named which of
-// those checks failed would tell whoever modified the file where in the
-// block the damage landed. This is that check collapsed to one bit. It
-// wraps x509.IncorrectPasswordError because a wrong passphrase is the
-// common cause and the value is what x/crypto/ssh returns for it.
+// range, an RSA key the standard library finds inconsistent. The AES modes
+// carry no authenticator, so a wrong passphrase and a modified file produce
+// the same kind of noise, and a parser that named which of those checks
+// failed would tell whoever modified the file where in the block the damage
+// landed. This is that check collapsed to one bit. It wraps
+// x509.IncorrectPasswordError because a wrong passphrase is the common cause
+// and the value is what x/crypto/ssh returns for it.
+//
+// chacha20-poly1305@openssh.com is authenticated, so there the same two
+// causes fail earlier, at the tag inside opensshCrypt, and nothing is
+// decrypted; that failure is folded into this error too, so the answer is
+// one whichever cipher the file names.
 //
 // The cost is that the rare non-content failure inside that stretch — the
 // host declining to lock memory for the key's own buffer, after it just
@@ -182,10 +196,11 @@ var errOpenSSHDecrypt = fmt.Errorf("OpenSSH private block did not decrypt to a v
 // in blob and returns the signer. blob is destroyed on every path.
 //
 // Order matters here and is the point: every refusal that does not need
-// the passphrase — the header, the KDF parameters, the key type and the
-// heap-transients gate read off the cleartext public-key block — comes
-// before the KDF runs, and every failure after decryption is
-// errOpenSSHDecrypt.
+// the passphrase — the header, what follows the private block, the KDF
+// parameters, the key type and the heap-transients gate read off the
+// cleartext public-key block — comes before the KDF runs, and every failure
+// after it, an authenticator that does not verify or a decrypted block that
+// does not become a key, is errOpenSSHDecrypt.
 func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o options) (Signer, error) {
 	var (
 		s   Signer
@@ -205,12 +220,17 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o optio
 		mode := opensshCipherByName(h.cipher)
 		if mode == cipherUnsupported {
 			// Named before the tail is judged: an AEAD cipher's tag sits
-			// after the private block, and a chacha20-poly1305 file must be
-			// refused as the cipher it is, not as trailing junk.
+			// after the private block, and a file naming a cipher this
+			// package does not run must be refused as that cipher, not as
+			// trailing junk.
 			return fmt.Errorf("%w: OpenSSH cipher %s", ErrUnsupportedKey, labelForError(h.cipher))
 		}
-		if len(h.rest) != 0 { // neither AES mode carries an authenticator: the file ends with the block
-			return fmt.Errorf("%w: trailing bytes after the OpenSSH container", errMalformed)
+		// What may follow the private block's string is the cipher's
+		// authenticator, which OpenSSH places after the string rather than
+		// inside it: 16 bytes for chacha20-poly1305, nothing for the AES
+		// modes, which authenticate nothing. Anything else is trailing junk.
+		if len(h.rest) != mode.tagLen() {
+			return fmt.Errorf("%w: %d bytes follow the encrypted block, want %d for this cipher's authenticator", errMalformed, len(h.rest), mode.tagLen())
 		}
 		if h.numKeys != 1 {
 			return fmt.Errorf("%w: OpenSSH file holds %d keys, want 1", ErrUnsupportedKey, h.numKeys)
@@ -232,7 +252,10 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o optio
 			// caller up for a very long time, not fail. Same cap as x/crypto.
 			return fmt.Errorf("%w: bcrypt KDF rounds %d exceed the maximum %d this parser will run", ErrUnsupportedKey, rounds, opensshMaxRounds)
 		}
-		if len(h.privBlock) == 0 || len(h.privBlock)%opensshAESBlock != 0 {
+		// The padding granularity is the cipher's block: an AES block for
+		// the AES modes, 8 bytes for chacha20-poly1305, as OpenSSH's
+		// chachapoly cipher declares.
+		if len(h.privBlock) == 0 || len(h.privBlock)%mode.blockLen() != 0 {
 			return fmt.Errorf("%w: encrypted block is not a multiple of the cipher block size", errMalformed)
 		}
 		if err := admitOpenSSHKeyType(h.pubBlob, o); err != nil {
@@ -245,14 +268,21 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o optio
 		}
 		defer func() { _ = plain.Destroy() }()
 		return plain.WithBytesErr(func(p []byte) error {
-			if err := opensshCrypt(p, h.privBlock, passphrase, salt, int(rounds), mode, true); err != nil {
+			if err := opensshCrypt(p, h.privBlock, h.rest, passphrase, salt, int(rounds), mode, true); err != nil {
+				if errors.Is(err, x509.IncorrectPasswordError) {
+					// chacha20-poly1305's authenticator did not verify: a
+					// wrong passphrase or a modified file, which the tag
+					// cannot tell apart, and the same one bit as every
+					// failure after decryption below.
+					return errOpenSSHDecrypt
+				}
 				// Not a verdict on the block: the KDF's bounds were checked
 				// above, so this is the AES schedule wipe failing closed,
 				// which the caller must see as itself.
 				return err
 			}
 			var err error
-			s, der, err = parseOpenSSHPrivateBlock(p, h.pubBlob, opensshAESBlock, o)
+			s, der, err = parseOpenSSHPrivateBlock(p, h.pubBlob, mode.blockLen(), o)
 			if err != nil {
 				return errOpenSSHDecrypt
 			}
