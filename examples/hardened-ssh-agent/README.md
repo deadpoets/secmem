@@ -80,7 +80,10 @@ unreachable by construction), and reseals under the same mutex, including
 on error paths. The lock passphrase is never stored: locking keeps only an
 Argon2id (RFC 9106) derivation in a `SecureBuffer`; unlocking derives the
 candidate and compares with `ConstantTimeEqual`, so a wrong guess costs a
-full Argon2 work factor and timing reveals nothing.
+full Argon2 work factor and timing reveals nothing. Around all of it, the
+accept loop serves at most 64 connections at once and gives each request
+30 s to arrive, so a client that connects and says nothing costs a slot for
+30 s and nothing more (details under the threat model).
 
 ## What the tests prove
 
@@ -107,6 +110,21 @@ full Argon2 work factor and timing reveals nothing.
   constraints the agent can't honor, and we do.
 - **Failure honesty**: unsupported key types and unknown messages return
   `AGENT_FAILURE` and the connection survives.
+- **Availability under a hostile local client** (`serve_test.go`, on the
+  wire, with the agent's real accept loop): a client that connects and
+  sends nothing, half a length prefix, or a header whose body never comes
+  is disconnected when the per-message deadline lapses — not before, and
+  not by some other limit; a client that pauses for less than the deadline
+  between requests is served for as long as it likes, because the deadline
+  is per message; with the cap lowered to two, a third connection is
+  neither served nor refused until one of the first two ends, and then
+  gets the reply to the request it queued; and stopping the agent
+  disconnects idle clients at once instead of waiting out their deadline.
+  Each test also checks the control is no stricter than documented (the
+  agent still answers). The stalled-client test was checked to fail against a
+  build with the deadline removed and the connection-cap test against one
+  with the cap removed; the per-message and shutdown tests are behaviour
+  checks that pass on both builds.
 
 At startup the agent logs `secmem.Probe()` — what this kernel actually
 granted (`memfd_secret`? mlock? flush-on-wipe?) and warnings for anything
@@ -125,6 +143,51 @@ capture. The socket is `0600` in a `0700` directory — anything that can
 connect can request signatures, exactly as with `ssh-agent`; the lock and
 `-t` key lifetimes are the mitigations for that layer, and per-key
 confirmation (`-c`) is a documented fork point.
+
+**Availability on the socket** is a separate question from key
+confidentiality, and the answer is bounded, not absolute. Anything that can
+connect can also try to keep the agent busy, and an agent that one idle
+client can pin is not hardened in any useful sense. So the agent bounds
+what a connection can cost it, in two plain-Go controls in `main.go`:
+
+- Every request gets **30 s to arrive in full** (`messageTimeout`), armed
+  before the length prefix and covering the body, and every reply gets the
+  same allowance to be handed to the kernel. A client that connects and
+  goes quiet, stalls halfway through a message, or stops reading its
+  replies is disconnected when that lapses, and its goroutine and
+  connection slot are released. The deadline is re-armed per message, so a
+  busy client is never cut off. OpenSSH's `ssh` and `ssh-add` hold an agent
+  connection only while using it and are unaffected; what this does cut off
+  is any client that holds an agent connection idle for 30 s — including a
+  long-lived program on an `ssh -A` agent-forwarding host that opens
+  `SSH_AUTH_SOCK` once and reuses it — whose next request then fails (EOF
+  or EPIPE) and which must reconnect. OpenSSH's `ssh-agent` has no such
+  timeout.
+- At most **64 connections are served at once** (`maxConns`). The 65th is
+  not refused: it sits, completed but unread, in the kernel's listen backlog
+  until a served connection ends, and is then served in turn. That holds up
+  to the size of the listen backlog (`net.core.somaxconn`, 4096 by default on
+  Linux 5.4 and later, 128 before); connections beyond it fail at the kernel
+  with `EAGAIN`, a limit no user-space cap can move. The slot is taken *before* `accept`, so an excess
+  connection costs the process neither a goroutine nor a file descriptor.
+  With the deadline above, waiting behind idle connections is bounded by
+  30 s.
+
+What this does **not** do, stated so nobody relies on it: a client that
+keeps 64 connections *actively* busy still starves everyone else, for as
+long as it keeps that up — the cap turns unbounded resource growth into a
+queue, it does not ration the queue between clients. A client can `LOCK`
+the agent, as it can OpenSSH's, and while it is locked nothing signs until
+someone unlocks it. And the Argon2id derivations behind `LOCK`/`UNLOCK`
+run **one at a time under the keyring lock**, deliberately: each allocates
+a 64 MiB working set, and serializing them means the agent never holds
+more than one, however many connections send passphrases at once, and a
+passphrase guess costs a full derivation process-wide. The price is that
+while a derivation runs, every other keyring call waits behind it — a
+`Sign` that would have been refused at once (the agent is locked) is
+refused a derivation time later, and a legitimate `UNLOCK` queues behind
+whatever `UNLOCK`s arrived before it, at most 64 of them. `keyring.go`'s
+`Unlock` comment gives the reasoning and the alternative it rejected.
 
 ECDSA identities accepted through `-allow-heap-transients` fall outside the
 "never on the heap" claim: each signature leaves unwiped copies of the

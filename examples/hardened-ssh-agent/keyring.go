@@ -18,7 +18,9 @@
 //     an Argon2id derivation (RFC 9106 parameters) in a SecureBuffer;
 //     unlocking derives the candidate into a second SecureBuffer and
 //     compares in constant time. Wrong-passphrase attempts each cost a
-//     full Argon2id derivation, which is the throttle.
+//     full Argon2id derivation, which is the throttle — and the
+//     derivations run one at a time, under the keyring lock, on purpose;
+//     see Unlock for what that costs and what it buys.
 package main
 
 import (
@@ -425,6 +427,11 @@ func (k *Keyring) removeRecordLocked(rec *record) {
 // Lock engages the agent-protocol lock. The passphrase bytes alias the
 // wire message and are wiped by the caller; only the Argon2id derivation
 // survives, in secure memory.
+//
+// The derivation runs under k.mu, like Unlock's, so signing stalls for one
+// derivation time while the agent locks — and is then refused until it is
+// unlocked, which is what the LOCK request asked for. See Unlock for why
+// the serialization is kept.
 func (k *Keyring) Lock(passphrase []byte) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
@@ -453,6 +460,26 @@ func (k *Keyring) Lock(passphrase []byte) error {
 // Unlock disengages the lock if passphrase matches. The comparison is
 // constant-time over Argon2id derivations; a wrong guess costs the full
 // RFC 9106 work factor.
+//
+// The derivation runs while holding k.mu, and that serialization is
+// deliberate. Argon2DeriveInto allocates a 64 MiB working set for every
+// call; under the lock at most one exists at a time, however many
+// connections send LOCK or UNLOCK at once, so a client cannot make the
+// agent allocate (connections × 64 MiB), and the guess rate is capped at
+// one derivation per derivation time process-wide. What it costs is stated
+// plainly: while a derivation runs, every other keyring call waits behind
+// it — a Sign or List that would have been refused at once (the agent is
+// locked, or is being locked) is refused a derivation time later, and a
+// legitimate UNLOCK queues behind whatever UNLOCKs other connections sent
+// first, at most maxConns of them (main.go). Anything that can connect can
+// do that, as it can with OpenSSH's agent, and the lock itself already
+// refuses signing; the serialization delays refusals, it does not deny
+// service that would otherwise be granted. Running the derivation outside
+// k.mu would buy a prompt errLocked for those calls at the price of a
+// generation check around the lock state and, without a shared workspace,
+// unbounded workspaces; a fork that wants the derivation's memory locked
+// and shared has secmemcrypto.Argon2Workspace, whose own mutex bounds
+// concurrency to one derivation per workspace.
 func (k *Keyring) Unlock(passphrase []byte) error {
 	k.mu.Lock()
 	defer k.mu.Unlock()
