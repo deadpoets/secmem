@@ -14,9 +14,9 @@ import (
 )
 
 // chacha20-poly1305@openssh.com, as OpenSSH applies it to a private-key
-// file. Two things differ from the IETF AEAD of RFC 8439, so neither
-// crypto/cipher's AEAD nor x/crypto/chacha20poly1305 implements this
-// construction:
+// file. Two things differ from the IETF AEAD of RFC 8439, so neither the
+// standard library (which has no ChaCha20 at all) nor
+// x/crypto/chacha20poly1305 implements this construction:
 //
 //   - The key is 64 bytes: the first half encrypts the payload, the second
 //     encrypts packet lengths on the wire. A private-key file has no length
@@ -27,13 +27,22 @@ import (
 //     key is the first 32 bytes of the keystream at counter 0, and the
 //     payload is encrypted from counter 1.
 //
-// The core below is written out rather than taken from x/crypto/chacha20
-// for the reason openssh_cipher.go gives for AES: that package's Cipher is
-// a heap object holding the key and a keystream buffer, and nothing
-// exported clears it. Here the state, the keystream block and the Poly1305
+// The core below is written out rather than taken from x/crypto/chacha20,
+// for two reasons. That package accepts only the IETF 12-byte and XChaCha
+// 24-byte nonces, so the 64-bit-nonce original is reachable only through
+// the counter-split mapping the differential test uses. And its Cipher —
+// on the stack or the heap, wherever the compiler places it — holds the
+// key, key-derived precomputation and a keystream buffer that nothing
+// exported clears. Here the state, the keystream block and the Poly1305
 // key are locals of a call that runs inside a Scrub window, wiped before it
-// returns. chachaBlock is pinned to x/crypto's implementation by a
-// differential test and to RFC 8439's vector by a known-answer test.
+// returns. One piece of state is not this file's to wipe: x/crypto's
+// Poly1305 keeps its own copies of the clamped r and of s — the two halves
+// of the Poly1305 key — in a stack MAC state that nothing clears, as
+// SHA-512 keeps its state inside the KDF (internal/bcryptpbkdf/doc.go);
+// those copies are left to the Scrub window, and the residue scenario
+// watches for both halves (residue_scenarios_test.go). chachaBlock is
+// pinned to x/crypto's implementation by a differential test and to RFC
+// 8439's vector by a known-answer test.
 
 const (
 	chachaBlockSize = 64
@@ -84,11 +93,12 @@ func chachaBlock(out *[chachaBlockSize]byte, key *[chachaKeyLen]byte, nonce *[8]
 	for i := range 16 {
 		binary.LittleEndian.PutUint32(out[4*i:], x[i]+s[i])
 	}
-	// s and x hold the key as words. A plain zeroing loop over them is a
-	// dead store the compiler may drop, so they are wiped through
-	// SecureWipe over a byte view of each — the same shape the Argon2 fork
-	// uses for its block words, and an allocation test pins that taking
-	// their address does not move them off the stack.
+	// s and x hold the key as words. A plain zeroing loop over them would
+	// be a dead store the compiler is free to drop — Go's compiler keeps it
+	// today, but nothing promises that — so they are wiped through
+	// SecureWipe over a byte view of each, the shape bcryptpbkdf's
+	// Workspace.Wipe uses for its struct; an allocation test pins that
+	// taking their address does not move them off the stack.
 	secmem.SecureWipe(chachaWords(&x))
 	secmem.SecureWipe(chachaWords(&s))
 }

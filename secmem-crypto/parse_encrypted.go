@@ -5,7 +5,9 @@
 // extraction. The KDF is this module's fork of bcrypt_pbkdf
 // (internal/bcryptpbkdf), whose working state is a SecureBuffer the call
 // wipes; the AES modes are written out over one cipher.Block whose round
-// keys are wiped before the call returns (openssh_cipher.go, aeswipe.go).
+// keys are wiped before the call returns (openssh_cipher.go, aeswipe.go),
+// and chacha20-poly1305@openssh.com over a core of this module's own whose
+// state is stack locals wiped in the call (openssh_chacha.go).
 package secmemcrypto
 
 import (

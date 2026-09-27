@@ -59,7 +59,7 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // package reads.
 //
 // It is deliberately NOT returned for things that are merely unimplemented
-// — PKCS#8 PBES2 — because those may yet arrive, and a caller should be
+// — PKCS#8 PBES2 — because that may yet arrive, and a caller should be
 // able to tell the two apart.
 var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
 

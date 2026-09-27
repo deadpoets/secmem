@@ -124,13 +124,16 @@ func fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.Public
 // the .pub advertises. The aes128 and aes192 files matter because OpenSSH
 // derives exactly key||IV from the KDF, so a shorter key is a shorter
 // derivation: a parser that always asked for 32+16 bytes would decrypt them
-// to nothing that parses.
-// The chacha20-poly1305 file must be refused by name.
+// to nothing that parses. The two chacha20-poly1305 files must open; the
+// second one's private block is 136 bytes, a multiple of 8 but not of 16,
+// so it opens only under the cipher's own block granularity
+// (TestParsePrivateKeyWithPassphrase_ChaChaBlockGranularity pins that).
 func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 	for _, name := range []string{
 		"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1",
-		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1", "ed25519-aes128-cbc-a1",
-		"ed25519-chacha-a1",
+		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
+		"ed25519-aes128-cbc-a1", "ed25519-aes192-cbc-a1",
+		"ed25519-chacha-a1", "ed25519-chacha-c3-a1",
 		"ecdsa-a1", "rsa-a1",
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -191,6 +194,29 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			if err == nil {
 				s.Destroy()
 				t.Fatalf("%s: a mis-sized authenticator was accepted", name)
+			}
+			if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
+				t.Errorf("%s: %v, want errMalformed before the KDF", name, err)
+			}
+			if !strings.Contains(err.Error(), "authenticator") {
+				t.Errorf("%s: %v does not say what it wanted", name, err)
+			}
+		}
+	})
+	// The same rule for the AES modes, which authenticate nothing: any byte
+	// after the block is a malformed file, judged before the KDF. This used
+	// to be accepted, as x/crypto/ssh still accepts it; OpenSSH refuses it.
+	t.Run("ed25519-a1/bytes after the block", func(t *testing.T) {
+		_, raw, _ := fixture(t, "ed25519-a1")
+		for name, data := range map[string][]byte{
+			"one byte":       append(bytes.Clone(raw), 0),
+			"a tag's worth":  append(bytes.Clone(raw), make([]byte, chachaTagLen)...),
+			"an AES block's": append(bytes.Clone(raw), make([]byte, opensshAESBlock)...),
+		} {
+			s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
+			if err == nil {
+				s.Destroy()
+				t.Fatalf("%s: trailing bytes after an AES block were accepted", name)
 			}
 			if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
 				t.Errorf("%s: %v, want errMalformed before the KDF", name, err)
@@ -586,40 +612,84 @@ func TestParsePrivateKeyWithPassphrase_ErrorsCarryNoSecret(t *testing.T) {
 // TestParsePrivateKeyWithPassphrase_WipesAESBlock wraps the package's wipe
 // var to alias the round keys at the moment the decrypt path wipes them,
 // and asserts that exact backing array is zero once the parse has
-// returned. Must not call t.Parallel(): it swaps a package var.
+// returned — for every AES key size and mode a file can name, since a
+// 16- or 24-byte key expands to a shorter schedule in the same arrays.
+// Must not call t.Parallel(): it swaps a package var.
 func TestParsePrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
-	pemBytes, _, pub := fixture(t, "ed25519-a1")
-	var fired int
-	var aliased [][]byte
-	orig := wipeAESBlock
-	wipeAESBlock = func(b cipher.Block) error {
-		fired++
-		for _, f := range aesRoundKeyFields {
-			if keys, err := aesRoundKeys(b, f); err == nil {
-				aliased = append(aliased, keys)
+	for _, name := range []string{
+		"ed25519-a1", "ed25519-cbc-a1",
+		"ed25519-aes128-ctr-a1", "ed25519-aes128-cbc-a1",
+		"ed25519-aes192-ctr-a1", "ed25519-aes192-cbc-a1",
+	} {
+		t.Run(name, func(t *testing.T) {
+			pemBytes, _, pub := fixture(t, name)
+			var fired, blank int
+			var aliased [][]byte
+			orig := wipeAESBlock
+			wipeAESBlock = func(b cipher.Block) error {
+				fired++
+				for _, f := range aesRoundKeyFields {
+					if keys, err := aesRoundKeys(b, f); err == nil {
+						if bytes.Equal(keys, make([]byte, len(keys))) {
+							blank++ // a schedule that is all zero before the wipe is not the schedule
+						}
+						aliased = append(aliased, keys)
+					}
+				}
+				return orig(b)
 			}
-		}
-		return orig(b)
-	}
-	defer func() { wipeAESBlock = orig }()
+			defer func() { wipeAESBlock = orig }()
 
-	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
+			s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
+			if err != nil {
+				t.Fatal(err)
+			}
+			verifySigner(t, s, pub)
+			s.Destroy()
+			if fired != 1 {
+				t.Fatalf("wipeAESBlock fired %d times, want 1", fired)
+			}
+			if len(aliased) != len(aesRoundKeyFields) {
+				t.Fatalf("aliased %d schedules, want %d", len(aliased), len(aesRoundKeyFields))
+			}
+			if blank != 0 {
+				t.Fatalf("%d round-key arrays were all zero before the wipe", blank)
+			}
+			for i, keys := range aliased {
+				if !bytes.Equal(keys, make([]byte, len(keys))) {
+					t.Fatalf("round keys %q live after the parse returned", aesRoundKeyFields[i])
+				}
+			}
+		})
+	}
+}
+
+// TestParsePrivateKeyWithPassphrase_ChaChaBlockGranularity is what makes the
+// second chacha fixture earn its place: its private block is a multiple of
+// 8 but not of 16, so it opens only if the block and pad rules use
+// chacha20-poly1305's own block size (8, as OpenSSH's cipher table gives
+// it) rather than AES's. The first fixture's 144-byte block is a multiple of
+// both and could not tell the two apart. The length is asserted here so a
+// regenerated fixture with a longer comment cannot quietly stop guarding.
+func TestParsePrivateKeyWithPassphrase_ChaChaBlockGranularity(t *testing.T) {
+	t.Parallel()
+	pemBytes, raw, pub := fixture(t, "ed25519-chacha-c3-a1")
+	h, err := readOpenSSHHeader(raw)
 	if err != nil {
 		t.Fatal(err)
 	}
+	if string(h.cipher) != opensshCipherChaCha {
+		t.Fatalf("fixture names cipher %q, want %s", h.cipher, opensshCipherChaCha)
+	}
+	if n := len(h.privBlock); n%8 != 0 || n%16 == 0 {
+		t.Fatalf("fixture's private block is %d bytes; want a multiple of 8 that is not a multiple of 16", n)
+	}
+	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
+	if err != nil {
+		t.Fatalf("a chacha20-poly1305 file whose block is 8 mod 16 did not open: %v", err)
+	}
+	defer s.Destroy()
 	verifySigner(t, s, pub)
-	s.Destroy()
-	if fired != 1 {
-		t.Fatalf("wipeAESBlock fired %d times, want 1", fired)
-	}
-	if len(aliased) != len(aesRoundKeyFields) {
-		t.Fatalf("aliased %d schedules, want %d", len(aliased), len(aesRoundKeyFields))
-	}
-	for i, keys := range aliased {
-		if !bytes.Equal(keys, make([]byte, len(keys))) {
-			t.Fatalf("round keys %q live after the parse returned", aesRoundKeyFields[i])
-		}
-	}
 }
 
 // TestParsePrivateKeyWithPassphrase_FailsClosedWhenWipeCannot pins the
@@ -669,8 +739,10 @@ func TestParsePrivateKeyWithPassphrase_FromSecureBuffer(t *testing.T) {
 // rounds and the mutator would otherwise spend its time in bcrypt.
 func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 	for _, name := range []string{
-		"ed25519-a1", "ed25519-cbc-a1", "ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
-		"ecdsa-a1", "rsa-a1", "ed25519-chacha-a1",
+		"ed25519-a1", "ed25519-cbc-a1",
+		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
+		"ed25519-aes128-cbc-a1", "ed25519-aes192-cbc-a1",
+		"ecdsa-a1", "rsa-a1", "ed25519-chacha-a1", "ed25519-chacha-c3-a1",
 	} {
 		pemBytes, raw, _ := fixture(f, name)
 		f.Add(pemBytes)

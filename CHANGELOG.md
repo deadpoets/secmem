@@ -17,25 +17,31 @@ mark the stability commitment.
 
 - **`secmem-crypto`: OpenSSH files encrypted with
   `chacha20-poly1305@openssh.com` open.** ssh-keygen writes this one on
-  request (`-Z`), and it was refused. It is not the IETF AEAD that
-  `crypto/cipher` or `x/crypto/chacha20poly1305` implement: the key is 64
+  request (`-Z`), and it was refused. It is not the IETF AEAD of RFC 8439
+  that `x/crypto/chacha20poly1305` implements (the standard library has no
+  ChaCha20 at all): the key is 64
   bytes (two ChaCha20 keys, the second of which encrypts packet lengths and
   so goes unused by a key file), it is the original ChaCha20 with a 64-bit
   counter and a 64-bit nonce rather than the 96-bit-nonce variant, the
   Poly1305 key is the keystream at counter 0 with the payload encrypted from
   counter 1, and the authenticator follows the private block in the
-  container rather than sitting inside it. The core is written out here for
-  the reason the AES modes are: `x/crypto/chacha20`'s cipher is a heap
-  object holding the key and a keystream buffer that nothing exported
-  clears, while these state words, the keystream block and the Poly1305 key
-  are stack locals wiped before return — pinned at zero allocations. The
-  core is checked against RFC 8439's vector and differentially against
-  `x/crypto/chacha20` over random keys, nonces, counters and lengths; the
-  end-to-end proof is the `ssh-keygen` fixture, which the residue scan also
-  runs as its own scenario and finds nothing for. A wrong passphrase fails
-  at the authenticator rather than at the format's check integers, and
-  returns the same `x509.IncorrectPasswordError`. Shown to fail with the two
-  keys swapped and with the payload counter left at 0.
+  container rather than sitting inside it. The core is written out here
+  because `x/crypto/chacha20` takes only the IETF and XChaCha nonces, and
+  because its cipher — wherever the compiler places it — holds the key and a
+  keystream buffer that nothing exported clears; these state words, the
+  keystream block and the Poly1305 key are stack locals wiped before return,
+  pinned at zero allocations, and x/crypto's Poly1305 copies of r and s are
+  left to the Scrub window and watched by the residue scan. The core is
+  checked against RFC 8439's vector and differentially against
+  `x/crypto/chacha20` over random keys, nonces and counters at every block
+  boundary and at random lengths, with the carry between the counter words
+  pinned separately; the end-to-end proof is two `ssh-keygen` fixtures — one
+  whose private block is a multiple of 16 and one whose block is 8 mod 16,
+  which only the cipher's own 8-byte block admits — and the residue scan
+  runs the first as its own scenario and finds nothing for. A wrong
+  passphrase fails at the authenticator rather than at the format's check
+  integers, and returns the same `x509.IncorrectPasswordError`. Shown to
+  fail with the two keys swapped and with the payload counter left at 0.
 
 - **`secmem-crypto`: OpenSSH files encrypted with AES-128 or AES-192 open.**
   `ParsePrivateKeyWithPassphrase` read only the aes256 ciphers, so a file
@@ -45,9 +51,11 @@ mark the stability commitment.
   16-byte key means a 32-byte derivation, and a parser that always asked for
   48 bytes decrypts such a file to nothing that parses. The cipher's key
   length now drives the derivation. Fixtures from a real `ssh-keygen` cover
-  aes128-ctr, aes192-ctr and aes128-cbc, and the fuzz corpus gains two of
-  them; shown to fail against a parser that assumes 32 bytes. Writing is
-  unchanged: this package still exports aes256-ctr only.
+  aes128-ctr, aes192-ctr, aes128-cbc and aes192-cbc, and the fuzz corpus
+  gains all four; shown to fail against a parser that assumes 32 bytes. The
+  round-key wipe is now pinned for 16- and 24-byte schedules as well as
+  32-byte ones. Writing is unchanged: this package still exports aes256-ctr
+  only.
 
 - **`secmem-crypto`: the key residue scan runs on Windows too.** The
   out-of-process proof was Linux-only, so the protection table's Windows
@@ -121,7 +129,8 @@ mark the stability commitment.
   accepted; an unencrypted block must be a multiple of 8 bytes; what follows
   the private block must be exactly the cipher's authenticator — the 16-byte
   tag for `chacha20-poly1305@openssh.com`, nothing for `none` and the AES
-  modes — and KDF options with KDF `none` are refused; a bcrypt salt over
+  modes; trailing bytes used to be accepted by both entry points — and KDF
+  options with KDF `none` are refused; a bcrypt salt over
   1 MiB is refused as malformed rather than surfacing as a bare
   `bcrypt_pbkdf` error; an OpenSSH RSA key's `iqmp` is bounded like the
   primes. `x/crypto/ssh` agrees on the KDF-options rule; block alignment and

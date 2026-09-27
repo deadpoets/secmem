@@ -84,8 +84,9 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 
 // TestErrRetiredAlgorithm_NotUsedForUnimplemented is what gives the marker
 // its meaning. Everything below is refused today and may well be supported
-// later — the OpenSSH ciphers this package has not written yet, and PKCS#8
-// PBES2 — so none of them may claim to be retired. Without this test
+// later — an OpenSSH cipher this package does not run (the AES-GCM pair),
+// an unknown KDF, and PKCS#8 PBES2 — so none of them may claim to be
+// retired. Without this test
 // ErrRetiredAlgorithm would decay into a synonym for ErrUnsupportedKey and
 // stop telling a caller anything.
 func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
@@ -106,9 +107,8 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 		name string
 		data []byte
 	}{
-		{"chacha20-poly1305", container("chacha20-poly1305@openssh.com", "bcrypt")},
-		{"aes128-ctr", container("aes128-ctr", "bcrypt")},
-		{"aes192-ctr", container("aes192-ctr", "bcrypt")},
+		{"aes256-gcm", container("aes256-gcm@openssh.com", "bcrypt")},
+		{"aes128-gcm", container("aes128-gcm@openssh.com", "bcrypt")},
 		{"unknown kdf", container("aes256-ctr", "scrypt")},
 		{"pkcs8 pbes2", []byte(pemOfType("ENCRYPTED PRIVATE KEY", "", "MAAA"))},
 		{"pkcs8 pbes2 der", []byte{0x30, 0x04, 0x30, 0x02, 0x05, 0x00}},

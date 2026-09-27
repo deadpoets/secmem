@@ -1,8 +1,9 @@
 # Passphrase-protected OpenSSH fixtures
 
-Throwaway keys written by a real `ssh-keygen` (OpenSSH 10.3p1), so the
-parser is tested against what the tool writes rather than against
-x/crypto's marshaller alone. The passphrase for every file is
+Throwaway keys written by a real `ssh-keygen` (OpenSSH 10.3p1; the
+`aes192-cbc` and `chacha-c3` files by 9.6p1, which writes the same
+container), so the parser is tested against what the tool writes rather
+than against x/crypto's marshaller alone. The passphrase for every file is
 `secmem-test-passphrase`; the keys were generated for this directory and
 are used for nothing else.
 
@@ -20,7 +21,9 @@ public key `ssh-keygen` wrote alongside.
 | `ed25519-aes128-ctr-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes128-ctr` | a 16-byte key: the KDF derives key\|\|IV, so the length is part of the format |
 | `ed25519-aes192-ctr-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes192-ctr` | a 24-byte key |
 | `ed25519-aes128-cbc-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes128-cbc` | a short key in CBC mode |
+| `ed25519-aes192-cbc-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes192-cbc` | the remaining AES mode: a 24-byte key in CBC |
 | `ed25519-chacha-a1` | `ssh-keygen -t ed25519 -a 1 -Z chacha20-poly1305@openssh.com` | the authenticated cipher: a 64-byte KDF output, and a tag after the private block |
+| `ed25519-chacha-c3-a1` | `ssh-keygen -t ed25519 -a 1 -Z chacha20-poly1305@openssh.com` with `-C fix` | a 136-byte private block, a multiple of 8 but not of 16: opens only under the cipher's own block granularity |
 | `ecdsa-a1` | `ssh-keygen -t ecdsa -b 256 -a 1` | the ECDSA private block after decryption |
 | `rsa-a1` | `ssh-keygen -t rsa -b 2048 -a 1` | the RSA private block after decryption |
 

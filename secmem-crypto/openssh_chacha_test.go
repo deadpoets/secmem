@@ -46,21 +46,31 @@ func TestChaChaBlock_RFC8439Vector(t *testing.T) {
 	}
 }
 
-// TestChaChaXOR_MatchesXCrypto is the differential: for random keys, nonces,
-// counters and lengths, the keystream must equal x/crypto/chacha20's. The
-// two are related by the counter split described above, so this also pins
-// that mapping.
+// TestChaChaXOR_MatchesXCrypto is the differential: for random keys, nonces
+// and counters, at every block boundary and at random lengths up to 4 KiB,
+// the keystream must equal x/crypto/chacha20's. The two are related by the
+// counter split described above, so this also pins that mapping. Both
+// counter words are random; the low word stays far enough below 2^32 that
+// x/crypto's 32-bit counter cannot overflow within one stream, and the
+// carry between the two words is TestChaChaXOR_CounterCarry's.
 func TestChaChaXOR_MatchesXCrypto(t *testing.T) {
 	t.Parallel()
-	for _, n := range []int{0, 1, 63, 64, 65, 127, 128, 200, 1024} {
+	lengths := []int{0, 1, 63, 64, 65, 127, 128, 200, 1024}
+	for range 8 {
+		var l [2]byte
+		chachaRand(t, l[:])
+		lengths = append(lengths, int(binary.LittleEndian.Uint16(l[:]))%4096)
+	}
+	for _, n := range lengths {
 		for range 8 {
 			var key [chachaKeyLen]byte
 			var nonce [8]byte
 			chachaRand(t, key[:])
 			chachaRand(t, nonce[:])
-			var hi [4]byte
-			chachaRand(t, hi[:])
-			counter := uint64(binary.LittleEndian.Uint32(hi[:]))<<32 | 7
+			var cw [8]byte
+			chachaRand(t, cw[:])
+			lo := binary.LittleEndian.Uint32(cw[:4]) % (1<<32 - 64) // 4 KiB is 64 blocks
+			counter := uint64(binary.LittleEndian.Uint32(cw[4:]))<<32 | uint64(lo)
 
 			src := make([]byte, n)
 			chachaRand(t, src)
@@ -69,7 +79,8 @@ func TestChaChaXOR_MatchesXCrypto(t *testing.T) {
 
 			// x/crypto takes the IETF split: a 32-bit counter and a nonce
 			// whose first word is the counter's high half.
-			ietfNonce := append(hi[:], nonce[:]...)
+			ietfNonce := binary.LittleEndian.AppendUint32(nil, uint32(counter>>32))
+			ietfNonce = append(ietfNonce, nonce[:]...)
 			c, err := chacha20.NewUnauthenticatedCipher(key[:], ietfNonce)
 			if err != nil {
 				t.Fatal(err)
@@ -85,9 +96,44 @@ func TestChaChaXOR_MatchesXCrypto(t *testing.T) {
 	}
 }
 
+// TestChaChaXOR_CounterCarry pins the 64-bit counter: a stream that starts
+// at low word 0xffffffff carries into the high word for its second block,
+// as OpenSSH's chacha.c does. x/crypto cannot express that in one stream,
+// so the expectation is two of its streams: the first block at (hi,
+// 0xffffffff) and the second at (hi+1, 0).
+func TestChaChaXOR_CounterCarry(t *testing.T) {
+	t.Parallel()
+	var key [chachaKeyLen]byte
+	var nonce [8]byte
+	chachaRand(t, key[:])
+	chachaRand(t, nonce[:])
+	const hi = uint32(0x1234_5678)
+	src := make([]byte, 2*chachaBlockSize)
+	chachaRand(t, src)
+	got := make([]byte, len(src))
+	chachaXOR(&key, &nonce, uint64(hi)<<32|0xffff_ffff, got, src)
+
+	want := make([]byte, len(src))
+	for i, part := range []struct{ hi, lo uint32 }{{hi, 0xffff_ffff}, {hi + 1, 0}} {
+		ietfNonce := binary.LittleEndian.AppendUint32(nil, part.hi)
+		ietfNonce = append(ietfNonce, nonce[:]...)
+		c, err := chacha20.NewUnauthenticatedCipher(key[:], ietfNonce)
+		if err != nil {
+			t.Fatal(err)
+		}
+		c.SetCounter(part.lo)
+		c.XORKeyStream(want[i*chachaBlockSize:(i+1)*chachaBlockSize], src[i*chachaBlockSize:(i+1)*chachaBlockSize])
+	}
+	if !bytes.Equal(got, want) {
+		t.Fatal("the counter did not carry from the low word into the high word")
+	}
+}
+
 // TestChaCha_NoHeap: the core, the keystream and the Poly1305 key are stack
-// locals wiped before return, so none of the three allocates. A regression
-// here means a secret reached the heap where nothing wipes it.
+// locals wiped before return, so none of the three allocates — on the
+// success path, decryption included, and on the early return for a tag
+// that does not match. A regression here means a secret reached the heap
+// where nothing wipes it.
 func TestChaCha_NoHeap(t *testing.T) {
 	var key [chachaKeyLen]byte
 	var nonce [8]byte
@@ -95,7 +141,13 @@ func TestChaCha_NoHeap(t *testing.T) {
 	src := make([]byte, 256)
 	dst := make([]byte, 256)
 	keyMaterial := make([]byte, chachaOpenSSHKeyLen)
-	tag := make([]byte, chachaTagLen)
+	chachaRand(t, keyMaterial)
+	chachaRand(t, src)
+	tag := chachaTagFor(t, keyMaterial, src)
+	if !opensshChaChaOpen(dst, src, tag, keyMaterial) {
+		t.Fatal("the authenticator this construction produces did not verify")
+	}
+	zero := make([]byte, chachaTagLen)
 
 	for _, tc := range []struct {
 		name string
@@ -104,6 +156,7 @@ func TestChaCha_NoHeap(t *testing.T) {
 		{"chachaBlock", func() { chachaBlock(&out, &key, &nonce, 1) }},
 		{"chachaXOR", func() { chachaXOR(&key, &nonce, 1, dst, src) }},
 		{"opensshChaChaOpen", func() { _ = opensshChaChaOpen(dst, src, tag, keyMaterial) }},
+		{"opensshChaChaOpen/mismatch", func() { _ = opensshChaChaOpen(dst, src, zero, keyMaterial) }},
 	} {
 		if got := testing.AllocsPerRun(50, tc.fn); got != 0 {
 			t.Errorf("%s: %v allocs/op, want 0", tc.name, got)

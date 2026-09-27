@@ -5,6 +5,7 @@ import (
 	"crypto/aes"
 	"crypto/cipher"
 	"crypto/rand"
+	"fmt"
 	"strings"
 	"testing"
 )
@@ -24,54 +25,63 @@ import (
 // uses is caught too.
 func TestWipeAESBlock_Tripwire(t *testing.T) {
 	t.Parallel()
-	key := make([]byte, 32)
-	if _, err := rand.Read(key); err != nil {
-		t.Fatal(err)
-	}
-	blk, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ref, err := aes.NewCipher(key)
-	if err != nil {
-		t.Fatal(err)
-	}
-	var in, want, got [16]byte
-	if _, err := rand.Read(in[:]); err != nil {
-		t.Fatal(err)
-	}
-	ref.Encrypt(want[:], in[:])
+	// Every key size crypto/aes accepts: the passphrase parser routes 16-
+	// and 24-byte schedules through the wipe as well as 32-byte ones, and
+	// a shorter key fills fewer words of the same arrays, so each size is
+	// pinned on its own rather than inferred from the largest.
+	for _, size := range []int{16, 24, 32} {
+		t.Run(fmt.Sprintf("aes-%d", size*8), func(t *testing.T) {
+			t.Parallel()
+			key := make([]byte, size)
+			if _, err := rand.Read(key); err != nil {
+				t.Fatal(err)
+			}
+			blk, err := aes.NewCipher(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			ref, err := aes.NewCipher(key)
+			if err != nil {
+				t.Fatal(err)
+			}
+			var in, want, got [16]byte
+			if _, err := rand.Read(in[:]); err != nil {
+				t.Fatal(err)
+			}
+			ref.Encrypt(want[:], in[:])
 
-	var views [][]byte
-	for _, field := range aesRoundKeyFields {
-		keys, err := aesRoundKeys(blk, field)
-		if err != nil {
-			t.Fatalf("crypto/aes round keys %q no longer resolve on this toolchain — update aesRoundKeyFields: %v", field, err)
-		}
-		if len(keys) != 60*4 {
-			t.Fatalf("field %q is %d bytes, want 240 ([60]uint32)", field, len(keys))
-		}
-		if bytes.Equal(keys, make([]byte, len(keys))) {
-			t.Fatalf("field %q is all zero on a freshly keyed cipher: not the schedule", field)
-		}
-		views = append(views, keys)
-	}
+			var views [][]byte
+			for _, field := range aesRoundKeyFields {
+				keys, err := aesRoundKeys(blk, field)
+				if err != nil {
+					t.Fatalf("crypto/aes round keys %q no longer resolve on this toolchain — update aesRoundKeyFields: %v", field, err)
+				}
+				if len(keys) != 60*4 {
+					t.Fatalf("field %q is %d bytes, want 240 ([60]uint32)", field, len(keys))
+				}
+				if bytes.Equal(keys, make([]byte, len(keys))) {
+					t.Fatalf("field %q is all zero on a freshly keyed cipher: not the schedule", field)
+				}
+				views = append(views, keys)
+			}
 
-	if err := wipeAESBlock(blk); err != nil {
-		t.Fatalf("wipeAESBlock: %v", err)
-	}
-	for i, keys := range views {
-		if !bytes.Equal(keys, make([]byte, len(keys))) {
-			t.Fatalf("field %q still holds the schedule after the wipe", aesRoundKeyFields[i])
-		}
-	}
-	blk.Encrypt(got[:], in[:])
-	if got == want {
-		t.Fatal("the cipher still computes AES after the wipe: the reflected fields are not the schedule it uses")
-	}
-	blk.Decrypt(got[:], want[:])
-	if got == in {
-		t.Fatal("the cipher still decrypts after the wipe: the dec schedule was not reached")
+			if err := wipeAESBlock(blk); err != nil {
+				t.Fatalf("wipeAESBlock: %v", err)
+			}
+			for i, keys := range views {
+				if !bytes.Equal(keys, make([]byte, len(keys))) {
+					t.Fatalf("field %q still holds the schedule after the wipe", aesRoundKeyFields[i])
+				}
+			}
+			blk.Encrypt(got[:], in[:])
+			if got == want {
+				t.Fatal("the cipher still computes AES after the wipe: the reflected fields are not the schedule it uses")
+			}
+			blk.Decrypt(got[:], want[:])
+			if got == in {
+				t.Fatal("the cipher still decrypts after the wipe: the dec schedule was not reached")
+			}
+		})
 	}
 
 	if err := wipeAESBlock(nil); err != nil {

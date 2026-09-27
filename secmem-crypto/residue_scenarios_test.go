@@ -249,11 +249,20 @@ var residueScenarios = []residueScenario{
 			var block [chachaBlockSize]byte
 			copy(key[:], kiv[:chachaKeyLen])
 			chachaBlock(&block, &key, &nonce, 0)
+			// Poly1305 splits its key into a clamped r and an s, and x/crypto
+			// keeps both in a stack MAC state this module cannot wipe. s is
+			// the poly1305-key pattern's tail window already; r is watched in
+			// the clamped form it is stored in (RFC 8439 §2.5.1: bits cleared
+			// in bytes 3, 7, 11, 15 and 4, 8, 12).
+			r := slices.Clone(block[:16])
+			r[3], r[7], r[11], r[15] = r[3]&15, r[7]&15, r[11]&15, r[15]&15
+			r[4], r[8], r[12] = r[4]&252, r[8]&252, r[12]&252
 			// The passphrase is not a pattern here: the fixtures share a
 			// fixed, low-entropy one, which would match unrelated memory.
 			pats := append(ed25519Patterns(seed),
 				residuePattern{"bcrypt-key", slices.Clone(kiv)},
 				residuePattern{"poly1305-key", slices.Clone(block[:chachaKeyLen])},
+				residuePattern{"poly1305-r", r},
 			)
 			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
 			return append(slices.Clone(pemBytes), pass...), aux, pats
@@ -1123,8 +1132,6 @@ func x25519Material(t *testing.T) ([]byte, []byte, []residuePattern) {
 	return scalar, peer.PublicKey().Bytes(), []residuePattern{{"scalar", scalar}, {"clamped", clamped}, {"shared", shared}}
 }
 
-// marshalEncryptedOpenSSH writes seed as an aes256-ctr, bcrypt-protected
-// OpenSSH key file at the given cost.
 // chachaFixtureSeed opens the fixture and reads back the seed it holds, so
 // the scan hunts for the key the victim will actually load.
 func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
@@ -1148,6 +1155,8 @@ func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
 	return seed
 }
 
+// marshalEncryptedOpenSSH writes seed as an aes256-ctr, bcrypt-protected
+// OpenSSH key file at the given cost.
 func marshalEncryptedOpenSSH(t *testing.T, seed, pass []byte, rounds int) []byte {
 	t.Helper()
 	buf, err := secmem.NewBuffer(slices.Clone(seed))
