@@ -301,10 +301,16 @@ func residueEnvironmental(t *testing.T, format string, args ...any) {
 	t.Skipf(format, args...)
 }
 
-func startResidueVictim(t *testing.T, exe, name string, secret, aux []byte) *residueVictim {
+func startResidueVictim(t *testing.T, exe string, sc residueScenario, secret, aux []byte) *residueVictim {
 	t.Helper()
 	cmd := exec.Command(exe, "-test.run=^TestKeyResidueVictim$", "-test.count=1")
-	cmd.Env = append(os.Environ(), residueVictimEnv+"="+name, residueAuxEnv+"="+hex.EncodeToString(aux))
+	cmd.Env = append(os.Environ(), residueVictimEnv+"="+sc.name, residueAuxEnv+"="+hex.EncodeToString(aux))
+	// A later entry wins, so this overrides a GODEBUG inherited from the
+	// environment. What it is for, and why it is empty on Linux, is in
+	// residueVictimGODEBUG's own comment in each per-OS half.
+	if g := residueVictimGODEBUG(sc); g != "" {
+		cmd.Env = append(cmd.Env, "GODEBUG="+g)
+	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
 		t.Fatal(err)
@@ -365,7 +371,7 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 		t.Logf("Scrub does not suppress asynchronous preemption on %s, so this scenario asserts the spill class: the copies are expected", runtime.GOOS)
 	}
 	secret, aux, pats := sc.material(t)
-	v := startResidueVictim(t, exe, sc.name, secret, aux)
+	v := startResidueVictim(t, exe, sc, secret, aux)
 	rs := secmem.RuntimeSecretActive()
 
 	none := func(phase string, r residueScan) {

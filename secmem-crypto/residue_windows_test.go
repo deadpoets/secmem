@@ -289,3 +289,39 @@ func TestResidueLockedPages_Detected(t *testing.T) {
 	}
 	runtime.KeepAlive(heap)
 }
+
+// residueVictimGODEBUG turns Go's asynchronous preemption off in the victim,
+// except for the scenarios that exist to measure what a preemption leaves
+// behind.
+//
+// Scrub cannot block preemption here — there is no signal to mask — and the
+// runtime does not keep the whole saved register file on the preempted
+// goroutine's stack, which a window would burn. In go1.26 and go1.27,
+// asyncPreempt writes the vector registers to p.xRegs.scratch, at a 64-byte
+// stride, and the runtime then copies that into an xRegState block allocated
+// off-heap from a fixalloc (runtime/preempt_xreg.go). Neither is cleared once
+// the state has been restored: the scratch lives in the P, which never dies,
+// and the block is NotInHeap, so even a runtime/secret build does not erase
+// it — its erasure is of heap objects the collector finds unreachable. A
+// preemption that lands while a key is in two vector registers therefore
+// leaves two copies of it per P that ran the goroutine, until the next
+// preemption on that P overwrites them.
+//
+// Left on, that makes every scenario a coin flip. X25519Key's SharedSecret —
+// microseconds of work — was caught by it about once in a hundred runs of
+// that scenario under load here, and once in CI, with the copies at
+// asyncPreempt's 64-byte stride in two regions outside every stack. A scan
+// that fails that way is reporting the platform, not this module, so the
+// platform is measured on its own: the scenarios that exist to observe a
+// preemption keep it on — the two control/preempted-copy controls, which
+// assert the copies appear, and WithBytesErr/copy-then-preempted, which is
+// the proof that the borrow paths clear the registers and would prove nothing
+// without one. Those three keep the residual risk this comment describes;
+// everything else no longer has it. PROTECTION.md states the limit for
+// callers, whose mitigation is this same GODEBUG.
+func residueVictimGODEBUG(sc residueScenario) string {
+	if sc.needsPreemption {
+		return ""
+	}
+	return "asyncpreemptoff=1"
+}

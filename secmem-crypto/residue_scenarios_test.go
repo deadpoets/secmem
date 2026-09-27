@@ -58,10 +58,13 @@ const (
 	// residueControlPlain: a heap copy made outside Scrub survives the
 	// collector on every build.
 	residueControlPlain
-	// residueControlSpill: a copy the runtime saved onto a goroutine stack by
-	// preempting it outside Scrub is there after use, on every build. Whether
-	// it is still there after GC depends on what reuses that stack, so only
-	// its presence is asserted.
+	// residueControlSpill: a copy the runtime saved when it preempted the
+	// goroutine outside Scrub is there after use, on every build — the
+	// general-purpose registers on the goroutine's own stack, the vector
+	// registers in the per-P buffer asyncPreempt writes them to (see
+	// residueVictimGODEBUG in residue_windows_test.go). How long each lasts
+	// depends on what reuses that stack and on when the next preemption
+	// overwrites that buffer, so only its presence is asserted.
 	residueControlSpill
 )
 
@@ -82,6 +85,15 @@ type residueScenario struct {
 	// scenario asserts the spill class there instead: the copies are present,
 	// which is the platform's documented limit, measured rather than assumed.
 	needsPreemptSuppression bool
+	// needsPreemption marks the scenarios that exist to measure what an
+	// asynchronous preemption leaves behind, and so must run with preemption
+	// on. Every other scenario runs with it off where the platform cannot
+	// suppress it, so that what the scan measures is this module rather than
+	// the runtime: residueVictimGODEBUG in residue_windows_test.go has the
+	// mechanism and the evidence. Getting this wrong is caught rather than
+	// silent — a control that is no longer preempted finds nothing, which its
+	// class asserts against.
+	needsPreemption bool
 	// material runs in the parent: the secret the victim receives in a
 	// SecureBuffer, public inputs, and every encoding to hunt for.
 	material func(t *testing.T) (secret, aux []byte, pats []residuePattern)
@@ -139,8 +151,9 @@ var residueScenarios = []residueScenario{
 		// nothing erases it. This is what Scrub's signal mask and register
 		// clear exist for, and the pair below proves both halves of that.
 		name: "control/preempted-copy-outside-scrub", class: residueControlSpill, nOps: 4,
-		material: randomSecret(32, "secret"),
-		victim:   preemptedCopy(false),
+		needsPreemption: true,
+		material:        randomSecret(32, "secret"),
+		victim:          preemptedCopy(false),
 	},
 	{
 		// The copy runs inside two WithBytesErr borrows and no Scrub window,
@@ -148,14 +161,16 @@ var residueScenarios = []residueScenario{
 		// What the copy left in the registers is gone only if the borrow
 		// clears them on the way out.
 		name: "WithBytesErr/copy-then-preempted", class: residueContained, nOps: 4,
-		minCore:  "v0.6.0", // the borrow paths clear the registers from this release
-		material: randomSecret(32, "secret"),
-		victim:   copyThenPreempted,
+		minCore:         "v0.6.0", // the borrow paths clear the registers from this release
+		needsPreemption: true,     // it exists to observe one; suppressing it would prove nothing
+		material:        randomSecret(32, "secret"),
+		victim:          copyThenPreempted,
 	},
 	{
 		name: "control/preempted-copy-in-scrub", class: residueContained, nOps: 4,
 		minCore:                 "v0.6.0", // Scrub clears the general-purpose registers (arm64 memmove uses them) from this release
 		needsPreemptSuppression: true,
+		needsPreemption:         true,
 		material:                randomSecret(32, "secret"),
 		victim:                  preemptedCopy(true),
 	},

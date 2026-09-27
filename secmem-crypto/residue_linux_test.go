@@ -148,3 +148,9 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 func residueThaw(pid int) {
 	_ = syscall.Kill(pid, syscall.SIGCONT)
 }
+
+// residueVictimGODEBUG adds nothing on Linux: Scrub blocks asynchronous
+// preemption here by masking the signal that delivers it, so the spill the
+// Windows half has to work around cannot happen inside a window — and that it
+// cannot is asserted, by control/preempted-copy-in-scrub, rather than assumed.
+func residueVictimGODEBUG(residueScenario) string { return "" }
