@@ -53,7 +53,17 @@ these are the operational differences a Windows deployment has to plan for.
   `SuspendThread` and `SetThreadContext`, which nothing in userspace masks.
   `Scrub` still runs the frame wipe (`Capabilities.FrameScrub`), but
   `AsyncPreemptSuppressed` is false, and `GOEXPERIMENT=runtimesecret` is
-  Linux-only, so the register and heap erasure tier is unavailable.
+  Linux-only, so the register and heap erasure tier is unavailable. What a
+  preemption inside a window leaves behind is measured, not assumed: the
+  general-purpose registers land on the goroutine's stack, which the window
+  burns, and the vector registers land in two buffers belonging to the runtime
+  — `asyncPreempt`'s per-P scratch and the off-heap block it is copied into —
+  which no window reaches, no collector erases, and only the next preemption on
+  that P overwrites. A microsecond-long `X25519` shared-secret call was caught
+  that way about once in a hundred residue scans under load. The mitigation for
+  a process that holds keys is `GODEBUG=asyncpreemptoff=1`, which removes the
+  mechanism; short windows narrow it but do not close it.
+  [PROTECTION.md](PROTECTION.md) has the full accounting.
 
 ## Not yet verified
 

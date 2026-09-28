@@ -73,6 +73,29 @@ mark the stability commitment.
 
 ### Changed
 
+- **`secmem-crypto`: the Windows residue scan measures this module, not the
+  runtime's preemption spill — which is now measured precisely.** A Windows
+  scan failed once in CI and about once in a hundred local runs of the
+  `X25519Key` scenario, finding two copies of the scalar outside locked memory
+  that survived garbage collection and `Destroy`. It was not a leak in the
+  library and not a flake in the scan: `Scrub` cannot block asynchronous
+  preemption on Windows, and a preemption inside a window does not leave the
+  whole saved register file where the window can burn it. The general-purpose
+  registers go onto the goroutine's stack; the vector registers go to
+  `asyncPreempt`'s per-P scratch buffer and then into a block the runtime
+  allocates off-heap (`runtime/preempt_xreg.go`), neither of which is cleared
+  after the state is restored and neither of which a collector erases — the
+  copies were found at that save layout's 64-byte stride, in two regions
+  outside every stack. Only the next preemption on that P overwrites them.
+  Nothing in this module can reach that memory, so the scan now runs its
+  Windows victims with `GODEBUG=asyncpreemptoff=1` for every scenario except
+  the three that exist to observe a preemption: the two controls, which keep it
+  on and assert the copies appear, and the borrow-clear proof, which would
+  prove nothing without one. Suppressing it for the controls too makes them
+  fail, which is the tripwire for getting this wrong. `PROTECTION.md`, `WINDOWS.md` and `TESTING.md` now state
+  the mechanism, that a real entry point was caught by it, and the mitigation
+  for a caller who needs it: the same `GODEBUG`, plus short windows.
+
 - **`secmem-crypto` documentation: two roadmap items are now decisions.**
   Private-key export stays Ed25519-only — ECDSA and RSA export will not be
   added, because those types are refused by default on a build that cannot

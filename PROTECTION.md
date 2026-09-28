@@ -145,7 +145,7 @@ keys and GHASH table, the Poly1305 key and its clamped half, Argon2's H0, and
 each output. Every scan must also find a
 heap canary the victim keeps alive, so a scan that sees nothing fails. Controls
 show the scan finding a heap copy, a copy made outside `Scrub`, and a copy the
-runtime saved to the stack by preemption, and on Windows a control that a
+runtime saved when it preempted the goroutine, and on Windows a control that a
 locked page is reported locked and a heap page is not — without which the scan
 could call everything locked and find nothing anywhere. CI runs it on
 linux/amd64 and linux/arm64 on both kinds of build, and on windows/amd64, with
@@ -163,12 +163,29 @@ Its limits, which are the limits of the levels above:
   `memfd_secret` equivalent), so the scan finds the buffers' own contents and
   counts them as locked hits — the row "another process reading this one's
   memory" is weaker there, as it says. And `Scrub` cannot block Go's
-  asynchronous preemption on Windows, because there is no signal to block: a
+  asynchronous preemption on Windows, because there is no signal to block, so
+  a preemption inside a window saves the register file where the window does
+  not reach. The general-purpose registers go onto the goroutine's own stack,
+  which the window does burn. The vector registers do not: `asyncPreempt`
+  writes them to a per-P scratch buffer, and the runtime copies that into a
+  block it allocates off-heap (`runtime/preempt_xreg.go`, go1.26 and go1.27).
+  Neither is cleared once the state has been restored — the scratch lives in
+  the P, which never dies, and the block is off-heap, so even a runtime/secret
+  build does not erase it, because its erasure is of heap objects the collector
+  finds unreachable. Only the next preemption on that P overwrites them. A
   control that deliberately spins inside a window with a secret in registers
-  leaves about thirty copies of it in memory the window does not wipe, and
-  they survive collection and `Destroy`. No real entry point showed that in
-  the scan — their operations are too short to be preempted often — but it is
-  not ruled out for a long operation, and it cannot be fixed from this side.
+  leaves about thirty such copies, and they survive collection and `Destroy`.
+  This is not merely theoretical for real entry points: `X25519Key`'s
+  `SharedSecret` — microseconds of work — was caught by it about once in a
+  hundred runs of that scenario under load, and once in CI, which is how the
+  mechanism above came to be measured rather than assumed. Nothing in this
+  module can prevent it: the memory is the runtime's, and reaching it needs no
+  cooperation from the code being preempted. If that matters for your process,
+  run it with `GODEBUG=asyncpreemptoff=1`, which removes the mechanism
+  altogether, and keep windows short. The scan's own Windows victims now run
+  that way for every scenario except the three that exist to observe a
+  preemption, so that what it reports is this module rather than the platform,
+  while the platform's cost stays measured by those three.
 - **What it cannot search for.** The ECDSA nonce (random per signature), the
   RSA signature's intermediate Montgomery tables, Argon2's memory blocks, the
   Blowfish schedule inside bcrypt_pbkdf, and the key a passphrase export derives
