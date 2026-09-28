@@ -90,8 +90,9 @@ func (s *Ed25519Signer) MarshalOpenSSHPrivateKeyWithPassphrase(comment string, p
 // open, so the marshaller refuses it: the limit here exists to keep what is
 // written readable, and it is deliberately the same number the readers use.
 const (
-	// OpenSSHKDFRounds is ssh-keygen's default, and what
-	// [Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphrase] uses.
+	// OpenSSHKDFRounds is what [Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphrase]
+	// uses: ssh-keygen's default until OpenSSH 9.3 (9.4 raised its default
+	// to 24; the file names the count, so either reads either).
 	OpenSSHKDFRounds = opensshRounds
 	// MaxOpenSSHKDFRounds is the largest cost this package will write, and
 	// the largest it will read.

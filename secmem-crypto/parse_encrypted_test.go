@@ -118,6 +118,27 @@ func fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.Public
 	return armour(body), raw, cp.CryptoPublicKey()
 }
 
+// encryptedFixtures lists every ssh-keygen fixture under
+// testdata/openssh-encrypted, so a file added to the directory is parsed,
+// seeded into the fuzzer and, if it names an AES cipher, has its schedule
+// wipe observed, without a list to keep in step. A fixture left out of the
+// corpus by accident is what this replaces.
+func encryptedFixtures(t testing.TB) []string {
+	t.Helper()
+	matches, err := filepath.Glob(filepath.Join("testdata", "openssh-encrypted", "*.b64"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(matches) < 11 {
+		t.Fatalf("found %d fixtures under testdata/openssh-encrypted, want at least 11", len(matches))
+	}
+	names := make([]string, 0, len(matches))
+	for _, m := range matches {
+		names = append(names, strings.TrimSuffix(filepath.Base(m), ".b64"))
+	}
+	return names
+}
+
 // TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures opens files a real
 // ssh-keygen wrote — the default profile, one round, every AES key size in
 // both modes, and every key type — and proves each parsed signer is the key
@@ -129,13 +150,7 @@ func fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.Public
 // so it opens only under the cipher's own block granularity
 // (TestParsePrivateKeyWithPassphrase_ChaChaBlockGranularity pins that).
 func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
-	for _, name := range []string{
-		"ed25519-a16", "ed25519-a1", "ed25519-cbc-a1",
-		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
-		"ed25519-aes128-cbc-a1", "ed25519-aes192-cbc-a1",
-		"ed25519-chacha-a1", "ed25519-chacha-c3-a1",
-		"ecdsa-a1", "rsa-a1",
-	} {
+	for _, name := range encryptedFixtures(t) {
 		t.Run(name, func(t *testing.T) {
 			pemBytes, raw, pub := fixture(t, name)
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
@@ -632,13 +647,16 @@ func TestParsePrivateKeyWithPassphrase_ErrorsCarryNoSecret(t *testing.T) {
 // 16- or 24-byte key expands to a shorter schedule in the same arrays.
 // Must not call t.Parallel(): it swaps a package var.
 func TestParsePrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
-	for _, name := range []string{
-		"ed25519-a1", "ed25519-cbc-a1",
-		"ed25519-aes128-ctr-a1", "ed25519-aes128-cbc-a1",
-		"ed25519-aes192-ctr-a1", "ed25519-aes192-cbc-a1",
-	} {
+	for _, name := range encryptedFixtures(t) {
+		pemBytes, raw, pub := fixture(t, name)
+		h, err := readOpenSSHHeader(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if !strings.HasPrefix(string(h.cipher), "aes") {
+			continue // chacha20-poly1305 has no AES schedule; the fixture loop opens it
+		}
 		t.Run(name, func(t *testing.T) {
-			pemBytes, _, pub := fixture(t, name)
 			var fired, blank int
 			var aliased [][]byte
 			orig := wipeAESBlock
@@ -754,13 +772,11 @@ func TestParsePrivateKeyWithPassphrase_FromSecureBuffer(t *testing.T) {
 // Files that name more than four KDF rounds are skipped — cost is linear in
 // rounds and the mutator would otherwise spend its time in bcrypt.
 func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
-	for _, name := range []string{
-		"ed25519-a1", "ed25519-cbc-a1",
-		"ed25519-aes128-ctr-a1", "ed25519-aes192-ctr-a1",
-		"ed25519-aes128-cbc-a1", "ed25519-aes192-cbc-a1",
-		"ecdsa-a1", "rsa-a1", "ed25519-chacha-a1", "ed25519-chacha-c3-a1",
-	} {
+	for _, name := range encryptedFixtures(f) {
 		pemBytes, raw, _ := fixture(f, name)
+		if _, rounds, ok := readKDFOpts(raw); ok && rounds > 4 {
+			continue // the body below skips such inputs; seeding one would seed nothing
+		}
 		f.Add(pemBytes)
 		f.Add(raw)
 	}

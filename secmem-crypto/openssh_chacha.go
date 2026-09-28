@@ -108,8 +108,8 @@ func chachaBlock(out *[chachaBlockSize]byte, key *[chachaKeyLen]byte, nonce *[8]
 // is the caller's local; the view never outlives it.
 func chachaWords(s *[16]uint32) []byte {
 	//nolint:gosec // G103: a byte view of the caller's own array, so that
-	// SecureWipe — which takes bytes — can zero words a plain loop would let
-	// the compiler drop. Nothing foreign is addressed and the view does not
+	// SecureWipe — which takes bytes — can zero words a plain loop is not
+	// guaranteed to. Nothing foreign is addressed and the view does not
 	// escape (TestChaCha_NoHeap pins that).
 	return unsafe.Slice((*byte)(unsafe.Pointer(s)), unsafe.Sizeof(*s))
 }

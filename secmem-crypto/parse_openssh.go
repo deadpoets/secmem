@@ -277,7 +277,8 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, blockSize int, o option
 
 // checkOpenSSHPadding verifies the private block's trailing pad: the bytes
 // 1, 2, 3, … that bring the block up to a multiple of blockSize — 8 for
-// "none", 16 for the AES ciphers — so fewer than blockSize of them. Both
+// "none" and chacha20-poly1305, 16 for the AES ciphers — so fewer than
+// blockSize of them. Both
 // the sequence and the length are checked: a writer never emits a whole
 // block of padding, so a pad of blockSize bytes or more is not a padded
 // block, whatever its bytes say. A wrong pad on an unencrypted file means

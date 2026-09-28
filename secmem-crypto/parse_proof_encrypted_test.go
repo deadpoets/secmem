@@ -7,6 +7,7 @@ package secmemcrypto
 
 import (
 	"runtime"
+	"strings"
 	"testing"
 
 	"golang.org/x/crypto/ssh"
@@ -24,7 +25,20 @@ import (
 var passphrasePathFiles = map[string]bool{
 	"parse.go": true, "parse_openssh.go": true, "parse_encrypted.go": true,
 	"marshal_openssh.go": true, "openssh_wire.go": true, "openssh_cipher.go": true,
-	"aeswipe.go": true,
+	"openssh_chacha.go": true, "aeswipe.go": true,
+}
+
+// withoutAESAllowance is the allowlist for a path that has no AES Block to
+// account for: the chacha20-poly1305 files, whose core is this package's own
+// and must allocate nothing.
+func withoutAESAllowance(allowed []string) []string {
+	out := make([]string, 0, len(allowed))
+	for _, a := range allowed {
+		if !strings.HasPrefix(a, "crypto/aes.") && !strings.HasPrefix(a, "crypto/internal/fips140/aes.") {
+			out = append(out, a)
+		}
+	}
+	return out
 }
 
 var passphrasePathAllowed = []string{
@@ -68,8 +82,8 @@ func proveNoOwnedAllocations(t *testing.T, files map[string]bool, allowed []stri
 
 func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 	for _, k := range parseTestKeys(t) {
-		if !k.openssh || k.pkcs1 {
-			continue // no OpenSSH form for P-224; the RSA block computes CRT exponents with math/big by design
+		if !k.openssh {
+			continue // no OpenSSH form for P-224
 		}
 		block, err := ssh.MarshalPrivateKeyWithPassphrase(k.priv, "a comment", []byte(testPassphrase))
 		if err != nil {
@@ -78,6 +92,34 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 		for form, data := range map[string][]byte{"pem": pemEncodeToMemory(block), "raw": block.Bytes} {
 			t.Run(k.name+"/"+form, func(t *testing.T) {
 				proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
+					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
+					if err != nil {
+						t.Fatal(err)
+					}
+					s.Destroy()
+				})
+			})
+		}
+	}
+
+	// The same proof over the files a real ssh-keygen wrote, which reach what
+	// x/crypto never writes: the aes128 and aes192 modes, CBC, and
+	// chacha20-poly1305, whose core has no AES Block to account for — so for
+	// those files the AES packages come off the allowlist and nothing owned
+	// may allocate at all.
+	for _, name := range encryptedFixtures(t) {
+		pemBytes, raw, _ := fixture(t, name)
+		h, err := readOpenSSHHeader(raw)
+		if err != nil {
+			t.Fatal(err)
+		}
+		allowed := passphrasePathAllowed
+		if string(h.cipher) == opensshCipherChaCha {
+			allowed = withoutAESAllowance(allowed)
+		}
+		for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
+			t.Run(name+"/"+form, func(t *testing.T) {
+				proveNoOwnedAllocations(t, passphrasePathFiles, allowed, func() {
 					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {
 						t.Fatal(err)

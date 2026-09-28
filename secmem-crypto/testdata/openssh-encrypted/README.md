@@ -15,7 +15,7 @@ public key `ssh-keygen` wrote alongside.
 
 | File | Command (after `-N secmem-test-passphrase -C fixture -f <name>`) | Covers |
 |---|---|---|
-| `ed25519-a16` | `ssh-keygen -t ed25519` | ssh-keygen's defaults: aes256-ctr, bcrypt, 16 rounds |
+| `ed25519-a16` | `ssh-keygen -t ed25519` | ssh-keygen's defaults: aes256-ctr, bcrypt and 24 rounds (OpenSSH 9.4 raised the default from the 16 the file is named for) |
 | `ed25519-a1` | `ssh-keygen -t ed25519 -a 1` | one round, for the tests that parse many times |
 | `ed25519-cbc-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes256-cbc` | the CBC mode |
 | `ed25519-aes128-ctr-a1` | `ssh-keygen -t ed25519 -a 1 -Z aes128-ctr` | a 16-byte key: the KDF derives key\|\|IV, so the length is part of the format |

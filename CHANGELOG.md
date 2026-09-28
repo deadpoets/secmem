@@ -170,6 +170,11 @@ mark the stability commitment.
 
 ### Fixed
 
+- **`secmem-crypto` documentation: ssh-keygen's default bcrypt cost.** Every
+  mention said ssh-keygen writes 16 rounds by default; OpenSSH 9.4 raised
+  that to 24, which is what the default-profile fixture in
+  `testdata/openssh-encrypted` carries. `OpenSSHKDFRounds` stays 16, the
+  count this package writes, and its doc now says which default it was.
 - **`redact`: the Handler no longer takes a `SecureBuffer` or `Secret` apart
   when it finds one in an unexported field.** The reflection walk that renders
   a `KindAny` value follows pointers at every depth, and could not call the
@@ -192,8 +197,9 @@ mark the stability commitment.
   `<ptr>`, as fmt renders any nested pointer as an address — so even a
   defined type with the methods stripped (`type mine secmem.SecureBuffer`)
   behind such a field is not taken apart; only a value of such a type held
-  directly in a nested struct still is, exactly as fmt would. Regression tests log every
-  secmem type from unexported fields through the handler, in text and JSON,
+  directly in a nested struct still is, exactly as fmt would. Regression
+  tests log every secmem type from unexported fields through the handler, in
+  text and JSON,
   and assert nothing of the secret reaches the sink in either form. The
   render cap now also bounds a single `[]byte`, `String()` or `MarshalText`
   result, where it bounded only their sum.

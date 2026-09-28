@@ -86,9 +86,8 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 // its meaning. Everything below is refused today and may well be supported
 // later — an OpenSSH cipher this package does not run (the AES-GCM pair),
 // an unknown KDF, and PKCS#8 PBES2 — so none of them may claim to be
-// retired. Without this test
-// ErrRetiredAlgorithm would decay into a synonym for ErrUnsupportedKey and
-// stop telling a caller anything.
+// retired. Without this test ErrRetiredAlgorithm would decay into a synonym
+// for ErrUnsupportedKey and stop telling a caller anything.
 func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	container := func(cipher, kdf string) []byte {
 		return testContainer(cipher, kdf, testKDFOpts(16, 1), 16)

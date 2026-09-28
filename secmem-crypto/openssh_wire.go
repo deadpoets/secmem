@@ -30,7 +30,7 @@ const (
 	opensshKDFNone      = "none"
 	opensshKDFBcrypt    = "bcrypt"
 	opensshSaltLen      = 16   // what ssh-keygen writes
-	opensshRounds       = 16   // ssh-keygen's default (-a)
+	opensshRounds       = 16   // ssh-keygen's default until OpenSSH 9.3; 24 since 9.4 (-a sets it)
 	opensshMaxRounds    = 2048 // x/crypto/ssh's cap on files it will open; see parse_encrypted.go
 	opensshAESBlock     = 16
 	opensshNoneBlock    = 8
