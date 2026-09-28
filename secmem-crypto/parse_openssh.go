@@ -40,19 +40,34 @@ func (r *sshReader) str() ([]byte, bool) {
 }
 
 // opensshHeader is the outer container, every field aliasing the input.
+// rest is whatever follows the private block: for an AEAD cipher the
+// authenticator, which PROTOCOL.key places after the string rather than in
+// it; for "none" and the AES modes, which have none, nothing at all — a
+// non-empty rest there is trailing junk, and the callers refuse it once
+// they know which cipher they are looking at.
 type opensshHeader struct {
 	cipher, kdf, kdfOpts []byte
 	numKeys              uint32
 	pubBlob, privBlock   []byte
-	// trailer is whatever follows the private block. For an authenticated
-	// cipher that is the authenticator, which OpenSSH appends after the
-	// string rather than inside it; for every other cipher it is empty.
-	trailer []byte
+	rest                 []byte
 }
 
 // readOpenSSHHeader reads the "openssh-key-v1" container's outer fields
-// from b, checking only structure; whether the private block is encrypted,
-// and with what, is the caller's question.
+// from b and checks that the fields are present and that the header agrees
+// with itself about encryption — the cipher and the KDF are both "none" or
+// neither is, and a "none" KDF carries no options. Which encryption, whether
+// the key count is one, whether the private block is a multiple of the
+// cipher's block size, and whether anything may follow it (see rest) are the
+// caller's questions.
+//
+// The consistency rule matters to the two entry points more than it looks:
+// a file naming aes256-ctr with KDF none, or none with bcrypt, is neither
+// "passphrase-protected" nor "not protected", and without the rule each
+// parser would send the caller to the other one. OpenSSH's own reader
+// (sshkey.c) refuses a cipher without a KDF as an invalid format; refusing a
+// KDF without a cipher, and options on a "none" KDF, is this parser's rule —
+// the latter shared with x/crypto/ssh — adopted for the two entry points'
+// sake.
 func readOpenSSHHeader(b []byte) (opensshHeader, error) {
 	var h opensshHeader
 	if !bytes.HasPrefix(b, opensshMagic) {
@@ -66,16 +81,27 @@ func readOpenSSHHeader(b []byte) (opensshHeader, error) {
 	h.numKeys, ok4 = r.uint32()
 	h.pubBlob, ok5 = r.str()
 	h.privBlock, ok6 = r.str()
-	h.trailer = r.b
 	if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 {
 		return h, errMalformed
+	}
+	h.rest = r.b
+	cipherNone := string(h.cipher) == opensshCipherNone // comparison only: no string is allocated
+	kdfNone := string(h.kdf) == opensshKDFNone
+	if cipherNone != kdfNone {
+		return h, fmt.Errorf("%w: OpenSSH cipher and KDF disagree about encryption", errMalformed)
+	}
+	if kdfNone && len(h.kdfOpts) != 0 {
+		return h, fmt.Errorf("%w: KDF options with KDF none", errMalformed)
 	}
 	return h, nil
 }
 
 // errCheckMismatch is the private block's two check integers disagreeing:
-// corruption in an unencrypted file, a wrong passphrase in an encrypted one
-// (parse_encrypted.go maps it accordingly).
+// corruption in an unencrypted file, a wrong passphrase in an encrypted one.
+// The encrypted path does not single it out: there every failure after
+// decryption, this one included, is reported as errOpenSSHDecrypt
+// (parse_encrypted.go), so nothing in the error says how far the block
+// parsed.
 var errCheckMismatch = fmt.Errorf("%w: check integers disagree", errMalformed)
 
 // parseOpenSSH reads an unencrypted "openssh-key-v1" container held in blob
@@ -92,13 +118,21 @@ func parseOpenSSH(blob *secmem.SecureBuffer, o options) (Signer, error) {
 		if err != nil {
 			return err
 		}
-		if string(h.cipher) != opensshCipherNone || string(h.kdf) != opensshKDFNone {
+		if string(h.cipher) != opensshCipherNone { // the header guarantees the KDF agrees
 			return ErrEncryptedKey
+		}
+		if len(h.rest) != 0 { // "none" carries no authenticator: the file ends with the block
+			return fmt.Errorf("%w: trailing bytes after the OpenSSH container", errMalformed)
 		}
 		if h.numKeys != 1 {
 			return fmt.Errorf("%w: OpenSSH file holds %d keys, want 1", ErrUnsupportedKey, h.numKeys)
 		}
-		s, der, err = parseOpenSSHPrivateBlock(h.privBlock, h.pubBlob, o)
+		// OpenSSH pads the plaintext block to the "none" cipher's 8-byte
+		// block and refuses a block that is not a multiple of it.
+		if len(h.privBlock) == 0 || len(h.privBlock)%opensshNoneBlock != 0 {
+			return fmt.Errorf("%w: private block is not a multiple of the cipher block size", errMalformed)
+		}
+		s, der, err = parseOpenSSHPrivateBlock(h.privBlock, h.pubBlob, opensshNoneBlock, o)
 		return err
 	})
 	_ = blob.Destroy()
@@ -114,13 +148,14 @@ func parseOpenSSH(blob *secmem.SecureBuffer, o options) (Signer, error) {
 // parseOpenSSHPrivateBlock reads a plaintext private block (check1, check2,
 // key type, the per-type fields, comment, padding) and builds the signer;
 // for RSA it returns the assembled PKCS#1 DER buffer instead, for the caller
-// to hand to NewRSASigner. pubBlob is the container's public-key block.
+// to hand to NewRSASigner. pubBlob is the container's public-key block and
+// blockSize the cipher's block size, which bounds the padding.
 //
 // The public-key block is compared field by field with the private block
 // (OpenSSH itself does this on load), so a file whose halves disagree is
 // rejected rather than yielding a signer whose Public() is not what the
 // file advertises.
-func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *secmem.SecureBuffer, error) {
+func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, blockSize int, o options) (Signer, *secmem.SecureBuffer, error) {
 	var (
 		s   Signer
 		der *secmem.SecureBuffer
@@ -158,7 +193,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *se
 			if !ok1 || !ok2 || !ok3 || len(pk) != 32 || len(sk) != 64 {
 				return errMalformed
 			}
-			if err := checkOpenSSHPadding(p.b); err != nil {
+			if err := checkOpenSSHPadding(p.b, blockSize); err != nil {
 				return err
 			}
 			pubKey, ok := pub.str()
@@ -178,7 +213,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *se
 			if !ok1 || !ok2 || !ok3 || !ok4 {
 				return errMalformed
 			}
-			if err := checkOpenSSHPadding(p.b); err != nil {
+			if err := checkOpenSSHPadding(p.b, blockSize); err != nil {
 				return err
 			}
 			if !bytes.Equal(curveName, keyType[len("ecdsa-sha2-"):]) {
@@ -193,7 +228,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *se
 			case "nistp521":
 				curve = elliptic.P521()
 			default:
-				return fmt.Errorf("%w: curve %q", ErrUnsupportedKey, curveName)
+				return fmt.Errorf("%w: curve %s", ErrUnsupportedKey, labelForError(curveName))
 			}
 			pubCurve, ok1 := pub.str()
 			pubQ, ok2 := pub.str()
@@ -216,7 +251,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *se
 			if !ok1 || !ok2 || !ok3 || !ok4 || !ok5 || !ok6 || !ok7 {
 				return errMalformed
 			}
-			if err := checkOpenSSHPadding(p.b); err != nil {
+			if err := checkOpenSSHPadding(p.b, blockSize); err != nil {
 				return err
 			}
 			pubE, ok1 := pub.str()
@@ -229,8 +264,9 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *se
 			return err
 
 		default:
-			// keyType is the algorithm label, not secret.
-			return fmt.Errorf("%w: OpenSSH key type %q", ErrUnsupportedKey, keyType)
+			// keyType is the algorithm label, not secret — but it is the
+			// file's to choose, so it is bounded on the way out.
+			return fmt.Errorf("%w: OpenSSH key type %s", ErrUnsupportedKey, labelForError(keyType))
 		}
 	}()
 	if err != nil {
@@ -240,9 +276,17 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, o options) (Signer, *se
 }
 
 // checkOpenSSHPadding verifies the private block's trailing pad: the bytes
-// 1, 2, 3, … up to the cipher block size, which for "none" is 8. A wrong pad
-// on an unencrypted file means corruption.
-func checkOpenSSHPadding(pad []byte) error {
+// 1, 2, 3, … that bring the block up to a multiple of blockSize — 8 for
+// "none" and chacha20-poly1305, 16 for the AES ciphers — so fewer than
+// blockSize of them. Both
+// the sequence and the length are checked: a writer never emits a whole
+// block of padding, so a pad of blockSize bytes or more is not a padded
+// block, whatever its bytes say. A wrong pad on an unencrypted file means
+// corruption.
+func checkOpenSSHPadding(pad []byte, blockSize int) error {
+	if len(pad) >= blockSize {
+		return fmt.Errorf("%w: bad padding", errMalformed)
+	}
 	for i, b := range pad {
 		if int(b) != i+1 {
 			return fmt.Errorf("%w: bad padding", errMalformed)
@@ -271,7 +315,11 @@ func bitLen(b []byte) int {
 // Bounds mirrored from x/crypto/ssh's OpenSSH RSA parser: the modulus cap is
 // OpenSSH's own maximum, the prime cap bounds the CRT arithmetic below, and
 // the exponent rules reject values that would make that arithmetic or the
-// later validation expensive or meaningless.
+// later validation expensive or meaningless. iqmp = q⁻¹ mod p is below p by
+// definition and so shares the prime cap; without that, it is the one
+// integer whose size the file could set freely, and the DER below would be
+// sized by it. d is bounded by reduceMod, which refuses a dividend wider
+// than the modulus cap.
 const (
 	rsaMaxModulusBits  = 16384
 	rsaMaxPrimeBits    = 8192
@@ -300,6 +348,8 @@ func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 		return nil, fmt.Errorf("%w: RSA modulus too large", errMalformed)
 	case bitLen(p) > rsaMaxPrimeBits || bitLen(q) > rsaMaxPrimeBits:
 		return nil, fmt.Errorf("%w: RSA prime too large", errMalformed)
+	case bitLen(iqmp) > rsaMaxPrimeBits:
+		return nil, fmt.Errorf("%w: RSA CRT coefficient too large", errMalformed)
 	case bitLen(e) > rsaMaxExponentBits || bitLen(e) < 2 || e[len(e)-1]&1 == 0:
 		return nil, fmt.Errorf("%w: RSA public exponent", errMalformed)
 	}
@@ -388,18 +438,27 @@ func (x derInt) encodedLen() int {
 	return 1 + derLengthLen(c) + c
 }
 
-// derLengthLen is the size of a DER length field for a content length n.
+// derLengthLen is the size of a DER length field for a content length n:
+// one byte in the short form (n < 0x80), otherwise one byte for the count
+// plus the minimum number of octets that hold n — correct for any
+// non-negative int, not only the lengths an RSA key can reach. n < 0 is the
+// caller's error and is encoded as if it were 0.
 func derLengthLen(n int) int {
-	switch {
-	case n < 0x80:
+	if n < 0x80 {
 		return 1
-	case n < 0x100:
-		return 2
-	case n < 0x10000:
-		return 3
-	default:
-		return 4
 	}
+	return 1 + derLengthOctets(n)
+}
+
+// derLengthOctets is the number of octets in the long-form encoding of n,
+// n >= 0x80: the minimal big-endian width of n, so 1 for n < 0x100, 2 for
+// n < 0x10000, and so on up to 8 for the largest int.
+func derLengthOctets(n int) int {
+	k := 0
+	for v := uint64(n); v != 0; v >>= 8 { //nolint:gosec // n >= 0x80 here, so the conversion is exact
+		k++
+	}
+	return k
 }
 
 // derWriter writes into a fixed slice; sizes are computed beforehand so it
@@ -414,13 +473,16 @@ func (w *derWriter) putByte(v byte) {
 	w.off++
 }
 
+// putLength writes the DER length field for n in exactly derLengthLen(n)
+// bytes: the short form below 0x80, otherwise 0x80 | k followed by the k
+// octets of n, most significant first, with no leading zero octet.
 func (w *derWriter) putLength(n int) {
 	if n < 0x80 {
-		w.putByte(byte(n)) //nolint:gosec // n < 0x80 on this branch
+		w.putByte(byte(max(n, 0))) //nolint:gosec // 0 <= n < 0x80 on this branch
 		return
 	}
-	k := derLengthLen(n) - 1
-	w.putByte(0x80 | byte(k)) //nolint:gosec // k is 1..3
+	k := derLengthOctets(n)
+	w.putByte(0x80 | byte(k)) //nolint:gosec // k is 1..8
 	for i := k - 1; i >= 0; i-- {
 		w.putByte(byte(n >> (8 * i))) //nolint:gosec // one octet of n, most significant first
 	}

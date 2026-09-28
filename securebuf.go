@@ -151,8 +151,15 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		_ = freeSecretMem(region) // nothing secret written yet
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
-	copy(data, raw)
-	return newSecureBuffer(region, data, info)
+	// Register first, copy second — see fillInitial for why the order matters.
+	sb, err := newSecureBuffer(region, data, info)
+	if err != nil {
+		return nil, err
+	}
+	if err := sb.fillInitial(raw); err != nil {
+		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
+	}
+	return sb, nil
 }
 
 // NewEmptyBuffer allocates an mlock'd zero-filled region of exactly size bytes.
@@ -196,8 +203,42 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		_ = freeSecretMem(region)
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
-	copy(data, raw)
-	return newSecureBuffer(region, data, info)
+	// Register first, copy second — see fillInitial.
+	sb, err := newSecureBuffer(region, data, info)
+	if err != nil {
+		return nil, err
+	}
+	if err := sb.fillInitial(raw); err != nil {
+		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
+	}
+	return sb, nil
+}
+
+// fillInitial copies raw into a buffer newSecureBuffer has just registered,
+// under the exclusive lock. It exists so that the janitor knows the region
+// BEFORE the secret is in it. The copying constructors used to copy first and
+// register second, so a WipeAllSecrets that ran in between could not see the
+// buffer: for that window the plaintext existed only in an unregistered
+// region, and the caller's copy had already been wiped. Now every secret byte
+// ever written into a SecureBuffer is written into a registered one.
+//
+// The lock is what makes the copy correct against that same wipe. A pass that
+// takes the region before this does leaves it zeroed and flagged; a copy that
+// then went ahead would write a live secret into a region the wipe has already
+// reported as handled — the exact thing the wiped flag exists to refuse for
+// every other mutator. So this refuses too: the buffer is destroyed and
+// ErrWiped returned, which is the honest outcome for a secret created while
+// the process is emergency-wiping.
+func (s *SecureBuffer) fillInitial(raw []byte) error {
+	s.mu.lock()
+	if s.wiped.Load() {
+		s.mu.unlock()
+		_ = s.Destroy()
+		return ErrWiped
+	}
+	copy(s.data, raw)
+	s.mu.unlock()
+	return nil
 }
 
 // newSecureBuffer wires up a SecureBuffer from a pre-allocated (region, data)
@@ -222,8 +263,10 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureB
 	}
 
 	// The canary zone is the slack between the caller's size and the page
-	// boundary. cap(data) is clamped to the original size and survives
-	// Truncate re-slices, so the zone stays correct for the buffer's lifetime.
+	// boundary, described once, here, from the construction-time size. The
+	// janitor keeps this layout and verifies it on Destroy and on the
+	// emergency wipe, so a later Truncate — which shrinks data's length AND
+	// capacity — cannot move the zone.
 	canary := bufferCanary(cap(data), len(region.inner))
 
 	// Register with the emergency janitor first. The janitor stores raw mapping
@@ -375,6 +418,15 @@ func (s *SecureBuffer) MappedLen() int {
 // The exclusive lock is held to drain all in-flight Write/SetByteAt calls
 // before the mprotect, preventing a SIGSEGV from a concurrent write hitting a
 // PROT_READ page.
+//
+// The guard is at the API boundary: [SecureBuffer.CopyIn],
+// [SecureBuffer.SetByteAt], [SecureBuffer.Truncate] and
+// [SecureBuffer.ReadFrom] return [ErrReadOnly] instead of writing. It does
+// not reach a write made THROUGH THE SLICE a borrowing accessor hands out
+// ([SecureBuffer.WithBytes], [SecureBuffer.WithBytesErr]): no supported OS
+// has sub-page protection, and the accessor cannot know what fn will do with
+// the slice, so such a write hits the PROT_READ page and faults the process.
+// Treat a borrowed slice as read-only for as long as the buffer is.
 //
 // NOTE: Operates on the full page-rounded region; sub-page protection
 // is not possible on any supported OS.
@@ -641,7 +693,12 @@ func (s *SecureBuffer) Truncate(n int) error {
 	if len(tail) > 0 {
 		secureWipeSlice(tail)
 	}
-	s.data = s.data[:n]
+	// Capacity clamped to n as well as length: the slice a later borrow hands
+	// out can then not be re-sliced back over the tail just wiped. Harmless if
+	// it could (the tail is zero and inside this buffer's own allocation), but
+	// a borrowed slice that reaches exactly the live bytes is the cleaner
+	// contract, and it costs nothing.
+	s.data = s.data[:n:n]
 	return nil
 }
 

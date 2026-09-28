@@ -121,11 +121,15 @@ use."
 retained pointer faults rather than corrupting the secret. But a write
 through the library's own mutating methods (`CopyIn`, `SetByteAt`,
 `Truncate`, `ReadFrom`) would also hit that `PROT_READ` page and fault the
-process — which contradicts the library's rule that *misuse returns an
-error, never crashes*. So read-only is tracked as a struct flag as well: the
-mutating methods check it and return `ErrReadOnly` at the API boundary, and
-the page protection is the backstop for raw-pointer writes that bypass the
-methods. Two layers for one property, because they cover different bypasses.
+process — which contradicts the library's rule that *misuse of its methods
+returns an error, never crashes*. So read-only is tracked as a struct flag as
+well: the mutating methods check it and return `ErrReadOnly` at the API
+boundary, and the page protection is the backstop for raw-pointer writes that
+bypass the methods. Two layers for one property, because they cover different
+bypasses. The one write the flag cannot intercept is a write through the
+slice a borrow hands out (`WithBytes`): the accessor cannot know what the
+closure will do, so that write reaches the page and faults — the documented
+exception, see PITFALLS.md §5.
 
 Because the flag is the source of truth, it is preserved across a seal cycle:
 `Seal` lifts the `PROT_READ` protection for the moment it must write (the

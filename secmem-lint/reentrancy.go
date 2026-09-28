@@ -50,13 +50,18 @@ var arenaExclusive = map[string]bool{ //nolint:gochecknoglobals // immutable loo
 //
 // Receivers are compared as identity chains, so a buffer held in a struct
 // field is covered, and a local bound once to the buffer (b2 := buf) or to
-// one of its methods (l := buf.Len) resolves to the buffer.
+// one of its methods (l := buf.Len) resolves to the buffer. A buffer embedded
+// in a struct is the same buffer whether its method is called through the
+// promotion (e.Len()) or on the field (e.SecureBuffer.Len()).
 //
 // Only calls that run synchronously inside the closure count. A func literal
 // that is assigned, returned, sent or launched with go runs after the lease
 // (or on another goroutine) and is skipped; one that is invoked in place,
 // deferred, or passed to a call is walked.
 func (c *checker) checkReentrancy(acc accessor) {
+	if acc.recvExpr == nil {
+		return // a method value bound to several receivers: identity undecidable
+	}
 	slot := namedTypeKey(c.pass.TypesInfo.TypeOf(acc.recvExpr)) == secmemPkg+".ArenaSlot"
 	if len(acc.recv) == 0 && !slot {
 		return
@@ -81,24 +86,21 @@ func (c *checker) checkReentrancy(acc accessor) {
 		if !ok {
 			return true
 		}
-		sel, ok := c.methodSelector(call.Fun)
-		if !ok {
+		mc, ok := c.methodCallOf(call)
+		if !ok || mc.recv == nil {
 			return true
 		}
-		if selection, ok := c.pass.TypesInfo.Selections[sel]; !ok || selection.Kind() != types.MethodVal {
-			return true
-		}
-		name := sel.Sel.Name
+		name := mc.method.Name()
 		if reentrantUnsafe[name] {
-			if inner, ok := c.receiverKey(sel.X, 0); ok && sameReceiver(acc.recv, inner) {
+			if inner, ok := c.receiverKeyOf(mc); ok && sameReceiver(acc.recv, inner) {
 				c.report(call.Pos(), fmt.Sprintf(
 					"%s called on the same %s inside its own borrowing closure; secmem access methods are not reentrant and will deadlock",
 					name, kind))
 				return true
 			}
 		}
-		if slot && arenaExclusive[name] && namedTypeKey(c.pass.TypesInfo.TypeOf(sel.X)) == secmemPkg+".SecureArena" {
-			inner, ok := c.receiverKey(sel.X, 0)
+		if slot && arenaExclusive[name] && namedTypeKey(c.pass.TypesInfo.TypeOf(mc.recv)) == secmemPkg+".SecureArena" {
+			inner, ok := c.receiverKeyOf(mc)
 			switch {
 			case arenaKnown && ok && sameReceiver(arena, inner):
 				c.report(call.Pos(), fmt.Sprintf(

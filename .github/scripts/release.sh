@@ -75,11 +75,24 @@ git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already e
 git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 && die "tag $tag already exists on origin. Pick the next version."
 ok "tag $tag is free in git"
 
+# http_code prints the status proxy.golang.org answered $1 with, or 000 when
+# the answer cannot be trusted: curl itself prints 000 for a connection failure
+# and exits non-zero, and any other non-zero exit is treated the same way. The
+# fallback is deliberately OUTSIDE the substitution. An earlier revision wrote
+# `$(curl ... || echo 000)`, which concatenated curl's own 000 with the echo's,
+# and the 000000 that produced fell through to the "unexpected HTTP" branch
+# instead of the "could not reach the proxy" message written for it.
+http_code() {
+  local code
+  code=$(curl -s -o /dev/null -w '%{http_code}' "$1") || code="000"
+  printf '%s' "${code:-000}"
+}
+
 # The check that would have caught secmem-crypto/v0.3.0. Once the proxy has a
 # version, that version's content is fixed forever; re-tagging produces a
 # checksum mismatch for anyone who already fetched it.
 escaped=$(printf '%s' "$module" | sed 's/\([A-Z]\)/!\L\1/g')
-code=$(curl -s -o /dev/null -w '%{http_code}' "https://proxy.golang.org/${escaped}/@v/${version}.info" || echo "000")
+code=$(http_code "https://proxy.golang.org/${escaped}/@v/${version}.info")
 case "$code" in
   404|410) ok "$version is unpublished on proxy.golang.org" ;;
   200)     die "$module@$version is ALREADY PUBLISHED on proxy.golang.org.
@@ -144,7 +157,7 @@ else
   while read -r req reqver; do
     [ -n "$req" ] || continue
     reqesc=$(printf '%s' "$req" | sed 's/\([A-Z]\)/!\L\1/g')
-    rcode=$(curl -s -o /dev/null -w '%{http_code}' "https://proxy.golang.org/${reqesc}/@v/${reqver}.info" || echo "000")
+    rcode=$(http_code "https://proxy.golang.org/${reqesc}/@v/${reqver}.info")
     [ "$rcode" = "200" ] || die "$dir/go.mod requires $req $reqver, which is NOT published (HTTP $rcode).
              Tagging now would publish a release pointing at a version that
              cannot be resolved. Release $req $reqver first, then re-run this."
@@ -160,9 +173,14 @@ else
     # So the required version must also be the newest published one. If the
     # dependency has moved ahead, this module's go.mod has not caught up and the
     # tag would claim a dependency it does not have.
+    #
+    # Body and status in one transfer, the status alone on the last line. A
+    # failed transfer is replaced wholesale by an empty body and a 000 line —
+    # the shape curl prints itself on a connection failure. As with http_code,
+    # the fallback stays OUTSIDE the substitution; inside it, it appended a
+    # second copy to what curl had already printed.
     latestbody=$(curl -s -w '
-%{http_code}' "https://proxy.golang.org/${reqesc}/@latest" || printf '
-000')
+%{http_code}' "https://proxy.golang.org/${reqesc}/@latest") || latestbody=$'\n000'
     latestcode=$(printf '%s' "$latestbody" | tail -1)
     latest=$(printf '%s' "$latestbody" | sed '$d' | latest_version)
     if [ "$latestcode" != "200" ] || [ -z "$latest" ]; then
@@ -269,8 +287,12 @@ else
   die "no terminal to confirm on. Set RELEASE_YES=1 if you really mean it."
 fi
 
-# Annotated and signed, matching every existing tag in this repo.
-git tag -a "$tag" -F - <<EOF
+# Annotated and signed, matching every existing tag in this repo. -s, not -a:
+# -a signs only where tag.gpgSign happens to be configured, and the verify
+# below then refused a perfectly good but unsigned tag. A failed signing
+# creates no tag, so there is nothing to clean up on this branch.
+git tag -s "$tag" -F - <<EOF || die "could not create the signed tag $tag; nothing was created or pushed.
+             Check the signing setup: git config gpg.format / user.signingkey."
 $module $version
 
 See CHANGELOG.md under [$tag].
@@ -278,7 +300,20 @@ See CHANGELOG.md under [$tag].
 Not independently audited — see SECURITY.md.
 EOF
 
-git tag -v "$tag" >/dev/null 2>&1 || die "tag $tag did not verify after creation — not pushing"
+# Verify what was just created, and take it back when it does not verify. An
+# earlier revision died here with the tag left in place, and every later run
+# then died at the "already exists locally" check above until somebody deleted
+# it by hand — a stuck script for a signing problem that is trivial to fix.
+if ! verify=$(git tag -v "$tag" 2>&1); then
+  printf '%s\n' "$verify" >&2
+  if git tag -d "$tag" >/dev/null; then
+    die "tag $tag did not verify after creation — deleted it again, nothing pushed.
+             Check the signing setup (git config gpg.format / user.signingkey;
+             for SSH signing also gpg.ssh.allowedSignersFile) and re-run."
+  fi
+  die "tag $tag did not verify after creation AND could not be deleted.
+             Remove it by hand (git tag -d $tag) before re-running. Nothing pushed."
+fi
 ok "tag created and signature verifies"
 
 git push origin "$tag"

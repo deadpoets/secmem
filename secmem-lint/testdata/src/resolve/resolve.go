@@ -141,3 +141,80 @@ func wrappedNotResolved(buf *secmem.SecureBuffer) {
 func nilClosure(buf *secmem.SecureBuffer) {
 	_ = buf.WithBytes(nil)
 }
+
+// leakG is a generic borrowing function passed by name. Its parameter is
+// declared as T and is a []byte only in the signature instantiated at the
+// call, which is where the analyzer decides the borrowed parameters. The body
+// is reported once however many call sites reach it.
+func leakG[T ~[]byte](b T) {
+	sink = b // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+}
+
+func genericByName(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(leakG)
+}
+
+// genericInstantiated: the same function passed with an explicit
+// instantiation resolves to the same declaration (and is not an unresolved
+// closure for -strict).
+func genericInstantiated(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(leakG[[]byte])
+}
+
+// leakG1 is reached ONLY through an explicit instantiation. Its finding pins
+// that leakG1[[]byte] resolves to the declaration by itself: leakG's body is
+// also reached by name, so it would be reported with or without the
+// instantiated shape being understood.
+func leakG1[T ~[]byte](b T) {
+	sink = b // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+}
+
+func genericInstantiatedOnly(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(leakG1[[]byte])
+}
+
+// leakG2 has two type parameters, so its instantiation is an index list.
+func leakG2[T ~[]byte, U any](b T) {
+	var zero U
+	_ = zero
+	sink = b // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+}
+
+func genericInstantiatedList(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(leakG2[[]byte, int])
+}
+
+// methodExpression: the accessor spelled as a method expression, with the
+// receiver as the first argument, is the same borrow.
+func methodExpression(buf *secmem.SecureBuffer) {
+	_ = (*secmem.SecureBuffer).WithBytes(buf, func(b []byte) {
+		sink = b      // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		_ = buf.Len() // want `secmem-lint: Len called on the same buffer`
+	})
+}
+
+// methodValueBoundTwice: f holds one of two borrowing accessors, so the
+// closure is borrowed whichever runs and its escapes are checked. Only the
+// receiver's identity is undecidable, so the reentrancy check stays silent.
+func methodValueBoundTwice(buf, other *secmem.SecureBuffer, cond bool) {
+	f := buf.WithBytes
+	if cond {
+		f = other.WithBytes
+	}
+	_ = f(func(b []byte) {
+		sink = b      // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		_ = buf.Len() // not decidable: f may be other.WithBytes
+	})
+}
+
+// methodValueSometimesBorrow: f is a borrowing accessor on one path and an
+// unrelated function on the other, so whether the literal is borrowed at all
+// is a runtime question. Default mode is silent; strict reports it (see the
+// strict fixture).
+func methodValueSometimesBorrow(buf *secmem.SecureBuffer, cond bool, plain func(func([]byte)) error) {
+	f := buf.WithBytes
+	if cond {
+		f = plain
+	}
+	_ = f(func(b []byte) { sink = b })
+}

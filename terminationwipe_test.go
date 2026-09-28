@@ -2,6 +2,7 @@ package secmem
 
 import (
 	"bytes"
+	"syscall"
 	"testing"
 )
 
@@ -44,4 +45,21 @@ func TestInstallTerminationWipe_UninstallClean(t *testing.T) {
 	uninstall := InstallTerminationWipe()
 	uninstall()
 	uninstall() // idempotent — must not panic
+}
+
+// oddSignal is an os.Signal that is not a syscall.Signal and whose dynamic
+// type is not comparable. os/signal.Notify skips such a value silently; the
+// installer's inherited-ignore record must skip it too rather than panic on
+// the map insert.
+type oddSignal struct{ tags []string }
+
+func (oddSignal) String() string { return "odd" }
+func (oddSignal) Signal()        {}
+
+// TestInstallTerminationWipe_ToleratesNonSyscallSignal pins that a caller's
+// own os.Signal implementation is accepted, as it was before the
+// inherited-ignore record existed.
+func TestInstallTerminationWipe_ToleratesNonSyscallSignal(t *testing.T) {
+	uninstall := InstallTerminationWipeNoExit(oddSignal{tags: []string{"x"}}, syscall.SIGTERM)
+	uninstall()
 }

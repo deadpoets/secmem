@@ -26,12 +26,18 @@ var ErrWiped = fmt.Errorf(
 var ErrSealed = errors.New("secmem: secure buffer is sealed")
 
 // ErrReadOnly is returned by the mutating methods (CopyIn, SetByteAt, Truncate,
-// ReadFrom) when the buffer is in the read-only (PROT_READ) state set by
-// [SecureBuffer.ReadOnly]. Call [SecureBuffer.ReadWrite] before mutating.
+// ReadFrom, and [ArenaSlot.Release] on a read-only slab) when the buffer is in
+// the read-only (PROT_READ) state set by [SecureBuffer.ReadOnly] or
+// [SecureArena.ReadOnly]. Call ReadWrite before mutating.
 //
-// The guard is a memory-safety boundary: a mutating method that wrote through
-// to the PROT_READ page would fault the process, so secmem refuses the write at
-// the API boundary instead — misuse returns an error, it never crashes.
+// The guard is a memory-safety boundary at the API: a mutating METHOD that
+// wrote through to the PROT_READ page would fault the process, so secmem
+// refuses the write there instead. It cannot cover a write made through the
+// slice a borrowing accessor hands out — [SecureBuffer.WithBytes],
+// [SecureBuffer.WithBytesErr], [ArenaSlot.WithBytes] — because no supported
+// OS has sub-page protection and the accessor cannot know what fn will do
+// with the slice. That write faults. Treat a borrowed slice as read-only for
+// as long as the buffer or slab is; see PITFALLS.md.
 var ErrReadOnly = errors.New("secmem: secure buffer is read-only — call ReadWrite before mutating")
 
 // ErrArenaDestroyed is returned by SecureArena and ArenaSlot methods after the

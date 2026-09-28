@@ -188,9 +188,11 @@ func GenerateRSASigner(bits int, opts ...Option) (*RSASigner, error) {
 			return gerr
 		}
 		defer func() { err = errors.Join(err, wipeRSAPrivateKey(key)) }()
-		// NewBuffer zeroes its source slice after copying — but only on
-		// success. On failure (no lockable memory, mlock limit) the DER is a
-		// complete private key stranded on the plain heap; wipe it ourselves.
+		// NewBuffer wipes its source slice on every path, success or
+		// failure (see its doc), so the DER — a complete private key on the
+		// plain heap — is gone either way. The wipe below is belt and
+		// braces: it costs nothing and does not depend on the core's
+		// contract staying what it is.
 		der := x509.MarshalPKCS1PrivateKey(key)
 		var berr error
 		buf, berr = secmem.NewBuffer(der)

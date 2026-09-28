@@ -5,7 +5,11 @@ description: >-
   condition, per TESTING.md). On a hosted runner that can lock memory a skip
   is therefore a finding, not noise: it means the runner's lock budget or the
   allocator changed and the workspace path silently stopped being tested.
-  This step re-runs just those tests verbosely and fails on any SKIP.
+  This step re-runs just those tests verbosely and fails on any SKIP, and on
+  any -run pattern that no passing test matched: a renamed test would
+  otherwise empty the pattern and the SKIP check would pass over nothing
+  (ScrubClearsVectorRegs is required only on amd64, the sole architecture
+  whose files define it).
 runs:
   using: composite
   steps:
@@ -26,3 +30,23 @@ runs:
           echo "::error::an Argon2 workspace/register/identity test skipped on this runner; see the lines above"
           exit 1
         fi
+        # The other way this check goes quiet: a pattern that matches no test.
+        # A rename empties it, `go test` prints "no tests to run" and exits 0,
+        # and the SKIP grep above passes over an empty run. So every pattern
+        # must also have produced at least one top-level PASS.
+        # ScrubClearsVectorRegs lives in amd64-only files
+        # (vecclear_amd64_test.go, internal/argon2/scrubclear_amd64_test.go:
+        # //go:build amd64 && gc && !purego), so it is required only where it
+        # compiles; the arm64 and macOS lanes have no such test to run.
+        patterns='Argon2Workspace Argon2Pool UpstreamIdentity'
+        if [ "$(go env GOARCH)" = amd64 ]; then
+          patterns="$patterns ScrubClearsVectorRegs"
+        fi
+        for p in $patterns; do
+          n=$(echo "$out" | grep -cE "^--- PASS: [^ /]*${p}" || true)
+          if [ "$n" -eq 0 ]; then
+            echo "::error::no test matching '$p' passed on this runner: the -run pattern matched nothing (renamed test?) — see the lines above"
+            exit 1
+          fi
+          echo "$p: $n test(s) passed"
+        done

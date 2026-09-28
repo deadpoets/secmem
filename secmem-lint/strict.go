@@ -17,10 +17,11 @@ import (
 // (go vet forwards flags it does not own to the vettool) and `secmem-lint
 // -strict ./...` when the binary is run directly.
 //
-// Besides N1 and L1 below, strict mode also reports the two cases the default
+// Besides N1 and L1 below, strict mode also reports the cases the default
 // checks stay silent on because they cannot decide them: a borrowing closure
-// the analyzer cannot resolve to a body, and a SecureArena.Destroy / ReadOnly /
-// ReadWrite inside a slot borrow whose arena it cannot identify.
+// the analyzer cannot resolve to a body, a closure passed through a variable
+// that is only sometimes a borrowing method value, and a SecureArena.Destroy /
+// ReadOnly / ReadWrite inside a slot borrow whose arena it cannot identify.
 var strict bool //nolint:gochecknoglobals // go/analysis flag state is package-level by convention.
 
 func init() { //nolint:gochecknoinits // registers the analyzer's -strict flag.
@@ -106,17 +107,31 @@ func isStringType(t types.Type) bool {
 // L1: a locally constructed secmem resource that is never Destroyed or handed off.
 // ---------------------------------------------------------------------------
 
+// The construction may be spelled as an assignment (buf, err := secmem.NewBuffer(…))
+// or as a declaration (var buf, err = secmem.NewBuffer(…)); both are walked.
 func checkMissingDestroy(pass *analysis.Pass, insp *inspector.Inspector, sup *suppressor) {
-	insp.WithStack([]ast.Node{(*ast.AssignStmt)(nil)}, func(n ast.Node, push bool, stack []ast.Node) bool {
+	nodes := []ast.Node{(*ast.AssignStmt)(nil), (*ast.ValueSpec)(nil)}
+	insp.WithStack(nodes, func(n ast.Node, push bool, stack []ast.Node) bool {
 		if !push {
 			return true
 		}
-		assign := n.(*ast.AssignStmt)
+		var lhs []ast.Expr
+		var rhs []ast.Expr
+		switch node := n.(type) {
+		case *ast.AssignStmt:
+			lhs, rhs = node.Lhs, node.Rhs
+		case *ast.ValueSpec:
+			lhs = make([]ast.Expr, len(node.Names))
+			for i, name := range node.Names {
+				lhs[i] = name
+			}
+			rhs = node.Values
+		}
 		// Only handle `x := call(...)` / `x, err := call(...)` — a single call RHS.
-		if len(assign.Rhs) != 1 {
+		if len(rhs) != 1 {
 			return true
 		}
-		call, ok := assign.Rhs[0].(*ast.CallExpr)
+		call, ok := rhs[0].(*ast.CallExpr)
 		if !ok || !isLibraryCall(pass, call) {
 			return true
 		}
@@ -124,8 +139,8 @@ func checkMissingDestroy(pass *analysis.Pass, insp *inspector.Inspector, sup *su
 		if body == nil {
 			return true
 		}
-		for _, lhs := range assign.Lhs {
-			id, ok := lhs.(*ast.Ident)
+		for _, l := range lhs {
+			id, ok := l.(*ast.Ident)
 			if !ok || id.Name == "_" {
 				continue
 			}
@@ -140,7 +155,7 @@ func checkMissingDestroy(pass *analysis.Pass, insp *inspector.Inspector, sup *su
 			if !withinNode(obj.Pos(), body) {
 				continue
 			}
-			if resourceLeaks(pass, body, id, obj) && !sup.suppressed(pass, assign.Pos()) {
+			if resourceLeaks(pass, body, id, obj) && !sup.suppressed(pass, n.Pos()) {
 				report(pass, id.Pos(), fmt.Sprintf(
 					"%s is never Destroyed or handed off; add `defer %s.Destroy()` (or return/pass it to transfer ownership)",
 					id.Name, id.Name))

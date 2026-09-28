@@ -136,6 +136,22 @@ mutating methods refuse rather than silently succeeding (and rather than
 faulting on the protected page — see DESIGN.md). Always check the returned
 error; a refused mutation that you treat as done is a logic bug.
 
+The refusal covers the *methods*. It cannot cover a write you make through the
+slice a borrow hands you:
+
+```go
+// BAD — the page is PROT_READ; this is not an ErrReadOnly, it is a SIGSEGV.
+buf.ReadOnly()
+buf.WithBytes(func(b []byte) {
+    b[0] = 0xFF                      // faults the process
+})
+```
+
+No supported OS has sub-page protection, and `WithBytes` cannot know what your
+closure will do with the slice, so the fault is the OS's answer, not the
+library's. While a buffer or arena slab is read-only, treat every borrowed slice
+as read-only too; call `ReadWrite` first if the closure writes.
+
 ## 6. Deriving keys into a plain []byte
 
 ```go

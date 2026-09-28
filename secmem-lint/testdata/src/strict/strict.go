@@ -32,6 +32,19 @@ func deferredOK() {
 	_ = buf.WithBytes(func(b []byte) {})
 }
 
+// leaksViaDeclaration: the construction spelled as a var declaration is the
+// same create-and-forget.
+func leaksViaDeclaration() {
+	var buf, _ = secmem.NewBuffer([]byte("k")) // want `secmem-lint: buf is never Destroyed or handed off`
+	_ = buf.WithBytes(func(b []byte) {})
+}
+
+func declarationDeferredOK() {
+	var buf, _ = secmem.NewBuffer([]byte("k"))
+	defer buf.Destroy()
+	_ = buf.WithBytes(func(b []byte) {})
+}
+
 func destroyedOK() {
 	buf, _ := secmem.NewBuffer([]byte("k"))
 	_ = buf.WithBytes(func(b []byte) {})
@@ -78,4 +91,32 @@ func unknownArena(slot *secmem.ArenaSlot, arena *secmem.SecureArena) {
 	_ = slot.WithBytes(func(b []byte) {
 		_ = arena.Destroy() // want `secmem-lint: Destroy called on a SecureArena inside a slot borrow whose arena cannot be resolved`
 	})
+}
+
+// --- a borrowing method value that is only sometimes one ---
+
+// sometimesBorrow: f is buf.WithBytes on one path and an unrelated function on
+// the other, so whether the literal is borrowed is a runtime question and it
+// is not checked. (Bound to borrowing accessors on EVERY path it would be —
+// see the resolve fixture.)
+func sometimesBorrow(buf *secmem.SecureBuffer, cond bool, plain func(func([]byte)) error) {
+	defer buf.Destroy()
+	f := buf.WithBytes
+	if cond {
+		f = plain
+	}
+	_ = f(func(b []byte) { sink = b }) // want `secmem-lint: closure passed through a variable that is sometimes a borrowing method value and sometimes not; it cannot be checked`
+}
+
+// --- an explicitly instantiated generic function is a resolved closure ---
+
+// leakG is a generic borrowing function. leakG[[]byte] resolves to this
+// declaration exactly as the bare name does, so the call below must not be
+// reported as an unresolvable closure (the body is clean, so nothing else is
+// reported either).
+func leakG[T ~[]byte](b T) { _ = len(b) }
+
+func genericInstantiatedResolved(buf *secmem.SecureBuffer) {
+	defer buf.Destroy()
+	_ = buf.WithBytes(leakG[[]byte]) // ok: resolved to leakG's declaration, not "cannot be checked"
 }

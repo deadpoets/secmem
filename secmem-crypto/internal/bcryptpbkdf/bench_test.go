@@ -2,7 +2,8 @@ package bcryptpbkdf
 
 import "testing"
 
-// BenchmarkDerive_OpenSSHDefault is OpenSSH's profile: 16 rounds, a 16-byte
+// BenchmarkDerive_OpenSSHDefault is the profile this package writes: 16
+// rounds (ssh-keygen's default before OpenSSH 9.4; 24 since), a 16-byte
 // salt, 48 bytes of key+IV. The algorithm is upstream's, so the cost is
 // upstream's; the number is here so a port can see a regression.
 func BenchmarkDerive_OpenSSHDefault(b *testing.B) {

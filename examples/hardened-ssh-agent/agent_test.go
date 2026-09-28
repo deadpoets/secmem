@@ -18,8 +18,6 @@ import (
 	"crypto/ed25519"
 	"crypto/elliptic"
 	"crypto/rand"
-	"net"
-	"path/filepath"
 	"testing"
 	"time"
 
@@ -38,35 +36,13 @@ func startAgent(t *testing.T) (agent.Agent, *Keyring) {
 	return startAgentWith(t, false)
 }
 
-// startAgentWith is startAgent with the -allow-heap-transients setting.
+// startAgentWith is startAgent with the -allow-heap-transients setting. The
+// agent runs the real accept loop (serve), so every interop test also passes
+// through the connection cap and the per-message deadline.
 func startAgentWith(t *testing.T, allowHeapTransients bool) (agent.Agent, *Keyring) {
 	t.Helper()
-	sock := filepath.Join(t.TempDir(), "agent.sock")
-	ln, err := net.Listen("unix", sock)
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { ln.Close() })
-
-	keyring := NewKeyring(allowHeapTransients)
-	t.Cleanup(keyring.DestroyAll)
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go serveConn(conn, keyring, testLogger())
-		}
-	}()
-
-	conn, err := net.Dial("unix", sock)
-	if err != nil {
-		t.Fatalf("dial: %v", err)
-	}
-	t.Cleanup(func() { conn.Close() })
-	return agent.NewClient(conn), keyring
+	sock, keyring, _ := startServer(t, allowHeapTransients)
+	return agent.NewClient(dialAgent(t, sock)), keyring
 }
 
 // allSealed reports whether every held key buffer is sealed. This reaches

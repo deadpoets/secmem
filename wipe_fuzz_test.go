@@ -27,8 +27,9 @@ func firstNonZero(b []byte) int {
 // readable afterwards, and reads the region back through the API:
 //
 //  1. Truncate's tail wipe: the bytes above the new length must be zero,
-//     read through WithBytes over the slice's full capacity, and the kept
-//     head must be untouched.
+//     read through the region under the borrow's lock (the borrowed slice's
+//     capacity is clamped to the new length, so the tail is out of its
+//     reach by design), and the kept head must be untouched.
 //  2. The emergency in-place wipe (WipeAllSecrets): the buffer stays mapped,
 //     and the whole secret area — data, and the canary slack behind it —
 //     must read as zero.
@@ -71,15 +72,20 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 			t.Fatalf("Truncate(%d) of %d: %v", n, len(content), err)
 		}
 		if err := buf.WithBytes(func(b []byte) {
-			if len(b) != n || cap(b) != len(content) {
-				t.Fatalf("after Truncate(%d): len %d cap %d, want len %d cap %d", n, len(b), cap(b), n, len(content))
+			// Length AND capacity are the new size: the borrow cannot be
+			// re-sliced back over the tail it just lost.
+			if len(b) != n || cap(b) != n {
+				t.Fatalf("after Truncate(%d): len %d cap %d, want len %d cap %d", n, len(b), cap(b), n, n)
 			}
-			full := b[:cap(b)]
-			if !bytes.Equal(full[:n], content[:n]) {
+			if !bytes.Equal(b, content[:n]) {
 				t.Fatal("Truncate changed the kept head")
 			}
-			if i := firstNonZero(full[n:]); i >= 0 {
-				t.Fatalf("Truncate left byte %d of the wiped tail non-zero (%#x)", n+i, full[n+i]) //nolint:secmem-lint // diagnostic on failure only; reports the one non-zero byte of a wiped region
+			// The tail is out of the borrow's reach, so read it through the
+			// region, under this borrow's lock (as step 2 does): it must be
+			// zero up to the old length.
+			tail := buf.region.inner[n:len(content)]
+			if i := firstNonZero(tail); i >= 0 {
+				t.Fatalf("Truncate left byte %d of the wiped tail non-zero (%#x)", n+i, tail[i])
 			}
 		}); err != nil {
 			t.Fatalf("WithBytes after Truncate: %v", err)

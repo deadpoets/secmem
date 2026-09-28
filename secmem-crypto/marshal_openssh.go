@@ -90,8 +90,9 @@ func (s *Ed25519Signer) MarshalOpenSSHPrivateKeyWithPassphrase(comment string, p
 // open, so the marshaller refuses it: the limit here exists to keep what is
 // written readable, and it is deliberately the same number the readers use.
 const (
-	// OpenSSHKDFRounds is ssh-keygen's default, and what
-	// [Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphrase] uses.
+	// OpenSSHKDFRounds is what [Ed25519Signer.MarshalOpenSSHPrivateKeyWithPassphrase]
+	// uses: ssh-keygen's default until OpenSSH 9.3 (9.4 raised its default
+	// to 24; the file names the count, so either reads either).
 	OpenSSHKDFRounds = opensshRounds
 	// MaxOpenSSHKDFRounds is the largest cost this package will write, and
 	// the largest it will read.
@@ -257,7 +258,8 @@ const (
 // and chacha20-poly1305 for decryption, where tag is the authenticator that
 // followed the ciphertext in the file and a mismatch returns
 // [x509.IncorrectPasswordError] — for that cipher a wrong passphrase fails
-// here rather than at the format's check integers. tag is nil for the AES
+// here rather than at the format's check integers, and parseOpenSSHEncrypted
+// folds it into its one post-KDF error. tag is nil or empty for the AES
 // modes, which authenticate nothing.
 // Every byte of secret state it creates is in one SecureBuffer allocated
 // for the call — the KDF workspace, the key and IV, the cipher's keystream

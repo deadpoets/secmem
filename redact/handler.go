@@ -3,6 +3,7 @@ package redact
 import (
 	"context"
 	"encoding"
+	"encoding/json"
 	"fmt"
 	"log/slog"
 	"reflect"
@@ -43,6 +44,29 @@ import (
 //     array, and a []byte is written as text rather than base64. That trade
 //     is deliberate: a struct or map passed through untouched carried its
 //     secrets straight to the sink in both text and JSON output.
+//
+//     The walk follows the pointers it can Interface() at every depth,
+//     which is more than fmt does (fmt prints a nested pointer as an
+//     address), because a secret two structs down is still a secret. Where
+//     it can call them it honours a value's own rendering methods as fmt's
+//     %v does — [fmt.Formatter], error, [fmt.Stringer] — plus
+//     [encoding.TextMarshaler]; a [slog.LogValuer] is resolved at the
+//     attribute level before the walk. It cannot call methods on a value
+//     reached through an UNEXPORTED field, so there it does two things fmt
+//     does too: a pointer is printed as "<ptr>" and not followed, and a
+//     value whose type has any such method (or GoString, LogValue,
+//     MarshalJSON) is not walked into either — it is replaced by
+//     "[REDACTED:unexported]". A type that redacts itself in print —
+//     secmem's SecureBuffer, Secret and ArenaSlot among them — is
+//     therefore never taken apart field by field, whichever way it was
+//     reached, and neither is anything behind an unexported pointer.
+//     (Before these rules the walk did take them apart: it printed the
+//     buffer's bytes, then read into the guard page and faulted.) The one
+//     shape left is the one fmt shares: a defined type over such a struct
+//     ("type mine secmem.SecureBuffer") has no methods, and held BY VALUE
+//     in a nested struct it is a plain struct to the walk and to fmt alike.
+//     Rendering stops at a fixed size, so a very large value costs a
+//     bounded amount of text before the Sanitizer truncates it.
 //
 // Same honesty caveat as the package: this reduces blast radius, it does not
 // guarantee no secret ever escapes. What it cannot see: a credential split
@@ -253,12 +277,69 @@ func appendPath(path, comps []string) []string {
 
 // renderCap bounds the text produced for one Any value. Sanitize truncates
 // at its own maxLen afterwards; the cap only keeps a huge slice from being
-// rendered in full first.
+// rendered in full first. Every write into the builder goes through
+// capWriter, so a single []byte, String() or MarshalText result larger than
+// the cap is cut too, not only the sum of many small ones.
 const renderCap = 1 << 16
 
 // maxRenderDepth bounds pointer and container nesting, which also breaks
 // cycles.
 const maxRenderDepth = 8
+
+// unexportedTag replaces a value the walk may not take apart: one reached
+// through an unexported field whose type renders itself (see selfRendering).
+const unexportedTag = "[REDACTED:unexported]"
+
+// capWriter is the builder behind an io.Writer that discards everything past
+// renderCap. It reports the full length written so fmt never sees an error.
+type capWriter struct{ b *strings.Builder }
+
+func (w capWriter) Write(p []byte) (int, error) {
+	n := len(p)
+	if room := renderCap - w.b.Len(); room > 0 {
+		if len(p) > room {
+			p = p[:room]
+		}
+		w.b.Write(p)
+	}
+	return n, nil
+}
+
+// selfRenderingTypes are the interfaces through which fmt, slog and the
+// encoders let a value control its own textual form. A value implementing
+// one has said how it wants to appear — for a secret-holding type, that is
+// "[REDACTED]" — and rendering its fields instead would override that.
+//
+//nolint:gochecknoglobals // fixed interface table, read-only.
+var selfRenderingTypes = [...]reflect.Type{
+	reflect.TypeFor[fmt.Formatter](),
+	reflect.TypeFor[fmt.Stringer](),
+	reflect.TypeFor[fmt.GoStringer](),
+	reflect.TypeFor[error](),
+	reflect.TypeFor[slog.LogValuer](),
+	reflect.TypeFor[encoding.TextMarshaler](),
+	reflect.TypeFor[json.Marshaler](),
+}
+
+// selfRendering reports whether t, or a pointer to it, implements one of
+// selfRenderingTypes. Checked at the TYPE level, so it answers for a value the
+// walk cannot Interface(): the method set is a property of the type, not of
+// how the value was reached.
+//
+// Pointer-to-t is included because Go promotes value-receiver methods into
+// the pointer method set and a field of type T is addressable inside its
+// struct, so fmt would find the method on &field; the walk mirrors that.
+func selfRendering(t reflect.Type) bool {
+	for _, it := range selfRenderingTypes {
+		if t.Implements(it) {
+			return true
+		}
+		if t.Kind() != reflect.Pointer && t.Kind() != reflect.Interface && reflect.PointerTo(t).Implements(it) {
+			return true
+		}
+	}
+	return false
+}
 
 // render produces a %+v-like text form of v with the key set applied to
 // struct field names and map keys (as components appended to path), []byte
@@ -283,27 +364,53 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		b.WriteString("...")
 		return
 	}
+	w := capWriter{b}
 	if rv.CanInterface() {
 		switch x := rv.Interface().(type) {
 		case []byte:
-			b.Write(x)
+			_, _ = w.Write(x)
 			return
-		case error, fmt.Stringer:
-			// fmt recovers a panicking String/Error method; calling it
-			// directly would not.
-			fmt.Fprint(b, x)
+		case fmt.Formatter, error, fmt.Stringer:
+			// What fmt's %v honours, in fmt's order: Format first, then Error
+			// and String. Through fmt rather than a direct call, because fmt
+			// recovers a panicking method and this would not.
+			_, _ = fmt.Fprint(w, x)
 			return
 		case encoding.TextMarshaler:
 			if text, err := x.MarshalText(); err == nil {
-				b.Write(text)
+				_, _ = w.Write(text)
 				return
 			}
 		}
+	} else if selfRendering(rv.Type()) {
+		// Reached through an unexported field, so none of the methods above
+		// can be called — and the type has one, so it must not be taken
+		// apart instead. This is what keeps a *secmem.SecureBuffer (whose
+		// Format redacts, and whose fields are slices over guarded, possibly
+		// PROT_NONE memory) or a secmem.Secret in an unexported field from
+		// being printed byte by byte, or faulting on the guard page, by the
+		// very handler installed to stop secrets reaching the log.
+		b.WriteString(unexportedTag)
+		return
 	}
 	switch rv.Kind() {
 	case reflect.Pointer, reflect.Interface:
 		if rv.IsNil() {
 			b.WriteString("<nil>")
+			return
+		}
+		if rv.Kind() == reflect.Pointer && !rv.CanInterface() {
+			// fmt's own rule for a nested pointer, applied to the pointers
+			// this walk cannot Interface(): print a marker, do not follow.
+			// The pointee's methods cannot be called from here, so a type
+			// that would redact itself cannot; and a pointee whose fields are
+			// views over guarded memory — a *SecureBuffer with its methods
+			// stripped by a type definition — would be taken apart and read
+			// into its guard page. Exported pointers are still followed,
+			// because there the pointee's methods can be honoured and a
+			// secret two structs down is still a secret. fmt prints an
+			// address here; the marker carries no information at all.
+			b.WriteString("<ptr>")
 			return
 		}
 		if rv.Kind() == reflect.Pointer && rv.Elem().Kind() == reflect.Struct {
@@ -358,7 +465,9 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		b.WriteByte(']')
 	default:
 		// fmt prints the value a reflect.Value holds, unexported or not.
-		fmt.Fprint(b, rv)
+		// Through the capped writer: a string field is the most common
+		// carrier of large text, and the cap must bound it too.
+		_, _ = fmt.Fprint(w, rv)
 	}
 }
 

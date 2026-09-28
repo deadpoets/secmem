@@ -57,7 +57,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below). One heap allocation per signature — the signature — for messages up to 4 KiB; a longer message puts its nonce pre-image on the heap, wiped before return | **contained** |
 | `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes every copy it can reach — the `big.Int` limbs and, for RSA, the standard library's FIPS-form key, by reflection with a tripwire; the copies it cannot reach are listed in the type docs and in the value table below. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **runtimesecret-only** |
 | `AsSSH`, `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase`, `…WithPassphraseParams` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, unencrypted or passphrase-protected, assembled and encrypted in place into a buffer. The `Params` form takes the bcrypt cost (ssh-keygen's `-a`), capped where the readers cap it so a written file always opens. The passphrase form's one heap object, the AES key schedule, is wiped by reflection with a tripwire. `AsSSH` adds nothing of its own and inherits the class of the signer it wraps | **contained** (export) |
-| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; an OpenSSH RSA key's missing CRT exponents are computed over stack arrays, not with `math/big`; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files (bcrypt, aes256-ctr/cbc — what ssh-keygen writes) open through the bcrypt_pbkdf fork below, with the AES round keys wiped by reflection; PKCS#8 PBES2 and legacy PEM encryption are refused. The parser is contained; what the `ECDSASigner` and `RSASigner` constructors then do with the scalar or DER is their own class, so an RSA or EC key file is refused on a legacy build without `AllowHeapTransients()`. Ed25519 files never are | **contained** (parser) |
+| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; an OpenSSH RSA key's missing CRT exponents are computed over stack arrays, not with `math/big`; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files open through the bcrypt_pbkdf fork below under the ciphers ssh-keygen writes that this package runs: aes128/192/256 in CTR or CBC mode, with the AES round keys wiped by reflection, and `chacha20-poly1305@openssh.com`, whose ChaCha20 state, keystream block and Poly1305 key are stack locals wiped in the call (x/crypto's Poly1305 keeps its own copies of r and s on the stack; those are left to the Scrub window and watched by the residue scan). The AES-GCM pair and 3des-cbc, which `ssh-keygen -Z` also accepts, are refused as unsupported, as are PKCS#8 PBES2 and legacy PEM encryption. The parser is contained; what the `ECDSASigner` and `RSASigner` constructors then do with the scalar or DER is their own class, so an RSA or EC key file is refused on a legacy build without `AllowHeapTransients()`. Ed25519 files never are | **contained** (parser) |
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 2104 derivation straight into a buffer. Over SHA-2 or SHA-3 it runs in place: two of the standard library's one-shot hash calls per HMAC, whose digest state is a stack local, over a working region — the padded key, the message, the pseudorandom key — that is a stack array in the Scrub window up to about 1 KiB and a locked buffer beyond. The only allocation is the digest instance asked of the caller's constructor to identify the hash. Over any other hash it uses `crypto/hmac` and `x/crypto/hkdf`, whose heap objects hold the key, and is **refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **contained** (SHA-2, SHA-3); **runtimesecret-only** (other hashes) |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors. The working set is a heap allocation — pageable and dumpable during the call — that the fork wipes deterministically before returning | **contained** (heap workspace, wiped) |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small | **contained** |
@@ -259,6 +259,30 @@ a padding oracle to anything that reports a decryption failure. Reading such a
 file is not a service to whoever holds it — keeping it openable is what lets
 it stay unconverted. `ssh-keygen -p -f key` and `openssl pkey -in key -out
 key` both rewrite one into a format this package reads, and the error says so.
+
+The AES containers this package does open — `aes128`, `aes192` and `aes256`
+in CTR or CBC mode under `bcrypt_pbkdf` — carry no authenticator either, and
+that is not glossed over. Two things make them acceptable where the legacy
+form is not. The KDF is a real one: bcrypt with a cost the file names and
+`ssh-keygen -a` raises, so an offline guess costs what the owner chose rather
+than one MD5. And the parser gives the malleability nothing to work with.
+Everything it can decide without the passphrase — the container's structure,
+the KDF parameters, and from the cleartext public-key block the key type and
+whether this build may hold it — it decides before the derivation runs, so a
+refused file costs nothing and none of it is decrypted. After decryption the
+outcome is one bit: whether the block failed at the check integers, a length,
+the padding, the public half against the private, or the standard library's
+consistency checks on an RSA key, `ParsePrivateKeyWithPassphrase` returns the
+same error, wrapping `x509.IncorrectPasswordError` and reading the same for a
+wrong passphrase as for a corrupt file. Someone who can hand the holder a
+modified file and read the error learns that it did not open, and nothing
+about where in the block their change landed. The residual is success: a
+change confined to the comment, which no reader validates, still yields the
+key — here exactly as in OpenSSH. The one authenticated OpenSSH
+cipher this package opens, `chacha20-poly1305@openssh.com`, has none of this
+to answer for: a wrong passphrase and a modified file both fail at the tag before
+anything is decrypted, and that failure is reported as the same error, so
+the answer reads the same whichever cipher the file names.
 
 Two other refusals are decisions of the same kind but do not carry the
 marker, because there is no file to convert and nothing to wait for: `AsSSH`

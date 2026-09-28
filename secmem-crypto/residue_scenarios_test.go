@@ -58,10 +58,13 @@ const (
 	// residueControlPlain: a heap copy made outside Scrub survives the
 	// collector on every build.
 	residueControlPlain
-	// residueControlSpill: a copy the runtime saved onto a goroutine stack by
-	// preempting it outside Scrub is there after use, on every build. Whether
-	// it is still there after GC depends on what reuses that stack, so only
-	// its presence is asserted.
+	// residueControlSpill: a copy the runtime saved when it preempted the
+	// goroutine outside Scrub is there after use, on every build — the
+	// general-purpose registers on the goroutine's own stack, the vector
+	// registers in the per-P buffer asyncPreempt writes them to (see
+	// residueVictimGODEBUG in residue_windows_test.go). How long each lasts
+	// depends on what reuses that stack and on when the next preemption
+	// overwrites that buffer, so only its presence is asserted.
 	residueControlSpill
 )
 
@@ -82,6 +85,15 @@ type residueScenario struct {
 	// scenario asserts the spill class there instead: the copies are present,
 	// which is the platform's documented limit, measured rather than assumed.
 	needsPreemptSuppression bool
+	// needsPreemption marks the scenarios that exist to measure what an
+	// asynchronous preemption leaves behind, and so must run with preemption
+	// on. Every other scenario runs with it off where the platform cannot
+	// suppress it, so that what the scan measures is this module rather than
+	// the runtime: residueVictimGODEBUG in residue_windows_test.go has the
+	// mechanism and the evidence. Getting this wrong is caught rather than
+	// silent — a control that is no longer preempted finds nothing, which its
+	// class asserts against.
+	needsPreemption bool
 	// material runs in the parent: the secret the victim receives in a
 	// SecureBuffer, public inputs, and every encoding to hunt for.
 	material func(t *testing.T) (secret, aux []byte, pats []residuePattern)
@@ -139,8 +151,9 @@ var residueScenarios = []residueScenario{
 		// nothing erases it. This is what Scrub's signal mask and register
 		// clear exist for, and the pair below proves both halves of that.
 		name: "control/preempted-copy-outside-scrub", class: residueControlSpill, nOps: 4,
-		material: randomSecret(32, "secret"),
-		victim:   preemptedCopy(false),
+		needsPreemption: true,
+		material:        randomSecret(32, "secret"),
+		victim:          preemptedCopy(false),
 	},
 	{
 		// The copy runs inside two WithBytesErr borrows and no Scrub window,
@@ -148,14 +161,16 @@ var residueScenarios = []residueScenario{
 		// What the copy left in the registers is gone only if the borrow
 		// clears them on the way out.
 		name: "WithBytesErr/copy-then-preempted", class: residueContained, nOps: 4,
-		minCore:  "v0.6.0", // the borrow paths clear the registers from this release
-		material: randomSecret(32, "secret"),
-		victim:   copyThenPreempted,
+		minCore:         "v0.6.0", // the borrow paths clear the registers from this release
+		needsPreemption: true,     // it exists to observe one; suppressing it would prove nothing
+		material:        randomSecret(32, "secret"),
+		victim:          copyThenPreempted,
 	},
 	{
 		name: "control/preempted-copy-in-scrub", class: residueContained, nOps: 4,
 		minCore:                 "v0.6.0", // Scrub clears the general-purpose registers (arm64 memmove uses them) from this release
 		needsPreemptSuppression: true,
+		needsPreemption:         true,
 		material:                randomSecret(32, "secret"),
 		victim:                  preemptedCopy(true),
 	},
@@ -249,11 +264,20 @@ var residueScenarios = []residueScenario{
 			var block [chachaBlockSize]byte
 			copy(key[:], kiv[:chachaKeyLen])
 			chachaBlock(&block, &key, &nonce, 0)
+			// Poly1305 splits its key into a clamped r and an s, and x/crypto
+			// keeps both in a stack MAC state this module cannot wipe. s is
+			// the poly1305-key pattern's tail window already; r is watched in
+			// the clamped form it is stored in (RFC 8439 §2.5: the top four bits
+			// of bytes 3, 7, 11, 15 and the low two of bytes 4, 8, 12 cleared).
+			r := slices.Clone(block[:16])
+			r[3], r[7], r[11], r[15] = r[3]&15, r[7]&15, r[11]&15, r[15]&15
+			r[4], r[8], r[12] = r[4]&252, r[8]&252, r[12]&252
 			// The passphrase is not a pattern here: the fixtures share a
 			// fixed, low-entropy one, which would match unrelated memory.
 			pats := append(ed25519Patterns(seed),
 				residuePattern{"bcrypt-key", slices.Clone(kiv)},
 				residuePattern{"poly1305-key", slices.Clone(block[:chachaKeyLen])},
+				residuePattern{"poly1305-r", r},
 			)
 			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
 			return append(slices.Clone(pemBytes), pass...), aux, pats
@@ -1123,8 +1147,6 @@ func x25519Material(t *testing.T) ([]byte, []byte, []residuePattern) {
 	return scalar, peer.PublicKey().Bytes(), []residuePattern{{"scalar", scalar}, {"clamped", clamped}, {"shared", shared}}
 }
 
-// marshalEncryptedOpenSSH writes seed as an aes256-ctr, bcrypt-protected
-// OpenSSH key file at the given cost.
 // chachaFixtureSeed opens the fixture and reads back the seed it holds, so
 // the scan hunts for the key the victim will actually load.
 func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
@@ -1148,6 +1170,8 @@ func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
 	return seed
 }
 
+// marshalEncryptedOpenSSH writes seed as an aes256-ctr, bcrypt-protected
+// OpenSSH key file at the given cost.
 func marshalEncryptedOpenSSH(t *testing.T, seed, pass []byte, rounds int) []byte {
 	t.Helper()
 	buf, err := secmem.NewBuffer(slices.Clone(seed))

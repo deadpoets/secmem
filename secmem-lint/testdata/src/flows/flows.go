@@ -161,3 +161,52 @@ func enclosingClosureIsStillOutside(a, b *secmem.SecureBuffer) {
 		copy(x, tmp[:]) // ok: writing into the borrowed slice
 	})
 }
+
+// iterators: a range over a tainted iterator function or channel yields the
+// secret through the FIRST range variable, not the second as a slice does.
+func iterators(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		for c := range func(yield func(byte) bool) {
+			for _, v := range b {
+				if !yield(v) {
+					return
+				}
+			}
+		} {
+			sinkB = append(sinkB, c) // want `secmem-lint: append\(\) copies borrowed secret bytes`
+		}
+		for i, c := range func(yield func(int, byte) bool) {
+			for i, v := range b {
+				if !yield(i, v) {
+					return
+				}
+			}
+		} {
+			sinkAny = i              // ok: the int key of a Seq2 is an index, not the secret
+			sinkB = append(sinkB, c) // want `secmem-lint: append\(\) copies borrowed secret bytes`
+		}
+		for c, i := range func(yield func(byte, int) bool) {
+			for i, v := range b {
+				if !yield(v, i) {
+					return
+				}
+			}
+		} {
+			sinkB = append(sinkB, c) // want `secmem-lint: append\(\) copies borrowed secret bytes`
+			_ = i
+		}
+		for chunk := range func(yield func([]byte, []byte) bool) { yield(b[:1], b[1:]) } {
+			sinkB = chunk // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		}
+		st := struct {
+			ch chan []byte
+			b  []byte
+		}{ch: make(chan []byte, 1), b: b}
+		for v := range st.ch {
+			sinkB = v // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		}
+		for i := range b {
+			sinkAny = i // ok: the sole variable of a range over the slice is an index
+		}
+	})
+}

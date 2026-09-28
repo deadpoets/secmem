@@ -8,7 +8,9 @@
 //
 //  2. Verification is a constant-time comparison of derivations
 //     (SecureBuffer.ConstantTimeEqual), never a byte-wise compare of
-//     anything an attacker can time.
+//     anything an attacker can time — and a failed login is uniform in
+//     both message and cost, so neither tells whether the account exists
+//     (see login).
 //
 // Contrast with the common pattern this replaces:
 //
@@ -30,6 +32,8 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
+	"log/slog"
 	"os"
 	"strings"
 
@@ -46,6 +50,29 @@ const (
 	// maxPasswordLen bounds the secure allocation. Longer input is an error,
 	// not a silent truncation — truncating would let a prefix log in.
 	maxPasswordLen = 256
+)
+
+// errLoginFailed is the one answer a refused login gets, whether the user
+// does not exist or the password was wrong. A message that distinguished the
+// two ("no such user") would hand out the list of accounts to anyone who can
+// try to log in; so would a refusal that comes back in a microsecond instead
+// of after a derivation. Which of the two it was is logged at debug level
+// (see login), a level this program never enables — the reason is for a
+// developer with the source, not for the person typing the password.
+var errLoginFailed = errors.New("login failed")
+
+// dummySalt and dummyStored stand in for the record of a user who does not
+// exist, so that login runs the same Argon2id derivation against them that it
+// runs against a real record and a refusal costs the same either way. Their
+// values are arbitrary: dummyStored is not the derivation of anything, and
+// login does not rely on that — a missing user fails by construction after
+// the comparison, whatever the comparison said. Fixed, not per-process
+// random, because nothing about them is ever revealed: the derivation is
+// discarded.
+var (
+	dummySalt   = [saltLen]byte{0x73, 0x65, 0x63, 0x6d, 0x65, 0x6d, 0x2d, 0x6e, 0x6f, 0x2d, 0x75, 0x73, 0x65, 0x72, 0x21, 0x21}
+	dummyStored = [keyLen]byte{0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a,
+		0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a, 0x5a}
 )
 
 func main() {
@@ -128,19 +155,13 @@ func register(user string, password *secmem.SecureBuffer) error {
 }
 
 func login(user string, password *secmem.SecureBuffer) error {
-	//nolint:gosec // G703: user is validated to a bare name (no path separators) in run().
-	raw, err := os.ReadFile(dbPath(user))
+	// Whether the user exists is decided here and acted on only at the very
+	// end: an unknown user gets the dummy record and the same derivation and
+	// comparison a real one gets, so the two refusals differ by one
+	// predictable branch, not by a 64 MiB Argon2id derivation.
+	salt, stored, known, err := loadRecord(user)
 	if err != nil {
-		return fmt.Errorf("no such user (register first?): %w", err)
-	}
-	parts := strings.SplitN(strings.TrimSpace(string(raw)), ":", 2)
-	if len(parts) != 2 {
-		return fmt.Errorf("corrupt record for %s", user)
-	}
-	salt, err1 := hex.DecodeString(parts[0])
-	stored, err2 := hex.DecodeString(parts[1])
-	if err1 != nil || err2 != nil || len(salt) != saltLen || len(stored) != keyLen {
-		return fmt.Errorf("corrupt record for %s", user)
+		return err
 	}
 
 	candidate, err := secmem.NewEmptyBuffer(keyLen)
@@ -161,11 +182,46 @@ func login(user string, password *secmem.SecureBuffer) error {
 	if err != nil {
 		return err
 	}
-	if !ok {
-		return fmt.Errorf("login failed")
+	if !known || !ok {
+		// One error for both reasons — see errLoginFailed. The reason is
+		// kept for whoever is debugging with the source, at a level the
+		// program never turns on; it is never part of the answer.
+		slog.Debug("login refused", "user", user, "known", known)
+		return errLoginFailed
 	}
 	fmt.Println("welcome,", user)
 	return nil
+}
+
+// loadRecord reads user's stored salt and verifier. A user with no record is
+// not an error: known is false and the dummy record is returned in place of
+// theirs, so that login's cost does not depend on the answer. A record that
+// exists but cannot be parsed IS an error, and a specific one: it names a
+// damaged file the operator has to fix, not the outcome of a guess, and a
+// guesser learns nothing from it that registering the name would not tell
+// them. Any other failure to read the file (permissions, I/O) is likewise
+// the operator's, and is returned as is.
+func loadRecord(user string) (salt, stored []byte, known bool, err error) {
+	//nolint:gosec // G703: user is validated to a bare name (no path separators) in run().
+	raw, err := os.ReadFile(dbPath(user))
+	if errors.Is(err, fs.ErrNotExist) {
+		// Deliberately not "no such user (register first?)": that message,
+		// and the instant it would have come back in, are the leak.
+		return dummySalt[:], dummyStored[:], false, nil
+	}
+	if err != nil {
+		return nil, nil, false, err
+	}
+	parts := strings.SplitN(strings.TrimSpace(string(raw)), ":", 2)
+	if len(parts) != 2 {
+		return nil, nil, false, fmt.Errorf("corrupt record for %s", user)
+	}
+	salt, err1 := hex.DecodeString(parts[0])
+	stored, err2 := hex.DecodeString(parts[1])
+	if err1 != nil || err2 != nil || len(salt) != saltLen || len(stored) != keyLen {
+		return nil, nil, false, fmt.Errorf("corrupt record for %s", user)
+	}
+	return salt, stored, true, nil
 }
 
 // readPassword reads one line from f into secure memory with terminal echo

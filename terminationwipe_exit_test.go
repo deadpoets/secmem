@@ -27,25 +27,34 @@ func TestCompleteTermination_ExitsWhenReraiseImpossible(t *testing.T) {
 	notSupported := errors.New("not supported by windows")
 
 	cases := []struct {
-		name       string
-		reraiseErr error
-		forceExit  bool
-		wantExit   bool
+		name            string
+		reraiseErr      error
+		forceExit       bool
+		inheritedIgnore bool
+		wantExit        bool
+		wantReraise     bool
 	}{
-		{"re-raise works: the disposition owns the exit", nil, true, false},
-		{"re-raise works, NoExit: still not ours to force", nil, false, false},
-		{"re-raise impossible, default: secmem exits", notSupported, true, true},
-		{"re-raise impossible, NoExit: caller owns the exit", notSupported, false, false},
+		{"re-raise works: the disposition owns the exit", nil, true, false, false, true},
+		{"re-raise works, NoExit: still not ours to force", nil, false, false, false, true},
+		{"re-raise impossible, default: secmem exits", notSupported, true, false, true, true},
+		{"re-raise impossible, NoExit: caller owns the exit", notSupported, false, false, false, true},
+		// The signal was ignored when the handler was installed. The re-raise
+		// would SUCCEED as a system call and be discarded by the kernel, which
+		// is why it must not even be attempted: a nil error here would read as
+		// "the disposition owns the exit" about a disposition that drops it.
+		{"inherited ignore, default: secmem exits, no re-raise", nil, true, true, true, false},
+		{"inherited ignore, NoExit: caller owns the exit, no re-raise", nil, false, true, false, false},
 	}
 
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			var exited bool
+			var exited, reraised bool
 			var status int
 			completeTermination(
 				os.Interrupt,
 				c.forceExit,
-				func(os.Signal) error { return c.reraiseErr },
+				c.inheritedIgnore,
+				func(os.Signal) error { reraised = true; return c.reraiseErr },
 				func(code int) { exited, status = true, code },
 			)
 			if exited != c.wantExit {
@@ -53,6 +62,9 @@ func TestCompleteTermination_ExitsWhenReraiseImpossible(t *testing.T) {
 			}
 			if exited && status != forcedExitStatus {
 				t.Errorf("exit status = %d, want %d", status, forcedExitStatus)
+			}
+			if reraised != c.wantReraise {
+				t.Errorf("re-raise attempted = %v, want %v", reraised, c.wantReraise)
 			}
 		})
 	}
