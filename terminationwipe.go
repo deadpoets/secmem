@@ -9,12 +9,20 @@
 package secmem
 
 import (
+	"errors"
 	"log/slog"
 	"os"
 	"os/signal"
 	"sync"
 	"syscall"
 )
+
+// errInheritedIgnored stands in for the re-raise's result when the signal
+// was already ignored at install time. The kill(2) itself would succeed —
+// which is exactly the problem: the kernel accepts the signal and discards it,
+// so the "re-raised, the disposition owns the exit" conclusion would be drawn
+// about an exit that is never going to happen.
+var errInheritedIgnored = errors.New("secmem: the signal was ignored when the handler was installed (an inherited disposition), so re-raising it would be discarded")
 
 // reraiseSignal re-delivers sig to this process. It is the step that terminates
 // the process on every platform that can do it.
@@ -31,13 +39,26 @@ func reraiseSignal(sig os.Signal) error {
 // stay installed: true only when nothing was re-raised and the process was left
 // running, so that the next signal is a new event and not the echo of this one.
 //
+// inheritedIgnore says the signal was ignored when the handler was installed
+// (see installTerminationWipeHooks). Then the re-raise is not attempted at
+// all: it would succeed as a system call and be discarded by the kernel, and
+// the process would run on with every secret zeroed. It is treated exactly
+// like a re-raise that failed.
+//
 // reraise and exit are parameters rather than direct calls so the decision is
 // testable without delivering a real signal — a test that actually re-raised
 // would terminate the test binary, and one that actually exited would take the
 // suite with it. The live behaviour is covered separately by a harness that
-// delivers a genuine console Ctrl-Break to a child in its own process group.
-func completeTermination(sig os.Signal, forceExit bool, reraise func(os.Signal) error, exit func(int)) (rearm bool) {
-	if err := reraise(sig); err == nil {
+// delivers a genuine console Ctrl-Break to a child in its own process group,
+// and, for the inherited-ignore case, by a child started with SIGINT ignored.
+func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise func(os.Signal) error, exit func(int)) (rearm bool) {
+	var err error
+	if inheritedIgnore {
+		err = errInheritedIgnored
+	} else {
+		err = reraise(sig)
+	}
+	if err == nil {
 		return false // re-raised; the restored disposition or a co-handler owns the exit
 	} else if !forceExit {
 		slog.Warn("secmem: could not re-raise the termination signal — secrets are wiped, but this process will NOT exit on its own",
@@ -81,11 +102,32 @@ func completeTermination(sig os.Signal, forceExit bool, reraise func(os.Signal) 
 //
 // # The process always terminates
 //
-// Where the signal cannot be re-raised, secmem exits the process itself with a
-// status indistinguishable from the un-intercepted signal. That is Windows:
+// Where the signal cannot be re-raised to any effect, secmem exits the process
+// itself, with forcedExitStatus: on Windows STATUS_CONTROL_C_EXIT, which is
+// indistinguishable from the un-intercepted signal; elsewhere 130, the shell
+// convention for SIGINT. One case is Windows:
 // os.Process.Signal there implements only [os.Kill] and rejects os.Interrupt and
 // SIGTERM outright, and the console event that triggered the handler has already
 // been consumed, so there is nothing left to re-deliver.
+//
+// It is also any signal the process INHERITED AS IGNORED. The Go runtime
+// respects an inherited SIG_IGN for SIGINT and SIGHUP (not SIGTERM): Notify
+// still delivers the signal, so the wipe runs, but Stop restores the ignore,
+// and a re-raise then succeeds as a system call and is discarded by the
+// kernel. A process started with `cmd &` from a non-interactive shell — a
+// shell script, a Makefile recipe, a shell-script container entrypoint that
+// backgrounds the process — has SIGINT ignored in exactly this way (POSIX
+// requires it for asynchronous lists when job control is off), and so does a
+// `nohup` child for SIGHUP. Measured before
+// this was handled: such a child wiped, reported the re-raise as done, and
+// kept running with every buffer reading as zeros. The installer therefore
+// records, once, which of its signals are ignored at the moment it is
+// called — [os/signal.Ignored] reports the inherited state only until Notify
+// overrides it — and treats one of those as impossible to re-raise: the
+// default installer exits, the NoExit one warns and stays installed. The
+// exit status is forcedExitStatus's for the platform — 130 here, whichever
+// of the handler's signals it was, since an ignored signal has no
+// un-intercepted status to match.
 //
 // Verified behaviour before this was so: a real Ctrl-C wiped every secret and
 // the process kept running, exiting only on a SECOND Ctrl-C. That left it in the
@@ -114,9 +156,10 @@ func completeTermination(sig os.Signal, forceExit bool, reraise func(os.Signal) 
 // signal.
 //
 // Where nothing could be re-raised and the process was left running — that is
-// [InstallTerminationWipeNoExit] on Windows — there is no such race and the
-// handler stays installed: every later signal wipes again, so a secret created
-// after one wipe does not outlive the next signal. Uninstall to stop that.
+// [InstallTerminationWipeNoExit] on Windows, or for a signal inherited as
+// ignored — there is no such race and the handler stays installed: every later
+// signal wipes again, so a secret created after one wipe does not outlive the
+// next signal. Uninstall to stop that.
 //
 // If you already have a termination handler, prefer calling WipeAllSecrets from
 // inside it rather than using this installer.
@@ -134,12 +177,14 @@ func InstallTerminationWipe(signals ...os.Signal) (uninstall func()) {
 // READABLE as zeros, so a shutdown path that keeps doing cryptography will get
 // silent success on zeroed key material. Exit promptly.
 //
-// It has no effect anywhere except Windows, since every other platform can
-// re-raise and the process terminates through the normal disposition. There it
-// stays installed after the signal (see "After the signal" above), so each
-// Ctrl-C wipes again and none of them ends the process: with no handler of your
-// own, a second Ctrl-C no longer terminates it the way it did while the handler
-// was one-shot. Termination is entirely yours.
+// It has an effect only on Windows and for a signal the process inherited as
+// ignored (see "The process always terminates" above); everywhere else the
+// re-raise is a real kill against a restored default disposition and the
+// process terminates through it. In those two cases the handler stays
+// installed after the signal (see "After the signal" above), so each Ctrl-C
+// wipes again and none of them ends the process: with no handler of your own,
+// a second Ctrl-C no longer terminates it the way it did while the handler was
+// one-shot. Termination is entirely yours.
 func InstallTerminationWipeNoExit(signals ...os.Signal) (uninstall func()) {
 	return installTerminationWipe(false, signals...)
 }
@@ -157,6 +202,27 @@ func installTerminationWipe(forceExit bool, signals ...os.Signal) (uninstall fun
 func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, exit func(int), rearmed func(), signals ...os.Signal) (uninstall func()) {
 	if len(signals) == 0 {
 		signals = []os.Signal{os.Interrupt, syscall.SIGTERM}
+	}
+	// Record which signals the process inherited as ignored BEFORE Notify:
+	// Notify overrides an inherited SIG_IGN so the wipe can run, and from then
+	// on signal.Ignored reports false for it — including after the Stop that
+	// puts the ignore back — so this is the only moment the fact can be read.
+	// A signal ignored here cannot be re-raised to any effect (see
+	// completeTermination); without this record the handler concluded "the
+	// disposition owns the exit" about a disposition that discards it.
+	//
+	// Keyed by syscall.Signal, the only kind os/signal acts on (Notify skips
+	// any other implementation of os.Signal, and so does this), so a caller's
+	// own os.Signal type cannot make the record panic. The record is taken
+	// once: a handler another package registers for the same signal AFTER
+	// this one does not change it, so with such a late co-handler the default
+	// installer still exits itself rather than leave the exit to it —
+	// fail-safe, and a reason to install this one first.
+	inheritedIgnore := make(map[syscall.Signal]bool, len(signals))
+	for _, sig := range signals {
+		if s, ok := sig.(syscall.Signal); ok {
+			inheritedIgnore[s] = signal.Ignored(s)
+		}
 	}
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, signals...)
@@ -197,7 +263,16 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				// independently. On Windows the exit is therefore the
 				// application's job, and the log line says so instead of leaving
 				// it to be discovered.
-				if !completeTermination(sig, forceExit, reraise, exit) {
+				//
+				// A signal the process inherited as ignored is the same case
+				// on every platform: the kill would succeed and the kernel
+				// would drop it. inheritedIgnore was read before Notify, the
+				// only moment it can be.
+				ignored := false
+				if s, ok := sig.(syscall.Signal); ok {
+					ignored = inheritedIgnore[s]
+				}
+				if !completeTermination(sig, forceExit, ignored, reraise, exit) {
 					// Re-raised, or exited. Whether the process dies now or a
 					// co-installed handler keeps it alive is not observable from
 					// here, and the re-raised signal is still in flight: a fresh

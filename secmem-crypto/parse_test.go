@@ -321,6 +321,96 @@ func TestParsePrivateKey_Truncations(t *testing.T) {
 	}
 }
 
+// TestParsePrivateKey_ErrorsBoundQuotedLabels: the one thing from a file an
+// error repeats is a label the file names, and every site that does so is
+// bounded. Each of the five — the PEM block type on both entry points, the
+// OpenSSH key type, the KDF name and the cipher name — is fed a 4000-byte
+// label and a label with control characters in it; the error must keep its
+// sentinel, stay short, contain neither label, and be printable ASCII
+// throughout, since it is what a caller logs. A short printable label is
+// still quoted, so the bound does not cost the diagnostic.
+func TestParsePrivateKey_ErrorsBoundQuotedLabels(t *testing.T) {
+	long := strings.Repeat("A", 4000)
+	control := "ssh-\n\x00\x1b[31mevil\x7f"
+	plain := func(d []byte) (Signer, error) { return ParsePrivateKey(d, AllowHeapTransients()) }
+	withPass := func(d []byte) (Signer, error) {
+		return ParsePrivateKeyWithPassphrase(d, []byte(testPassphrase), AllowHeapTransients())
+	}
+	paths := []struct {
+		name  string
+		build func(label string) []byte
+		parse func([]byte) (Signer, error)
+	}{
+		{"pem type", func(l string) []byte { return []byte(pemOfType(l, "", "AAAA")) }, plain},
+		{"pem type via passphrase", func(l string) []byte { return []byte(pemOfType(l, "", "AAAA")) }, withPass},
+		{"openssh key type", func(l string) []byte { d, _ := ed25519Container(t, l, nil, "c"); return d }, plain},
+		{"openssh kdf", func(l string) []byte { return testContainer(opensshCipherCTR, l, testKDFOpts(opensshSaltLen, 1), 16) }, withPass},
+		{"openssh cipher", func(l string) []byte { return testContainer(l, opensshKDFBcrypt, testKDFOpts(opensshSaltLen, 1), 16) }, withPass},
+	}
+	for _, p := range paths {
+		t.Run(p.name, func(t *testing.T) {
+			for name, label := range map[string]string{"4000 bytes": long, "control characters": control} {
+				s, err := p.parse(p.build(label))
+				if err == nil {
+					s.Destroy()
+					t.Fatalf("%s: a key labelled %q parsed", name, label[:8])
+				}
+				if !errors.Is(err, ErrUnsupportedKey) {
+					t.Fatalf("%s: %v, want ErrUnsupportedKey", name, err)
+				}
+				msg := err.Error()
+				if len(msg) > 200 {
+					t.Errorf("%s: error is %d bytes: %.120q...", name, len(msg), msg)
+				}
+				if strings.Contains(msg, label) {
+					t.Errorf("%s: error repeats the label", name)
+				}
+				for i := 0; i < len(msg); i++ {
+					if msg[i] < 0x20 || msg[i] > 0x7e {
+						t.Fatalf("%s: error carries byte %#x: %q", name, msg[i], msg)
+					}
+				}
+				if label == control && !strings.Contains(msg, "non-printable label") {
+					t.Errorf("%s: error does not describe the label: %q", name, msg)
+				}
+			}
+			// The diagnostic survives for a label a real file could carry.
+			s, err := p.parse(p.build("x-unknown-label"))
+			if err == nil {
+				s.Destroy()
+				t.Fatal("unknown label parsed")
+			}
+			if !strings.Contains(err.Error(), `"x-unknown-label"`) {
+				t.Errorf("short printable label not quoted: %v", err)
+			}
+		})
+	}
+}
+
+// TestLabelForError pins the helper at its boundaries: 32 printable bytes
+// quote whole, 33 quote to 32 with the total, any byte outside 0x20..0x7e
+// suppresses the quote, and a quote character in the label is escaped.
+func TestLabelForError(t *testing.T) {
+	for _, tc := range []struct {
+		label, want string
+	}{
+		{"", `""`},
+		{"OPENSSH PRIVATE KEY", `"OPENSSH PRIVATE KEY"`},
+		{strings.Repeat("a", 32), `"` + strings.Repeat("a", 32) + `"`},
+		{strings.Repeat("a", 33), `"` + strings.Repeat("a", 32) + `"... (33 bytes)`},
+		{strings.Repeat("a", 4000), `"` + strings.Repeat("a", 32) + `"... (4000 bytes)`},
+		{"say \"hi\"", `"say \"hi\""`},
+		{"tab\there", "<8-byte non-printable label>"},
+		{"\x7f", "<1-byte non-printable label>"},
+		{"caf\xc3\xa9", "<5-byte non-printable label>"},
+		{strings.Repeat("a", 40) + "\n", "<41-byte non-printable label>"},
+	} {
+		if got := labelForError([]byte(tc.label)); got != tc.want {
+			t.Errorf("labelForError(%q) = %s, want %s", tc.label, got, tc.want)
+		}
+	}
+}
+
 // TestParsePrivateKey_ErrorsCarryNoKeyBytes: rejections must not quote the
 // input. A hex or base64 fragment of the key in an error string would end up
 // in a log.

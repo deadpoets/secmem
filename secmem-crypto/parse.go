@@ -19,6 +19,7 @@ import (
 	"encoding/base64"
 	"errors"
 	"fmt"
+	"strconv"
 
 	"golang.org/x/crypto/cryptobyte"
 	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
@@ -58,9 +59,9 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // package reads.
 //
 // It is deliberately NOT returned for things that are merely unimplemented
-// — PKCS#8 PBES2, chacha20-poly1305@openssh.com, the aes128 and aes192
-// OpenSSH ciphers — because those may yet arrive, and a caller should be
-// able to tell the two apart.
+// — PKCS#8 PBES2, the OpenSSH ciphers this package does not run, an unknown
+// KDF — because those may yet arrive, and a caller should be able to tell
+// the two apart.
 var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
 
 // errLegacyPEM is the one refusal that carries ErrRetiredAlgorithm today.
@@ -110,7 +111,13 @@ var (
 // and PKCS#8 v2 optionally), it is checked against the one derived from the
 // private half and a mismatch is an error. Passphrase-protected keys return
 // an error wrapping [ErrEncryptedKey] (see [ParsePrivateKeyWithPassphrase]);
-// other kinds, [ErrUnsupportedKey]. Errors never quote the input.
+// other kinds, [ErrUnsupportedKey]. Errors never carry key bytes. The one
+// thing from the file they repeat is a label it names — a PEM block type or
+// an OpenSSH algorithm, cipher or KDF name — and it is quoted whole only when
+// it is at most 32 bytes of printable ASCII; a longer printable label is
+// quoted to 32 bytes with its length noted, and one with any other byte is
+// described by its length alone, so a hostile file cannot put kilobytes, or
+// control characters, into a log line through the error.
 //
 // An RSA or EC key is refused with an error wrapping [ErrHeapTransients] on
 // a build without GOEXPERIMENT=runtimesecret, unless opts include
@@ -220,7 +227,7 @@ func parsePrivateKey(data []byte, o options) (Signer, error) {
 			return nil, ErrEncryptedKey
 		default:
 			_ = blob.Destroy()
-			return nil, fmt.Errorf("%w: PEM block type %q", ErrUnsupportedKey, typ)
+			return nil, fmt.Errorf("%w: PEM block type %s", ErrUnsupportedKey, labelForError(typ))
 		}
 	default:
 		return nil, fmt.Errorf("%w: not PEM, OpenSSH, or DER", errMalformed)
@@ -238,6 +245,34 @@ func looksLikeDER(data []byte) bool {
 	var seq cryptobyte.String
 	in := cryptobyte.String(data)
 	return in.ReadASN1Element(&seq, cbasn1.SEQUENCE) && in.Empty()
+}
+
+// maxQuotedLabel is the longest label an error will quote. Every label a
+// well-formed file names — "OPENSSH PRIVATE KEY", "ecdsa-sha2-nistp521",
+// "chacha20-poly1305@openssh.com" — fits; nothing legitimate is longer.
+const maxQuotedLabel = 32
+
+// labelForError renders a label the file names — a PEM block type, an
+// OpenSSH key type, cipher or KDF name — for an error message. Every such
+// field is attacker-controlled and, in the SSH wire encoding, up to 4 GiB
+// long, and the error is what a caller logs, so what is repeated is
+// bounded: a label of at most maxQuotedLabel bytes, all printable ASCII
+// (0x20..0x7e), is quoted as %q would quote it; a longer one that is all
+// printable is quoted to that length with the total noted; and a label with
+// any other byte in it is described by its length alone, so no control
+// character reaches a terminal or a log parser. Every site that names a
+// label in an error goes through here — it is the promise in
+// ParsePrivateKey's doc that errors carry nothing else from the input.
+func labelForError(label []byte) string {
+	for _, b := range label {
+		if b < 0x20 || b > 0x7e {
+			return fmt.Sprintf("<%d-byte non-printable label>", len(label))
+		}
+	}
+	if len(label) <= maxQuotedLabel {
+		return strconv.Quote(string(label))
+	}
+	return fmt.Sprintf("%s... (%d bytes)", strconv.Quote(string(label[:maxQuotedLabel])), len(label))
 }
 
 // pemBlock finds the first PEM block in data and returns its type and its

@@ -10,8 +10,9 @@
 // heap and unwiped: a streaming SHA-512 digest that was written the raw
 // passphrase, and its 64-byte hash; one freshly allocated Blowfish Cipher —
 // a 4 KiB key schedule derived from that hash — for every bcrypt step,
-// which at OpenSSH's default of 16 rounds and a 48-byte key+IV is 32 of
-// them, about 133 KB; and the derived key itself, which the caller slices
+// which at 16 rounds (ssh-keygen's default before OpenSSH 9.4; 24 since,
+// making it 48) and a 48-byte key+IV is 32 of them, about 133 KB; and the
+// derived key itself, which the caller slices
 // into an AES key and IV and cannot wipe because the slice is upstream's.
 // None of it is reachable from outside x/crypto: bcrypt_pbkdf is an
 // internal package, and blowfish exposes no way to re-key a Cipher in

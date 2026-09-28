@@ -17,15 +17,20 @@ func TestCompleteTermination_ReportsRearm(t *testing.T) {
 	notSupported := errors.New("not supported by windows")
 
 	cases := []struct {
-		name       string
-		reraiseErr error
-		forceExit  bool
-		wantRearm  bool
+		name            string
+		reraiseErr      error
+		forceExit       bool
+		inheritedIgnore bool
+		wantRearm       bool
 	}{
-		{"re-raise works: in flight, handler is done", nil, true, false},
-		{"re-raise works, NoExit: in flight, handler is done", nil, false, false},
-		{"re-raise impossible, default: exiting, nothing to arm", notSupported, true, false},
-		{"re-raise impossible, NoExit: process runs on, re-arm", notSupported, false, true},
+		{"re-raise works: in flight, handler is done", nil, true, false, false},
+		{"re-raise works, NoExit: in flight, handler is done", nil, false, false, false},
+		{"re-raise impossible, default: exiting, nothing to arm", notSupported, true, false, false},
+		{"re-raise impossible, NoExit: process runs on, re-arm", notSupported, false, false, true},
+		// An inherited ignore is "re-raise impossible" by another route: the
+		// kill would be accepted and dropped, so nothing is in flight.
+		{"inherited ignore, default: exiting, nothing to arm", nil, true, true, false},
+		{"inherited ignore, NoExit: process runs on, re-arm", nil, false, true, true},
 	}
 
 	for _, c := range cases {
@@ -33,6 +38,7 @@ func TestCompleteTermination_ReportsRearm(t *testing.T) {
 			got := completeTermination(
 				os.Interrupt,
 				c.forceExit,
+				c.inheritedIgnore,
 				func(os.Signal) error { return c.reraiseErr },
 				func(int) {},
 			)

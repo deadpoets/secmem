@@ -276,6 +276,20 @@ func (j *janitor) takeWiped(key uint64) (janitorRegion, bool) {
 	return region, ok
 }
 
+// restoreWriteAccess is wipeAndFree's first step. A package var solely so a
+// test can make it fail and drive the left-unwiped branch below, the way
+// sealProtect exists for Seal's rollback; production always runs
+// mprotectSecretMem.
+var restoreWriteAccess = mprotectSecretMem
+
+// errWipeSkipped marks the one emergency-path outcome in which the region was
+// NOT wiped: write access could not be restored, the wipe would have faulted,
+// and the region was left exactly as it was. The passes test for it and do not
+// mark such a region wiped — that flag would make every mutator refuse a
+// secret that is still there and, worse, tell ArenaSlot.Release that a
+// read-only slab had been made writable when it is still PROT_READ.
+var errWipeSkipped = errors.New("secmem: janitor: write access could not be restored; region left as it was, unwiped")
+
 // wipeAndFree wipes one mapping and, when unmap is true, releases it. When
 // lockHeld is false, it first acquires the region's exclusive lock to block
 // in-flight callbacks.
@@ -304,21 +318,23 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 		defer region.mu.unlock()
 	}
 
-	if err := mprotectSecretMem(region.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+	if err := restoreWriteAccess(region.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		// A sealed region is PROT_NONE and a read-only one is PROT_READ, so
 		// without write access the canary read below and the wipe after it
 		// both fault the process. "Continue cleanup" would mean continue into
 		// a SIGSEGV — inside a signal handler, on the emergency path, aborting
 		// the wipe of every region this pass had not reached yet. Give up on
-		// the wipe instead and go straight to the release: an unwiped region
-		// that is unmapped is bad, but a crash mid-emergency-wipe is worse.
-		slog.Error("secmem: janitor could not restore write access — releasing WITHOUT wiping",
+		// the wipe instead: on the emergency path leave the region exactly as
+		// it was (and say so with errWipeSkipped, so it is not flagged wiped);
+		// on a release, go straight to the unmap — an unwiped region that is
+		// unmapped is bad, but a crash mid-emergency-wipe is worse.
+		slog.Error("secmem: janitor could not restore write access — continuing WITHOUT wiping",
 			slog.Any("error", err),
 		)
-		werr := fmt.Errorf("secmem: janitor: restoring write access failed, region released unwiped: %w", err)
 		if !unmap {
-			return werr
+			return fmt.Errorf("%w: %w", errWipeSkipped, err)
 		}
+		werr := fmt.Errorf("secmem: janitor: restoring write access failed, region released unwiped: %w", err)
 		// The advice needs no write access, so it is the one step that can
 		// still run. Be precise about what it is worth, per tier: on an anon
 		// mapping it drops the frames now instead of at the munmap below,
@@ -370,8 +386,12 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 
 // markWiped tells the owning SecureBuffer/SecureArena that its secret is gone,
 // so every mutating entry point starts refusing with ErrWiped. Called only on
-// the emergency path, and only with the region's exclusive lock held, so it
-// cannot land while an accessor is mid-flight.
+// the emergency path, only with the region's exclusive lock held, so it
+// cannot land while an accessor is mid-flight — and only when the wipe
+// actually ran, which also means write access was restored and the region
+// left writable. The owner relies on that second fact: ArenaSlot.Release
+// treats a set flag as "the slab is writable whatever readOnly says". A pass
+// whose wipeAndFree returned errWipeSkipped therefore does not call this.
 //
 // The explicit Destroy and GC-cleanup paths do NOT call it: they unmap the
 // region and nil the owner's own state, which already makes the object refuse
@@ -460,7 +480,9 @@ func (j *janitor) wipeInPlace(key uint64) error {
 		return nil
 	}
 	err := wipeAndFree(region, true, false)
-	markWiped(region)
+	if !errors.Is(err, errWipeSkipped) {
+		markWiped(region)
+	}
 	if janitorWipeTestHook != nil {
 		janitorWipeTestHook()
 	}
@@ -491,7 +513,9 @@ func (j *janitor) tryWipeInPlace(key uint64) (done bool, err error) {
 		return true, nil
 	}
 	err = wipeAndFree(region, true, false)
-	markWiped(region)
+	if !errors.Is(err, errWipeSkipped) {
+		markWiped(region)
+	}
 	if janitorWipeTestHook != nil {
 		janitorWipeTestHook()
 	}

@@ -7,6 +7,7 @@ import (
 	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/x509"
+	"encoding/pem"
 	"errors"
 	"math/big"
 	"testing"
@@ -51,7 +52,11 @@ type sshRSAFields struct {
 }
 
 // opensshContainer assembles a raw (non-PEM) container. pad, when nil, is
-// the correct 1,2,3… padding to the 8-byte block of cipher "none".
+// the correct 1,2,3… padding to the 8-byte block of cipher "none". A cipher
+// other than "none" gets a matching bcrypt KDF with well-formed options, so
+// the header is one the parser classifies as encrypted rather than refuses
+// as inconsistent (the private block is then left in the clear, which such
+// a test never reads).
 func opensshContainer(pubBlob []byte, inner sshInner, cipher string, numKeys uint32, pad []byte) []byte {
 	priv := ssh.Marshal(inner)
 	if pad == nil {
@@ -61,8 +66,218 @@ func opensshContainer(pubBlob []byte, inner sshInner, cipher string, numKeys uin
 	} else {
 		priv = append(priv, pad...)
 	}
-	outer := sshOuter{CipherName: cipher, KdfName: "none", NumKeys: numKeys, PubKey: pubBlob, PrivKeyBlock: priv}
+	kdf, kdfOpts := opensshKDFNone, ""
+	if cipher != opensshCipherNone {
+		kdf, kdfOpts = opensshKDFBcrypt, string(testKDFOpts(opensshSaltLen, 1))
+	}
+	outer := sshOuter{CipherName: cipher, KdfName: kdf, KdfOpts: kdfOpts, NumKeys: numKeys, PubKey: pubBlob, PrivKeyBlock: priv}
 	return append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
+}
+
+// ed25519Container is a fresh Ed25519 key in a hand-built unencrypted
+// container whose key type, padding and comment the test chooses; the
+// public-key block names the same type, so a parse reaches the private
+// block's type switch. pad nil means correct padding (see opensshContainer).
+func ed25519Container(t *testing.T, keyType string, pad []byte, comment string) (data []byte, pub ed25519.PublicKey) {
+	t.Helper()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inner := sshInner{Check1: 0x11223344, Check2: 0x11223344, Keytype: keyType,
+		Rest: ssh.Marshal(sshEd25519Fields{Pub: pub, Priv: priv, Comment: comment})}
+	pubBlob := ssh.Marshal(struct {
+		Type string
+		Pub  []byte
+	}{keyType, pub})
+	return opensshContainer(pubBlob, inner, opensshCipherNone, 1, pad), pub
+}
+
+// armourRaw is the PEM form of a raw container, for handing the same bytes
+// to x/crypto/ssh, which reads only PEM.
+func armourRaw(raw []byte) []byte {
+	return pem.EncodeToMemory(&pem.Block{Type: opensshPEMType, Bytes: raw})
+}
+
+// TestParseOpenSSH_HeaderConsistency: a header that names a cipher without
+// a KDF, or a KDF without a cipher, is malformed to both entry points.
+// Before this rule ParsePrivateKey called such a file passphrase-protected
+// and ParsePrivateKeyWithPassphrase called it unprotected, each sending the
+// caller to the other; OpenSSH refuses it as an invalid format. The two
+// consistent headers keep their classifications.
+func TestParseOpenSSH_HeaderConsistency(t *testing.T) {
+	kdfOpts := testKDFOpts(opensshSaltLen, 1)
+	for _, tc := range []struct {
+		name, cipher, kdf string
+		opts              []byte
+	}{
+		{"cipher without kdf", opensshCipherCTR, opensshKDFNone, nil},
+		{"kdf without cipher", opensshCipherNone, opensshKDFBcrypt, kdfOpts},
+		{"cbc without kdf", opensshCipherCBC, opensshKDFNone, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			data := testContainer(tc.cipher, tc.kdf, tc.opts, 16)
+			for name, parse := range map[string]func([]byte) (Signer, error){
+				"ParsePrivateKey": func(d []byte) (Signer, error) { return ParsePrivateKey(d, AllowHeapTransients()) },
+				"ParsePrivateKeyWithPassphrase": func(d []byte) (Signer, error) {
+					return ParsePrivateKeyWithPassphrase(d, []byte(testPassphrase), AllowHeapTransients())
+				},
+			} {
+				for form, in := range map[string][]byte{"raw": data, "pem": armourRaw(data)} {
+					s, err := parse(in)
+					if err == nil {
+						s.Destroy()
+						t.Fatalf("%s/%s accepted a half-encrypted header", name, form)
+					}
+					if !errors.Is(err, errMalformed) {
+						t.Errorf("%s/%s: %v, want errMalformed", name, form, err)
+					}
+					if errors.Is(err, ErrEncryptedKey) || errors.Is(err, ErrNotEncrypted) {
+						t.Errorf("%s/%s classified a half-encrypted header: %v", name, form, err)
+					}
+				}
+			}
+		})
+	}
+
+	// The consistent headers still classify, in both directions.
+	if _, err := ParsePrivateKey(testContainer(opensshCipherCTR, opensshKDFBcrypt, kdfOpts, 16), AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
+		t.Errorf("ParsePrivateKey on ctr/bcrypt: %v, want ErrEncryptedKey", err)
+	}
+	if _, err := ParsePrivateKeyWithPassphrase(testContainer(opensshCipherNone, opensshKDFNone, nil, 16), []byte("x"), AllowHeapTransients()); !errors.Is(err, ErrNotEncrypted) {
+		t.Errorf("ParsePrivateKeyWithPassphrase on none/none: %v, want ErrNotEncrypted", err)
+	}
+}
+
+// TestParseOpenSSH_FormatStrictness pins the container rules PROTOCOL.key
+// implies and OpenSSH's sshkey.c enforces, which the parser used to let
+// through: (a) the pad is shorter than the cipher block, (b) an unencrypted
+// private block is a multiple of the "none" cipher's 8-byte block, (c)
+// nothing follows the container's last field, (d) a "none" KDF carries no
+// options. For each, the well-formed neighbour of the refused input is
+// parsed too, so the refusal is shown to be the rule and not the
+// construction.
+//
+// golang.org/x/crypto/ssh is compared where it agrees: it refuses (d) and
+// the parsers must keep agreeing there. It accepts (a), (b) and (c) — its
+// container struct takes trailing bytes as a "rest" field, and its pad check
+// looks at the sequence but not its length — so those are asserted against
+// this parser alone, with OpenSSH's own reader as the authority. (a) is
+// stricter than both: neither ever writes a pad of a whole block, so
+// nothing well-formed is lost.
+func TestParseOpenSSH_FormatStrictness(t *testing.T) {
+	sequence := func(n int) []byte {
+		pad := make([]byte, n)
+		for i := range pad {
+			pad[i] = byte(i + 1)
+		}
+		return pad
+	}
+	accepts := func(t *testing.T, data []byte, pub ed25519.PublicKey) {
+		t.Helper()
+		s, err := ParsePrivateKey(data, AllowHeapTransients())
+		if err != nil {
+			t.Fatalf("well-formed neighbour refused: %v", err)
+		}
+		verifySigner(t, s, pub)
+		s.Destroy()
+		if _, err := ssh.ParseRawPrivateKey(armourRaw(data)); err != nil {
+			t.Fatalf("x/crypto refuses the well-formed neighbour: %v", err)
+		}
+	}
+	refuses := func(t *testing.T, data []byte) {
+		t.Helper()
+		s, err := ParsePrivateKey(data, AllowHeapTransients())
+		if err == nil {
+			s.Destroy()
+			t.Fatal("accepted")
+		}
+		if !errors.Is(err, errMalformed) {
+			t.Fatalf("%v, want errMalformed", err)
+		}
+	}
+
+	t.Run("a: pad length", func(t *testing.T) {
+		// The Ed25519 private block is 131 bytes plus the comment; a 6-byte
+		// comment wants the longest legal pad, 7, and a 5-byte one falls on
+		// the boundary, where a writer emits no pad at all.
+		data, pub := ed25519Container(t, opensshKeyEd25519, sequence(7), "cccccc")
+		accepts(t, data, pub)
+		data, _ = ed25519Container(t, opensshKeyEd25519, sequence(8), "ccccc")
+		refuses(t, data) // a whole block of pad: aligned and in sequence, and still not a padded block
+		data, _ = ed25519Container(t, opensshKeyEd25519, sequence(200), "c")
+		refuses(t, data)
+	})
+	t.Run("b: block alignment", func(t *testing.T) {
+		data, pub := ed25519Container(t, opensshKeyEd25519, nil, "cc")
+		accepts(t, data, pub)
+		data, _ = ed25519Container(t, opensshKeyEd25519, sequence(1), "cc") // 134 bytes: in sequence, not a multiple of 8
+		refuses(t, data)
+	})
+	t.Run("c: trailing bytes", func(t *testing.T) {
+		data, pub := ed25519Container(t, opensshKeyEd25519, nil, "c")
+		accepts(t, data, pub)
+		refuses(t, append(data, 0xde, 0xad, 0xbe, 0xef))
+		refuses(t, append(data, 0))
+		// The passphrase path reads the same header: a protected file with
+		// bytes after it is malformed, not a wrong passphrase (the fixture is
+		// aes256-ctr, which carries no authenticator, so nothing may follow).
+		_, raw, _ := fixture(t, "ed25519-a1")
+		_, err := ParsePrivateKeyWithPassphrase(append(append([]byte(nil), raw...), 0), []byte(testPassphrase), AllowHeapTransients())
+		if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
+			t.Errorf("protected file with trailing bytes: %v, want errMalformed", err)
+		}
+	})
+	t.Run("d: kdf options with none", func(t *testing.T) {
+		data, pub := ed25519Container(t, opensshKeyEd25519, nil, "c")
+		accepts(t, data, pub)
+		h, err := readOpenSSHHeader(data)
+		if err != nil {
+			t.Fatal(err)
+		}
+		outer := sshOuter{CipherName: opensshCipherNone, KdfName: opensshKDFNone, KdfOpts: "junkjunk", NumKeys: 1, PubKey: h.pubBlob, PrivKeyBlock: h.privBlock}
+		bad := append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
+		refuses(t, bad)
+		if _, err := ssh.ParseRawPrivateKey(armourRaw(bad)); err == nil {
+			t.Error("x/crypto accepts KDF options with KDF none; the parsers no longer agree")
+		}
+	})
+}
+
+// TestPKCS1DER_RejectsOversizedIqmp: iqmp = q⁻¹ mod p is below p, so a
+// value wider than the prime cap is not a CRT coefficient of any key this
+// parser accepts. Without the bound it was the one integer whose size the
+// file set freely, and the assembled DER's length field was sized by it.
+func TestPKCS1DER_RejectsOversizedIqmp(t *testing.T) {
+	k := testRSAKey()
+	e := big.NewInt(int64(k.E))
+	huge := new(big.Int).Lsh(big.NewInt(1), rsaMaxPrimeBits) // rsaMaxPrimeBits+1 bits
+	if buf, err := pkcs1DER(k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), huge.Bytes()); err == nil {
+		buf.Destroy()
+		t.Fatal("pkcs1DER accepted an iqmp wider than the prime cap")
+	} else if !errors.Is(err, errMalformed) {
+		t.Fatalf("%v, want errMalformed", err)
+	}
+	// Exactly at the cap it is a size question for the standard library,
+	// not a bound question for this parser.
+	atCap := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), rsaMaxPrimeBits), big.NewInt(1))
+	if buf, err := pkcs1DER(k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), atCap.Bytes()); err != nil {
+		t.Fatalf("pkcs1DER refused an iqmp at the prime cap: %v", err)
+	} else {
+		buf.Destroy()
+	}
+
+	// Through the container: the file is refused as malformed before the
+	// standard library sees anything.
+	fields := sshRSAFields{N: k.N, E: e, D: k.D, Iqmp: huge, P: k.Primes[0], Q: k.Primes[1], Comment: "c"}
+	inner := sshInner{Check1: 5, Check2: 5, Keytype: "ssh-rsa", Rest: ssh.Marshal(fields)}
+	data := opensshContainer(sshPubBlob(t, &k.PublicKey), inner, opensshCipherNone, 1, nil)
+	if s, err := ParsePrivateKey(data, AllowHeapTransients()); err == nil {
+		s.Destroy()
+		t.Fatal("container with an oversized iqmp parsed")
+	} else if !errors.Is(err, errMalformed) {
+		t.Fatalf("%v, want errMalformed", err)
+	}
 }
 
 func sshPubBlob(t *testing.T, pub any) []byte {
@@ -269,23 +484,56 @@ func TestPKCS1DER_MatchesX509(t *testing.T) {
 }
 
 // TestDERWriter_Lengths checks the length encoder at its boundaries and the
-// INTEGER encoder's sign-byte and zero rules against known DER.
+// INTEGER encoder's sign-byte and zero rules against known DER. The length
+// cases run past 2^24, where the encoder used to write the count of a
+// three-octet field and the low three octets of a four-octet value — a
+// length modulo 2^24 — and up to a five-octet value, and every case is
+// decoded back by the DER rule.
 func TestDERWriter_Lengths(t *testing.T) {
+	// The two largest cases do not fit a 32-bit int; the table is int64 so
+	// the file compiles on 386, and those cases are skipped there (the
+	// encoder takes an int, so no such length can be asked for on 32-bit).
+	const maxInt = int64(int(^uint(0) >> 1))
 	for _, tc := range []struct {
-		n    int
+		n    int64
 		want []byte
 	}{
 		{0, []byte{0x00}}, {127, []byte{0x7f}}, {128, []byte{0x81, 0x80}}, {255, []byte{0x81, 0xff}},
 		{256, []byte{0x82, 0x01, 0x00}}, {65535, []byte{0x82, 0xff, 0xff}}, {65536, []byte{0x83, 0x01, 0x00, 0x00}},
+		{0xffffff, []byte{0x83, 0xff, 0xff, 0xff}}, {0x1000000, []byte{0x84, 0x01, 0x00, 0x00, 0x00}},
+		{0x1234567, []byte{0x84, 0x01, 0x23, 0x45, 0x67}}, {0xffffffff, []byte{0x84, 0xff, 0xff, 0xff, 0xff}},
+		{0x100000000, []byte{0x85, 0x01, 0x00, 0x00, 0x00, 0x00}},
 	} {
-		buf := make([]byte, 4)
+		if tc.n > maxInt {
+			t.Logf("length %#x: not representable as int on this platform, skipped", tc.n)
+			continue
+		}
+		n := int(tc.n)
+		buf := make([]byte, 9)
 		w := derWriter{b: buf}
-		w.putLength(tc.n)
-		if got := buf[:w.off]; !bytes.Equal(got, tc.want) {
+		w.putLength(n)
+		got := buf[:w.off]
+		if !bytes.Equal(got, tc.want) {
 			t.Errorf("length %d: got %x want %x", tc.n, got, tc.want)
 		}
-		if derLengthLen(tc.n) != len(tc.want) {
-			t.Errorf("derLengthLen(%d) = %d, want %d", tc.n, derLengthLen(tc.n), len(tc.want))
+		if derLengthLen(n) != len(tc.want) {
+			t.Errorf("derLengthLen(%d) = %d, want %d", tc.n, derLengthLen(n), len(tc.want))
+		}
+		// Decode the field back by the DER rule, and require the minimal
+		// form DER demands: no leading zero octet in the long form.
+		var decoded int64
+		if got[0] < 0x80 {
+			decoded = int64(got[0])
+		} else {
+			for _, b := range got[1:] {
+				decoded = decoded<<8 | int64(b)
+			}
+			if got[1] == 0 {
+				t.Errorf("length %d: leading zero octet in %x", tc.n, got)
+			}
+		}
+		if decoded != tc.n {
+			t.Errorf("length %d: %x decodes to %d", tc.n, got, decoded)
 		}
 	}
 	for _, tc := range []struct {

@@ -43,8 +43,9 @@ const MaxBcryptPBKDFKeyLen = bcryptpbkdf.MaxKeyLen
 //
 // # Cost
 //
-// rounds must be at least 1; ssh-keygen writes 16 by default and its -a
-// flag sets it. Cost is linear in rounds, and there is no upper bound here
+// rounds must be at least 1; ssh-keygen wrote 16 by default until OpenSSH
+// 9.3 and writes 24 since 9.4, and its -a flag sets it. Cost is linear in
+// rounds, and there is no upper bound here
 // — the OpenSSH file format's own cap belongs to the functions that read
 // and write those files, not to the primitive. salt must be 1 to 1 MiB, and
 // out 1 to [MaxBcryptPBKDFKeyLen] bytes; OpenSSH uses a 16-byte salt and a

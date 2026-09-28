@@ -73,6 +73,16 @@ func run(pass *analysis.Pass) (any, error) {
 					"borrowed closure is not a function literal and cannot be checked; pass a func literal, a local variable assigned one, or a function declared in this package")
 			}
 			return true
+		case unresolvedCallee:
+			// The call goes through a variable that holds a borrowing method
+			// value on some assignments and something else on others, so
+			// whether the closure is borrowed at all is a runtime question.
+			// The literal is not checked; strict mode says so.
+			if strict {
+				c.report(acc.closureArg.Pos(),
+					"closure passed through a variable that is sometimes a borrowing method value and sometimes not; it cannot be checked — bind the accessor once or call it directly")
+			}
+			return true
 		}
 		c.checkCallbackEscapes(acc)
 		c.checkReentrancy(acc)
@@ -112,7 +122,7 @@ func (c *checker) report(pos token.Pos, msg string) {
 type accessor struct {
 	call       *ast.CallExpr
 	method     *types.Func
-	recvExpr   ast.Expr       // the receiver expression as written
+	recvExpr   ast.Expr       // the receiver expression as written; nil if undecidable
 	recv       []types.Object // receiver identity chain, nil if undecidable
 	closureArg ast.Expr       // the argument the closure was resolved from
 	node       ast.Node       // *ast.FuncLit or *ast.FuncDecl: the closure's extent
@@ -131,7 +141,35 @@ const (
 	notBorrow accessorStatus = iota
 	resolved
 	unresolvedClosure
+	unresolvedCallee
 )
+
+// methodCall is a call resolved to the method it invokes: the receiver
+// expression as written (nil when the call goes through a variable bound to
+// method values of more than one receiver) and the embedded fields the method
+// was promoted through, so that e.Len() and e.SecureBuffer.Len() — the same
+// buffer, spelled with and without the promotion — get the same identity.
+type methodCall struct {
+	method   *types.Func
+	recv     ast.Expr
+	embedded []types.Object
+}
+
+// receiverKey builds the identity chain of a resolved method call's receiver:
+// the chain of the receiver expression (see checker.receiverKey) extended by
+// the embedded fields the method was promoted through.
+func (c *checker) receiverKeyOf(mc methodCall) ([]types.Object, bool) {
+	if mc.recv == nil {
+		return nil, false
+	}
+	base, ok := c.receiverKey(mc.recv, 0)
+	if !ok {
+		return nil, false
+	}
+	key := make([]types.Object, 0, len(base)+len(mc.embedded))
+	key = append(key, base...)
+	return append(key, mc.embedded...), true
+}
 
 // borrowAccessor reports whether call is a secmem borrowing accessor and, if so,
 // resolves the closure it borrows to. Matching is type-aware: the method must be
@@ -139,21 +177,27 @@ const (
 // has the borrowing shape, so an unrelated WithBytes on some other library's
 // concrete type is not flagged.
 func (c *checker) borrowAccessor(call *ast.CallExpr, stack []ast.Node) (accessor, accessorStatus) {
-	m, recvExpr, ok := c.borrowCallee(call)
-	if !ok {
+	mc, status := c.borrowCallee(call)
+	if status == notBorrow {
 		return accessor{}, notBorrow
 	}
 	arg := c.closureArgument(call)
 	if arg == nil {
 		return accessor{}, notBorrow
 	}
-	acc := accessor{call: call, method: m, recvExpr: recvExpr, closureArg: arg}
+	acc := accessor{call: call, method: mc.method, recvExpr: mc.recv, closureArg: arg}
+	if status == unresolvedCallee {
+		return acc, unresolvedCallee
+	}
 	acc.node, acc.body = c.resolveClosure(arg)
 	if acc.body == nil {
 		return acc, unresolvedClosure
 	}
-	acc.params = c.byteSliceParams(closureType(acc.node))
-	acc.recv, _ = c.receiverKey(recvExpr, 0)
+	// The parameters are decided on the closure's type AT THE CALL, which for
+	// a generic function passed by name (func leak[T ~[]byte](b T)) is the
+	// instantiated signature; the declared one says only T.
+	acc.params = c.byteSliceParams(closureType(acc.node), c.pass.TypesInfo.TypeOf(arg))
+	acc.recv, _ = c.receiverKeyOf(mc)
 	acc.otherBorrowed = make(map[types.Object]bool)
 	for _, anc := range stack {
 		if pc, ok := anc.(*ast.CallExpr); ok && pc != call {
@@ -172,12 +216,12 @@ func (c *checker) borrowAccessor(call *ast.CallExpr, stack []ast.Node) (accessor
 // addBorrowedParams adds the []byte parameters of the func literal a borrowing
 // call is passed (if call is one) to set.
 func (c *checker) addBorrowedParams(call *ast.CallExpr, set map[types.Object]bool) {
-	if _, _, ok := c.borrowCallee(call); !ok {
+	if _, status := c.borrowCallee(call); status != resolved {
 		return
 	}
 	for _, a := range call.Args {
 		if lit, ok := a.(*ast.FuncLit); ok {
-			for p := range c.byteSliceParams(lit.Type) {
+			for p := range c.byteSliceParams(lit.Type, c.pass.TypesInfo.TypeOf(lit)) {
 				set[p] = true
 			}
 		}
@@ -185,23 +229,120 @@ func (c *checker) addBorrowedParams(call *ast.CallExpr, set map[types.Object]boo
 }
 
 // borrowCallee resolves the method a call invokes and the receiver expression
-// it is invoked on, when that method is a borrowing accessor. Two spellings are
-// understood: the direct recv.WithBytes(...) and a call through a local
-// variable holding the method value (f := recv.WithBytes; f(...)).
-func (c *checker) borrowCallee(call *ast.CallExpr) (*types.Func, ast.Expr, bool) {
+// it is invoked on, when that method is a borrowing accessor. The spellings
+// understood are the direct recv.WithBytes(...), the method expression
+// (*secmem.SecureBuffer).WithBytes(recv, ...), and a call through a local
+// variable holding the method value (f := recv.WithBytes; f(...)) — bound once
+// to one receiver, or several times to borrowing accessors of several
+// receivers (the closure is still borrowed and is checked; only the receiver's
+// identity is unknown). A variable that is a borrowing method value on some
+// assignments and something else on others is unresolvedCallee.
+func (c *checker) borrowCallee(call *ast.CallExpr) (methodCall, accessorStatus) {
+	if id, ok := unparen(call.Fun).(*ast.Ident); ok {
+		return c.borrowCalleeVar(call, id)
+	}
+	mc, ok := c.methodCallOf(call)
+	if !ok || !isBorrowMethod(mc.method) {
+		return methodCall{}, notBorrow
+	}
+	return mc, resolved
+}
+
+// borrowCalleeVar resolves a call through a variable: every value the variable
+// is ever assigned must be a borrowing method value.
+func (c *checker) borrowCalleeVar(call *ast.CallExpr, id *ast.Ident) (methodCall, accessorStatus) {
+	v, ok := c.pass.TypesInfo.Uses[id].(*types.Var)
+	if !ok {
+		return methodCall{}, notBorrow
+	}
+	e := c.defs.vars[v]
+	if e == nil || len(e.defs) == 0 {
+		return methodCall{}, notBorrow
+	}
+	var first methodCall
+	borrowing, total := 0, 0
+	for _, def := range e.defs {
+		total++
+		if def.tuple {
+			continue
+		}
+		mc, ok := c.methodCallOf(&ast.CallExpr{Fun: def.expr, Args: call.Args})
+		if !ok || !isBorrowMethod(mc.method) {
+			continue
+		}
+		if borrowing == 0 {
+			first = mc
+		}
+		borrowing++
+	}
+	switch {
+	case borrowing == 0:
+		return methodCall{}, notBorrow
+	case borrowing < total || e.opaque != 0:
+		return methodCall{}, unresolvedCallee
+	case borrowing > 1:
+		first.recv, first.embedded = nil, nil // several receivers: identity undecidable
+	}
+	return first, resolved
+}
+
+// methodCallOf resolves the method a call invokes, when its function is spelled
+// as a method value (recv.M, possibly via an identifier bound once to one) or a
+// method expression ((*T).M with the receiver as the first argument).
+func (c *checker) methodCallOf(call *ast.CallExpr) (methodCall, bool) {
 	sel, ok := c.methodSelector(call.Fun)
 	if !ok {
-		return nil, nil, false
+		return methodCall{}, false
 	}
 	selection, ok := c.pass.TypesInfo.Selections[sel]
-	if !ok || selection.Kind() != types.MethodVal {
-		return nil, nil, false
+	if !ok {
+		return methodCall{}, false
 	}
 	m, ok := selection.Obj().(*types.Func)
-	if !ok || !isBorrowMethod(m) {
-		return nil, nil, false
+	if !ok {
+		return methodCall{}, false
 	}
-	return m, sel.X, true
+	var recv ast.Expr
+	switch selection.Kind() {
+	case types.MethodVal:
+		recv = sel.X
+	case types.MethodExpr:
+		if len(call.Args) == 0 {
+			return methodCall{}, false
+		}
+		recv = call.Args[0]
+	default:
+		return methodCall{}, false
+	}
+	index := selection.Index()
+	return methodCall{
+		method:   m,
+		recv:     recv,
+		embedded: embeddedFields(c.pass.TypesInfo.TypeOf(recv), index[:len(index)-1]),
+	}, true
+}
+
+// embeddedFields returns the field objects a promoted selection walks through,
+// starting from a value of type t (the receiver as written).
+func embeddedFields(t types.Type, index []int) []types.Object {
+	if len(index) == 0 || t == nil {
+		return nil
+	}
+	fields := make([]types.Object, 0, len(index))
+	for _, i := range index {
+		t = types.Unalias(t)
+		if p, ok := t.Underlying().(*types.Pointer); ok {
+			t = types.Unalias(p.Elem())
+		}
+		st, ok := t.Underlying().(*types.Struct)
+		if !ok || i >= st.NumFields() {
+			return fields
+		}
+		f := st.Field(i)
+		fields = append(fields, f)
+		t = f.Type()
+	}
+	return fields
 }
 
 // methodSelector returns the selector expression a call's function ultimately
@@ -284,7 +425,8 @@ func (c *checker) closureArgument(call *ast.CallExpr) ast.Expr {
 //   - an identifier bound exactly once (fn := func(b []byte) {...}) to a func
 //     literal;
 //   - an identifier naming a function declared at package level in the
-//     package under analysis.
+//     package under analysis, bare (leak) or explicitly instantiated
+//     (leak[[]byte]).
 //
 // Anything else — a call result, a method value, a field, a variable assigned
 // more than once, a function from another package — resolves to nil.
@@ -303,10 +445,38 @@ func (c *checker) resolveClosure(arg ast.Expr) (ast.Node, *ast.BlockStmt) {
 				return lit, lit.Body
 			}
 		case *types.Func:
-			if decl := c.defs.funcDecls[obj]; decl != nil && decl.Body != nil {
-				return decl, decl.Body
-			}
+			return c.funcDeclOf(obj)
 		}
+	case *ast.IndexExpr:
+		return c.resolveInstantiation(e.X)
+	case *ast.IndexListExpr:
+		return c.resolveInstantiation(e.X)
+	}
+	return nil, nil
+}
+
+// resolveInstantiation resolves the function an explicit instantiation
+// (leak[[]byte], leak[K, V]) names to its declaration in this package. Uses
+// records the generic function itself for the instantiated identifier, which
+// is the key funcDecls is built on; the instantiated signature is read off the
+// argument's type where the parameters are decided (see byteSliceParams).
+func (c *checker) resolveInstantiation(fun ast.Expr) (ast.Node, *ast.BlockStmt) {
+	id, ok := unparen(fun).(*ast.Ident)
+	if !ok {
+		return nil, nil
+	}
+	fn, ok := c.pass.TypesInfo.Uses[id].(*types.Func)
+	if !ok {
+		return nil, nil
+	}
+	return c.funcDeclOf(fn)
+}
+
+// funcDeclOf returns the declaration of a function in the package under
+// analysis, when it has a body.
+func (c *checker) funcDeclOf(fn *types.Func) (ast.Node, *ast.BlockStmt) {
+	if decl := c.defs.funcDecls[fn]; decl != nil && decl.Body != nil {
+		return decl, decl.Body
 	}
 	return nil, nil
 }
@@ -405,22 +575,42 @@ func sameReceiver(a, b []types.Object) bool {
 }
 
 // byteSliceParams returns the function's []byte parameters — the borrowed
-// slices whose escape the checks track. Decided on the resolved type, so a
-// parameter declared through an alias (type raw = []byte) is still tracked.
-func (c *checker) byteSliceParams(ft *ast.FuncType) map[types.Object]bool {
+// slices whose escape the checks track. Each declared parameter is decided on
+// the corresponding parameter of sig, the closure's type where it is passed:
+// for a generic function that is the instantiated signature, in which a
+// parameter declared as T ~[]byte is a []byte. Without sig (or past its end)
+// the declared type is used, resolved so that a parameter declared through an
+// alias (type raw = []byte) is still tracked.
+func (c *checker) byteSliceParams(ft *ast.FuncType, closureType types.Type) map[types.Object]bool {
 	objs := make(map[types.Object]bool)
 	if ft == nil || ft.Params == nil {
 		return objs
 	}
+	var params *types.Tuple
+	if closureType != nil {
+		if sig, ok := types.Unalias(closureType).Underlying().(*types.Signature); ok {
+			params = sig.Params()
+		}
+	}
+	idx := 0
 	for _, field := range ft.Params.List {
-		if !isByteSliceType(c.pass.TypesInfo.TypeOf(field.Type)) {
+		n := len(field.Names)
+		if n == 0 {
+			n = 1 // an unnamed parameter still occupies a position
+		}
+		t := c.pass.TypesInfo.TypeOf(field.Type)
+		if params != nil && idx < params.Len() {
+			t = params.At(idx).Type()
+		}
+		idx += n
+		if !isByteSliceType(t) {
 			continue
 		}
-		for _, n := range field.Names {
-			if n.Name == "_" {
+		for _, name := range field.Names {
+			if name.Name == "_" {
 				continue
 			}
-			if obj := c.pass.TypesInfo.ObjectOf(n); obj != nil {
+			if obj := c.pass.TypesInfo.ObjectOf(name); obj != nil {
 				objs[obj] = true
 			}
 		}
@@ -487,8 +677,10 @@ func lineKey(file string, line int) string {
 	return file + ":" + strconv.Itoa(line)
 }
 
-// nolintApplies reports whether a //nolint directive covers secmem-lint: either a
-// bare //nolint, or //nolint:<list> where the list contains secmem-lint.
+// nolintApplies reports whether a //nolint directive covers secmem-lint: a bare
+// //nolint, or //nolint:<list> where the list contains secmem-lint or all
+// (golangci-lint's spelling of "every linter", honoured here so a line one
+// tool has excused is not failed by the other).
 func nolintApplies(comment string) bool {
 	t := strings.TrimSpace(strings.TrimPrefix(comment, "//"))
 	if t == "nolint" {
@@ -502,7 +694,8 @@ func nolintApplies(comment string) bool {
 		list = list[:i] // drop any trailing "// explanation"
 	}
 	for _, name := range strings.Split(list, ",") {
-		if strings.TrimSpace(name) == "secmem-lint" {
+		switch strings.TrimSpace(name) {
+		case "secmem-lint", "all":
 			return true
 		}
 	}

@@ -244,6 +244,60 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
+		// The chacha20-poly1305 profile: a different KDF output length, a
+		// Poly1305 key derived from the keystream, and a hand-written core
+		// instead of crypto/aes. The file is the ssh-keygen fixture, so the
+		// scan is against what the tool writes; the parent learns its seed by
+		// parsing it, which is also what makes the patterns real.
+		name: "ParsePrivateKeyWithPassphrase/Ed25519-OpenSSH-chacha", class: residueContained,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			pemBytes, _, _ := fixture(t, "ed25519-chacha-a1")
+			pass := []byte(testPassphrase)
+			seed := chachaFixtureSeed(t, pemBytes, pass)
+			salt, rounds := kdfOptsOf(t, pemBytes)
+			kiv := make([]byte, chachaOpenSSHKeyLen)
+			if err := bcryptpbkdf.Derive(kiv, pass, salt, int(rounds), bcryptpbkdf.NewWorkspace()); err != nil {
+				t.Fatal(err)
+			}
+			var key [chachaKeyLen]byte
+			var nonce [8]byte
+			var block [chachaBlockSize]byte
+			copy(key[:], kiv[:chachaKeyLen])
+			chachaBlock(&block, &key, &nonce, 0)
+			// Poly1305 splits its key into a clamped r and an s, and x/crypto
+			// keeps both in a stack MAC state this module cannot wipe. s is
+			// the poly1305-key pattern's tail window already; r is watched in
+			// the clamped form it is stored in (RFC 8439 §2.5: the top four bits
+			// of bytes 3, 7, 11, 15 and the low two of bytes 4, 8, 12 cleared).
+			r := slices.Clone(block[:16])
+			r[3], r[7], r[11], r[15] = r[3]&15, r[7]&15, r[11]&15, r[15]&15
+			r[4], r[8], r[12] = r[4]&252, r[8]&252, r[12]&252
+			// The passphrase is not a pattern here: the fixtures share a
+			// fixed, low-entropy one, which would match unrelated memory.
+			pats := append(ed25519Patterns(seed),
+				residuePattern{"bcrypt-key", slices.Clone(kiv)},
+				residuePattern{"poly1305-key", slices.Clone(block[:chachaKeyLen])},
+				residuePattern{"poly1305-r", r},
+			)
+			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
+			return append(slices.Clone(pemBytes), pass...), aux, pats
+		},
+		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+			n := int(binary.BigEndian.Uint32(aux))
+			op := func() error {
+				return buf.WithBytesErr(func(p []byte) error {
+					s, err := ParsePrivateKeyWithPassphrase(p[:n], p[n:])
+					if err != nil {
+						return err
+					}
+					defer s.Destroy()
+					return signOp(s, crypto.Hash(0), []byte(residueMessage))()
+				})
+			}
+			return op, buf.Destroy, nil
+		},
+	},
+	{
 		// The salt is drawn fresh inside every export, so the derived key and
 		// round keys cannot be predicted; the seed's and the passphrase's own
 		// encodings can.
@@ -1091,6 +1145,29 @@ func x25519Material(t *testing.T) ([]byte, []byte, []residuePattern) {
 	clamped[31] &= 127
 	clamped[31] |= 64
 	return scalar, peer.PublicKey().Bytes(), []residuePattern{{"scalar", scalar}, {"clamped", clamped}, {"shared", shared}}
+}
+
+// chachaFixtureSeed opens the fixture and reads back the seed it holds, so
+// the scan hunts for the key the victim will actually load.
+func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
+	t.Helper()
+	s, err := ParsePrivateKeyWithPassphrase(pemBytes, pass)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Destroy()
+	ed, ok := s.(*Ed25519Signer)
+	if !ok {
+		t.Fatalf("fixture parsed as %T, want *Ed25519Signer", s)
+	}
+	var seed []byte
+	if err := ed.WithSeed(func(b []byte) error {
+		seed = slices.Clone(b) //nolint:secmem-lint // the parent builds the scan's patterns from it
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return seed
 }
 
 // marshalEncryptedOpenSSH writes seed as an aes256-ctr, bcrypt-protected

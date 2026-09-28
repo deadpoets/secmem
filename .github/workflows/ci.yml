@@ -43,12 +43,38 @@ env:
   GO_VERSION: "1.26.6"
 
 jobs:
-  # Every test step below runs through the test-audited action: `go test
-  # -json` piped into internal/skipaudit, which prints each skipped test with
-  # its reason and fails the job on any skip that is not on the lane's
-  # allowlist (.github/skip-allowlist/). A plain `go test` prints nothing for
-  # a t.Skip, so a proof that stopped running on a runner looked exactly like
-  # one that passed.
+  # Skip audit. A plain `go test` prints nothing for a t.Skip, so a proof that
+  # stopped running on a runner looked exactly like one that passed. Every step
+  # that runs a proof therefore goes through internal/skipaudit: `go test
+  # -json` piped into the audit, which prints each skipped test with its
+  # reason and fails the job on any skip that is not on the lane's allowlist
+  # (.github/skip-allowlist/), on any failure, and when no test ran at all —
+  # so a test renamed out from under a -run pattern fails instead of passing
+  # as "no tests to run". Audited, via ./.github/actions/test-audited: every
+  # test step of test, test-arm64-linux, test-runtimesecret, test-386-linux,
+  # test-noescape, test-residue and test-residue-windows. Audited by the same
+  # program fed through test2json: test-root-linux, where only the test binary
+  # may run under sudo. argon2-workspace-ran, run by test and test-arm64-linux,
+  # is the one other check on skipping: it re-runs the locked Argon2 workspace
+  # tests verbosely and fails on any SKIP and on a -run pattern that no
+  # passing test matched (ScrubClearsVectorRegs is required only on amd64,
+  # the sole architecture whose files define it).
+  #
+  # The remaining `go test` runs — four steps in three jobs — are plain and
+  # NOT audited, on purpose:
+  #   - released-deps, both steps: its question is whether the module graph
+  #     RESOLVES and builds as a consumer would see it (GOWORK=off, the
+  #     published core tag). The test files it runs are the same ones `test`
+  #     (with -race) and secmem-lint run on the same runner image, and it
+  #     does not lift the memlock limit, so the full-profile locked Argon2
+  #     workspace test skips there by design; auditing it would mean an
+  #     allowlist for a lane that proves nothing about skipping.
+  #   - secmem-lint "test analyzer": analysistest over testdata, asserting
+  #     diagnostics rather than runtime protections; the module has no t.Skip.
+  #   - examples "vet + race test": the illustrative module, outside the
+  #     workspace; its tests are the ssh-agent's x/crypto/ssh/agent interop
+  #     and availability suites and the password-login timing tests, none
+  #     uses t.Skip, and no protection claim rests on it.
   test:
     strategy:
       fail-fast: false
@@ -171,6 +197,9 @@ jobs:
   # detector), so the -race jobs skip them and only test-386-linux would
   # otherwise run them — but OpenInto's GCM path is assembly on amd64/arm64 and
   # generic on 386, so the deployed architectures must run the gates too.
+  # Audited like every other proof: the gates have no t.Skip, so nothing may
+  # skip, and a rename that empties the -run pattern fails the step (the audit
+  # refuses a run with no test events) instead of passing as "no tests to run".
   test-noescape:
     strategy:
       fail-fast: false
@@ -183,9 +212,17 @@ jobs:
         with:
           go-version: ${{ env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
-      - run: go test -run TestNoHeapEscape ./...
-      - run: go test -run TestNoHeapEscape ./...
-        working-directory: secmem-crypto
+      - name: no-heap-escape gates (core)
+        uses: ./.github/actions/test-audited
+        with:
+          allowlist: linux
+          args: "-count=1 -run TestNoHeapEscape"
+      - name: no-heap-escape gates (secmem-crypto)
+        uses: ./.github/actions/test-audited
+        with:
+          working-directory: secmem-crypto
+          allowlist: linux
+          args: "-count=1 -run TestNoHeapEscape"
 
   # The out-of-process key residue proof (secmem-crypto/residue_test.go and
   # its per-OS halves): a parent freezes a victim subprocess and scans its
@@ -339,7 +376,8 @@ jobs:
   # and crypto through replace directives, so it builds against this checkout with
   # GOWORK=off and does NOT use setup-workspace (which would write a go.work that
   # omits examples). The ssh-agent example is unix-only, so this job is Linux-only:
-  # it vets, race-tests (the agent's x/crypto/ssh/agent interop suite), and holds
+  # it vets, race-tests (the agent's interop and availability suites and the
+  # password-login timing tests), and holds
   # the example code to the same golangci-lint + staticcheck gate as the library.
   examples:
     runs-on: ubuntu-latest

@@ -105,6 +105,8 @@ func TestBorrowPaths_ClearRegistersOnReturn(t *testing.T) {
 		{"ArenaSlot.WithBytesErr", func() { _ = slot.WithBytesErr(func([]byte) error { fill(); return nil }) }},
 		{"SecureBuffer.CopyIn", func() { fill(); _, _ = buf.CopyIn(src, 0) }},
 		{"SecureBuffer.CopyOut", func() { fill(); _, _ = buf.CopyOut(dst, 0) }},
+		{"SecureBuffer.ByteAt", func() { fill(); _, _ = buf.ByteAt(0) }},
+		{"SecureBuffer.SetByteAt", func() { fill(); _ = buf.SetByteAt(0, 0x42) }},
 		{"SecureBuffer.ConstantTimeEqual", func() { fill(); _, _ = buf.ConstantTimeEqual(src) }},
 		{"SecureBuffer.WriteTo", func() { fill(); _, _ = buf.WriteTo(io.Discard) }},
 		{"SecureBuffer.ReadFrom", func() { fill(); _, _ = buf.ReadFrom(bytes.NewReader(src)) }},

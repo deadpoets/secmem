@@ -27,3 +27,11 @@ func bareNolint(buf *secmem.SecureBuffer) {
 		sink = string(b) //nolint
 	})
 }
+
+// nolintAll: golangci-lint's "every linter" spelling is honoured, so a line
+// one tool has excused is not failed by the other.
+func nolintAll(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		sink = string(b) //nolint:all // deliberate egress
+	})
+}

@@ -24,7 +24,7 @@ func ExampleBcryptPBKDFInto() {
 	// The salt is not secret: OpenSSH stores a fresh 16-byte salt, and the
 	// round count, in the key file's header beside the ciphertext.
 	salt := []byte("0123456789abcdef")
-	const rounds = 16 // ssh-keygen's default; its -a flag sets it
+	const rounds = 16 // ssh-keygen's default before OpenSSH 9.4 (24 since); its -a flag sets it
 
 	// Created after the passphrase buffer on purpose: the passphrase is
 	// borrowed around the call below, and nested borrows must run
