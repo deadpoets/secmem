@@ -18,8 +18,8 @@ mark the stability commitment.
 - **`secmem-crypto`: OpenSSH files encrypted with
   `chacha20-poly1305@openssh.com` open.** ssh-keygen writes this one on
   request (`-Z`), and it was refused. It is not the IETF AEAD of RFC 8439
-  that `x/crypto/chacha20poly1305` implements (the standard library has no
-  ChaCha20 at all): the key is 64
+  that `x/crypto/chacha20poly1305` implements (the standard library exports
+  no ChaCha20): the key is 64
   bytes (two ChaCha20 keys, the second of which encrypts packet lengths and
   so goes unused by a key file), it is the original ChaCha20 with a 64-bit
   counter and a 64-bit nonce rather than the 96-bit-nonce variant, the
@@ -33,12 +33,13 @@ mark the stability commitment.
   pinned at zero allocations, and x/crypto's Poly1305 copies of r and s are
   left to the Scrub window and watched by the residue scan. The core is
   checked against RFC 8439's vector and differentially against
-  `x/crypto/chacha20` over random keys, nonces and counters at every block
-  boundary and at random lengths, with the carry between the counter words
-  pinned separately; the end-to-end proof is two `ssh-keygen` fixtures — one
-  whose private block is a multiple of 16 and one whose block is 8 mod 16,
-  which only the cipher's own 8-byte block admits — and the residue scan
-  runs the first as its own scenario and finds nothing for. A wrong
+  `x/crypto/chacha20` over random keys, nonces and counters at lengths on
+  and around the first block boundaries and at random lengths, with the
+  carry between the counter words pinned separately; the end-to-end proof is
+  two `ssh-keygen` fixtures — one whose private block is a multiple of 16 and
+  one whose block is 8 mod 16, which only the cipher's own 8-byte block
+  admits — and the residue scan runs the first as its own scenario and finds
+  nothing for. A wrong
   passphrase fails at the authenticator rather than at the format's check
   integers, and returns the same `x509.IncorrectPasswordError`. Shown to
   fail with the two keys swapped and with the payload counter left at 0.

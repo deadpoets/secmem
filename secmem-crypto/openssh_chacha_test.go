@@ -47,8 +47,8 @@ func TestChaChaBlock_RFC8439Vector(t *testing.T) {
 }
 
 // TestChaChaXOR_MatchesXCrypto is the differential: for random keys, nonces
-// and counters, at every block boundary and at random lengths up to 4 KiB,
-// the keystream must equal x/crypto/chacha20's. The two are related by the
+// and counters, at lengths on and around the first block boundaries and at
+// random lengths up to 4 KiB, the keystream must equal x/crypto/chacha20's. The two are related by the
 // counter split described above, so this also pins that mapping. Both
 // counter words are random; the low word stays far enough below 2^32 that
 // x/crypto's 32-bit counter cannot overflow within one stream, and the

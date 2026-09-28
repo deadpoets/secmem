@@ -37,17 +37,18 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // error and ownership rules, and the [ErrHeapTransients] refusal of RSA and
 // EC keys without [AllowHeapTransients] are [ParsePrivateKey]'s.
 //
-// Supported protection is what ssh-keygen writes and reads: KDF bcrypt,
-// cipher AES-128/192/256 in CTR or CBC mode, up to 2048 rounds (x/crypto's
-// cap: cost is linear in rounds and the count comes from the file), and
-// chacha20-poly1305@openssh.com, whose authenticator follows the private
-// block and whose 64-byte key material is two ChaCha20 keys, only the first
-// of which a key file uses. OpenSSH derives exactly key||IV from the KDF, so
-// the key length is part of the format, not a local choice. Of these,
-// x/crypto/ssh reads only aes256-ctr and aes256-cbc, the pair ssh-keygen
-// writes by default. PKCS#8 "ENCRYPTED PRIVATE KEY" (PBES2) and legacy PEM
-// Proc-Type / DEK-Info encryption return an error wrapping
-// [ErrUnsupportedKey]; the legacy form additionally wraps
+// Supported protection is KDF bcrypt, up to 2048 rounds (x/crypto's cap:
+// cost is linear in rounds and the count comes from the file), under the
+// ciphers ssh-keygen writes that this package runs: AES-128/192/256 in CTR
+// or CBC mode, and chacha20-poly1305@openssh.com, whose authenticator
+// follows the private block and whose 64-byte key material is two ChaCha20
+// keys, only the first of which a key file uses. OpenSSH derives exactly
+// key||IV from the KDF, so the key length is part of the format, not a
+// local choice. Of these, x/crypto/ssh reads only aes256-ctr (ssh-keygen's
+// default) and aes256-cbc. The other ciphers ssh-keygen -Z accepts — the
+// AES-GCM pair and 3des-cbc — as well as PKCS#8 "ENCRYPTED PRIVATE KEY"
+// (PBES2) and legacy PEM Proc-Type / DEK-Info encryption return an error
+// wrapping [ErrUnsupportedKey]; the legacy form additionally wraps
 // [ErrRetiredAlgorithm], because that one is refused on purpose and will not
 // arrive in a later release, while PBES2 is simply not implemented yet. A
 // key that is not protected at all returns [ErrNotEncrypted]; a header that

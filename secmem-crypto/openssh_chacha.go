@@ -15,8 +15,8 @@ import (
 
 // chacha20-poly1305@openssh.com, as OpenSSH applies it to a private-key
 // file. Two things differ from the IETF AEAD of RFC 8439, so neither the
-// standard library (which has no ChaCha20 at all) nor
-// x/crypto/chacha20poly1305 implements this construction:
+// standard library (which exports no ChaCha20; crypto/tls uses a vendored
+// copy) nor x/crypto/chacha20poly1305 implements this construction:
 //
 //   - The key is 64 bytes: the first half encrypts the payload, the second
 //     encrypts packet lengths on the wire. A private-key file has no length
@@ -38,8 +38,9 @@ import (
 // returns. One piece of state is not this file's to wipe: x/crypto's
 // Poly1305 keeps its own copies of the clamped r and of s — the two halves
 // of the Poly1305 key — in a stack MAC state that nothing clears, as
-// SHA-512 keeps its state inside the KDF (internal/bcryptpbkdf/doc.go);
-// those copies are left to the Scrub window, and the residue scenario
+// sha512.Sum512 keeps its copies of the seed when Ed25519 signs
+// (ed25519direct.go); those copies are left to the Scrub window, and the
+// residue scenario
 // watches for both halves (residue_scenarios_test.go). chachaBlock is
 // pinned to x/crypto's implementation by a differential test and to RFC
 // 8439's vector by a known-answer test.

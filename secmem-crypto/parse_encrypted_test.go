@@ -187,6 +187,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			t.Fatalf("fixture: header %v, %d bytes after the block, want %d", err, len(h.rest), chachaTagLen)
 		}
 		for name, data := range map[string][]byte{
+			"none":  raw[:len(raw)-chachaTagLen],
 			"short": raw[:len(raw)-1],
 			"long":  append(bytes.Clone(raw), 0),
 		} {
@@ -209,9 +210,9 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 	t.Run("ed25519-a1/bytes after the block", func(t *testing.T) {
 		_, raw, _ := fixture(t, "ed25519-a1")
 		for name, data := range map[string][]byte{
-			"one byte":       append(bytes.Clone(raw), 0),
-			"a tag's worth":  append(bytes.Clone(raw), make([]byte, chachaTagLen)...),
-			"an AES block's": append(bytes.Clone(raw), make([]byte, opensshAESBlock)...),
+			"one byte":      append(bytes.Clone(raw), 0),
+			"half a block":  append(bytes.Clone(raw), make([]byte, opensshAESBlock/2)...),
+			"a tag's worth": append(bytes.Clone(raw), make([]byte, chachaTagLen)...),
 		} {
 			s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 			if err == nil {
@@ -308,6 +309,18 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		{"not a key", []byte("hello"), testPassphrase, errMalformed},
 		{"truncated container", raw[:40], testPassphrase, errMalformed},
 	}
+	// The synthetic containers carry a public-key block of "pub", which the
+	// pre-KDF key-type check refuses as malformed too, so for the rows that
+	// exist to pin a rule judged before it, the error must also name that
+	// rule; otherwise the row would pass with the rule deleted.
+	wantText := map[string]string{
+		"aes: bytes after the block":      "authenticator",
+		"aes128: bytes after the block":   "authenticator",
+		"chacha: no authenticator":        "authenticator",
+		"chacha: short authenticator":     "authenticator",
+		"chacha: long authenticator":      "authenticator",
+		"chacha: block not multiple of 8": "block size",
+	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			s, err := ParsePrivateKeyWithPassphrase(tc.data, []byte(tc.pass), AllowHeapTransients())
@@ -317,6 +330,9 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 			}
 			if !errors.Is(err, tc.want) {
 				t.Fatalf("got %v, want %v", err, tc.want)
+			}
+			if text, ok := wantText[tc.name]; ok && !strings.Contains(err.Error(), text) {
+				t.Fatalf("got %v, want an error naming the %s", err, text)
 			}
 		})
 	}

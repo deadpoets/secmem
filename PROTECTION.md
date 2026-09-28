@@ -141,7 +141,8 @@ every encoding it can derive that recovers the key: raw and little-endian
 integers, the RSA FIPS-form limbs and Montgomery constants, the Ed25519 scalars
 in `edwards25519`'s internal layout and the nonce digest, the HMAC pads and
 chaining values, the ML-KEM secret polynomial and SHAKE state, the AES round
-keys and GHASH table, Argon2's H0, and each output. Every scan must also find a
+keys and GHASH table, the Poly1305 key and its clamped half, Argon2's H0, and
+each output. Every scan must also find a
 heap canary the victim keeps alive, so a scan that sees nothing fails. Controls
 show the scan finding a heap copy, a copy made outside `Scrub`, and a copy the
 runtime saved to the stack by preemption, and on Windows a control that a
