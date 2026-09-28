@@ -252,8 +252,8 @@ var residueScenarios = []residueScenario{
 			// Poly1305 splits its key into a clamped r and an s, and x/crypto
 			// keeps both in a stack MAC state this module cannot wipe. s is
 			// the poly1305-key pattern's tail window already; r is watched in
-			// the clamped form it is stored in (RFC 8439 §2.5.1: bits cleared
-			// in bytes 3, 7, 11, 15 and 4, 8, 12).
+			// the clamped form it is stored in (RFC 8439 §2.5: the top four bits
+			// of bytes 3, 7, 11, 15 and the low two of bytes 4, 8, 12 cleared).
 			r := slices.Clone(block[:16])
 			r[3], r[7], r[11], r[15] = r[3]&15, r[7]&15, r[11]&15, r[15]&15
 			r[4], r[8], r[12] = r[4]&252, r[8]&252, r[12]&252

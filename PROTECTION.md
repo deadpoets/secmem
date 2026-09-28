@@ -49,7 +49,7 @@ it.
 | Entry point | Level | Left outside locked memory after use | Residue scenario |
 |---|---|---|---|
 | `Ed25519Signer` (sign, generate, `NewEd25519Signer`) | **Protected** | nothing: not the seed, the expanded secret, the private or nonce scalar, or the nonce digest | `Ed25519Signer` |
-| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` for an Ed25519 file | **Protected** | nothing: not the seed, the passphrase, the bcrypt output (48 bytes for AES, 64 for chacha20-poly1305), either AES schedule, or the Poly1305 key and its clamped half | `ParsePrivateKey/Ed25519-PKCS8`, `ParsePrivateKeyWithPassphrase/Ed25519-OpenSSH`, `ParsePrivateKeyWithPassphrase/Ed25519-OpenSSH-chacha` |
+| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` for an Ed25519 file | **Protected** | nothing: not the seed, the passphrase, the bcrypt output (key||IV: 48 bytes for the aes256-ctr file the AES scenario uses, 64 for chacha20-poly1305), either AES schedule, or the Poly1305 key and its clamped half | `ParsePrivateKey/Ed25519-PKCS8`, `ParsePrivateKeyWithPassphrase/Ed25519-OpenSSH`, `ParsePrivateKeyWithPassphrase/Ed25519-OpenSSH-chacha` |
 | `MarshalOpenSSHPrivateKey…` | **Protected** | nothing: not the seed or the passphrase (the salt is random, so the derived key is not searched) | `MarshalOpenSSHPrivateKeyWithPassphrase/Ed25519` |
 | `X25519Key` | **Protected** | nothing: not the scalar, the clamped scalar, or the shared secret | `X25519Key` |
 | `HKDFInto`, `HMACInto` over SHA-2 or SHA-3 (and `HKDFSHA256Into`, `HMACSHA256Into`) | **Protected** | nothing: not the secret, the key XORed into either pad, the pseudorandom key, either digest state, or the output | `HKDFSHA256Into`, `HMACSHA256Into`, `HKDFInto/SHA-512-long-secret`, `HMACInto/SHA3-256-long-info` |

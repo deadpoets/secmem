@@ -59,8 +59,9 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // package reads.
 //
 // It is deliberately NOT returned for things that are merely unimplemented
-// — PKCS#8 PBES2 — because that may yet arrive, and a caller should be
-// able to tell the two apart.
+// — PKCS#8 PBES2, the OpenSSH ciphers this package does not run, an unknown
+// KDF — because those may yet arrive, and a caller should be able to tell
+// the two apart.
 var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
 
 // errLegacyPEM is the one refusal that carries ErrRetiredAlgorithm today.

@@ -278,9 +278,9 @@ wrong passphrase as for a corrupt file. Someone who can hand the holder a
 modified file and read the error learns that it did not open, and nothing
 about where in the block their change landed. The residual is success: a
 change confined to the comment, which no reader validates, still yields the
-key — here exactly as in OpenSSH. The one OpenSSH cipher that is
-authenticated, `chacha20-poly1305@openssh.com`, has none of this to answer
-for: a wrong passphrase and a modified file both fail at the tag before
+key — here exactly as in OpenSSH. The one authenticated OpenSSH
+cipher this package opens, `chacha20-poly1305@openssh.com`, has none of this
+to answer for: a wrong passphrase and a modified file both fail at the tag before
 anything is decrypted, and that failure is reported as the same error, so
 the answer reads the same whichever cipher the file names.
 
