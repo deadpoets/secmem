@@ -45,7 +45,7 @@ func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 
 	// Control: opensshCrypt's computation over plain memory, no window and no
 	// secmem call.
-	kiv := make([]byte, opensshKeyIVLen)
+	kiv := make([]byte, aes256KeyIVLen)
 	if err := bcryptpbkdf.Derive(kiv, passphrase, salt, 1, bcryptpbkdf.NewWorkspace()); err != nil {
 		t.Fatal(err)
 	}
@@ -61,7 +61,7 @@ func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 
 	// Subject: the window both callers use.
 	err = secmem.ScrubErr(func() error {
-		return opensshCrypt(dst, src, passphrase, salt, 1, cipherAES256CTR, false)
+		return opensshCrypt(dst, src, nil, passphrase, salt, 1, cipherAES256CTR, false)
 	})
 	regprobe.DumpXMM(&got)
 	if errors.Is(err, secmem.ErrNoSecureMemory) {
