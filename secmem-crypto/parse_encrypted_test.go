@@ -302,8 +302,8 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 		{"unencrypted openssh raw", plainBlock.Bytes, testPassphrase, ErrNotEncrypted},
 		{"pkcs8 pem", []byte(pemOfType(pk, "", base64.StdEncoding.EncodeToString(p8))), testPassphrase, ErrNotEncrypted},
 		{"pkcs8 raw", p8, testPassphrase, ErrNotEncrypted},
-		{"pkcs8 encrypted pem", []byte(pemOfType(epk, "", "MAAA")), testPassphrase, ErrUnsupportedKey},
-		{"pkcs8 encrypted raw", []byte{0x30, 0x04, 0x30, 0x02, 0x05, 0x00}, testPassphrase, ErrUnsupportedKey},
+		{"pkcs8 encrypted pem, empty", []byte(pemOfType(epk, "", "MAAA")), testPassphrase, errMalformed},         // PBES2 opens now (pbes2_test.go); an empty SEQUENCE is not a file
+		{"pkcs8 encrypted raw, empty", []byte{0x30, 0x04, 0x30, 0x02, 0x05, 0x00}, testPassphrase, errMalformed}, // likewise
 		{"legacy pem encryption", legacy, testPassphrase, ErrUnsupportedKey},
 		{"kdf none", testContainer("aes256-ctr", "none", nil, 16), testPassphrase, errMalformed},               // half-encrypted: see TestParseOpenSSH_HeaderConsistency
 		{"cipher none", testContainer("none", "bcrypt", testKDFOpts(16, 1), 16), testPassphrase, errMalformed}, // likewise
@@ -780,9 +780,23 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 		f.Add(pemBytes)
 		f.Add(raw)
 	}
+	// The PBES2 fixtures, under the same rule for the cost they name: PBKDF2
+	// is cheap per iteration, so the bound is a few thousand rather than
+	// four, which admits openssl's 2048 default and excludes the 600 000 file.
+	for _, name := range pkcs8Fixtures(f) {
+		pemBytes, raw, _ := pkcs8Fixture(f, name)
+		if iter, ok := pbes2IterationsOf(raw); ok && iter > fuzzMaxPBKDF2Iterations {
+			continue
+		}
+		f.Add(pemBytes)
+		f.Add(raw)
+	}
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if _, rounds, ok := readKDFOpts(data); ok && rounds > 4 {
 			t.Skip("rounds > 4")
+		}
+		if iter, ok := pbes2IterationsOf(data); ok && iter > fuzzMaxPBKDF2Iterations {
+			t.Skip("PBKDF2 iterations over the fuzzing bound")
 		}
 		s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 		if err != nil {
@@ -794,6 +808,32 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 		defer s.Destroy()
 		checkSignerConsistent(t, s)
 	})
+}
+
+// fuzzMaxPBKDF2Iterations bounds the PBKDF2 count a fuzz input may name.
+const fuzzMaxPBKDF2Iterations = 4096
+
+// pbes2IterationsOf reads the PBKDF2 iteration count out of a PKCS#8
+// EncryptedPrivateKeyInfo, PEM or raw, as the parser would; ok is false
+// for anything that is not one the parser accepts up to that field. It
+// allocates freely: it is a fuzzing guard, not the parser.
+func pbes2IterationsOf(data []byte) (int, bool) {
+	der := data
+	if bytes.Contains(data, pemBegin) {
+		typ, body, err := pemBlock(data)
+		if err != nil || string(typ) != pkcs8PEMType {
+			return 0, false
+		}
+		der, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(body)), ""))
+		if err != nil {
+			return 0, false
+		}
+	}
+	f, err := readPBES2(der)
+	if err != nil {
+		return 0, false
+	}
+	return f.iter, true
 }
 
 // testContainer builds an OpenSSH container with a hand-written header,

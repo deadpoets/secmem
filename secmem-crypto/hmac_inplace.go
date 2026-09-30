@@ -16,6 +16,7 @@ package secmemcrypto
 
 import (
 	"bytes"
+	"crypto/sha1" //nolint:gosec // G505: PBKDF2-HMAC-SHA1 is the PRF PKCS#8 PBES2 defaults to; it is selected by OID in pbes2.go only, never for a caller's hash
 	"crypto/sha256"
 	"crypto/sha3"
 	"crypto/sha512"
@@ -43,6 +44,14 @@ const (
 	hashSHA3_256
 	hashSHA3_384
 	hashSHA3_512
+	// hashSHA1 is reachable only by id, from pbes2.go: it is the PRF a
+	// PKCS#8 PBES2 file names when its prf field is absent (RFC 8018's
+	// DEFAULT), and files that OpenSSL 1.0 wrote still carry it. HMAC-SHA1
+	// is not broken — HMAC does not depend on collision resistance — but
+	// this module offers SHA-1 nowhere else, so inPlaceHashOf never
+	// identifies a caller's sha1.New as it: HMACInto and HKDFInto with SHA-1
+	// keep taking the heap path and its gate, as before.
+	hashSHA1
 )
 
 // maxHashSize bounds every supported hash's output: SHA-512's.
@@ -55,6 +64,8 @@ const hmacStackRegion = 1536
 
 func (h inPlaceHash) size() int {
 	switch h {
+	case hashSHA1:
+		return 20
 	case hashSHA224, hashSHA512_224, hashSHA3_224:
 		return 28
 	case hashSHA256, hashSHA512_256, hashSHA3_256:
@@ -71,7 +82,7 @@ func (h inPlaceHash) size() int {
 // hash.Hash.BlockSize, the rate for SHA-3.
 func (h inPlaceHash) block() int {
 	switch h {
-	case hashSHA224, hashSHA256:
+	case hashSHA1, hashSHA224, hashSHA256:
 		return 64
 	case hashSHA384, hashSHA512, hashSHA512_224, hashSHA512_256:
 		return 128
@@ -93,6 +104,10 @@ func (h inPlaceHash) block() int {
 // would make data escape.
 func (h inPlaceHash) sum(dst, data []byte) {
 	switch h {
+	case hashSHA1:
+		s := sha1.Sum(data) //nolint:gosec // G401: see hashSHA1
+		copy(dst, s[:])
+		secmem.SecureWipe(s[:])
 	case hashSHA224:
 		s := sha256.Sum224(data)
 		copy(dst, s[:])

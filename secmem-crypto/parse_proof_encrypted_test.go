@@ -26,6 +26,7 @@ var passphrasePathFiles = map[string]bool{
 	"parse.go": true, "parse_openssh.go": true, "parse_encrypted.go": true,
 	"marshal_openssh.go": true, "openssh_wire.go": true, "openssh_cipher.go": true,
 	"openssh_chacha.go": true, "aeswipe.go": true,
+	"pbes2.go": true, "pbkdf2_inplace.go": true, "hmac_inplace.go": true,
 }
 
 // withoutAESAllowance is the allowlist for a path that has no AES Block to
@@ -120,6 +121,30 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 		for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 			t.Run(name+"/"+form, func(t *testing.T) {
 				proveNoOwnedAllocations(t, passphrasePathFiles, allowed, func() {
+					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
+					if err != nil {
+						t.Fatal(err)
+					}
+					s.Destroy()
+				})
+			})
+		}
+	}
+}
+
+// The same proof over every PKCS#8 PBES2 fixture: the in-place PBKDF2, the
+// CBC decryption and the PrivateKeyInfo read may allocate nothing but the
+// AES Block. The OID reads are cryptobyte's own allocations, not secret,
+// and allowlisted as they are for the plain proof.
+func TestParsePrivateKeyWithPassphrase_PKCS8AllocatesOnlyTheAESBlock(t *testing.T) {
+	for _, name := range pkcs8Fixtures(t) {
+		if strings.Contains(name, "600k") {
+			continue // 4 x 600 000 iterations under the profiler proves nothing extra
+		}
+		pemBytes, raw, _ := pkcs8Fixture(t, name)
+		for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
+			t.Run(name+"/"+form, func(t *testing.T) {
+				proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
 					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {
 						t.Fatal(err)

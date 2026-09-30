@@ -29,12 +29,12 @@ import (
 
 // ErrEncryptedKey is returned by [ParsePrivateKey] for a passphrase-protected
 // key: an OpenSSH file with a cipher or KDF other than "none", a PKCS#8
-// "ENCRYPTED PRIVATE KEY" block, or a legacy PEM block with Proc-Type /
-// DEK-Info headers. A protected OpenSSH file opens with
-// [ParsePrivateKeyWithPassphrase]. The other two are refused: PBES2's KDFs
-// are not implemented here yet, and legacy PEM encryption never will be
-// (see [ErrRetiredAlgorithm]). Convert the file with ssh-keygen -p or
-// openssl pkey first.
+// "ENCRYPTED PRIVATE KEY" block (PEM or bare DER), or a legacy PEM block
+// with Proc-Type / DEK-Info headers. A protected OpenSSH file and a PKCS#8
+// PBES2 file open with [ParsePrivateKeyWithPassphrase]. Legacy PEM
+// encryption, and PKCS#8 files under PBES1, the PKCS#12 PBEs or PBES2 over
+// DES, 3DES or RC2, never will: for those the error also wraps
+// [ErrRetiredAlgorithm] and names the command that converts the file.
 var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protected")
 
 // ErrRetiredAlgorithm marks a refusal that is a decision rather than a gap:
@@ -58,17 +58,23 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // `openssl pkey -in key -out key` both rewrite such a file in a format this
 // package reads.
 //
+// The PKCS#8 side of the same decision (pbes2.go): PBES1 and the PKCS#12
+// password-based encryption schemes — a single pass of MD2, MD5 or SHA-1
+// over the passphrase, then DES, 3DES, RC2 or RC4 — and PBES2 over DES,
+// 3DES or RC2, are refused the same way. `openssl pkcs8 -topk8 -v2
+// aes-256-cbc` rewrites any of them in a form this package reads.
+//
 // It is deliberately NOT returned for things that are merely unimplemented
-// — PKCS#8 PBES2, the OpenSSH ciphers this package does not run, an unknown
-// KDF — because those may yet arrive, and a caller should be able to tell
-// the two apart.
+// — the scrypt KDF and the AES-GCM schemes of PBES2, the OpenSSH ciphers
+// this package does not run, an unknown KDF — because those may yet
+// arrive, and a caller should be able to tell the two apart.
 var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
 
-// errLegacyPEM is the one refusal that carries ErrRetiredAlgorithm today.
-// It is built once, with the remedy in it, so that both entry points say
-// the same thing: ParsePrivateKey wraps it in ErrEncryptedKey and
-// ParsePrivateKeyWithPassphrase in ErrUnsupportedKey, each keeping the
-// sentinel it always returned.
+// errLegacyPEM is the PEM refusal that carries ErrRetiredAlgorithm (the
+// PKCS#8 ones are in pbes2.go). It is built once, with the remedy in it,
+// so that both entry points say the same thing: ParsePrivateKey wraps it
+// in ErrEncryptedKey and ParsePrivateKeyWithPassphrase in
+// ErrUnsupportedKey, each keeping the sentinel it always returned.
 var errLegacyPEM = fmt.Errorf("%w: legacy PEM encryption (Proc-Type / DEK-Info headers); re-encrypt it with ssh-keygen -p or openssl pkey", ErrRetiredAlgorithm)
 
 // ErrUnsupportedKey is returned by [ParsePrivateKey] for a well-formed key of
@@ -223,8 +229,9 @@ func parsePrivateKey(data []byte, o options) (Signer, error) {
 		case "RSA PRIVATE KEY":
 			return rsaFromDER(blob, o)
 		case "ENCRYPTED PRIVATE KEY":
+			err := blob.WithBytesErr(func(der []byte) error { return encryptedPKCS8Error(der) })
 			_ = blob.Destroy()
-			return nil, ErrEncryptedKey
+			return nil, err
 		default:
 			_ = blob.Destroy()
 			return nil, fmt.Errorf("%w: PEM block type %s", ErrUnsupportedKey, labelForError(typ))
@@ -419,8 +426,17 @@ func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	err := blob.WithBytesErr(func(der []byte) error {
 		in := cryptobyte.String(der)
 		var seq cryptobyte.String
+		if !in.ReadASN1(&seq, cbasn1.SEQUENCE) {
+			return errMalformed
+		}
+		if seq.PeekASN1Tag(cbasn1.SEQUENCE) {
+			// An AlgorithmIdentifier where every unencrypted structure
+			// has its version: EncryptedPrivateKeyInfo, named as the PEM
+			// form of the same file is.
+			return encryptedPKCS8Error(der)
+		}
 		var version int64
-		if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadASN1Integer(&version) {
+		if !seq.ReadASN1Integer(&version) {
 			return errMalformed
 		}
 		var elem cryptobyte.String
@@ -505,6 +521,11 @@ func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 				return errMalformed
 			}
 			pub = pubBits
+		}
+		if !seq.Empty() {
+			// attributes and publicKey are OPTIONAL: a damaged tag reads
+			// as "absent" and would otherwise leave the element unread.
+			return errMalformed
 		}
 
 		switch {
@@ -610,6 +631,12 @@ func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte, o options)
 	}
 	var innerPub []byte
 	if havePub && !pubWrap.ReadASN1BitStringAsBytes(&innerPub) {
+		return nil, errMalformed
+	}
+	// Both trailing fields are OPTIONAL, so a damaged tag reads as "absent"
+	// and leaves the element behind; without this check such a file would
+	// open with its public-key cross-check silently skipped.
+	if !seq.Empty() {
 		return nil, errMalformed
 	}
 	s, err := ecdsaFromScalar(d, curve, innerPub, o)
