@@ -18,6 +18,7 @@ import (
 	"encoding/pem"
 	"errors"
 	"hash"
+	"math"
 	"os"
 	"path/filepath"
 	"strings"
@@ -51,6 +52,7 @@ func pkcs8Fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.P
 	block, _ := pem.Decode(pubPEM)
 	if block == nil {
 		t.Fatalf("%s.pub: not PEM", pubName)
+		return nil, nil, nil // t is an interface; staticcheck cannot see Fatalf never returns
 	}
 	pub, err = x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
@@ -925,7 +927,9 @@ func TestReadASN1Count(t *testing.T) {
 		{"2048", []byte{0x08, 0x00}, 2048, false, true},
 		{"128 with lead zero", []byte{0x00, 0x80}, 128, false, true},
 		{"600000", []byte{0x09, 0x27, 0xc0}, 600000, false, true},
-		{"seven bytes", []byte{1, 0, 0, 0, 0, 0, 0}, 1 << 48, false, true},
+		{"max int32", []byte{0x7f, 0xff, 0xff, 0xff}, math.MaxInt32, false, true},
+		{"over int32", []byte{0, 0x80, 0, 0, 0}, 0, true, true},
+		{"five bytes", []byte{1, 0, 0, 0, 0}, 0, true, true},
 		{"eight bytes", []byte{1, 0, 0, 0, 0, 0, 0, 0}, 0, true, true},
 		{"lead zero then eight", []byte{0, 0x80, 0, 0, 0, 0, 0, 0, 0}, 0, true, true},
 		{"empty", nil, 0, false, false},

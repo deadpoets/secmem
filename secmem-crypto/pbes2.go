@@ -28,6 +28,7 @@ import (
 	"encoding/asn1"
 	"errors"
 	"fmt"
+	"math"
 
 	"golang.org/x/crypto/cryptobyte"
 	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
@@ -287,9 +288,9 @@ func readPBES2(der []byte) (pbes2File, error) {
 }
 
 // readASN1Count reads a non-negative INTEGER as a count. over reports one
-// that does not fit in 56 bits, which the caller treats as exceeding its
-// cap rather than as malformed: it is a well-formed integer the file is
-// entitled to write, just not one this parser will run.
+// that does not fit in 31 bits (an int on every platform), which the caller
+// treats as exceeding its cap rather than as malformed: it is a well-formed
+// integer the file is entitled to write, just not one this parser will run.
 func readASN1Count(s *cryptobyte.String) (n int, over, ok bool) {
 	var raw cryptobyte.String
 	if !s.ReadASN1(&raw, cbasn1.INTEGER) || len(raw) == 0 || raw[0]&0x80 != 0 {
@@ -302,13 +303,17 @@ func readASN1Count(s *cryptobyte.String) (n int, over, ok bool) {
 	if raw[0] == 0 {
 		raw = raw[1:]
 	}
-	if len(raw) > 7 {
+	if len(raw) > 4 {
 		return 0, true, true
 	}
+	var v uint64
 	for _, b := range raw {
-		n = n<<8 | int(b)
+		v = v<<8 | uint64(b)
 	}
-	return n, false, true
+	if v > math.MaxInt32 {
+		return 0, true, true
+	}
+	return int(v), false, true
 }
 
 // prfByOID maps a PBKDF2 PRF identifier to the in-place hash that computes
@@ -395,11 +400,12 @@ func pbes2Decrypt(dst []byte, f pbes2File, passphrase []byte) error {
 // with every other post-decryption failure.
 func pkcs7Unpad(p []byte) (int, bool) {
 	n := len(p)
-	pad := int(p[n-1])
+	padByte := p[n-1]
+	pad := int(padByte)
 	good := subtle.ConstantTimeLessOrEq(1, pad) & subtle.ConstantTimeLessOrEq(pad, opensshAESBlock)
 	for i := 1; i <= opensshAESBlock; i++ {
 		claimed := subtle.ConstantTimeLessOrEq(i, pad)
-		good &= subtle.ConstantTimeByteEq(p[n-i], byte(pad)) | (claimed ^ 1)
+		good &= subtle.ConstantTimeByteEq(p[n-i], padByte) | (claimed ^ 1)
 	}
 	if good != 1 {
 		return 0, false
