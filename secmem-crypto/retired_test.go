@@ -85,9 +85,11 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 // TestErrRetiredAlgorithm_NotUsedForUnimplemented is what gives the marker
 // its meaning. Everything below is refused today and may well be supported
 // later — an OpenSSH cipher this package does not run (the AES-GCM pair),
-// an unknown KDF, and PKCS#8 PBES2 — so none of them may claim to be
-// retired. Without this test ErrRetiredAlgorithm would decay into a synonym
-// for ErrUnsupportedKey and stop telling a caller anything.
+// an unknown KDF, and the parts of PKCS#8 PBES2 that are not implemented
+// (the scrypt KDF, on a real openssl -scrypt file, and the AES-GCM
+// schemes) — so none of them may claim to be retired. Without this test
+// ErrRetiredAlgorithm would decay into a synonym for ErrUnsupportedKey and
+// stop telling a caller anything. PBES2 itself opens now (pbes2_test.go).
 func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	container := func(cipher, kdf string) []byte {
 		return testContainer(cipher, kdf, testKDFOpts(16, 1), 16)
@@ -101,6 +103,7 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	scryptPEM, scryptRaw := pkcs8RefusedFixture(t, "scrypt")
 
 	cases := []struct {
 		name string
@@ -109,8 +112,9 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 		{"aes256-gcm", container("aes256-gcm@openssh.com", "bcrypt")},
 		{"aes128-gcm", container("aes128-gcm@openssh.com", "bcrypt")},
 		{"unknown kdf", container("aes256-ctr", "scrypt")},
-		{"pkcs8 pbes2", []byte(pemOfType("ENCRYPTED PRIVATE KEY", "", "MAAA"))},
-		{"pkcs8 pbes2 der", []byte{0x30, 0x04, 0x30, 0x02, 0x05, 0x00}},
+		{"pkcs8 pbes2 scrypt", scryptPEM},
+		{"pkcs8 pbes2 scrypt der", scryptRaw},
+		{"pkcs8 pbes2 aes-gcm", encryptPKCS8(t, p8, pbes2Spec{scheme: oidAES256GCM})},
 		{"pkcs8 unencrypted", []byte(pemOfType("PRIVATE KEY", "", base64.StdEncoding.EncodeToString(p8)))},
 	}
 	for _, c := range cases {
@@ -125,6 +129,52 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 			}
 			if errors.Is(err, ErrRetiredAlgorithm) {
 				t.Errorf("%q claims to be retired, but it is unimplemented and may yet be supported", err)
+			}
+		})
+	}
+}
+
+// TestPKCS8LegacyPBE_RefusedAsPolicy is the PKCS#8 counterpart of the
+// legacy-PEM test above, on real files openssl wrote: PBES1
+// (pbeWithMD5AndDES-CBC), the PKCS#12 PBEs (SHA-1 with 3DES and with 40-bit
+// RC2 — the default openssl pkcs8 -topk8 wrote before 1.1.0) and PBES2
+// over 3DES or RC2. Every one derives its key with a single-pass MD5 or
+// SHA-1 construction and encrypts with a cipher this package does not run,
+// and each entry point's refusal carries ErrRetiredAlgorithm alongside its
+// usual sentinel and names the command that converts the file. As above,
+// adding support would mean deleting this test on purpose.
+func TestPKCS8LegacyPBE_RefusedAsPolicy(t *testing.T) {
+	for _, name := range []string{"pbe-md5-des", "pbe-sha1-3des", "pbe-sha1-rc2-40", "pbes2-des-ede3-cbc", "pbes2-rc2-cbc"} {
+		t.Run(name, func(t *testing.T) {
+			pemBytes, raw := pkcs8RefusedFixture(t, name)
+			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
+				s, err := ParsePrivateKey(data, AllowHeapTransients())
+				if s != nil {
+					s.Destroy()
+					t.Fatalf("%s: a retired PBE file was parsed", form)
+				}
+				if !errors.Is(err, ErrEncryptedKey) {
+					t.Errorf("%s: ParsePrivateKey: %v does not wrap ErrEncryptedKey", form, err)
+				}
+				plainErr := err
+
+				s, err = ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
+				if s != nil {
+					s.Destroy()
+					t.Fatalf("%s: a retired PBE file was decrypted", form)
+				}
+				if !errors.Is(err, ErrUnsupportedKey) {
+					t.Errorf("%s: ParsePrivateKeyWithPassphrase: %v does not wrap ErrUnsupportedKey", form, err)
+				}
+				refusals := map[string]error{"ParsePrivateKey": plainErr, "ParsePrivateKeyWithPassphrase": err}
+				for entry, refusal := range refusals {
+					if !errors.Is(refusal, ErrRetiredAlgorithm) {
+						t.Errorf("%s/%s: %v does not wrap ErrRetiredAlgorithm", form, entry, refusal)
+					}
+					if !strings.Contains(refusal.Error(), "openssl pkcs8 -topk8") {
+						t.Errorf("%s/%s: the refusal %q does not say how to convert the file", form, entry, refusal)
+					}
+				}
 			}
 		})
 	}

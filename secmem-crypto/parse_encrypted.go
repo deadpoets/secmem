@@ -1,8 +1,9 @@
 // parse_encrypted.go is ParsePrivateKey for passphrase-protected OpenSSH
-// files. The container is read in place from a SecureBuffer as the
-// unencrypted path does; the private block is decrypted from it into a
-// second SecureBuffer, never onto the heap, and handed to the same per-type
-// extraction. The KDF is this module's fork of bcrypt_pbkdf
+// files (pbes2.go has the PKCS#8 counterpart, and the container dispatch
+// here routes to it). The container is read in place from a SecureBuffer
+// as the unencrypted path does; the private block is decrypted from it
+// into a second SecureBuffer, never onto the heap, and handed to the same
+// per-type extraction. The KDF is this module's fork of bcrypt_pbkdf
 // (internal/bcryptpbkdf), whose working state is a SecureBuffer the call
 // wipes; the AES modes are written out over one cipher.Block whose round
 // keys are wiped before the call returns (openssh_cipher.go, aeswipe.go),
@@ -29,15 +30,35 @@ import (
 // should learn that it is not one. Use [ParsePrivateKey] for it.
 var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-protected")
 
-// ParsePrivateKeyWithPassphrase parses a passphrase-protected OpenSSH
-// private key ("OPENSSH PRIVATE KEY", PEM-armoured or raw; the format
-// ssh-keygen writes for every key type when given a passphrase) and returns
-// a signer that holds it in a [secmem.SecureBuffer]. The caller owns the
-// result and must call Destroy. Key types, the public-key cross-check, the
-// error and ownership rules, and the [ErrHeapTransients] refusal of RSA and
-// EC keys without [AllowHeapTransients] are [ParsePrivateKey]'s.
+// ParsePrivateKeyWithPassphrase parses a passphrase-protected private key
+// and returns a signer that holds it in a [secmem.SecureBuffer]: an OpenSSH
+// file ("OPENSSH PRIVATE KEY", PEM-armoured or raw; the format ssh-keygen
+// writes for every key type when given a passphrase) or a PKCS#8
+// EncryptedPrivateKeyInfo ("ENCRYPTED PRIVATE KEY", PEM-armoured or bare
+// DER; what openssl pkcs8 -topk8, openssl genpkey and most tooling that
+// exports a key from a PKCS#12 write). The caller owns the result and must
+// call Destroy. Key types, the public-key cross-check, the error and
+// ownership rules, and the [ErrHeapTransients] refusal of RSA and EC keys
+// without [AllowHeapTransients] are [ParsePrivateKey]'s.
 //
-// Supported protection is KDF bcrypt, up to 2048 rounds (x/crypto's cap:
+// For a PKCS#8 file the protection is PBES2 with PBKDF2 — under HMAC-SHA1
+// (the format's default, which a file names by omitting the field),
+// -SHA-224, -256, -384, -512, -512/224 or -512/256, up to
+// [MaxPBKDF2Iterations] — and AES-128, -192 or -256 in CBC mode. The
+// scrypt KDF and the AES-GCM schemes return an error wrapping
+// [ErrUnsupportedKey]; PBES1, the PKCS#12 PBEs, and PBES2 over DES, 3DES or
+// RC2 additionally wrap [ErrRetiredAlgorithm], as legacy PEM encryption
+// does. PKCS#8 puts the key's algorithm inside the ciphertext, so unlike
+// the OpenSSH path the RSA/EC gate can only be applied after the KDF has
+// run; it is still applied before any signer is built. Everything else
+// about the file — its structure, every parameter, the iteration count
+// against the cap — is decided before the derivation. AES-CBC
+// authenticates nothing, so after it the answer is the same one bit as
+// below; what stays observable is success, and for an Ed25519 file without
+// a public key (openssl writes v1) damage confined to the seed leaves a
+// file that opens as a different key, exactly as it would through openssl.
+//
+// For an OpenSSH file the protection is KDF bcrypt, up to 2048 rounds (x/crypto's cap:
 // cost is linear in rounds and the count comes from the file), under the
 // ciphers ssh-keygen writes that this package runs: AES-128/192/256 in CTR
 // or CBC mode, and chacha20-poly1305@openssh.com, whose authenticator
@@ -46,11 +67,10 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // key||IV from the KDF, so the key length is part of the format, not a
 // local choice. Of these, x/crypto/ssh reads only aes256-ctr (ssh-keygen's
 // default) and aes256-cbc. The other ciphers ssh-keygen -Z accepts — the
-// AES-GCM pair and 3des-cbc — as well as PKCS#8 "ENCRYPTED PRIVATE KEY"
-// (PBES2) and legacy PEM Proc-Type / DEK-Info encryption return an error
-// wrapping [ErrUnsupportedKey]; the legacy form additionally wraps
-// [ErrRetiredAlgorithm], because that one is refused on purpose and will not
-// arrive in a later release, while PBES2 is simply not implemented yet. A
+// AES-GCM pair and 3des-cbc — as well as legacy PEM Proc-Type / DEK-Info
+// encryption return an error wrapping [ErrUnsupportedKey]; the legacy form
+// additionally wraps [ErrRetiredAlgorithm], because that one is refused on
+// purpose and will not arrive in a later release. A
 // key that is not protected at all returns [ErrNotEncrypted]; a header that
 // names a cipher without a KDF, or a KDF without a cipher, is malformed
 // rather than either; an empty passphrase is an error before anything is
@@ -88,10 +108,11 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // type's unexported fields before return, and if that wipe cannot locate
 // the schedule on the running toolchain the call fails rather than leave it
 // behind. The chacha20-poly1305 core is written out in this package and
-// allocates nothing. The KDF's working state (the Blowfish schedule and
-// both SHA-512 outputs, about 4 KiB), the derived key and IV, and the
-// cipher's scratch live in one SecureBuffer for the call. data and
-// passphrase are the caller's: neither is wiped nor retained.
+// allocates nothing. The KDF's working state (for bcrypt the Blowfish
+// schedule and both SHA-512 outputs, about 4 KiB; for PBKDF2 the padded
+// keys, the running blocks and the hash inputs, under 1 KiB), the derived
+// key and IV, and the cipher's scratch live in one SecureBuffer for the
+// call. data and passphrase are the caller's: neither is wiped nor retained.
 func ParsePrivateKeyWithPassphrase(data, passphrase []byte, opts ...Option) (Signer, error) {
 	if len(data) == 0 {
 		return nil, errors.New("secmemcrypto: parse private key: empty input")
@@ -112,20 +133,26 @@ func ParsePrivateKeyWithPassphrase(data, passphrase []byte, opts ...Option) (Sig
 }
 
 // parseEncryptedPrivateKey locates the container the way parsePrivateKey
-// does and classifies what it finds: only an OpenSSH container can be
-// opened here; every other shape is named as unsupported or as not
-// encrypted. The container goes into a SecureBuffer before its header is
-// read, because until the header is read it may be an unencrypted key.
+// does and classifies what it finds: an OpenSSH container and a PKCS#8
+// EncryptedPrivateKeyInfo are opened, each by its own parser; every other
+// shape is named as unsupported or as not encrypted. The container goes
+// into a SecureBuffer before its header is read, because until the header
+// is read it may be an unencrypted key.
 func parseEncryptedPrivateKey(data, passphrase []byte, o options) (Signer, error) {
 	var (
-		blob *secmem.SecureBuffer
-		err  error
+		blob  *secmem.SecureBuffer
+		pkcs8 bool
+		err   error
 	)
 	switch {
 	case bytes.HasPrefix(data, opensshMagic):
 		blob, err = copyToBuffer(data)
 	case looksLikeDER(data):
-		return nil, derEncryptionError(data)
+		if err := derIsEncrypted(data); err != nil {
+			return nil, err
+		}
+		pkcs8 = true
+		blob, err = copyToBuffer(data)
 	case bytes.Contains(data, pemBegin):
 		typ, body, perr := pemBlock(data)
 		if errors.Is(perr, ErrEncryptedKey) {
@@ -140,7 +167,8 @@ func parseEncryptedPrivateKey(data, passphrase []byte, o options) (Signer, error
 		case opensshPEMType:
 			blob, err = decodePEMBody(body)
 		case "ENCRYPTED PRIVATE KEY":
-			return nil, fmt.Errorf("%w: PKCS#8 encryption (PBES2)", ErrUnsupportedKey)
+			pkcs8 = true
+			blob, err = decodePEMBody(body)
 		case "PRIVATE KEY", "EC PRIVATE KEY", "RSA PRIVATE KEY":
 			return nil, ErrNotEncrypted
 		default:
@@ -152,23 +180,30 @@ func parseEncryptedPrivateKey(data, passphrase []byte, o options) (Signer, error
 	if err != nil {
 		return nil, err
 	}
+	if pkcs8 {
+		return parsePKCS8Encrypted(blob, passphrase, o)
+	}
 	return parseOpenSSHEncrypted(blob, passphrase, o)
 }
 
-// derEncryptionError classifies a bare DER SEQUENCE by its first element:
-// an INTEGER (a version) opens every unencrypted structure ParsePrivateKey
-// reads; a SEQUENCE (an AlgorithmIdentifier) opens EncryptedPrivateKeyInfo.
-func derEncryptionError(data []byte) error {
+// derIsEncrypted classifies a bare DER SEQUENCE by its first element: an
+// INTEGER (a version) opens every unencrypted structure ParsePrivateKey
+// reads, and is ErrNotEncrypted here; a SEQUENCE (an AlgorithmIdentifier)
+// opens EncryptedPrivateKeyInfo, which is the caller's to parse.
+func derIsEncrypted(data []byte) error {
 	in := cryptobyte.String(data)
 	var seq, elem cryptobyte.String
 	var tag cbasn1.Tag
 	if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadAnyASN1Element(&elem, &tag) {
 		return errMalformed
 	}
-	if tag == cbasn1.INTEGER {
+	switch tag {
+	case cbasn1.INTEGER:
 		return ErrNotEncrypted
+	case cbasn1.SEQUENCE:
+		return nil
 	}
-	return fmt.Errorf("%w: PKCS#8 encryption (PBES2)", ErrUnsupportedKey)
+	return errMalformed
 }
 
 // errOpenSSHDecrypt is the one error for everything that goes wrong after

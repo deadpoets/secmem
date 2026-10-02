@@ -14,6 +14,7 @@ import (
 	"crypto/hmac"
 	"crypto/mlkem"
 	"crypto/mlkem/mlkemtest"
+	"crypto/pbkdf2"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/sha256"
@@ -279,6 +280,50 @@ var residueScenarios = []residueScenario{
 				residuePattern{"poly1305-key", slices.Clone(block[:chachaKeyLen])},
 				residuePattern{"poly1305-r", r},
 			)
+			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
+			return append(slices.Clone(pemBytes), pass...), aux, pats
+		},
+		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+			n := int(binary.BigEndian.Uint32(aux))
+			op := func() error {
+				return buf.WithBytesErr(func(p []byte) error {
+					s, err := ParsePrivateKeyWithPassphrase(p[:n], p[n:])
+					if err != nil {
+						return err
+					}
+					defer s.Destroy()
+					return signOp(s, crypto.Hash(0), []byte(residueMessage))()
+				})
+			}
+			return op, buf.Destroy, nil
+		},
+	},
+	{
+		// The PKCS#8 PBES2 profile: PBKDF2 in place of bcrypt_pbkdf, run
+		// over the in-place HMAC, and AES-CBC keyed from its output. The
+		// file is the openssl fixture, so the scan is against what the tool
+		// writes; the parent learns its seed by parsing it and derives the
+		// key with the standard library, which is also what makes the
+		// patterns real. The passphrase is not a pattern, as for the chacha
+		// fixture: it is the fixed, low-entropy one every fixture shares.
+		name: "ParsePrivateKeyWithPassphrase/Ed25519-PKCS8-PBES2", class: residueContained,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			pemBytes, raw, _ := pkcs8Fixture(t, "ed25519-aes256-cbc-sha256")
+			pass := []byte(testPassphrase)
+			seed := chachaFixtureSeed(t, pemBytes, pass)
+			f, err := readPBES2(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if f.prf != hashSHA256 || f.keyLen != 32 {
+				t.Fatalf("fixture is prf %d, key %d; the pattern below derives HMAC-SHA256 to 32 bytes", f.prf, f.keyLen)
+			}
+			key, err := pbkdf2.Key(sha256.New, testPassphrase, f.salt, f.iter, f.keyLen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			pats := append(ed25519Patterns(seed), residuePattern{"pbkdf2-key", key})
+			pats = append(pats, aesSchedulePatterns(t, "aes256", key)...)
 			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
 			return append(slices.Clone(pemBytes), pass...), aux, pats
 		},

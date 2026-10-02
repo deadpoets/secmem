@@ -15,6 +15,43 @@ mark the stability commitment.
 
 ### Added
 
+- **`secmem-crypto`: PKCS#8 `ENCRYPTED PRIVATE KEY` files open.**
+  `ParsePrivateKeyWithPassphrase` reads EncryptedPrivateKeyInfo under PBES2
+  — what `openssl pkcs8 -topk8`, `openssl genpkey` and most tooling that
+  exports a key from a PKCS#12 write, and the last unclaimed item on the
+  ingress roadmap: an Ed25519 key in such a file was unopenable, and the
+  workaround was to convert it with openssl, which puts the plaintext key
+  on a disk. PBKDF2 is written here over the in-place HMAC, because
+  `crypto/pbkdf2.Key` takes the passphrase as a string (an unwipeable heap
+  copy) and returns a heap slice: the padded keys, the running blocks and
+  the hash inputs live in a locked scratch for the call, and an iteration
+  is two one-shot hashes with no per-call wiping. SHA-1 joins the in-place
+  hash set for it — HMAC-SHA1 is the PRF the format defaults to, and the
+  field is absent from such a file — but only by identifier: a caller's
+  `sha1.New` is still not taken for a one-shot, so `HMACInto` and
+  `HKDFInto` are unchanged. Supported: PBKDF2 under HMAC-SHA1 through
+  HMAC-SHA-512/256, up to the exported `MaxPBKDF2Iterations` (2 000 000: a
+  little over three times current guidance, one to two seconds on one
+  core, refused above with `ErrUnsupportedKey` before any derivation), and
+  aes-128/192/256-cbc, keyed to the scheme's length with the round keys
+  wiped by reflection as on the OpenSSH path. Every refusal that needs no
+  passphrase — structure, algorithms, parameters, the cap, the salt's form,
+  the ciphertext's length — is decided before the KDF; after it the answer
+  is one bit wrapping `IncorrectPasswordError`, as for OpenSSH's AES modes.
+  The RSA/EC heap-transients gate can only run after decryption here, since
+  PKCS#8 puts the algorithm inside the ciphertext; it still runs before any
+  signer is built. Refused as unimplemented: the scrypt KDF and the
+  AES-GCM schemes (OpenSSL cannot write the latter). Refused as retired,
+  with `ErrRetiredAlgorithm` and the converting command from both entry
+  points: PBES1, the PKCS#12 PBEs (the default `openssl pkcs8` wrote before
+  1.1.0) and PBES2 over DES, 3DES or RC2. Fixtures are real: fourteen
+  `openssl` and `ssh-keygen -m PKCS8` files under every PRF, key size and
+  key type, plus six refused ones; RFC 6070 and RFC 7914 vectors and a
+  differential against `crypto/pbkdf2` pin the KDF; the no-heap proof, a
+  residue scenario and the fuzzer cover the path. `ParsePrivateKey` now
+  names a bare-DER EncryptedPrivateKeyInfo as `ErrEncryptedKey`, as it did
+  the PEM form, rather than as malformed.
+
 - **`secmem-crypto`: OpenSSH files encrypted with
   `chacha20-poly1305@openssh.com` open.** ssh-keygen writes this one on
   request (`-Z`), and it was refused. It is not the IETF AEAD of RFC 8439
@@ -192,6 +229,15 @@ mark the stability commitment.
   both properties.
 
 ### Fixed
+
+- **`secmem-crypto`: the SEC 1 and PKCS#8 readers accept no element after
+  the last one the structure defines.** ECPrivateKey's parameters and
+  publicKey, and PrivateKeyInfo's attributes and publicKey, are OPTIONAL,
+  so a damaged tag read as "absent" — and the element was then left behind
+  unread. An EC file whose `[1]` publicKey tag was damaged opened with its
+  public-key cross-check silently skipped. Found by the PBES2 damage sweep,
+  which flips every ciphertext byte and requires an EC file never to open;
+  regression test shown to open against the readers without the check.
 
 - **`secmem-crypto` documentation: ssh-keygen's default bcrypt cost.** Every
   mention said ssh-keygen writes 16 rounds by default; OpenSSH 9.4 raised

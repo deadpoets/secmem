@@ -162,7 +162,8 @@ where:
 - **Transients** are the buffers helpers allocate for one call. The
   passphrase paths of `ParsePrivateKeyWithPassphrase` and
   `MarshalOpenSSHPrivateKeyWithPassphrase` (and its `Params` form) take a
-  scratch of a couple of pages plus the decoded key; `BcryptPBKDFInto` takes
+  scratch of a couple of pages plus the decoded key (for a PKCS#8 PBES2 file,
+  one page: the PBKDF2 region is under 1 KiB); `BcryptPBKDFInto` takes
   a workspace of a little over 4 KiB, which is two 4 KiB pages; the parsers
   allocate the decoded file and the key they return. Multiply by the peak
   number of concurrent calls.
