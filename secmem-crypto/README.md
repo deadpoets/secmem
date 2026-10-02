@@ -79,7 +79,9 @@ without `runtime/secret` — Windows, macOS, and Linux without
 band and the vector registers and nothing erases heap objects.
 "runtimesecret" is linux/amd64 or linux/arm64 with the experiment, where
 the runtime also erases every heap object allocated inside the window at the
-first collection after it becomes unreachable. All counts are for go1.26.
+first collection after it becomes unreachable. All counts are for go1.26;
+the residue scan that proves each row's class runs in CI on go1.26 and
+go1.27.
 
 | Type / function | Protected at rest | Per-operation copies, legacy build | Per-operation copies, runtimesecret build | Verdict, legacy | Verdict, runtimesecret |
 |---|---|---|---|---|---|

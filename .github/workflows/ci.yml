@@ -40,7 +40,23 @@ env:
   # fetches an exact version straight from the Go dist site when the manifest
   # does not have it yet, so pinning is also what makes CI reproducible.
   # Bump deliberately when a patch release lands.
-  GO_VERSION: "1.26.6"
+  #
+  # Two toolchains, two tiers. Go supports its two newest releases and the
+  # modules declare the older one as their floor (go.mod's `go` directive),
+  # so both are tested — but not everywhere. Every job runs on GO_VERSION,
+  # the newest. The jobs whose answer depends on the toolchain — the test
+  # suite, the runtimesecret build, the no-heap-escape gates and the residue
+  # scans, which reflect into standard-library internals and measure what a
+  # given runtime leaves behind — also run on GO_VERSION_OLDSTABLE, on one
+  # runner per platform, as a matrix leg named "[oldstable]". Lint, the
+  # vulnerability and secret scans, cross-compilation, API compatibility,
+  # the examples and the 386/arm64 lanes would say nothing new on the second
+  # toolchain and run once. When a new Go release ships, GO_VERSION moves to
+  # it, GO_VERSION_OLDSTABLE to the release it displaces, and go.mod's floor
+  # to the latter's minor. The leg's name is a fixed label, not the version,
+  # so a patch bump never renames a required check.
+  GO_VERSION: "1.27.1"
+  GO_VERSION_OLDSTABLE: "1.26.8"
 
 jobs:
   # Skip audit. A plain `go test` prints nothing for a t.Skip, so a proof that
@@ -76,16 +92,21 @@ jobs:
   #     and availability suites and the password-login timing tests, none
   #     uses t.Skip, and no protection claim rests on it.
   test:
+    name: test (${{ matrix.os }})${{ matrix.go == 'oldstable' && ' [oldstable]' || '' }}
     strategy:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        go: [stable]
+        include:
+          - { os: ubuntu-latest, go: oldstable }
+          - { os: windows-latest, go: oldstable }
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ matrix.go == 'oldstable' && env.GO_VERSION_OLDSTABLE || env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
       - uses: ./.github/actions/test-audited
         with:
@@ -133,10 +154,14 @@ jobs:
   # without this job they never run in automation. linux/amd64 and linux/arm64
   # only — the experiment's supported platforms.
   test-runtimesecret:
+    name: test-runtimesecret (${{ matrix.runner }})${{ matrix.go == 'oldstable' && ' [oldstable]' || '' }}
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
+        go: [stable]
+        include:
+          - { runner: ubuntu-latest, go: oldstable }
     runs-on: ${{ matrix.runner }}
     env:
       GOEXPERIMENT: runtimesecret
@@ -144,7 +169,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ matrix.go == 'oldstable' && env.GO_VERSION_OLDSTABLE || env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
       - uses: ./.github/actions/test-audited
         with:
@@ -201,16 +226,20 @@ jobs:
   # skip, and a rename that empties the -run pattern fails the step (the audit
   # refuses a run with no test events) instead of passing as "no tests to run".
   test-noescape:
+    name: test-noescape (${{ matrix.runner }})${{ matrix.go == 'oldstable' && ' [oldstable]' || '' }}
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
+        go: [stable]
+        include:
+          - { runner: ubuntu-latest, go: oldstable }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ matrix.go == 'oldstable' && env.GO_VERSION_OLDSTABLE || env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
       - name: no-heap-escape gates (core)
         uses: ./.github/actions/test-audited
@@ -234,11 +263,16 @@ jobs:
   # exactly what runtime/secret changes; audited against an empty allowlist,
   # because a skipped scan is an unproven table row.
   test-residue:
+    name: test-residue (${{ matrix.runner }}${{ matrix.goexperiment && format(', {0}', matrix.goexperiment) || '' }})${{ matrix.go == 'oldstable' && ' [oldstable]' || '' }}
     strategy:
       fail-fast: false
       matrix:
         runner: [ubuntu-latest, ubuntu-24.04-arm]
         goexperiment: ["", runtimesecret]
+        go: [stable]
+        include:
+          - { runner: ubuntu-latest, goexperiment: "", go: oldstable }
+          - { runner: ubuntu-latest, goexperiment: runtimesecret, go: oldstable }
     runs-on: ${{ matrix.runner }}
     env:
       GOEXPERIMENT: ${{ matrix.goexperiment }}
@@ -246,7 +280,7 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ matrix.go == 'oldstable' && env.GO_VERSION_OLDSTABLE || env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
       - uses: ./.github/actions/test-audited
         with:
@@ -263,12 +297,17 @@ jobs:
   # nothing anywhere. There is no GOEXPERIMENT=runtimesecret here (it is
   # linux/amd64 and linux/arm64 only), so one lane covers the platform.
   test-residue-windows:
+    name: test-residue-windows${{ matrix.go == 'oldstable' && ' [oldstable]' || '' }}
+    strategy:
+      fail-fast: false
+      matrix:
+        go: [stable, oldstable]
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          go-version: ${{ env.GO_VERSION }}
+          go-version: ${{ matrix.go == 'oldstable' && env.GO_VERSION_OLDSTABLE || env.GO_VERSION }}
       - uses: ./.github/actions/setup-workspace
       - uses: ./.github/actions/test-audited
         with:
@@ -395,7 +434,7 @@ jobs:
           go test -race ./...
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
           working-directory: examples
       - name: staticcheck (examples)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
@@ -505,10 +544,10 @@ jobs:
 
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
           working-directory: secmem-crypto
       - name: staticcheck (core)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
@@ -524,7 +563,7 @@ jobs:
           cache-key: secmem-crypto
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
-          version: v2.12.2
+          version: v2.14.0
           working-directory: secmem-lint
       - name: staticcheck (secmem-lint)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1

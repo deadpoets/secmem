@@ -110,6 +110,18 @@ mark the stability commitment.
 
 ### Changed
 
+- **CI tests the two Go releases upstream supports.** Every job runs on the
+  newest (go1.27.1, up from 1.26.6); the jobs whose answer depends on the
+  toolchain — the test suite on Linux and Windows, the runtimesecret build,
+  the no-heap-escape gates and the residue scans on both build modes and on
+  Windows — also run on the oldest supported release (go1.26.8), which is
+  the floor the modules declare, as an `[oldstable]` matrix leg named by a
+  fixed label so a patch bump never renames a required check. Lint, the
+  vulnerability and secret scans, cross-compilation, API compatibility, the
+  examples and the 386/arm64 lanes run once. golangci-lint moves to v2.14.0,
+  the first line built with go1.27 (v2.12.2 could not typecheck its standard
+  library). The `go` directives stay at 1.26.0.
+
 - **`secmem-crypto`: the Windows residue scan measures this module, not the
   runtime's preemption spill — which is now measured precisely.** A Windows
   scan failed once in CI and about once in a hundred local runs of the
