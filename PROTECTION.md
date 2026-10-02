@@ -193,10 +193,12 @@ Its limits, which are the limits of the levels above:
 - **Between operations, not during.** Each scan freezes the victim between
   operations. The in-use window is real, and the table above names it rather
   than measuring it.
-- **The standard library it ran against** — go1.26 — decides what the
-  *Protected at rest only* rows leave behind. A later release can change it;
-  the test asserts that those copies exist, so a release that removes them turns
-  it red and prompts this page to be rewritten.
+- **The standard library it ran against** — go1.26 and go1.27, both in CI —
+  decides what the *Protected at rest only* rows leave behind. A later
+  release can change it; the test asserts that those copies exist, so a
+  release that removes them turns it red and prompts this page to be
+  rewritten. The scan runs on the two Go releases upstream supports, so a
+  row's class is proved on both; the counts quoted elsewhere are go1.26's.
 
 ## Choosing
 
