@@ -3,6 +3,7 @@ package secmemcrypto
 import (
 	"bytes"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -100,6 +101,7 @@ func TestScrypt_MatchesXCrypto(t *testing.T) {
 func TestScryptRegionSize_IsWhatTheCapCounts(t *testing.T) {
 	for _, c := range []struct{ n, r, p int }{
 		{2, 1, 1}, {16, 1, 1}, {16, 8, 1}, {1024, 8, 2}, {16384, 8, 1}, {32768, 1, 1}, {32768, 15, 1}, {16384, 8, 32}, {4, 3, 7},
+		{scryptBothCapsN, scryptBothCapsR, scryptBothCapsP},
 	} {
 		for _, saltLen := range []int{1, 8, 16, 128, 129, maxPBES2Salt} {
 			counted := 128 * c.r * (c.n + 2*c.p + 2)
@@ -127,4 +129,51 @@ func BenchmarkScryptInPlace(b *testing.B) {
 		scryptCompute(dst, region, []byte(testPassphrase), salt, n, r, p)
 	}
 	b.ReportMetric(float64(b.Elapsed().Nanoseconds())/float64(b.N)/float64(n*r*p), "ns/unit")
+}
+
+// The parameters MaxScryptWork's doc gives as the slowest the caps admit.
+const scryptBothCapsN, scryptBothCapsR, scryptBothCapsP = 16, 1, 262135
+
+// TestScryptBothCaps_AreAtBothCaps pins what MaxScryptWork's doc says of
+// those parameters: their working set is exactly MaxScryptMemory, N·r·p is
+// 144 under MaxScryptWork, the parser runs them, and it refuses one more p.
+// A file the parser opens can exceed them by that 144 in N·r·p, or by 7 in
+// r·p (N=2, r=1, p=262142), and no further. Nothing is derived: the files
+// carry p as raw INTEGER content, which the encoder keys with zeros.
+func TestScryptBothCaps_AreAtBothCaps(t *testing.T) {
+	const n, r, p = scryptBothCapsN, scryptBothCapsR, scryptBothCapsP
+	if mem := 128 * r * (n + 2*p + 2); mem != MaxScryptMemory {
+		t.Errorf("the working set is %d bytes, want MaxScryptMemory = %d", mem, MaxScryptMemory)
+	}
+	if under := MaxScryptWork - n*r*p; under != 144 {
+		t.Errorf("N·r·p is %d under MaxScryptWork, want 144", under)
+	}
+	p8, _ := testPKCS8Ed25519(t)
+	file := func(p int) []byte {
+		raw := []byte{byte(p >> 16), byte(p >> 8), byte(p)}
+		return encryptPKCS8(t, p8, pbes2Spec{kdf: oidScrypt, n: n, r: r, pRaw: raw})
+	}
+	f, err := readPBES2(file(p))
+	if err != nil || f.n != n || f.r != r || f.p != p {
+		t.Fatalf("readPBES2 read N=%d r=%d p=%d, %v: the parser does not run the parameters", f.n, f.r, f.p, err)
+	}
+	if _, err := readPBES2(file(p + 1)); !errors.Is(err, ErrUnsupportedKey) {
+		t.Fatalf("one more p: %v, want ErrUnsupportedKey", err)
+	}
+}
+
+// BenchmarkScryptInPlace_BothCaps is the other figure in MaxScryptWork's
+// doc comment: one derivation at the parameters that meet both caps at
+// once, under the longest salt the parser reads. Most of it is not the
+// memory-hard step but the first PBKDF2, filling 32 MiB of B with one HMAC
+// for every 32 bytes.
+func BenchmarkScryptInPlace_BothCaps(b *testing.B) {
+	const n, r, p = scryptBothCapsN, scryptBothCapsR, scryptBothCapsP
+	salt := make([]byte, maxPBES2Salt)
+	region := make([]byte, scryptRegionSize(len(salt), n, r, p))
+	dst := make([]byte, 32)
+	b.ResetTimer()
+	for range b.N {
+		scryptCompute(dst, region, []byte(testPassphrase), salt, n, r, p)
+	}
 }

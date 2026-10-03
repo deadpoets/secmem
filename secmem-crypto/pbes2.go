@@ -76,12 +76,21 @@ const MaxScryptMemory = 64 << 20
 // naming more is refused with [ErrUnsupportedKey] before any derivation.
 // [MaxScryptMemory] alone does not bound the time: p multiplies the work
 // and adds only 256·r bytes each, so parameters inside the memory cap can
-// still ask for the better part of an hour. The work is proportional to
-// N·r·p — 4·N·r·p Salsa20/8 cores — and openssl's default is 131072; this
-// is thirty-two times that. Measured on one core (BenchmarkScryptInPlace) a
-// unit is about 0.17 microseconds, so a file at the cap takes about 0.7
-// seconds to open, or to refuse a wrong passphrase: the same order as a
-// file at [MaxPBKDF2Iterations].
+// still ask for the better part of an hour. The memory-hard step is
+// proportional to N·r·p — 4·N·r·p Salsa20/8 cores — and openssl's default
+// is 131072; this is thirty-two times that. Measured on one core
+// (BenchmarkScryptInPlace) a unit is about 0.17 microseconds, so a file
+// that reaches the cap as a writer would, through N or a modest p, takes
+// about 0.7 seconds to open, or to refuse a wrong passphrase.
+//
+// The most the two caps leave reachable is about three times that. N·r·p
+// does not count scrypt's first PBKDF2, which fills the p blocks with one
+// HMAC for every 32 bytes: a cost in r·p alone, which only the memory cap
+// bounds, at 32 MiB of blocks. N=16, r=1, p=262135 is exactly at
+// [MaxScryptMemory] and within 144 of this cap, and under the longest salt
+// the parser reads it takes a little over two seconds
+// (BenchmarkScryptInPlace_BothCaps) — the same order as a file at
+// [MaxPBKDF2Iterations].
 const MaxScryptWork = 1 << 22
 
 // maxPBES2Salt bounds the KDF salt a file carries, PBKDF2's or scrypt's. It
@@ -504,8 +513,10 @@ func pbes2Decrypt(dst []byte, f pbes2File, passphrase []byte) error {
 	}
 	return withScratch(kdfRegion+f.keyLen+cipherScratch, func(mem []byte) (err error) {
 		// The KDF's region leads: scrypt views it as 32-bit words, and the
-		// start of the mapping is what is known to be aligned.
-		region := mem[:kdfRegion]
+		// start of the mapping is what is known to be aligned. Its capacity
+		// stops where the key starts, so a KDF that slices past the region
+		// it was sized for panics instead of running on into the key.
+		region := mem[:kdfRegion:kdfRegion]
 		key := mem[kdfRegion : kdfRegion+f.keyLen]
 		cipherMem := mem[kdfRegion+f.keyLen:]
 		if f.scrypt {

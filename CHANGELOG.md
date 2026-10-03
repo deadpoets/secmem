@@ -31,11 +31,12 @@ mark the stability commitment.
   A scrypt file names its own cost, so two caps are decided before anything
   is derived or locked, and both are new exported constants (a minor bump):
   **`MaxScryptMemory`** (64 MiB) bounds the working set, 128·r·(N + 2·p + 2)
-  bytes, and **`MaxScryptWork`** (N·r·p ≤ 2²², about 0.7 s) bounds the time,
-  which the memory cap alone does not — p costs almost no memory. A file
-  over either is `ErrUnsupportedKey`, not `ErrRetiredAlgorithm`. Parameters
-  scrypt is not defined for (N not a power of two above 1, or not below
-  2^(128·r/8)) are malformed.
+  bytes, and **`MaxScryptWork`** (N·r·p ≤ 2²²) bounds the time, which the
+  memory cap alone does not — p costs almost no memory: about 0.7 s for a
+  file at the work cap, and a little over 2 s for the slowest parameters the
+  two admit together. A file over either is `ErrUnsupportedKey`, not
+  `ErrRetiredAlgorithm`. Parameters scrypt is not defined for (N not a power
+  of two above 1, or not below 2^(128·r/8)) are malformed.
 
   **What a caller has to know:** the working set is locked for the parse, so
   opening such a file needs that much lock budget — 16 MiB for an openssl
