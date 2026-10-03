@@ -13,6 +13,17 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [secmem-crypto/v0.9.0] - 2026-10-04
+
+The passphrase ingress is complete: PKCS#8 files protected with scrypt open,
+through a fork of the memory-hard step laid over locked memory with the
+in-place PBKDF2 either side of it, bounded by two new caps on the memory and
+the work a file may name. And the forks this module carries — Argon2,
+BLAKE2b, bcrypt_pbkdf, Blowfish, scrypt, the X25519 ladder — are now watched
+against their upstreams by a record, a test and a weekly workflow, rather
+than only documented. Minor: `MaxScryptMemory` and `MaxScryptWork` are added.
+The core floor is unchanged at v0.7.0.
+
 ### Added
 
 - **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` opens PKCS#8 files
@@ -2234,6 +2245,7 @@ First tagged release of the core `secmem` module.
   itself a `go vet` copylocks violation) a dereferenced value.
 
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.7.0...HEAD
+[secmem-crypto/v0.9.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.9.0
 [0.7.0]: https://github.com/deadpoets/secmem/compare/v0.6.0...v0.7.0
 [secmem-crypto/v0.8.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.8.0
 [secmem-lint/v0.4.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.4.0
