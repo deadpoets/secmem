@@ -259,9 +259,11 @@ func checkGoroot(f *forks.Fork) result {
 	}
 	// A stdlib copy carries no version to advance automatically: which Go
 	// release the claim covers is a sentence in doc.go and NOTICE as well as
-	// a manifest field, so the suggestion is made and left to a human.
+	// a manifest field, so the suggestion is made and left to a human. The
+	// comparison is a prefix of the running toolchain's version, because the
+	// manifest records the minor line — forks.json's _comment says why.
 	if r.Status == "clean" && r.Newest != "" && !strings.HasPrefix(r.Newest, f.UnchangedThrough) {
-		r.Findings = append(r.Findings, "identical under "+r.Newest+", which unchanged_through ("+f.UnchangedThrough+") does not cover: update the manifest and the prose together")
+		r.Findings = append(r.Findings, "identical under "+r.Newest+", which is outside the line unchanged_through records ("+f.UnchangedThrough+"): a new Go line, so update the manifest and the prose together")
 	}
 	return r
 }

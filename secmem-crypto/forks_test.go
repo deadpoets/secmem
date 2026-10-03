@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -221,6 +222,29 @@ func TestForks_EntriesAreUsable(t *testing.T) {
 			if len(f.Upstream.Paths) == 0 || len(f.Identity) == 0 {
 				t.Errorf("%s: a goroot upstream needs paths and identity claims", f.ID)
 			}
+			// The line, not a patch: internal/forkcheck compares this as a
+			// prefix of the running toolchain's version, so a patch here
+			// would report every Go patch release as a manifest update, for
+			// a file that practically never changes. forks.json's _comment
+			// has the reasoning.
+			//
+			// And not a shorter string either. "go1.2" is shaped like a line
+			// and prefix-matches go1.27.1, so it would claim coverage of a
+			// line nobody checked; the floor in go.mod is what rules it out,
+			// since no toolchain below that can build this module at all.
+			line := regexp.MustCompile(`^go1\.(\d+)$`)
+			floor := goDirectiveMinor(t)
+			for field, v := range map[string]string{"fork_point": f.ForkPoint, "unchanged_through": f.UnchangedThrough} {
+				m := line.FindStringSubmatch(v)
+				if m == nil {
+					t.Errorf("%s: %s is %q; a goroot fork records the Go minor line, like go1.26", f.ID, field, v)
+					continue
+				}
+				minor, err := strconv.Atoi(m[1])
+				if err != nil || minor < floor {
+					t.Errorf("%s: %s is %q, below this module's own go directive (go1.%d); a provenance line the module cannot be built with is a typo", f.ID, field, v, floor)
+				}
+			}
 		case forks.KindURL:
 			if f.Upstream.URL == "" {
 				t.Errorf("%s: a url upstream needs the url", f.ID)
@@ -244,4 +268,24 @@ func TestForks_EntriesAreUsable(t *testing.T) {
 			}
 		}
 	}
+}
+
+// goDirectiveMinor is the minor version of this module's go directive — the
+// oldest toolchain that can build it, and so the oldest a provenance claim
+// about the standard library can sensibly name.
+func goDirectiveMinor(t *testing.T) int {
+	t.Helper()
+	b, err := os.ReadFile("go.mod")
+	if err != nil {
+		t.Fatal(err)
+	}
+	m := regexp.MustCompile(`(?m)^go 1\.(\d+)`).FindSubmatch(b)
+	if m == nil {
+		t.Fatal("no go directive in go.mod: this check has nothing to anchor to")
+	}
+	minor, err := strconv.Atoi(string(m[1]))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return minor
 }
