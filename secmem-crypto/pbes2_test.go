@@ -26,6 +26,9 @@ import (
 
 	"golang.org/x/crypto/cryptobyte"
 	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
+	xscrypt "golang.org/x/crypto/scrypt"
+
+	"github.com/deadpoets/secmem"
 )
 
 const pkcs8PEMType = "ENCRYPTED PRIVATE KEY"
@@ -76,14 +79,40 @@ func pkcs8Fixtures(t testing.TB) []string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(matches) < 14 {
-		t.Fatalf("found %d fixtures under testdata/pkcs8-encrypted, want at least 14", len(matches))
+	if len(matches) < 19 {
+		t.Fatalf("found %d fixtures under testdata/pkcs8-encrypted, want at least 19", len(matches))
 	}
 	names := make([]string, 0, len(matches))
 	for _, m := range matches {
 		names = append(names, strings.TrimSuffix(filepath.Base(m), ".b64"))
 	}
 	return names
+}
+
+// pkcs8LockBudget makes sure the host will lock what opening the file takes,
+// and skips the test where it will not. A scrypt file locks its whole
+// working set for the parse — 16 MiB at openssl's defaults — which is over
+// Windows' default working-set quota and can be over a container's
+// RLIMIT_MEMLOCK. Raising the budget is what a program opening such files
+// does at startup, so the test does the same, and then asks the only
+// question that settles it: whether a buffer of that size can be had. A
+// host that refuses is the environment's condition, not the parser's. A
+// PBKDF2 file needs a page and is not gated.
+func pkcs8LockBudget(t testing.TB, raw []byte) {
+	t.Helper()
+	f, err := readPBES2(raw)
+	if err != nil || !f.scrypt {
+		return
+	}
+	need := scryptRegionSize(len(f.salt), f.n, f.r, f.p) + f.keyLen + cipherScratch
+	// Asked for with room: the budget is the process's, and other tests
+	// hold locked buffers while this one runs.
+	_, _ = secmem.EnsureMemlockLimit(uint64(need) + 32<<20)
+	probe, err := secmem.NewEmptyBuffer(need)
+	if err != nil {
+		t.Skipf("the host will not lock the %d bytes a scrypt file at N=%d r=%d p=%d takes: %v", need, f.n, f.r, f.p, err)
+	}
+	_ = probe.Destroy()
 }
 
 // pkcs8RefusedFixture loads one of the real files under refused/.
@@ -103,15 +132,17 @@ func pkcs8RefusedFixture(t testing.TB, name string) (pemBytes, raw []byte) {
 // TestParsePrivateKeyWithPassphrase_PKCS8Fixtures opens files a real
 // openssl pkcs8 and ssh-keygen wrote — every PRF OID the parser maps, the
 // absent-PRF form that means HMAC-SHA1, every AES key size, one and
-// 600 000 iterations, and all three key types — and proves each parsed
-// signer is the key the .pub advertises. The aes128 and aes192 files
-// matter for the same reason the OpenSSH ones do: the scheme decides how
-// much PBKDF2 derives, and a parser that always asked for 32 bytes would
-// key the cipher wrongly.
+// 600 000 iterations, scrypt at openssl's defaults and at r = 1, p = 2 and
+// a 16-byte key, and all three key types — and proves each parsed signer is
+// the key the .pub advertises. The aes128 and aes192 files matter for the
+// same reason the OpenSSH ones do: the scheme decides how much the KDF
+// derives, and a parser that always asked for 32 bytes would key the cipher
+// wrongly.
 func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 	for _, name := range pkcs8Fixtures(t) {
 		t.Run(name, func(t *testing.T) {
 			pemBytes, raw, pub := pkcs8Fixture(t, name)
+			pkcs8LockBudget(t, raw)
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
@@ -151,6 +182,25 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 			t.Fatalf("readPBES2: prf %d, err %v; want hashSHA1 from the absent field", f.prf, err)
 		}
 	})
+	// The scrypt fixtures cover what their names say only while the files
+	// carry those parameters; a regenerated file must not quietly stop
+	// covering r = 1, p > 1, the short key or openssl's defaults.
+	t.Run("scrypt fixtures carry their parameters", func(t *testing.T) {
+		for name, want := range map[string]pbes2File{
+			"ed25519-scrypt":              {n: 16384, r: 8, p: 1, keyLen: 32},
+			"ed25519-scrypt-n1024":        {n: 1024, r: 8, p: 1, keyLen: 32},
+			"ed25519-scrypt-n1024-p2":     {n: 1024, r: 8, p: 2, keyLen: 32},
+			"ed25519-scrypt-n1024-aes128": {n: 1024, r: 8, p: 1, keyLen: 16},
+			"ed25519-scrypt-n32768-r1":    {n: 32768, r: 1, p: 1, keyLen: 32},
+		} {
+			_, raw, _ := pkcs8Fixture(t, name)
+			f, err := readPBES2(raw)
+			if err != nil || !f.scrypt || f.n != want.n || f.r != want.r || f.p != want.p || f.keyLen != want.keyLen {
+				t.Errorf("%s: scrypt %v, N=%d r=%d p=%d, key %d, err %v; want N=%d r=%d p=%d, key %d",
+					name, f.scrypt, f.n, f.r, f.p, f.keyLen, err, want.n, want.r, want.p, want.keyLen)
+			}
+		}
+	})
 }
 
 // oidBytes is the DER encoding of oid, for searching a file.
@@ -166,25 +216,28 @@ func oidBytes(t *testing.T, oid asn1.ObjectIdentifier) []byte {
 // TestParsePrivateKeyWithPassphrase_PKCS8Refused runs the real files under
 // refused/ through the entry point: the PBES1, PKCS#12-PBE and PBES2-over-
 // 3DES/RC2 files must be refused as retired, naming the openssl command
-// that converts them, and the scrypt file as merely unsupported. None may
+// that converts them, and RFC 7914's own example file — scrypt at
+// N = 1048576, a 1 GiB derivation — as merely unsupported, naming the
+// memory it is over, with the passphrase the RFC gives for it. None may
 // wrap IncorrectPasswordError: every one is decided before a KDF runs.
 func TestParsePrivateKeyWithPassphrase_PKCS8Refused(t *testing.T) {
 	cases := []struct {
-		name    string
-		retired bool
+		name       string
+		retired    bool
+		passphrase string
 	}{
-		{"pbe-md5-des", true},
-		{"pbe-sha1-3des", true},
-		{"pbe-sha1-rc2-40", true},
-		{"pbes2-des-ede3-cbc", true},
-		{"pbes2-rc2-cbc", true},
-		{"scrypt", false},
+		{"pbe-md5-des", true, testPassphrase},
+		{"pbe-sha1-3des", true, testPassphrase},
+		{"pbe-sha1-rc2-40", true, testPassphrase},
+		{"pbes2-des-ede3-cbc", true, testPassphrase},
+		{"pbes2-rc2-cbc", true, testPassphrase},
+		{"scrypt-rfc7914", false, "Rabbit"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			pemBytes, raw := pkcs8RefusedFixture(t, c.name)
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
-				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
+				s, err := ParsePrivateKeyWithPassphrase(data, []byte(c.passphrase), AllowHeapTransients())
 				if err == nil {
 					s.Destroy()
 					t.Fatalf("%s: opened", form)
@@ -201,6 +254,9 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Refused(t *testing.T) {
 				if c.retired && !strings.Contains(err.Error(), "openssl pkcs8 -topk8") {
 					t.Errorf("%s: the refusal %q does not say how to convert the file", form, err)
 				}
+				if !c.retired && !strings.Contains(err.Error(), "working memory") {
+					t.Errorf("%s: the refusal %q does not name the memory cap", form, err)
+				}
 				// The plain entry point names the condition it always did.
 				if _, perr := ParsePrivateKey(data, AllowHeapTransients()); !errors.Is(perr, ErrEncryptedKey) {
 					t.Errorf("%s: ParsePrivateKey = %v, want ErrEncryptedKey", form, perr)
@@ -214,6 +270,8 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Refused(t *testing.T) {
 // The zero value is a valid aes-256-cbc / PBKDF2-HMAC-SHA256 file at one
 // iteration; each field overrides one thing, so a test can pin one rule by
 // producing a file that differs from a valid one in exactly that field.
+// With kdf set to oidScrypt the KDF parameters are scrypt's, and the zero
+// value of the scrypt fields is a valid file at N=16, r=8, p=1.
 type pbes2Spec struct {
 	outer, kdf, scheme asn1.ObjectIdentifier // nil: PBES2, PBKDF2, aes-256-cbc
 	prf                asn1.ObjectIdentifier // nil: omitted (the DEFAULT, HMAC-SHA1)
@@ -228,6 +286,47 @@ type pbes2Spec struct {
 	iv                 []byte
 	ctLen              int // trim or pad the ciphertext to this; 0: as encrypted
 	trailing           []byte
+
+	// scrypt's cost parameters; 0: N=16, r=8, p=1. The Raw forms are an
+	// explicit INTEGER content, overriding the value written — and, where
+	// the parser must refuse the file anyway, standing in for one that
+	// cannot be derived with.
+	n, r, p             int
+	nRaw, rRaw, pRaw    []byte
+	kdfParamsTrailing   func(*cryptobyte.Builder) // appended inside the KDF's parameter SEQUENCE
+	kdfParamsStopAfterR bool                      // scrypt: write salt, N and r only
+}
+
+// scryptParams is the spec's N, r and p with the defaults applied.
+func (spec pbes2Spec) scryptParams() (n, r, p int) {
+	n, r, p = spec.n, spec.r, spec.p
+	if n == 0 {
+		n = 16
+	}
+	if r == 0 {
+		r = 8
+	}
+	if p == 0 {
+		p = 1
+	}
+	return n, r, p
+}
+
+// scryptOpens reports whether the parser would run the spec's parameters:
+// the encoder derives a real key only then. For anything else — parameters
+// scrypt is not defined for, or over a cap — it keys the cipher with zeros,
+// which no test can mistake for a pass: such a file must be refused before
+// the KDF, and one that is not reads as a wrong passphrase, which check
+// rejects by name.
+func (spec pbes2Spec) scryptOpens() bool {
+	n, r, p := spec.scryptParams()
+	if spec.nRaw != nil || spec.rRaw != nil || spec.pRaw != nil {
+		return false
+	}
+	if n < 2 || n&(n-1) != 0 || (r == 1 && n >= 1<<16) {
+		return false
+	}
+	return 128*uint64(r)*(uint64(n)+2*uint64(p)+2) <= MaxScryptMemory && uint64(n)*uint64(r)*uint64(p) <= MaxScryptWork
 }
 
 // encryptPKCS8 writes plain (a PrivateKeyInfo) as an EncryptedPrivateKeyInfo
@@ -273,7 +372,18 @@ func encryptPKCS8(t *testing.T, plain []byte, spec pbes2Spec) []byte {
 	if iv == nil {
 		iv = randBytes(t, 16)
 	}
-	key, err := pbkdf2.Key(h, testPassphrase, salt, iter, keyLen)
+	isScrypt := kdf.Equal(oidScrypt)
+	var key []byte
+	var err error
+	switch {
+	case isScrypt && spec.scryptOpens():
+		n, r, p := spec.scryptParams()
+		key, err = xscrypt.Key([]byte(testPassphrase), salt, n, r, p, keyLen)
+	case isScrypt:
+		key = make([]byte, keyLen)
+	default:
+		key, err = pbkdf2.Key(h, testPassphrase, salt, iter, keyLen)
+	}
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -311,6 +421,29 @@ func encryptPKCS8(t *testing.T, plain []byte, spec pbes2Spec) []byte {
 						} else {
 							b.AddASN1OctetString(salt)
 						}
+						if isScrypt {
+							n, r, p := spec.scryptParams()
+							count := func(v int, raw []byte) {
+								if raw != nil {
+									b.AddASN1(cbasn1.INTEGER, func(b *cryptobyte.Builder) { b.AddBytes(raw) })
+								} else {
+									b.AddASN1Int64(int64(v))
+								}
+							}
+							count(n, spec.nRaw)
+							count(r, spec.rRaw)
+							if spec.kdfParamsStopAfterR {
+								return
+							}
+							count(p, spec.pRaw)
+							if spec.keyLength != 0 {
+								b.AddASN1Int64(int64(spec.keyLength))
+							}
+							if spec.kdfParamsTrailing != nil {
+								spec.kdfParamsTrailing(b)
+							}
+							return
+						}
 						if spec.iterRaw != nil {
 							b.AddASN1(cbasn1.INTEGER, func(b *cryptobyte.Builder) { b.AddBytes(spec.iterRaw) })
 						} else {
@@ -328,6 +461,9 @@ func encryptPKCS8(t *testing.T, plain []byte, spec pbes2Spec) []byte {
 									b.AddASN1NULL()
 								}
 							})
+						}
+						if spec.kdfParamsTrailing != nil {
+							spec.kdfParamsTrailing(b)
 						}
 					})
 				})
@@ -386,10 +522,36 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Encoder(t *testing.T) {
 		"salt at the bound":              {salt: randBytes(t, maxPBES2Salt)},
 		"iteration count in two bytes":   {iterRaw: []byte{0x08, 0x00}, iter: 2048},
 		"iteration count with lead zero": {iterRaw: []byte{0x00, 0x80}, iter: 128},
+
+		// scrypt, where the reference is golang.org/x/crypto/scrypt: each r
+		// the block arithmetic treats differently, more than one pass over
+		// B, every key size, the smallest N, an N whose INTEGER needs a
+		// lead zero, the largest N scrypt defines at r = 1 one step down
+		// (the real fixture is at it), and both ends of the salt's range —
+		// the long salt is longer than B here, so it is what sizes the
+		// PBKDF2 region.
+		"scrypt":                        {kdf: oidScrypt},
+		"scrypt r=1":                    {kdf: oidScrypt, r: 1},
+		"scrypt r=2":                    {kdf: oidScrypt, r: 2},
+		"scrypt p=2":                    {kdf: oidScrypt, p: 2},
+		"scrypt p=3, r=1":               {kdf: oidScrypt, p: 3, r: 1},
+		"scrypt N=2":                    {kdf: oidScrypt, n: 2},
+		"scrypt N=128 (lead zero)":      {kdf: oidScrypt, n: 128},
+		"scrypt N=16384, r=1":           {kdf: oidScrypt, n: 16384, r: 1},
+		"scrypt keyLength agreeing":     {kdf: oidScrypt, keyLength: 32},
+		"scrypt aes-128-cbc":            {kdf: oidScrypt, scheme: oidAES128CBC},
+		"scrypt aes-192-cbc":            {kdf: oidScrypt, scheme: oidAES192CBC},
+		"scrypt aes-128-cbc keyLength":  {kdf: oidScrypt, scheme: oidAES128CBC, keyLength: 16},
+		"scrypt salt of one byte":       {kdf: oidScrypt, salt: []byte{7}},
+		"scrypt salt at the bound, r=1": {kdf: oidScrypt, r: 1, salt: randBytes(t, maxPBES2Salt)},
 	}
 	for name, spec := range specs {
 		t.Run(name, func(t *testing.T) {
+			if spec.kdf.Equal(oidScrypt) && !spec.scryptOpens() {
+				t.Fatal("the encoder would not derive a key for this spec, so the row would prove nothing")
+			}
 			data := encryptPKCS8(t, p8, spec)
+			pkcs8LockBudget(t, data)
 			for form, d := range map[string][]byte{"raw": data, "pem": pemArmour(pkcs8PEMType, []byte(base64.StdEncoding.EncodeToString(data)))} {
 				s, err := ParsePrivateKeyWithPassphrase(d, []byte(testPassphrase))
 				if err != nil {
@@ -440,8 +602,50 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Rejects(t *testing.T) {
 		{"scheme des-ede3-cbc", pbes2Spec{scheme: oidDESEDE3CBC}, ErrRetiredAlgorithm, "openssl pkcs8"},
 		{"scheme rc2-cbc", pbes2Spec{scheme: oidRC2CBC}, ErrRetiredAlgorithm, "openssl pkcs8"},
 		{"scheme des-cbc", pbes2Spec{scheme: oidDESCBC}, ErrRetiredAlgorithm, "openssl pkcs8"},
-		{"kdf scrypt", pbes2Spec{kdf: oidScrypt}, ErrUnsupportedKey, "scrypt"},
 		{"kdf unknown", pbes2Spec{kdf: unknown}, ErrUnsupportedKey, "KDF"},
+		{"pbkdf2 params trailing element", pbes2Spec{prf: oidHMACSHA256(9), kdfParamsTrailing: func(b *cryptobyte.Builder) { b.AddASN1NULL() }}, errMalformed, ""},
+
+		// scrypt's parameters. Shape first: each count is an INTEGER
+		// (1..MAX) in minimal DER, and all three are there.
+		{"scrypt N zero", pbes2Spec{kdf: oidScrypt, nRaw: []byte{0}}, errMalformed, ""},
+		{"scrypt N negative", pbes2Spec{kdf: oidScrypt, nRaw: []byte{0xf0}}, errMalformed, ""},
+		{"scrypt N non-minimal", pbes2Spec{kdf: oidScrypt, nRaw: []byte{0x00, 0x10}}, errMalformed, ""},
+		{"scrypt r zero", pbes2Spec{kdf: oidScrypt, rRaw: []byte{0}}, errMalformed, ""},
+		{"scrypt r negative", pbes2Spec{kdf: oidScrypt, rRaw: []byte{0xff}}, errMalformed, ""},
+		{"scrypt r non-minimal", pbes2Spec{kdf: oidScrypt, rRaw: []byte{0x00, 0x08}}, errMalformed, ""},
+		{"scrypt p zero", pbes2Spec{kdf: oidScrypt, pRaw: []byte{0}}, errMalformed, ""},
+		{"scrypt p negative", pbes2Spec{kdf: oidScrypt, pRaw: []byte{0xff}}, errMalformed, ""},
+		{"scrypt p non-minimal", pbes2Spec{kdf: oidScrypt, pRaw: []byte{0x00, 0x01}}, errMalformed, ""},
+		{"scrypt p missing", pbes2Spec{kdf: oidScrypt, kdfParamsStopAfterR: true}, errMalformed, ""},
+		{"scrypt params trailing element", pbes2Spec{kdf: oidScrypt, kdfParamsTrailing: func(b *cryptobyte.Builder) { b.AddASN1NULL() }}, errMalformed, ""},
+		{"scrypt params trailing integer", pbes2Spec{kdf: oidScrypt, keyLength: 32, kdfParamsTrailing: func(b *cryptobyte.Builder) { b.AddASN1Int64(1) }}, errMalformed, ""},
+		{"scrypt keyLength disagreeing", pbes2Spec{kdf: oidScrypt, keyLength: 16}, errMalformed, "keyLength"},
+		{"scrypt keyLength disagreeing, aes-128", pbes2Spec{kdf: oidScrypt, scheme: oidAES128CBC, keyLength: 32}, errMalformed, "keyLength"},
+		{"scrypt salt empty", pbes2Spec{kdf: oidScrypt, salt: []byte{}}, errMalformed, ""},
+		{"scrypt salt over the bound", pbes2Spec{kdf: oidScrypt, salt: randBytes(t, maxPBES2Salt+1)}, errMalformed, "salt"},
+		{"scrypt salt not an OCTET STRING", pbes2Spec{kdf: oidScrypt, saltOtherSource: true}, errMalformed, ""},
+		// Then what scrypt is defined for.
+		{"scrypt N one", pbes2Spec{kdf: oidScrypt, n: 1}, errMalformed, "power of two"},
+		{"scrypt N three", pbes2Spec{kdf: oidScrypt, n: 3}, errMalformed, "power of two"},
+		{"scrypt N not a power of two", pbes2Spec{kdf: oidScrypt, n: 1000}, errMalformed, "power of two"},
+		{"scrypt N one over a power of two", pbes2Spec{kdf: oidScrypt, n: 16385}, errMalformed, "power of two"},
+		{"scrypt N at 2^(128r/8), r=1", pbes2Spec{kdf: oidScrypt, n: 65536, r: 1}, errMalformed, "2^(128*r/8)"},
+		{"scrypt N over 2^(128r/8), r=1", pbes2Spec{kdf: oidScrypt, n: 1 << 17, r: 1}, errMalformed, "2^(128*r/8)"},
+		// Then what this parser will run: the memory, by each parameter
+		// that can exceed it alone and by a count too wide to read; then
+		// the work, on parameters inside the memory cap.
+		{"scrypt memory: N=65536, r=8", pbes2Spec{kdf: oidScrypt, n: 65536}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: N=1048576, r=8", pbes2Spec{kdf: oidScrypt, n: 1 << 20}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: r alone", pbes2Spec{kdf: oidScrypt, n: 2, r: 1 << 19}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: r past the overflow guard", pbes2Spec{kdf: oidScrypt, n: 2, r: 1<<19 + 1}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: r at max int32", pbes2Spec{kdf: oidScrypt, n: 2, r: math.MaxInt32}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: p alone", pbes2Spec{kdf: oidScrypt, p: 65536}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: p at max int32", pbes2Spec{kdf: oidScrypt, p: math.MaxInt32}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: N of eight bytes", pbes2Spec{kdf: oidScrypt, nRaw: []byte{1, 0, 0, 0, 0, 0, 0, 0}}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: r of eight bytes", pbes2Spec{kdf: oidScrypt, rRaw: []byte{1, 0, 0, 0, 0, 0, 0, 0}}, ErrUnsupportedKey, "working memory"},
+		{"scrypt memory: p of twenty bytes", pbes2Spec{kdf: oidScrypt, pRaw: append([]byte{1}, make([]byte, 19)...)}, ErrUnsupportedKey, "working memory"},
+		{"scrypt work: p=33 at openssl's N and r", pbes2Spec{kdf: oidScrypt, n: 16384, p: 33}, ErrUnsupportedKey, "N*r*p"},
+		{"scrypt work: p=4097 at N=1024, r=1", pbes2Spec{kdf: oidScrypt, n: 1024, r: 1, p: 4097}, ErrUnsupportedKey, "N*r*p"},
 		{"prf unknown", pbes2Spec{prf: oidHMACSHA256(99)}, ErrUnsupportedKey, "PRF"},
 		{"prf sha3 arc", pbes2Spec{prf: unknown}, ErrUnsupportedKey, "PRF"},
 		{"prf params not NULL", pbes2Spec{prf: oidHMACSHA256(9), prfParams: func(b *cryptobyte.Builder) { b.AddASN1Int64(1) }}, errMalformed, ""},
@@ -553,6 +757,86 @@ func TestParsePrivateKeyWithPassphrase_PKCS8IterationCap(t *testing.T) {
 	s.Destroy()
 	data = encryptPKCS8(t, p8, pbes2Spec{iter: MaxPBKDF2Iterations + 1, prf: oidHMACSHA256(9)})
 	check(t, data, ErrUnsupportedKey, "maximum")
+}
+
+// TestParsePrivateKeyWithPassphrase_PKCS8ScryptCaps: each cap is a boundary
+// a file may sit on. Memory: at N=32768, p=1 the working set is
+// 128·r·32772 bytes, which is inside MaxScryptMemory at r=15 by 4 MiB and
+// over it at r=16 by 8 KiB — the two files differ in r alone. Work:
+// N=16384, r=8, p=32 is N·r·p = MaxScryptWork exactly and opens; p=33 is
+// refused. The files at the caps are derived for real, twice (the encoder's
+// x/crypto and the parser), which is the cost this test is skipped for
+// under -short.
+func TestParsePrivateKeyWithPassphrase_PKCS8ScryptCaps(t *testing.T) {
+	if testing.Short() {
+		t.Skip("derives at both scrypt caps")
+	}
+	p8, pub := testPKCS8Ed25519(t)
+	for _, c := range []struct {
+		name          string
+		opens, refuse pbes2Spec
+		text          string
+	}{
+		{"memory", pbes2Spec{kdf: oidScrypt, n: 32768, r: 15}, pbes2Spec{kdf: oidScrypt, n: 32768, r: 16}, "working memory"},
+		{"work", pbes2Spec{kdf: oidScrypt, n: 16384, p: 32}, pbes2Spec{kdf: oidScrypt, n: 16384, p: 33}, "N*r*p"},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			if !c.opens.scryptOpens() || c.refuse.scryptOpens() {
+				t.Fatal("the pair does not straddle the cap")
+			}
+			check(t, encryptPKCS8(t, p8, c.refuse), ErrUnsupportedKey, c.text)
+
+			data := encryptPKCS8(t, p8, c.opens)
+			pkcs8LockBudget(t, data)
+			s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
+			if err != nil {
+				t.Fatalf("a file inside the cap did not open: %v", err)
+			}
+			verifySigner(t, s, pub)
+			s.Destroy()
+		})
+	}
+	if n, r, p := (pbes2Spec{kdf: oidScrypt, n: 16384, p: 32}).scryptParams(); uint64(n)*uint64(r)*uint64(p) != MaxScryptWork {
+		t.Fatalf("N·r·p = %d: the work row is not at MaxScryptWork = %d", n*r*p, MaxScryptWork)
+	}
+}
+
+// TestParsePrivateKeyWithPassphrase_PKCS8ScryptLockRefusal: a host that will
+// not lock the scrypt working set fails the parse as itself. The refusal
+// comes after every parameter check and before the KDF, so it must not read
+// as a wrong passphrase — a caller would otherwise prompt again for a
+// passphrase that was right — and it must not be the parser's own verdict
+// on the file either. The allocation is made to fail the way a host does,
+// by asking for the working set of a real file from a scratch allocator
+// that refuses.
+func TestParsePrivateKeyWithPassphrase_PKCS8ScryptLockRefusal(t *testing.T) {
+	_, raw, _ := pkcs8Fixture(t, "ed25519-scrypt")
+	refused := errors.New("simulated: VirtualLock refused")
+	orig := newScratchBuffer
+	var asked []int
+	newScratchBuffer = func(size int) (*secmem.SecureBuffer, error) {
+		asked = append(asked, size)
+		return nil, refused
+	}
+	defer func() { newScratchBuffer = orig }()
+
+	s, err := ParsePrivateKeyWithPassphrase(raw, []byte(testPassphrase))
+	if err == nil {
+		s.Destroy()
+		t.Fatal("parse succeeded although the working set could not be locked")
+	}
+	if !errors.Is(err, refused) {
+		t.Fatalf("the refusal is not in the error: %v", err)
+	}
+	if errors.Is(err, x509.IncorrectPasswordError) || errors.Is(err, ErrUnsupportedKey) || errors.Is(err, errMalformed) {
+		t.Fatalf("a lock refusal was reported as a verdict on the file or the passphrase: %v", err)
+	}
+	// One scratch, of the size MaxScryptMemory's doc describes for
+	// openssl's defaults: 128·8·(16384 + 2 + 2) bytes and under 2 KiB more.
+	const counted = 128 * 8 * (16384 + 2 + 2)
+	if len(asked) != 1 || asked[0] < counted || asked[0] >= counted+2048 {
+		t.Fatalf("scratch allocations %v, want one of [%d, %d)", asked, counted, counted+2048)
+	}
 }
 
 // TestParsePrivateKeyWithPassphrase_PKCS8HeapGate: an RSA or EC key in a
@@ -792,7 +1076,8 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ErrorsCarryNoSecret(t *testing.T) {
 func TestParsePrivateKeyWithPassphrase_PKCS8WipesAESBlock(t *testing.T) {
 	for _, name := range pkcs8Fixtures(t) {
 		t.Run(name, func(t *testing.T) {
-			pemBytes, _, pub := pkcs8Fixture(t, name)
+			pemBytes, raw, pub := pkcs8Fixture(t, name)
+			pkcs8LockBudget(t, raw)
 			var fired, blank int
 			var aliased [][]byte
 			orig := wipeAESBlock

@@ -65,9 +65,12 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // aes-256-cbc` rewrites any of them in a form this package reads.
 //
 // It is deliberately NOT returned for things that are merely unimplemented
-// — the scrypt KDF and the AES-GCM schemes of PBES2, the OpenSSH ciphers
-// this package does not run, an unknown KDF — because those may yet
-// arrive, and a caller should be able to tell the two apart.
+// — the AES-GCM schemes of PBES2, the OpenSSH ciphers this package does not
+// run, an unknown KDF — because those may yet arrive, and a caller should
+// be able to tell the two apart. Nor is it returned for a file refused for
+// what it would cost — a PBKDF2 count over [MaxPBKDF2Iterations], scrypt
+// parameters over [MaxScryptMemory] or [MaxScryptWork]: the algorithm is
+// one this package runs, and the same key under ordinary parameters opens.
 var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanently unsupported")
 
 // errLegacyPEM is the PEM refusal that carries ErrRetiredAlgorithm (the

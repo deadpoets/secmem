@@ -37,9 +37,11 @@ import (
 	"golang.org/x/crypto/argon2"
 	"golang.org/x/crypto/blake2b"
 	"golang.org/x/crypto/hkdf"
+	xscrypt "golang.org/x/crypto/scrypt"
 
 	"github.com/deadpoets/secmem"
 	"github.com/deadpoets/secmem/secmem-crypto/internal/bcryptpbkdf"
+	"github.com/deadpoets/secmem/secmem-crypto/internal/scrypt"
 )
 
 // residueClass is what a scenario asserts; see residue_linux_test.go.
@@ -323,6 +325,66 @@ var residueScenarios = []residueScenario{
 				t.Fatal(err)
 			}
 			pats := append(ed25519Patterns(seed), residuePattern{"pbkdf2-key", key})
+			pats = append(pats, aesSchedulePatterns(t, "aes256", key)...)
+			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
+			return append(slices.Clone(pemBytes), pass...), aux, pats
+		},
+		victim: func(buf *secmem.SecureBuffer, aux []byte) (func() error, func() error, error) {
+			n := int(binary.BigEndian.Uint32(aux))
+			op := func() error {
+				return buf.WithBytesErr(func(p []byte) error {
+					s, err := ParsePrivateKeyWithPassphrase(p[:n], p[n:])
+					if err != nil {
+						return err
+					}
+					defer s.Destroy()
+					return signOp(s, crypto.Hash(0), []byte(residueMessage))()
+				})
+			}
+			return op, buf.Destroy, nil
+		},
+	},
+	{
+		// The same profile under scrypt, on the openssl fixture at N=1024:
+		// 1 MiB of V, the code path of the 16 MiB default at a size the
+		// scan's lock budget holds alongside everything else. What scrypt
+		// adds to hunt for is B — the first PBKDF2's output, 1 KiB of it,
+		// which is also V's first block — B as the mix leaves it, which is
+		// what the second PBKDF2 hashes, and the key that comes out. The
+		// parent computes them with the standard library's PBKDF2 around the
+		// fork's own mix on the heap, and checks the key against x/crypto's
+		// scrypt, so the patterns are the real intermediates.
+		name: "ParsePrivateKeyWithPassphrase/Ed25519-PKCS8-scrypt", class: residueContained,
+		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
+			pemBytes, raw, _ := pkcs8Fixture(t, "ed25519-scrypt-n1024")
+			pkcs8LockBudget(t, raw)
+			pass := []byte(testPassphrase)
+			seed := chachaFixtureSeed(t, pemBytes, pass)
+			f, err := readPBES2(raw)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !f.scrypt || f.keyLen != 32 {
+				t.Fatalf("fixture is scrypt %v, key %d; the patterns below derive scrypt to 32 bytes", f.scrypt, f.keyLen)
+			}
+			b, err := pbkdf2.Key(sha256.New, testPassphrase, f.salt, 1, f.p*scrypt.BlockSize(f.r))
+			if err != nil {
+				t.Fatal(err)
+			}
+			mixed := slices.Clone(b)
+			scrypt.Mix(mixed, f.n, f.r, make([]byte, scrypt.WorkSize(f.n, f.r)))
+			key, err := pbkdf2.Key(sha256.New, testPassphrase, mixed, 1, f.keyLen)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if want, err := xscrypt.Key(pass, f.salt, f.n, f.r, f.p, f.keyLen); err != nil || !bytes.Equal(key, want) {
+				t.Fatalf("the parent's intermediates are not scrypt's (err %v): the patterns would hunt for nothing", err)
+			}
+			pats := append(ed25519Patterns(seed),
+				residuePattern{"scrypt-B", b},
+				residuePattern{"scrypt-B-mixed", mixed},
+				residuePattern{"scrypt-key", key},
+			)
 			pats = append(pats, aesSchedulePatterns(t, "aes256", key)...)
 			aux := binary.BigEndian.AppendUint32(nil, uint32(len(pemBytes)))
 			return append(slices.Clone(pemBytes), pass...), aux, pats

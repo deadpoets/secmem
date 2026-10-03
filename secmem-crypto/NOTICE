@@ -59,6 +59,24 @@ upstream's, byte for byte.
 As above, the fork is not a distribution of golang.org/x/crypto and does not
 use the Go name or the Go Authors' names to endorse this project.
 
+internal/scrypt/
+-----------------
+A modified copy of the memory-hard step of the Go package
+golang.org/x/crypto/scrypt (the Salsa20/8 core, scryptBlockMix and
+scryptROMix), taken from golang.org/x/crypto v0.57.0. Copyright 2012 The Go
+Authors. All rights reserved.
+
+Licensed under the BSD-3-Clause licence in internal/scrypt/LICENSE, with the
+additional patent grant in internal/scrypt/PATENTS; both files are copied
+unmodified from the golang.org/x/crypto module root and govern every file in
+that directory. The forked source file keeps the original copyright header
+and states that it was modified; the modifications, all made for
+secmem-crypto, are listed in internal/scrypt/doc.go. blockCopy, blockXOR,
+salsaXOR, blockMix and integer are text-identical to upstream.
+
+As above, the fork is not a distribution of golang.org/x/crypto and does not
+use the Go name or the Go Authors' names to endorse this project.
+
 internal/x25519/
 -----------------
 x25519ScalarMult copied verbatim from the Go standard library's

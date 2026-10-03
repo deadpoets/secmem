@@ -44,19 +44,26 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // For a PKCS#8 file the protection is PBES2 with PBKDF2 — under HMAC-SHA1
 // (the format's default, which a file names by omitting the field),
 // -SHA-224, -256, -384, -512, -512/224 or -512/256, up to
-// [MaxPBKDF2Iterations] — and AES-128, -192 or -256 in CBC mode. The
-// scrypt KDF and the AES-GCM schemes return an error wrapping
-// [ErrUnsupportedKey]; PBES1, the PKCS#12 PBEs, and PBES2 over DES, 3DES or
-// RC2 additionally wrap [ErrRetiredAlgorithm], as legacy PEM encryption
-// does. PKCS#8 puts the key's algorithm inside the ciphertext, so unlike
-// the OpenSSH path the RSA/EC gate can only be applied after the KDF has
-// run; it is still applied before any signer is built. Everything else
-// about the file — its structure, every parameter, the iteration count
-// against the cap — is decided before the derivation. AES-CBC
-// authenticates nothing, so after it the answer is the same one bit as
-// below; what stays observable is success, and for an Ed25519 file without
-// a public key (openssl writes v1) damage confined to the seed leaves a
-// file that opens as a different key, exactly as it would through openssl.
+// [MaxPBKDF2Iterations] — or with scrypt (RFC 7914: openssl pkcs8 -scrypt),
+// up to [MaxScryptMemory] and [MaxScryptWork], and AES-128, -192 or -256 in
+// CBC mode. A file over one of those caps and the AES-GCM schemes return an
+// error wrapping [ErrUnsupportedKey]; PBES1, the PKCS#12 PBEs, and PBES2
+// over DES, 3DES or RC2 additionally wrap [ErrRetiredAlgorithm], as legacy
+// PEM encryption does. A scrypt file names its own working memory, and the
+// call locks all of it for the derivation — 16 MiB for openssl's defaults —
+// so the process needs that much lock budget
+// ([secmem.EnsureMemlockLimit]); a host that will not lock it fails the
+// call with the platform's own error, before the derivation and not as the
+// one-bit answer below. PKCS#8 puts the key's algorithm inside the
+// ciphertext, so unlike the OpenSSH path the RSA/EC gate can only be
+// applied after the KDF has run; it is still applied before any signer is
+// built. Everything else about the file — its structure, every parameter,
+// the cost it names against the caps — is decided before the derivation.
+// AES-CBC authenticates nothing, so after it the answer is the same one bit
+// as below; what stays observable is success, and for an Ed25519 file
+// without a public key (openssl writes v1) damage confined to the seed
+// leaves a file that opens as a different key, exactly as it would through
+// openssl.
 //
 // For an OpenSSH file the protection is KDF bcrypt, up to 2048 rounds (x/crypto's cap:
 // cost is linear in rounds and the count comes from the file), under the
@@ -110,9 +117,11 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // behind. The chacha20-poly1305 core is written out in this package and
 // allocates nothing. The KDF's working state (for bcrypt the Blowfish
 // schedule and both SHA-512 outputs, about 4 KiB; for PBKDF2 the padded
-// keys, the running blocks and the hash inputs, under 1 KiB), the derived
-// key and IV, and the cipher's scratch live in one SecureBuffer for the
-// call. data and passphrase are the caller's: neither is wiped nor retained.
+// keys, the running blocks and the hash inputs, under 1 KiB; for scrypt
+// the array V and everything else it mixes, as much as the file's
+// parameters say), the derived key and IV, and the cipher's scratch live in
+// one SecureBuffer for the call. data and passphrase are the caller's:
+// neither is wiped nor retained.
 func ParsePrivateKeyWithPassphrase(data, passphrase []byte, opts ...Option) (Signer, error) {
 	if len(data) == 0 {
 		return nil, errors.New("secmemcrypto: parse private key: empty input")
