@@ -139,18 +139,59 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
-          # Whatever is newest, including a release candidate, which is the
-          # point: ci.yml pins exact patches of the two supported releases, so
-          # nothing there ever meets the toolchain that is about to arrive.
+          # A base toolchain only, so that `go` exists. Which toolchain runs
+          # the tests is decided in the next step: setup-go's "stable" is the
+          # newest STABLE release, and the release candidate that arrives
+          # before it is the whole point of this job.
           go-version: "stable"
           check-latest: true
+
+      - name: resolve the newest toolchain, release candidates included
+        id: newest
+        run: |
+          set -uo pipefail
+          # go.dev's download index is ordered newest first and, with
+          # include=all, lists release candidates beside releases. GOTOOLCHAIN
+          # then fetches whatever this names from the module proxy, which is
+          # how a job on a stable runner runs a prerelease compiler.
+          if ! index=$(curl -fsSL 'https://go.dev/dl/?mode=json&include=all'); then
+            echo "::warning::could not reach go.dev/dl; skipping the canary"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          ver=$(jq -r '[.[].version] | .[0] // empty' <<<"$index")
+          if [ -z "$ver" ]; then
+            echo "::warning::the download index returned no versions; skipping the canary"
+            echo "version=" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          echo "newest published toolchain: $ver"
+          jq -r '.[0:4] | .[] | "  " + .version + (if .stable then " (stable)" else " (prerelease)" end)' <<<"$index"
+          echo "version=$ver" >> "$GITHUB_OUTPUT"
+
       - uses: ./.github/actions/setup-workspace
 
       - name: what a new toolchain would break
+        if: steps.newest.outputs.version != ''
         working-directory: secmem-crypto
+        env:
+          # setup-go exports GOTOOLCHAIN=local to stop Go fetching a toolchain
+          # other than the one it installed. A step-level value overrides that,
+          # which is what lets this job run the release candidate.
+          GOTOOLCHAIN: ${{ steps.newest.outputs.version }}
         run: |
           set -uo pipefail
           go version
+          # Assert the switch took. If setup-go's "local" ever wins, this job
+          # would quietly re-run the toolchain ci.yml already pins and report
+          # that as advance warning — a check that passes by testing nothing,
+          # which is the one failure mode this repository keeps meeting.
+          running=$(go env GOVERSION)
+          if [ "$running" != "${GOTOOLCHAIN}" ]; then
+            echo "::warning::asked for $GOTOOLCHAIN but go reports $running; the toolchain switch did not take, so nothing newer than CI was exercised"
+          elif [ "$GOTOOLCHAIN" = "go${GO_VERSION}" ]; then
+            echo "::notice::$GOTOOLCHAIN is the release ci.yml already pins; there is no newer toolchain to warn about yet"
+          fi
           # The couplings a Go release can break, in the order they would hurt:
           # the stdlib copy (text identity), the reflection layouts that resolve
           # unexported fields and fail closed when they cannot, and the
