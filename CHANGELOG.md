@@ -307,6 +307,9 @@ core floor rises to v0.7.0.
 
 ### Changed
 
+- **`secmem-crypto`: requires core v0.7.0.** The floor rises with the release
+  it ships beside; `examples/go.mod` carries the same line.
+
 - **`secmem-crypto`: the Windows residue scan measures this module, not the
   runtime's preemption spill — which is now measured precisely.** A Windows
   scan failed once in CI and about once in a hundred local runs of the
