@@ -13,7 +13,7 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
-## [secmem-crypto/v0.9.0] - 2026-10-04
+## [secmem-crypto/v0.9.0] - 2026-10-03
 
 The passphrase ingress is complete: PKCS#8 files protected with scrypt open,
 through a fork of the memory-hard step laid over locked memory with the
