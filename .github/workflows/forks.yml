@@ -1,0 +1,198 @@
+name: Fork Watch
+
+# This module carries copies of third-party code: x/crypto's argon2, blake2b,
+# bcrypt_pbkdf and blowfish, the standard library's X25519 ladder, and the EFF
+# wordlist. forks.json records where each came from; secmem-crypto/forks_test.go
+# keeps that record honest against this tree, in ordinary CI, offline. What
+# neither can see is the thing that actually needs watching: UPSTREAM moving
+# after we copied it. That is what this workflow is for.
+#
+# It reports; it does not gate. An upstream release is an event outside this
+# repository, so a required check for it would block unrelated work for a
+# reason no PR can fix — the same argument apicompat.sh is report-only for. The
+# deterministic half (each fork's upstream_identity_test.go, forks_test.go)
+# stays inside ci.yml where it is required. When something here finds a change,
+# it opens or updates ONE tracking issue, so a missed week cannot bury the
+# signal in a pile of duplicates.
+#
+# A copy also creates a blind spot that nothing else in CI covers: govulncheck
+# reads a module's dependency graph, and a fork is not in one. An advisory
+# against x/crypto's argon2 would never be reported against this module. The
+# forkcheck step queries the advisory database for the upstream module at the
+# fork point and keeps the advisories whose affected import paths are the
+# copied ones.
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # 06:00 UTC Mondays; x/crypto releases roughly monthly
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  # The newest supported release, in step with ci.yml's GO_VERSION. The canary
+  # job below deliberately runs a different one.
+  GO_VERSION: "1.27.1"
+
+jobs:
+  forkcheck:
+    name: upstream drift
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # the tracking issue is the whole output of this job
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: check every fork against its upstream
+        id: check
+        working-directory: secmem-crypto
+        env:
+          # The forks resolve against released dependencies here: this job asks
+          # about upstream, not about the sibling core tree, so no workspace.
+          GOWORK: "off"
+        run: |
+          set -uo pipefail
+          # One invocation serves all three readers: the text report for
+          # whoever opens the run, the JSON for the artifact, and the tallies
+          # for this step's outputs. Two invocations would be two queries of
+          # upstream, and could disagree with each other.
+          if ! go run ./internal/forkcheck                  -out "$RUNNER_TEMP/forks.json"                  -counts "$RUNNER_TEMP/forks.counts" | tee "$RUNNER_TEMP/forks.txt"; then
+            echo "::error::forkcheck itself failed; that is a tool or manifest problem, not a drift report"
+            exit 1
+          fi
+          cat "$RUNNER_TEMP/forks.counts" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Fork watch"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/forks.txt"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # shellcheck source=/dev/null
+          . "$RUNNER_TEMP/forks.counts"
+          # "unknown" means the question could not be asked - no network, a
+          # proxy error, a missing toolchain source tree. Say so loudly: a run
+          # that silently checked nothing is the failure this workflow exists
+          # to avoid, and it would otherwise look exactly like a clean week.
+          if [ "${unknown:-0}" != "0" ]; then
+            echo "::warning::$unknown fork(s) could not be checked; see the summary"
+          fi
+
+      - name: keep the report
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: forkcheck
+          path: |
+            ${{ runner.temp }}/forks.json
+            ${{ runner.temp }}/forks.txt
+          if-no-files-found: warn
+
+      - name: open or update the tracking issue
+        if: steps.check.outputs.drift != '0'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "fork watch: an upstream has moved past a fork point"
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/issue.md"
+          {
+            echo "The weekly fork watch found that upstream has changed code this module"
+            echo "carries a copy of, or that a claim of verbatim identity no longer holds."
+            echo
+            echo "Nothing is broken by this on its own: the forks still build, still pass"
+            echo "their differential tests against upstream's current release, and still"
+            echo "produce the output their vectors pin. What it means is that a decision is"
+            echo "due — port the change, or record that it does not apply."
+            echo
+            echo "CONTRIBUTING.md, \"Maintaining the forks\", has the procedure."
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/forks.txt"
+            echo '```'
+          } > "$body"
+          # One issue, reused: a second week of the same unported change should
+          # add a comment, not a duplicate.
+          existing=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+            echo "commented on #$existing"
+          else
+            gh issue create --title "$TITLE" --body-file "$body" --label maintenance || \
+              gh issue create --title "$TITLE" --body-file "$body"
+          fi
+
+  canary:
+    name: next toolchain (advance warning)
+    runs-on: ubuntu-latest
+    # Never fails the workflow. This job's answer is "the next Go release will
+    # break X", which is information, not a defect in the commit it ran on.
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          # Whatever is newest, including a release candidate, which is the
+          # point: ci.yml pins exact patches of the two supported releases, so
+          # nothing there ever meets the toolchain that is about to arrive.
+          go-version: "stable"
+          check-latest: true
+      - uses: ./.github/actions/setup-workspace
+
+      - name: what a new toolchain would break
+        working-directory: secmem-crypto
+        run: |
+          set -uo pipefail
+          go version
+          # The couplings a Go release can break, in the order they would hurt:
+          # the stdlib copy (text identity), the reflection layouts that resolve
+          # unexported fields and fail closed when they cannot, and the
+          # constructor probe behind the in-place hashes. Each is already a test
+          # with a verdict; this job only runs them somewhere ci.yml cannot.
+          failed=0
+          # Each entry is pkg|pattern|minimum-tests-the-pattern-must-match.
+          # The minimum is the point: a -run that matches nothing passes, so a
+          # renamed test would quietly turn this job into a green no-op.
+          checks=(
+            "./internal/x25519@TestUpstreamIdentity@1"
+            "./internal/argon2@TestUpstreamIdentity@2"
+            "./internal/bcryptpbkdf@TestUpstreamIdentity@3"
+            ".@TestWipeAESBlock|TestResolveAESGCMLayout|TestWipeRSAFIPSKey|TestRSAFIPSSecretViews|TestWipeMLKEMDecapsulationKey|TestWipeECDHPrivateKey|TestInPlaceHash|TestForks_@15"
+          )
+          # @ separates the three fields because a -run pattern contains |.
+          for entry in "${checks[@]}"; do
+            pkg=${entry%%@*}
+            rest=${entry#*@}
+            pattern=${rest%@*}
+            want=${rest##*@}
+            echo "::group::go test $pkg -run $pattern"
+            if ! list=$(go test -list "$pattern" "$pkg" 2>&1); then
+              echo "$list"
+              echo "::error::listing tests in $pkg failed"
+              failed=1
+              echo "::endgroup::"
+              continue
+            fi
+            got=$(grep -c '^Test' <<<"$list" || true)
+            if [ "$got" -lt "$want" ]; then
+              echo "::error::$pkg: the pattern matched $got test(s), want at least $want; a rename left this check hollow"
+              failed=1
+              echo "::endgroup::"
+              continue
+            fi
+            if ! go test -count=1 -run "$pattern" "$pkg"; then
+              failed=1
+            fi
+            echo "::endgroup::"
+          done
+          if [ $failed -ne 0 ]; then
+            echo "::warning::a coupling to the standard library breaks on $(go version); this is advance warning, not a regression in this commit"
+            exit 1
+          fi
