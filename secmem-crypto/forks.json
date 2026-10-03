@@ -1,0 +1,100 @@
+{
+  "_comment": [
+    "Every piece of third-party code copied into this module, and where it came",
+    "from. This file is the single source of truth that NOTICE, each fork's",
+    "doc.go and the README state in prose: forks_test.go fails when the prose",
+    "and this file disagree, when a copied directory is missing an entry, and",
+    "when the recorded hash of an embedded file no longer matches it.",
+    "",
+    "internal/forkcheck reads it to answer the only question that matters for",
+    "maintenance: has UPSTREAM moved since the fork point? It diffs upstream",
+    "against itself between fork_point and the newest release, never against",
+    "our copy -- a fork-versus-upstream diff is permanently noisy, because the",
+    "modifications are the point, so nobody reads it. Upstream against itself",
+    "is empty in the steady state, which makes a non-empty result a signal.",
+    "",
+    "fork_point is history and does not move with Dependabot: the module's",
+    "x/crypto requirement rises for the rest of the package while a fork stays",
+    "where it was ported from. unchanged_through records the newest upstream",
+    "release checked to be identical in the copied paths, so the pair together",
+    "says 'ported from X, and upstream has not changed through Y'.",
+    "",
+    "identity[] mirrors the claims in each fork's upstream_identity_test.go.",
+    "Those tests compare against the x/crypto the module RESOLVES; forkcheck",
+    "compares against the NEWEST release, so a changed upstream function is",
+    "seen before a dependency bump arrives, and even if none ever does.",
+    "Modes: bytes (exact), code (ignore comments, blank lines and the package",
+    "clause), func (one top-level function, comment lines dropped), block (a",
+    "regexp-delimited span, for golden tables)."
+  ],
+  "forks": [
+    {
+      "id": "argon2",
+      "path": "internal/argon2",
+      "notes": "Argon2 plus the portable BLAKE2b compression function and one-shot finalisation, modified so every byte of working state lives in a caller-owned Workspace and is wiped.",
+      "upstream": {
+        "kind": "gomod",
+        "module": "golang.org/x/crypto",
+        "paths": ["argon2", "blake2b"]
+      },
+      "fork_point": "v0.56.0",
+      "unchanged_through": "v0.57.0",
+      "claims": ["internal/argon2/doc.go", "NOTICE", "README.md"],
+      "identity": [
+        { "mode": "bytes", "ours": "internal/argon2/blamka_amd64.s", "theirs": "argon2/blamka_amd64.s" },
+        { "mode": "func", "name": "blamkaGeneric", "ours": "internal/argon2/blamka_generic.go", "theirs": "argon2/blamka_generic.go" },
+        { "mode": "func", "name": "indexAlpha", "ours": "internal/argon2/argon2.go", "theirs": "argon2/argon2.go" },
+        { "mode": "func", "name": "phi", "ours": "internal/argon2/argon2.go", "theirs": "argon2/argon2.go" }
+      ]
+    },
+    {
+      "id": "bcryptpbkdf",
+      "path": "internal/bcryptpbkdf",
+      "notes": "The KDF that protects OpenSSH private-key files, with Blowfish, modified to run in a caller-owned Workspace that can be a SecureBuffer.",
+      "upstream": {
+        "kind": "gomod",
+        "module": "golang.org/x/crypto",
+        "paths": ["ssh/internal/bcrypt_pbkdf", "blowfish"]
+      },
+      "fork_point": "v0.56.0",
+      "unchanged_through": "v0.57.0",
+      "claims": ["internal/bcryptpbkdf/doc.go", "NOTICE", "README.md"],
+      "identity": [
+        { "mode": "code", "ours": "internal/bcryptpbkdf/const.go", "theirs": "blowfish/const.go" },
+        { "mode": "func", "name": "getNextWord", "ours": "internal/bcryptpbkdf/blowfish.go", "theirs": "blowfish/block.go" },
+        { "mode": "func", "name": "ExpandKey", "ours": "internal/bcryptpbkdf/blowfish.go", "theirs": "blowfish/block.go" },
+        { "mode": "func", "name": "expandKeyWithSalt", "ours": "internal/bcryptpbkdf/blowfish.go", "theirs": "blowfish/block.go" },
+        { "mode": "func", "name": "encryptBlock", "ours": "internal/bcryptpbkdf/blowfish.go", "theirs": "blowfish/block.go" },
+        { "mode": "func", "name": "initCipher", "ours": "internal/bcryptpbkdf/blowfish.go", "theirs": "blowfish/cipher.go" },
+        { "mode": "func", "name": "(c *Cipher) Encrypt", "ours": "internal/bcryptpbkdf/blowfish.go", "theirs": "blowfish/cipher.go" },
+        { "mode": "block", "name": "^var golden = .*?^}$", "ours": "internal/bcryptpbkdf/bcrypt_pbkdf_test.go", "theirs": "ssh/internal/bcrypt_pbkdf/bcrypt_pbkdf_test.go" }
+      ]
+    },
+    {
+      "id": "x25519",
+      "path": "internal/x25519",
+      "notes": "The X25519 Montgomery ladder from the standard library's crypto/ecdh, callable on a scalar held in locked memory, with the field package pointed at filippo.io/edwards25519.",
+      "upstream": {
+        "kind": "goroot",
+        "paths": ["src/crypto/ecdh/x25519.go"]
+      },
+      "fork_point": "go1.26",
+      "unchanged_through": "go1.27",
+      "claims": ["internal/x25519/doc.go", "internal/x25519/x25519.go", "NOTICE"],
+      "identity": [
+        { "mode": "func", "name": "x25519ScalarMult", "ours": "internal/x25519/x25519.go", "theirs": "src/crypto/ecdh/x25519.go" }
+      ]
+    },
+    {
+      "id": "eff-wordlist",
+      "path": "eff_large_wordlist.txt",
+      "notes": "The EFF long wordlist, embedded byte-for-byte as distributed, under CC BY 3.0. Not code: the check is that the file still hashes to what NOTICE's claim of byte identity rests on.",
+      "upstream": {
+        "kind": "url",
+        "url": "https://www.eff.org/files/2016/07/18/eff_large_wordlist.txt"
+      },
+      "sha256": "addd35536511597a02fa0a9ff1e5284677b8883b83e986e43f15a3db996b903e",
+      "claims": ["NOTICE"]
+    }
+  ]
+}

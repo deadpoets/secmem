@@ -65,10 +65,13 @@
 // the differential tests against upstream), so a bump only matters if
 // upstream argon2 or blake2b gains a fix worth porting.
 // upstream_identity_test.go fails the bump when upstream's assembly or
-// verbatim functions change; port by hand from a diff of upstream's argon2
-// and blake2b directories between the pinned version and the new one, then
-// update the pinned version everywhere it is stated (grep the module for
-// v0.56.0: the file headers here, NOTICE and CHANGELOG).
+// verbatim functions change, and the weekly Fork Watch workflow reports an
+// upstream release that moved argon2 or blake2b even when no bump arrives:
+// `go run ./internal/forkcheck` prints the diff between the fork point and
+// upstream's newest release, which is the input to the port. Afterwards
+// update forks.json's fork_point and the prose that states it — forks.json
+// lists those files and forks_test.go fails while any of them disagrees.
+// CONTRIBUTING.md, "Maintaining the forks", has the whole procedure.
 //
 // # Licence
 //

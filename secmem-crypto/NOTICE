@@ -2,6 +2,10 @@ This module embeds third-party material under licences other than this
 project's own Apache-2.0. Each item below is self-contained: the licence
 text that governs it ships next to it.
 
+forks.json carries the same list in machine-readable form, with the version
+each copy was taken from; forks_test.go fails when the two disagree, and
+internal/forkcheck reports when an upstream has moved past a fork point.
+
 eff_large_wordlist.txt
 -----------------------
 "EFF's New Wordlists for Random Passphrases" (the "EFF long wordlist"),
@@ -20,7 +24,8 @@ internal/argon2/
 A modified copy of the Go package golang.org/x/crypto/argon2, plus the
 portable compression function and one-shot finalisation of
 golang.org/x/crypto/blake2b (blake2b_generic.go), both taken from
-golang.org/x/crypto v0.56.0. Copyright 2017 The Go Authors. All rights
+golang.org/x/crypto v0.56.0, which is unchanged upstream in those packages
+through v0.57.0. Copyright 2017 The Go Authors. All rights
 reserved.
 
 Licensed under the BSD-3-Clause licence in internal/argon2/LICENSE, with
@@ -38,7 +43,8 @@ internal/bcryptpbkdf/
 ----------------------
 A modified copy of the Go package golang.org/x/crypto/ssh/internal/bcrypt_pbkdf
 together with golang.org/x/crypto/blowfish (cipher.go, block.go and const.go),
-both taken from golang.org/x/crypto v0.56.0. Copyright 2010 and 2014 The Go
+both taken from golang.org/x/crypto v0.56.0, which is unchanged upstream in
+those packages through v0.57.0. Copyright 2010 and 2014 The Go
 Authors. All rights reserved.
 
 Licensed under the BSD-3-Clause licence in internal/bcryptpbkdf/LICENSE, with
@@ -56,8 +62,8 @@ use the Go name or the Go Authors' names to endorse this project.
 internal/x25519/
 -----------------
 x25519ScalarMult copied verbatim from the Go standard library's
-crypto/ecdh/x25519.go (go1.26), with its field package import pointed at
-filippo.io/edwards25519/field. Copyright 2022 The Go Authors. All rights
+crypto/ecdh/x25519.go (go1.26, and text-identical through go1.27), with its
+field package import pointed at filippo.io/edwards25519/field. Copyright 2022 The Go Authors. All rights
 reserved.
 
 Licensed under the BSD-3-Clause licence in internal/x25519/LICENSE, with the

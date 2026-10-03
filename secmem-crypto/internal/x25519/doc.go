@@ -23,9 +23,12 @@
 //   - ScalarMult is new: a fixed-size-array entry point over the verbatim
 //     function, so a caller cannot pass a short slice.
 //
-// x25519ScalarMult is text-identical to the toolchain's own
-// crypto/ecdh/x25519.go; upstream_identity_test.go fails when a Go release
-// changes it, and forces a re-port.
+// x25519ScalarMult was copied from go1.26 and is text-identical to the
+// toolchain's own crypto/ecdh/x25519.go through go1.27;
+// upstream_identity_test.go fails when a Go release changes it, and forces a
+// re-port. forks.json records both versions, and the Fork Watch workflow
+// runs that test under the next release candidate so a change is seen before
+// the toolchain pin moves — see CONTRIBUTING.md, "Maintaining the forks".
 //
 // The copy is not a distribution of Go and does not use the Go name or the
 // Go Authors' names to endorse this project.

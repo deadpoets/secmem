@@ -13,6 +13,49 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`secmem-crypto`: the forks are now watched, not just documented.**
+  This module carries copies of x/crypto's `argon2`, `blake2b`,
+  `bcrypt_pbkdf` and `blowfish`, the standard library's X25519 ladder and the
+  EFF wordlist. Each fork's `upstream_identity_test.go` already failed when
+  upstream changed a part documented as verbatim — but only for the x/crypto
+  version the module happens to resolve, and only for the verbatim parts.
+  Nothing noticed an upstream release that changed the code around them, and
+  nothing could: a fork is not in the dependency graph `govulncheck` reads,
+  so an advisory against x/crypto's `argon2` would never have been reported
+  against this module.
+
+  `forks.json` now records every copy with the version it was taken from and
+  the newest release upstream is unchanged through; `forks_test.go` keeps that
+  record in step with the tree and with the prose in `NOTICE` and each fork's
+  `doc.go`, offline, in every CI run — it found one claim already missing on
+  its first run. `internal/forkcheck` answers the maintenance question by
+  diffing upstream *against itself* between the fork point and its newest
+  release, so the output is empty in the steady state rather than the
+  permanent noise of a fork-versus-upstream diff, and it queries the advisory
+  database for the forked import paths at the fork point. A weekly **Fork
+  Watch** workflow runs it, reports to one tracking issue rather than failing
+  a check — an upstream release is not something a pull request can fix — and
+  carries a canary job that runs the toolchain-coupled tests on the newest Go
+  release, release candidates included, so a stdlib change is advance warning
+  instead of a surprise on the day the pin moves.
+  `CONTRIBUTING.md`, "Maintaining the forks", is the procedure.
+
+  As of this change every fork is current: x/crypto is unchanged in all four
+  copied packages between v0.56.0 and v0.57.0, and the X25519 ladder is
+  text-identical from go1.26 through go1.27.
+
+### Fixed
+
+- **`secmem-crypto` documentation: the X25519 copy never said which Go
+  release it came from.** `internal/x25519/x25519.go` and `NOTICE` named
+  go1.26; `doc.go` claimed text identity with "the toolchain's own"
+  `crypto/ecdh` without naming a version, so after the go1.27 pin the three
+  together no longer said anything checkable. All three now state the release
+  the copy was taken from and the one it is still identical under, which is
+  the form `forks_test.go` enforces.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

@@ -2,7 +2,8 @@
 // Use of this source code is governed by a BSD-style
 // license that can be found in the LICENSE file.
 //
-// x25519ScalarMult is copied verbatim from crypto/ecdh/x25519.go (go1.26)
+// x25519ScalarMult is copied verbatim from crypto/ecdh/x25519.go (go1.26,
+// and text-identical through go1.27)
 // for secmem-crypto, with the import of the standard library's internal
 // field package replaced by filippo.io/edwards25519/field, the module the
 // standard library's copy is vendored from. See doc.go for why, and for the

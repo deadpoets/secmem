@@ -80,6 +80,71 @@ to contributions:
   only; `secmem-crypto` adds `filippo.io/edwards25519`, `golang.org/x/crypto`
   and `golang.org/x/sys`; `secmem-lint` depends on `golang.org/x/tools` only.
 
+## Maintaining the forks
+
+`secmem-crypto` carries copies of other people's code: x/crypto's `argon2`,
+`blake2b`, `bcrypt_pbkdf` and `blowfish`, the standard library's X25519
+ladder, and the EFF wordlist. Each exists because the upstream leaves key
+material in memory that nothing exported can reach — the reasons are in each
+fork's `doc.go`. A copy means the upstream's later fixes are not ours
+automatically, so this is the standing procedure for noticing.
+
+**What watches what.**
+
+| Question | Answered by | When |
+|---|---|---|
+| Does the manifest still match the tree and its own prose? | `secmem-crypto/forks_test.go` | every CI run, offline |
+| Are the verbatim parts still identical to the x/crypto the module resolves? | each fork's `upstream_identity_test.go` | every CI run, and on every Dependabot bump |
+| Has upstream changed the copied packages since the fork point? | `internal/forkcheck`, via the **Fork Watch** workflow | weekly, and on demand |
+| Is there an advisory against the forked code at its fork point? | the same workflow | weekly |
+| Would the next Go release break a stdlib copy or a reflection layout? | Fork Watch's canary job | weekly, against the newest toolchain including release candidates |
+
+`forks.json` is the manifest all of that reads. Run the checker by hand with:
+
+```sh
+cd secmem-crypto && go run ./internal/forkcheck        # add -offline to skip the network
+```
+
+It diffs upstream **against itself** between the fork point and upstream's
+newest release — never against our copy, because a fork-versus-upstream diff
+is permanently large (the modifications are the point) and so goes unread.
+Upstream against itself is empty in the steady state, which is why a
+non-empty result is worth your attention.
+
+**Why Fork Watch reports instead of failing.** An upstream release is an
+event outside this repository; a required check for it would block unrelated
+work for a reason no pull request can fix — the same reason
+`.github/scripts/apicompat.sh` is report-only. It opens or updates one
+tracking issue. The deterministic checks above it stay inside `ci.yml`, where
+they are required.
+
+**When upstream has moved.** The diff in the report is the input to one
+decision, and the decision is yours, not the tool's:
+
+1. If the change is to comments, tests or documentation, nothing needs
+   porting: advance the manifest (`go run ./internal/forkcheck -update`
+   writes `unchanged_through` for you) and say so on the issue.
+2. If it touches the algorithm, port it by hand. The fork's differential
+   tests against upstream (`TestMatchesUpstream`,
+   `TestBlowfish_MatchesUpstream`) and its RFC vectors are what tell you the
+   port is faithful; run them before and after. Then move `fork_point` in
+   `forks.json` **and** the prose that states it — the manifest lists those
+   files, and `forks_test.go` fails while any of them disagrees.
+3. If it is a fix for a vulnerability, treat it as a security fix in this
+   module, not as housekeeping: [SECURITY.md](SECURITY.md) applies, and the
+   release that carries it says so.
+
+**Never** resolve a drift report by moving `fork_point` without porting the
+change. The pair of fields means "taken from X, and upstream has not changed
+through Y"; editing Y to silence a job turns the one record of what this
+module actually contains into a lie.
+
+**What none of this covers.** `govulncheck` reads a module's dependency
+graph, and a fork is not in one: an advisory against x/crypto's `argon2`
+would never be reported against this module by the `vuln` job. That is what
+Fork Watch's advisory query is for, and it is the single best argument for
+keeping the fork list as short as it is.
+
 ## Reporting a security issue
 
 Do **not** open a public issue for a vulnerability. See
