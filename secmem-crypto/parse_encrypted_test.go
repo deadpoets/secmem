@@ -782,21 +782,29 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 	}
 	// The PBES2 fixtures, under the same rule for the cost they name: PBKDF2
 	// is cheap per iteration, so the bound is a few thousand rather than
-	// four, which admits openssl's 2048 default and excludes the 600 000 file.
+	// four, which admits openssl's 2048 default and excludes the 600 000 file;
+	// scrypt is bounded in work and in the memory an input makes the fuzzer
+	// lock and wipe, which admits the N=1024 files and excludes openssl's
+	// default.
 	for _, name := range pkcs8Fixtures(f) {
 		pemBytes, raw, _ := pkcs8Fixture(f, name)
-		if iter, ok := pbes2IterationsOf(raw); ok && iter > fuzzMaxPBKDF2Iterations {
+		if pbes2TooCostlyToFuzz(raw) {
 			continue
 		}
 		f.Add(pemBytes)
 		f.Add(raw)
 	}
+	// A scrypt input inside the bound still locks up to fuzzMaxScryptMemory,
+	// which is over Windows' default quota. Where the budget cannot be had
+	// those inputs fail at the allocation, which is an error like any other
+	// to this fuzzer.
+	_, _ = secmem.EnsureMemlockLimit(4 * fuzzMaxScryptMemory)
 	f.Fuzz(func(t *testing.T, data []byte) {
 		if _, rounds, ok := readKDFOpts(data); ok && rounds > 4 {
 			t.Skip("rounds > 4")
 		}
-		if iter, ok := pbes2IterationsOf(data); ok && iter > fuzzMaxPBKDF2Iterations {
-			t.Skip("PBKDF2 iterations over the fuzzing bound")
+		if pbes2TooCostlyToFuzz(data) {
+			t.Skip("PBES2 KDF cost over the fuzzing bound")
 		}
 		s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 		if err != nil {
@@ -810,30 +818,63 @@ func FuzzParsePrivateKeyWithPassphrase(f *testing.F) {
 	})
 }
 
-// fuzzMaxPBKDF2Iterations bounds the PBKDF2 count a fuzz input may name.
-const fuzzMaxPBKDF2Iterations = 4096
+// What a fuzz input may ask of a PBES2 KDF: PBKDF2's count, and scrypt's
+// work (N·r·p) and working memory. The scrypt bounds are those of the
+// N=1024, r=8, p=2 fixture with a little room.
+const (
+	fuzzMaxPBKDF2Iterations = 4096
+	fuzzMaxScryptWork       = 1 << 14
+	fuzzMaxScryptMemory     = 2 << 20
+)
 
-// pbes2IterationsOf reads the PBKDF2 iteration count out of a PKCS#8
-// EncryptedPrivateKeyInfo, PEM or raw, as the parser would; ok is false
-// for anything that is not one the parser accepts up to that field. It
-// allocates freely: it is a fuzzing guard, not the parser.
-func pbes2IterationsOf(data []byte) (int, bool) {
+// pbes2TooCostlyToFuzz reads the KDF cost out of a PKCS#8
+// EncryptedPrivateKeyInfo, PEM or raw, as the parser would, and reports
+// whether it is over the fuzzing bounds; false for anything the parser
+// would not take as far as a KDF. It allocates freely: it is a fuzzing
+// guard, not the parser.
+func pbes2TooCostlyToFuzz(data []byte) bool {
 	der := data
 	if bytes.Contains(data, pemBegin) {
 		typ, body, err := pemBlock(data)
 		if err != nil || string(typ) != pkcs8PEMType {
-			return 0, false
+			return false
 		}
 		der, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(body)), ""))
 		if err != nil {
-			return 0, false
+			return false
 		}
 	}
 	f, err := readPBES2(der)
 	if err != nil {
-		return 0, false
+		return false
 	}
-	return f.iter, true
+	if f.scrypt {
+		return f.n*f.r*f.p > fuzzMaxScryptWork || scryptRegionSize(len(f.salt), f.n, f.r, f.p) > fuzzMaxScryptMemory
+	}
+	return f.iter > fuzzMaxPBKDF2Iterations
+}
+
+// TestPBES2TooCostlyToFuzz pins the guard on the real fixtures: the files it
+// exists to keep out are out, and the cheap scrypt files — the fuzzer's only
+// scrypt seeds — are in.
+func TestPBES2TooCostlyToFuzz(t *testing.T) {
+	for name, want := range map[string]bool{
+		"ed25519-iter1":               false,
+		"ed25519-aes256-cbc-sha256":   false,
+		"ed25519-iter600k":            true,
+		"ed25519-scrypt":              true,
+		"ed25519-scrypt-n32768-r1":    true,
+		"ed25519-scrypt-n1024":        false,
+		"ed25519-scrypt-n1024-p2":     false,
+		"ed25519-scrypt-n1024-aes128": false,
+	} {
+		pemBytes, raw, _ := pkcs8Fixture(t, name)
+		for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
+			if got := pbes2TooCostlyToFuzz(data); got != want {
+				t.Errorf("%s/%s: too costly = %v, want %v", name, form, got, want)
+			}
+		}
+	}
 }
 
 // testContainer builds an OpenSSH container with a hand-written header,

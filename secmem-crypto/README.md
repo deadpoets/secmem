@@ -57,7 +57,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Ed25519Signer` | a `crypto.Signer` whose seed never leaves secure memory; signs in place (see below). One heap allocation per signature — the signature — for messages up to 4 KiB; a longer message puts its nonce pre-image on the heap, wiped before return | **contained** |
 | `ECDSASigner`, `RSASigner` | `crypto.Signer`s whose durable key lives in a buffer. Each `Sign` re-materialises the key on the heap through the standard library and wipes every copy it can reach — the `big.Int` limbs and, for RSA, the standard library's FIPS-form key, by reflection with a tripwire; the copies it cannot reach are listed in the type docs and in the value table below. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **runtimesecret-only** |
 | `AsSSH`, `MarshalOpenSSHPrivateKey`, `MarshalOpenSSHPrivateKeyWithPassphrase`, `…WithPassphraseParams` | an `ssh.Signer` adapter that never offers SHA-1 `ssh-rsa`; Ed25519 export in OpenSSH private-key format, unencrypted or passphrase-protected, assembled and encrypted in place into a buffer. The `Params` form takes the bcrypt cost (ssh-keygen's `-a`), capped where the readers cap it so a written file always opens. The passphrase form's one heap object, the AES key schedule, is wiped by reflection with a tripwire. `AsSSH` adds nothing of its own and inherits the class of the signer it wraps | **contained** (export) |
-| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; an OpenSSH RSA key's missing CRT exponents are computed over stack arrays, not with `math/big`; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files open through the bcrypt_pbkdf fork below under the ciphers ssh-keygen writes that this package runs: aes128/192/256 in CTR or CBC mode, with the AES round keys wiped by reflection, and `chacha20-poly1305@openssh.com`, whose ChaCha20 state, keystream block and Poly1305 key are stack locals wiped in the call (x/crypto's Poly1305 keeps its own copies of r and s on the stack; those are left to the Scrub window and watched by the residue scan). The AES-GCM pair and 3des-cbc, which `ssh-keygen -Z` also accepts, are refused as unsupported, and legacy PEM encryption as retired. PKCS#8 `ENCRYPTED PRIVATE KEY` files (what `openssl pkcs8 -topk8` writes) open under PBES2 with PBKDF2 — HMAC-SHA1, the format's default, through SHA-512/256, capped at `MaxPBKDF2Iterations` — over aes-128/192/256-cbc, through a PBKDF2 written here over the same one-shot HMAC as `HMACInto`, with every intermediate in a locked scratch and the AES round keys wiped as above; the scrypt KDF and the AES-GCM schemes are refused as unsupported, and PBES1, the PKCS#12 PBEs and PBES2 over DES/3DES/RC2 as retired. The parser is contained; what the `ECDSASigner` and `RSASigner` constructors then do with the scalar or DER is their own class, so an RSA or EC key file is refused on a legacy build without `AllowHeapTransients()`. Ed25519 files never are | **contained** (parser) |
+| `ParsePrivateKey`, `ParsePrivateKeyWithPassphrase` | the ingress: an OpenSSH, PKCS#8, SEC 1, or PKCS#1 key file parsed with the base64 decoded into a buffer and the structure read in place, so the seed, scalar, or DER is copied once, into the buffer the signer keeps; an OpenSSH RSA key's missing CRT exponents are computed over stack arrays, not with `math/big`; the file's public key is checked against the derived one. Passphrase-protected OpenSSH files open through the bcrypt_pbkdf fork below under the ciphers ssh-keygen writes that this package runs: aes128/192/256 in CTR or CBC mode, with the AES round keys wiped by reflection, and `chacha20-poly1305@openssh.com`, whose ChaCha20 state, keystream block and Poly1305 key are stack locals wiped in the call (x/crypto's Poly1305 keeps its own copies of r and s on the stack; those are left to the Scrub window and watched by the residue scan). The AES-GCM pair and 3des-cbc, which `ssh-keygen -Z` also accepts, are refused as unsupported, and legacy PEM encryption as retired. PKCS#8 `ENCRYPTED PRIVATE KEY` files (what `openssl pkcs8 -topk8` writes) open under PBES2 with PBKDF2 — HMAC-SHA1, the format's default, through SHA-512/256, capped at `MaxPBKDF2Iterations` — or with scrypt (`openssl pkcs8 -scrypt`), over aes-128/192/256-cbc: through a PBKDF2 written here over the same one-shot HMAC as `HMACInto`, and for scrypt the fork below around it, with every intermediate in a locked scratch and the AES round keys wiped as above. A scrypt file names its own memory, so its whole working set — 16 MiB at openssl's defaults — is locked for the call; a file asking for more than `MaxScryptMemory` (64 MiB) or more work than `MaxScryptWork` is refused before any derivation. The AES-GCM schemes are refused as unsupported, and PBES1, the PKCS#12 PBEs and PBES2 over DES/3DES/RC2 as retired. The parser is contained; what the `ECDSASigner` and `RSASigner` constructors then do with the scalar or DER is their own class, so an RSA or EC key file is refused on a legacy build without `AllowHeapTransients()`. Ed25519 files never are | **contained** (parser) |
 | `HKDFInto`, `HMACInto` (and `*SHA256Into`) | RFC 5869 / RFC 2104 derivation straight into a buffer. Over SHA-2 or SHA-3 it runs in place: two of the standard library's one-shot hash calls per HMAC, whose digest state is a stack local, over a working region — the padded key, the message, the pseudorandom key — that is a stack array in the Scrub window up to about 1 KiB and a locked buffer beyond. The only allocation is the digest instance asked of the caller's constructor to identify the hash. Over any other hash it uses `crypto/hmac` and `x/crypto/hkdf`, whose heap objects hold the key, and is **refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **contained** (SHA-2, SHA-3); **runtimesecret-only** (other hashes) |
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors. The working set is a heap allocation — pageable and dumpable during the call — that the fork wipes deterministically before returning | **contained** (heap workspace, wiped) |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small | **contained** |
@@ -238,6 +238,25 @@ x/crypto/ssh. What the fork cannot fix is the AES key schedule, which
 type's unexported fields, with a tripwire test and a call that fails closed
 when the layout it expects is not there.
 
+### A fork of `golang.org/x/crypto/scrypt`
+
+`internal/scrypt/` is a modified copy of the memory-hard step of x/crypto
+v0.57.0's scrypt — the Salsa20/8 core, BlockMix and ROMix (same licence,
+provenance and change list as above). It is what opens a PKCS#8 file written
+by `openssl pkcs8 -scrypt`. Upstream's `Key` allocates the array scrypt
+exists to fill — 128·r·N bytes, 16 MiB at openssl's defaults, every block of
+it derived from the passphrase — and its two working blocks on the heap,
+runs both PBKDF2 calls through heap HMAC states, and clears none of it. The
+fork lays that array, the working blocks and Salsa20/8's chaining block over
+a region the caller owns — a `SecureBuffer` in this module, locked for the
+derivation and wiped before the parse returns — and leaves the two PBKDF2
+calls to this module's in-place PBKDF2, in the same region. It is about 230
+lines, most of them verbatim and identity-tested against the resolved
+x/crypto; the output is pinned by RFC 7914's vectors for each piece and for
+the whole, a differential test against `x/crypto/scrypt`, and files a real
+openssl wrote. It is not exported as a KDF: for a password KDF chosen fresh,
+use Argon2.
+
 ## Pure Ed25519 only
 
 Ed25519ph and Ed25519ctx requests are **refused**, not silently signed as pure
@@ -309,10 +328,8 @@ the alternative is proceeding with a key schedule on the heap that this module
 cannot wipe, which is the exact thing these paths exist to prevent. A build
 that needs those paths needs the standard library's AES.
 
-What is **not** in either category, and may yet arrive: PKCS#8 PBES2 under
-the scrypt KDF (`openssl pkcs8 -scrypt`; PBKDF2 files open), and PKCS#8
-export for Ed25519. Those need forks that wipe their working state, which is
-work, not a judgement.
+What is **not** in either category, and may yet arrive: PKCS#8 export for
+Ed25519. That is work, not a judgement.
 
 ## Versioning
 
@@ -330,4 +347,4 @@ later. See [CHANGELOG.md](../CHANGELOG.md).
 `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys` (the
 CPU-feature check for the Argon2 fork's SSE path), plus the core module. Pure
 Go, `CGO_ENABLED=0`. Third-party material embedded under other licences (the
-EFF wordlist, the Argon2 and bcrypt_pbkdf forks) is itemised in `NOTICE`.
+EFF wordlist, the Argon2, bcrypt_pbkdf and scrypt forks) is itemised in `NOTICE`.

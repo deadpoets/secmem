@@ -3,16 +3,18 @@
 // (RFC 8018 §6.2), which is what openssl pkcs8 -topk8 has written since
 // 1.1.0 and what most tooling that exports a key from a PKCS#12 writes. The
 // container is read in place from a SecureBuffer, the key is derived with
-// this module's in-place PBKDF2 (pbkdf2_inplace.go) into a locked scratch,
-// the ciphertext is decrypted from the container into a second SecureBuffer
-// under the same AES-CBC routine and round-key wipe the OpenSSH path uses,
-// and the plaintext PrivateKeyInfo is handed to parsePKCS8, exactly as an
-// unencrypted file's would be.
+// this module's in-place PBKDF2 (pbkdf2_inplace.go) or scrypt
+// (scrypt_inplace.go) into a locked scratch, the ciphertext is decrypted
+// from the container into a second SecureBuffer under the same AES-CBC
+// routine and round-key wipe the OpenSSH path uses, and the plaintext
+// PrivateKeyInfo is handed to parsePKCS8, exactly as an unencrypted file's
+// would be.
 //
 // What it opens: PBES2 with PBKDF2 under HMAC-SHA-1 (the format's DEFAULT
 // PRF: the field is absent from such a file), -SHA-224, -256, -384, -512,
-// -512/224 or -512/256, and aes-128, -192 or -256 in CBC mode. What it
-// refuses as merely unimplemented (ErrUnsupportedKey): the scrypt KDF, the
+// -512/224 or -512/256, or with scrypt (RFC 7914: openssl pkcs8 -scrypt)
+// inside MaxScryptMemory and MaxScryptWork, and aes-128, -192 or -256 in CBC
+// mode. What it refuses as merely unimplemented (ErrUnsupportedKey): the
 // AES-GCM schemes, and a PBKDF2 salt given as otherSource. What it refuses
 // for good (ErrUnsupportedKey wrapping ErrRetiredAlgorithm): PBES1 and the
 // PKCS#12 PBEs — the single-DES, 3DES and RC2 constructions over MD5 or
@@ -50,9 +52,50 @@ import (
 // cap takes one to two seconds to open, or to refuse a wrong passphrase.
 const MaxPBKDF2Iterations = 2_000_000
 
-// maxPBES2Salt bounds the PBKDF2 salt. It sizes the locked working region,
-// so a hostile length would be a locked-memory demand rather than a cost;
-// every writer uses 8 or 16 bytes.
+// MaxScryptMemory is the most working memory, in bytes, that
+// [ParsePrivateKeyWithPassphrase] will lock to run scrypt for a PKCS#8
+// PBES2 file. The file names scrypt's N, r and p, and they are a demand for
+// memory before they are a cost in time: the derivation holds
+// 128·r·(N + 2·p + 2) bytes — the array V of N blocks, the two blocks it
+// mixes, the p blocks PBKDF2 expands the passphrase into, and the copy of
+// those the second PBKDF2 hashes. A file whose parameters come to more is
+// refused with [ErrUnsupportedKey] before any derivation, as one over
+// [MaxPBKDF2Iterations] is. What the call locks for the derivation is that
+// figure plus under 2 KiB of fixed state, so this is also, to within a few
+// pages, the budget a process opening such files must have: see
+// [secmem.EnsureMemlockLimit].
+//
+// openssl pkcs8 -scrypt writes N=16384, r=8, p=1 — 16 MiB — and will itself
+// neither write nor open parameters past 32 MiB. This is twice that, and
+// the same 64 MiB as [Argon2Memory]: at r=8 it admits N up to 32768, which
+// is what x/crypto/scrypt's documentation recommends and OpenSSL refuses.
+const MaxScryptMemory = 64 << 20
+
+// MaxScryptWork is the largest scrypt cost N·r·p
+// [ParsePrivateKeyWithPassphrase] will run for a PKCS#8 PBES2 file; a file
+// naming more is refused with [ErrUnsupportedKey] before any derivation.
+// [MaxScryptMemory] alone does not bound the time: p multiplies the work
+// and adds only 256·r bytes each, so parameters inside the memory cap can
+// still ask for the better part of an hour. The memory-hard step is
+// proportional to N·r·p — 4·N·r·p Salsa20/8 cores — and openssl's default
+// is 131072; this is thirty-two times that. Measured on one core
+// (BenchmarkScryptInPlace) a unit is about 0.17 microseconds, so a file
+// that reaches the cap as a writer would, through N or a modest p, takes
+// about 0.7 seconds to open, or to refuse a wrong passphrase.
+//
+// The most the two caps leave reachable is about three times that. N·r·p
+// does not count scrypt's first PBKDF2, which fills the p blocks with one
+// HMAC for every 32 bytes: a cost in r·p alone, which only the memory cap
+// bounds, at 32 MiB of blocks. N=16, r=1, p=262135 is exactly at
+// [MaxScryptMemory] and within 144 of this cap, and under the longest salt
+// the parser reads it takes a little over two seconds
+// (BenchmarkScryptInPlace_BothCaps) — the same order as a file at
+// [MaxPBKDF2Iterations].
+const MaxScryptWork = 1 << 22
+
+// maxPBES2Salt bounds the KDF salt a file carries, PBKDF2's or scrypt's. It
+// sizes the locked working region, so a hostile length would be a
+// locked-memory demand rather than a cost; every writer uses 8 or 16 bytes.
 const maxPBES2Salt = 1024
 
 // OIDs of PBES2 and its parts (RFC 8018 §A; the AES identifiers from
@@ -134,35 +177,35 @@ func encryptedPKCS8Error(der []byte) error {
 }
 
 // pbes2File is what readPBES2 takes from an EncryptedPrivateKeyInfo: the
-// PRF and iteration count, the key length the scheme fixes, and the salt,
-// IV and ciphertext, which alias the container and live only as long as
-// its borrow.
+// KDF's parameters — PBKDF2's PRF and iteration count, or scrypt's N, r and
+// p — the key length the scheme fixes, and the salt, IV and ciphertext,
+// which alias the container and live only as long as its borrow.
 type pbes2File struct {
-	prf    inPlaceHash
-	iter   int
-	keyLen int
-	salt   []byte
-	iv     []byte
-	ct     []byte
+	scrypt  bool // the KDF is scrypt: n, r and p apply; otherwise prf and iter
+	prf     inPlaceHash
+	iter    int
+	n, r, p int
+	keyLen  int
+	salt    []byte
+	iv      []byte
+	ct      []byte
 }
 
 // readPBES2 reads an EncryptedPrivateKeyInfo in place and decides every
 // refusal that needs no passphrase: the structure, the algorithm and every
-// parameter in it, the iteration cap, the salt's form and length, and the
-// ciphertext's length against the block size. Nothing here costs a
-// derivation, and a file refused here has none of its key touched.
+// parameter in it, the iteration cap or scrypt's memory and work caps, the
+// salt's form and length, and the ciphertext's length against the block
+// size. Nothing here costs a derivation, and a file refused here has none
+// of its key touched.
 //
 //	EncryptedPrivateKeyInfo ::= SEQUENCE {
 //	  encryptionAlgorithm  AlgorithmIdentifier,   -- id-PBES2
 //	  encryptedData        OCTET STRING }
 //	PBES2-params ::= SEQUENCE {
-//	  keyDerivationFunc    AlgorithmIdentifier,   -- id-PBKDF2
+//	  keyDerivationFunc    AlgorithmIdentifier,   -- id-PBKDF2 or id-scrypt
 //	  encryptionScheme     AlgorithmIdentifier }  -- an AES-CBC OID, IV as parameter
-//	PBKDF2-params ::= SEQUENCE {
-//	  salt                 CHOICE { specified OCTET STRING, otherSource AlgorithmIdentifier },
-//	  iterationCount       INTEGER (1..MAX),
-//	  keyLength            INTEGER (1..MAX) OPTIONAL,
-//	  prf                  AlgorithmIdentifier DEFAULT hmacWithSHA1 }
+//
+// The KDF's own parameters are readPBKDF2Params' and readScryptParams'.
 func readPBES2(der []byte) (pbes2File, error) {
 	var f pbes2File
 	in := cryptobyte.String(der)
@@ -221,7 +264,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	switch {
 	case oid.Equal(oidPBKDF2):
 	case oid.Equal(oidScrypt):
-		return f, fmt.Errorf("%w: PBES2 KDF scrypt", ErrUnsupportedKey)
+		f.scrypt = true
 	default:
 		return f, fmt.Errorf("%w: PBES2 KDF %v", ErrUnsupportedKey, oid)
 	}
@@ -229,55 +272,14 @@ func readPBES2(der []byte) (pbes2File, error) {
 	if !kdf.ReadASN1(&kdfParams, cbasn1.SEQUENCE) || !kdf.Empty() {
 		return f, errMalformed
 	}
-	var salt cryptobyte.String
-	if kdfParams.PeekASN1Tag(cbasn1.SEQUENCE) {
-		return f, fmt.Errorf("%w: PBKDF2 salt given as otherSource", ErrUnsupportedKey)
+	var err error
+	if f.scrypt {
+		err = readScryptParams(&f, kdfParams)
+	} else {
+		err = readPBKDF2Params(&f, kdfParams)
 	}
-	if !kdfParams.ReadASN1(&salt, cbasn1.OCTET_STRING) || len(salt) == 0 {
-		return f, errMalformed
-	}
-	if len(salt) > maxPBES2Salt {
-		return f, fmt.Errorf("%w: PBKDF2 salt of %d bytes exceeds %d", errMalformed, len(salt), maxPBES2Salt)
-	}
-	f.salt = salt
-	iter, over, ok := readASN1Count(&kdfParams)
-	if !ok || (!over && iter == 0) {
-		return f, errMalformed
-	}
-	if over || iter > MaxPBKDF2Iterations {
-		// The file names the cost; an oversized count would tie the
-		// caller up for a very long time, not fail.
-		return f, fmt.Errorf("%w: PBKDF2 iteration count exceeds the maximum %d this parser will run", ErrUnsupportedKey, MaxPBKDF2Iterations)
-	}
-	f.iter = iter
-	// keyLength, if present, is redundant with the scheme; a file where the
-	// two disagree was not written by anything this parser should trust.
-	if kdfParams.PeekASN1Tag(cbasn1.INTEGER) {
-		var keyLen int
-		if !kdfParams.ReadASN1Integer(&keyLen) {
-			return f, errMalformed
-		}
-		if keyLen != f.keyLen {
-			return f, fmt.Errorf("%w: PBKDF2 keyLength disagrees with the encryption scheme", errMalformed)
-		}
-	}
-	f.prf = hashSHA1 // the DEFAULT, which a writer using it omits
-	var prf cryptobyte.String
-	var havePRF bool
-	if !kdfParams.ReadOptionalASN1(&prf, &havePRF, cbasn1.SEQUENCE) {
-		return f, errMalformed
-	}
-	if havePRF {
-		if !prf.ReadASN1ObjectIdentifier(&oid) || !prf.SkipOptionalASN1(cbasn1.NULL) || !prf.Empty() {
-			return f, errMalformed
-		}
-		f.prf = prfByOID(oid)
-		if f.prf == hashNone {
-			return f, fmt.Errorf("%w: PBKDF2 PRF %v", ErrUnsupportedKey, oid)
-		}
-	}
-	if !kdfParams.Empty() {
-		return f, errMalformed
+	if err != nil {
+		return f, err
 	}
 
 	if len(ct) == 0 || len(ct)%opensshAESBlock != 0 {
@@ -285,6 +287,135 @@ func readPBES2(der []byte) (pbes2File, error) {
 	}
 	f.ct = ct
 	return f, nil
+}
+
+// readPBKDF2Params reads PBKDF2's parameters (RFC 8018 §A.2) into f, whose
+// keyLen the encryption scheme has already fixed.
+//
+//	PBKDF2-params ::= SEQUENCE {
+//	  salt                 CHOICE { specified OCTET STRING, otherSource AlgorithmIdentifier },
+//	  iterationCount       INTEGER (1..MAX),
+//	  keyLength            INTEGER (1..MAX) OPTIONAL,
+//	  prf                  AlgorithmIdentifier DEFAULT hmacWithSHA1 }
+func readPBKDF2Params(f *pbes2File, kdfParams cryptobyte.String) error {
+	var salt cryptobyte.String
+	if kdfParams.PeekASN1Tag(cbasn1.SEQUENCE) {
+		return fmt.Errorf("%w: PBKDF2 salt given as otherSource", ErrUnsupportedKey)
+	}
+	if !kdfParams.ReadASN1(&salt, cbasn1.OCTET_STRING) || len(salt) == 0 {
+		return errMalformed
+	}
+	if len(salt) > maxPBES2Salt {
+		return fmt.Errorf("%w: PBKDF2 salt of %d bytes exceeds %d", errMalformed, len(salt), maxPBES2Salt)
+	}
+	f.salt = salt
+	iter, over, ok := readASN1Count(&kdfParams)
+	if !ok || (!over && iter == 0) {
+		return errMalformed
+	}
+	if over || iter > MaxPBKDF2Iterations {
+		// The file names the cost; an oversized count would tie the
+		// caller up for a very long time, not fail.
+		return fmt.Errorf("%w: PBKDF2 iteration count exceeds the maximum %d this parser will run", ErrUnsupportedKey, MaxPBKDF2Iterations)
+	}
+	f.iter = iter
+	// keyLength, if present, is redundant with the scheme; a file where the
+	// two disagree was not written by anything this parser should trust.
+	if kdfParams.PeekASN1Tag(cbasn1.INTEGER) {
+		var keyLen int
+		if !kdfParams.ReadASN1Integer(&keyLen) {
+			return errMalformed
+		}
+		if keyLen != f.keyLen {
+			return fmt.Errorf("%w: PBKDF2 keyLength disagrees with the encryption scheme", errMalformed)
+		}
+	}
+	f.prf = hashSHA1 // the DEFAULT, which a writer using it omits
+	var prf cryptobyte.String
+	var havePRF bool
+	if !kdfParams.ReadOptionalASN1(&prf, &havePRF, cbasn1.SEQUENCE) {
+		return errMalformed
+	}
+	if havePRF {
+		var oid asn1.ObjectIdentifier
+		if !prf.ReadASN1ObjectIdentifier(&oid) || !prf.SkipOptionalASN1(cbasn1.NULL) || !prf.Empty() {
+			return errMalformed
+		}
+		f.prf = prfByOID(oid)
+		if f.prf == hashNone {
+			return fmt.Errorf("%w: PBKDF2 PRF %v", ErrUnsupportedKey, oid)
+		}
+	}
+	if !kdfParams.Empty() {
+		return errMalformed
+	}
+	return nil
+}
+
+// readScryptParams reads scrypt's parameters (RFC 7914 §7) into f, whose
+// keyLen the encryption scheme has already fixed, and decides everything
+// about them: their shape, whether they are parameters scrypt is defined
+// for, and whether this parser will run them.
+//
+//	scrypt-params ::= SEQUENCE {
+//	  salt                      OCTET STRING,
+//	  costParameter             INTEGER (1..MAX),   -- N
+//	  blockSize                 INTEGER (1..MAX),   -- r
+//	  parallelizationParameter  INTEGER (1..MAX),   -- p
+//	  keyLength                 INTEGER (1..MAX) OPTIONAL }
+func readScryptParams(f *pbes2File, kdfParams cryptobyte.String) error {
+	var salt cryptobyte.String
+	if !kdfParams.ReadASN1(&salt, cbasn1.OCTET_STRING) || len(salt) == 0 {
+		return errMalformed
+	}
+	if len(salt) > maxPBES2Salt {
+		return fmt.Errorf("%w: scrypt salt of %d bytes exceeds %d", errMalformed, len(salt), maxPBES2Salt)
+	}
+	f.salt = salt
+	n, nOver, okN := readASN1Count(&kdfParams)
+	r, rOver, okR := readASN1Count(&kdfParams)
+	p, pOver, okP := readASN1Count(&kdfParams)
+	if !okN || !okR || !okP || (!nOver && n == 0) || (!rOver && r == 0) || (!pOver && p == 0) {
+		return errMalformed
+	}
+	// What scrypt is defined for (RFC 7914 §2): N a power of two greater
+	// than 1, and below 2^(128·r/8) — which only r = 1 can bring within
+	// reach of a count, and which OpenSSL enforces too. A file outside
+	// either was not written by a working scrypt. An N too wide to read is
+	// left to the memory cap below, which it necessarily exceeds.
+	if !nOver && (n == 1 || n&(n-1) != 0) {
+		return fmt.Errorf("%w: scrypt cost parameter N is not a power of two greater than 1", errMalformed)
+	}
+	if !nOver && !rOver && r == 1 && n >= 1<<16 {
+		return fmt.Errorf("%w: scrypt cost parameter N is not below 2^(128*r/8)", errMalformed)
+	}
+	// The file names the memory and the time; see MaxScryptMemory and
+	// MaxScryptWork. r is bounded first so the products cannot overflow:
+	// past that check 128·r is at most the cap and the block count is under
+	// 2^33, and past the memory check N, r and p are each under 2^20.
+	//nolint:gosec // G115: readASN1Count returns counts in [0, 2^31).
+	un, ur, up := uint64(n), uint64(r), uint64(p)
+	if nOver || rOver || pOver || ur > MaxScryptMemory/128 || 128*ur*(un+2*up+2) > MaxScryptMemory {
+		return fmt.Errorf("%w: scrypt parameters need more working memory than the %d bytes this parser will lock", ErrUnsupportedKey, MaxScryptMemory)
+	}
+	if un*ur*up > MaxScryptWork {
+		return fmt.Errorf("%w: scrypt cost N*r*p exceeds the maximum %d this parser will run", ErrUnsupportedKey, MaxScryptWork)
+	}
+	f.n, f.r, f.p = n, r, p
+	// keyLength, if present, is redundant with the scheme, as PBKDF2's is.
+	if kdfParams.PeekASN1Tag(cbasn1.INTEGER) {
+		var keyLen int
+		if !kdfParams.ReadASN1Integer(&keyLen) {
+			return errMalformed
+		}
+		if keyLen != f.keyLen {
+			return fmt.Errorf("%w: scrypt keyLength disagrees with the encryption scheme", errMalformed)
+		}
+	}
+	if !kdfParams.Empty() {
+		return errMalformed
+	}
+	return nil
 }
 
 // readASN1Count reads a non-negative INTEGER as a count. over reports one
@@ -364,21 +495,35 @@ func oidIsRetiredPBE(oid asn1.ObjectIdentifier) bool {
 	return false
 }
 
-// pbes2Decrypt derives the key from passphrase with PBKDF2 and decrypts
-// f.ct into dst, which must be len(f.ct) bytes. Every byte of secret state
-// it creates — the derived key, the KDF's working region, the cipher's
-// chaining blocks — is in one SecureBuffer allocated for the call and wiped
-// before return; the AES round keys, which crypto/aes puts on the heap, are
-// wiped through aeswipe.go, whose failure is this function's failure. As in
-// opensshCrypt, what the hashes' and AES's assembly leave in the vector
-// registers is the caller's Scrub window's to clear.
+// pbes2Decrypt derives the key from passphrase with the file's KDF and
+// decrypts f.ct into dst, which must be len(f.ct) bytes. Every byte of
+// secret state it creates — the derived key, the KDF's working region, the
+// cipher's chaining blocks — is in one SecureBuffer allocated for the call
+// and wiped before return; for a scrypt file that region is V and the rest
+// of scryptRegionSize, up to MaxScryptMemory, and a host that will not lock
+// that much fails the call here, as itself. The AES round keys, which
+// crypto/aes puts on the heap, are wiped through aeswipe.go, whose failure
+// is this function's failure. As in opensshCrypt, what the hashes' and
+// AES's assembly leave in the vector registers is the caller's Scrub
+// window's to clear.
 func pbes2Decrypt(dst []byte, f pbes2File, passphrase []byte) error {
 	kdfRegion := pbkdf2RegionSize(f.prf, len(f.salt))
-	return withScratch(f.keyLen+kdfRegion+cipherScratch, func(mem []byte) (err error) {
-		key := mem[:f.keyLen]
-		region := mem[f.keyLen : f.keyLen+kdfRegion]
-		cipherMem := mem[f.keyLen+kdfRegion:]
-		pbkdf2Compute(f.prf, key, region, passphrase, f.salt, f.iter)
+	if f.scrypt {
+		kdfRegion = scryptRegionSize(len(f.salt), f.n, f.r, f.p)
+	}
+	return withScratch(kdfRegion+f.keyLen+cipherScratch, func(mem []byte) (err error) {
+		// The KDF's region leads: scrypt views it as 32-bit words, and the
+		// start of the mapping is what is known to be aligned. Its capacity
+		// stops where the key starts, so a KDF that slices past the region
+		// it was sized for panics instead of running on into the key.
+		region := mem[:kdfRegion:kdfRegion]
+		key := mem[kdfRegion : kdfRegion+f.keyLen]
+		cipherMem := mem[kdfRegion+f.keyLen:]
+		if f.scrypt {
+			scryptCompute(key, region, passphrase, f.salt, f.n, f.r, f.p)
+		} else {
+			pbkdf2Compute(f.prf, key, region, passphrase, f.salt, f.iter)
+		}
 		blk, err := aes.NewCipher(key)
 		if err != nil {
 			return err

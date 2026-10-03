@@ -81,6 +81,26 @@
       ]
     },
     {
+      "id": "scrypt",
+      "path": "internal/scrypt",
+      "notes": "scrypt's memory-hard step (the Salsa20/8 core, BlockMix and ROMix), with V, X, Y and the chaining block as views of a caller-owned region that can be a SecureBuffer. The two PBKDF2 calls around it are secmem-crypto's own in-place PBKDF2, not part of the fork.",
+      "upstream": {
+        "kind": "gomod",
+        "module": "golang.org/x/crypto",
+        "paths": ["scrypt"]
+      },
+      "fork_point": "v0.57.0",
+      "unchanged_through": "v0.57.0",
+      "claims": ["internal/scrypt/doc.go", "NOTICE", "README.md"],
+      "identity": [
+        { "mode": "func", "name": "blockCopy", "ours": "internal/scrypt/scrypt.go", "theirs": "scrypt/scrypt.go" },
+        { "mode": "func", "name": "blockXOR", "ours": "internal/scrypt/scrypt.go", "theirs": "scrypt/scrypt.go" },
+        { "mode": "func", "name": "salsaXOR", "ours": "internal/scrypt/scrypt.go", "theirs": "scrypt/scrypt.go" },
+        { "mode": "func", "name": "blockMix", "ours": "internal/scrypt/scrypt.go", "theirs": "scrypt/scrypt.go" },
+        { "mode": "func", "name": "integer", "ours": "internal/scrypt/scrypt.go", "theirs": "scrypt/scrypt.go" }
+      ]
+    },
+    {
       "id": "x25519",
       "path": "internal/x25519",
       "notes": "The X25519 Montgomery ladder from the standard library's crypto/ecdh, callable on a scalar held in locked memory, with the field package pointed at filippo.io/edwards25519.",

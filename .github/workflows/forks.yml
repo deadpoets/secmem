@@ -205,6 +205,7 @@ jobs:
             "./internal/x25519@TestUpstreamIdentity@1"
             "./internal/argon2@TestUpstreamIdentity@2"
             "./internal/bcryptpbkdf@TestUpstreamIdentity@3"
+            "./internal/scrypt@TestUpstreamIdentity@2"
             ".@TestWipeAESBlock|TestResolveAESGCMLayout|TestWipeRSAFIPSKey|TestRSAFIPSSecretViews|TestWipeMLKEMDecapsulationKey|TestWipeECDHPrivateKey|TestInPlaceHash|TestForks_@15"
           )
           # @ separates the three fields because a -run pattern contains |.

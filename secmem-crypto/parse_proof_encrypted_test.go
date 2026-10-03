@@ -27,6 +27,7 @@ var passphrasePathFiles = map[string]bool{
 	"marshal_openssh.go": true, "openssh_wire.go": true, "openssh_cipher.go": true,
 	"openssh_chacha.go": true, "aeswipe.go": true,
 	"pbes2.go": true, "pbkdf2_inplace.go": true, "hmac_inplace.go": true,
+	"scrypt_inplace.go": true,
 }
 
 // withoutAESAllowance is the allowlist for a path that has no AES Block to
@@ -132,10 +133,15 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 	}
 }
 
-// The same proof over every PKCS#8 PBES2 fixture: the in-place PBKDF2, the
-// CBC decryption and the PrivateKeyInfo read may allocate nothing but the
-// AES Block. The OID reads are cryptobyte's own allocations, not secret,
-// and allowlisted as they are for the plain proof.
+// The same proof over every PKCS#8 PBES2 fixture: the in-place PBKDF2 and
+// scrypt, the CBC decryption and the PrivateKeyInfo read may allocate
+// nothing but the AES Block. The OID reads are cryptobyte's own
+// allocations, not secret, and allowlisted as they are for the plain proof.
+// For the scrypt files this is the proof that V — 16 MiB at openssl's
+// defaults — is not on the heap: internal/scrypt is a different package, so
+// by the ownership rule described at TestBcryptPBKDFInto_AllocatesNothing an
+// allocation inside the fork is reported against scrypt_inplace.go, its
+// caller, rather than hidden.
 func TestParsePrivateKeyWithPassphrase_PKCS8AllocatesOnlyTheAESBlock(t *testing.T) {
 	for _, name := range pkcs8Fixtures(t) {
 		if strings.Contains(name, "600k") {
@@ -144,6 +150,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8AllocatesOnlyTheAESBlock(t *testing.
 		pemBytes, raw, _ := pkcs8Fixture(t, name)
 		for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 			t.Run(name+"/"+form, func(t *testing.T) {
+				pkcs8LockBudget(t, raw)
 				proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
 					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {

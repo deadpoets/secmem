@@ -15,6 +15,41 @@ mark the stability commitment.
 
 ### Added
 
+- **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` opens PKCS#8 files
+  protected with scrypt.** `openssl pkcs8 -topk8 -scrypt` files — PBES2 with
+  the scrypt KDF of RFC 7914, the one KDF the parser still refused — now
+  open, under the same standard as the PBKDF2 ones: the passphrase, every
+  intermediate and the derived key in locked memory only, all of it wiped
+  before the call returns, and nothing on the heap but the AES Block.
+  `x/crypto/scrypt` cannot do that — it allocates the array scrypt exists to
+  fill (16 MiB at openssl's defaults) and its PBKDF2 state on the heap and
+  clears nothing — so the memory-hard step is a fork, `internal/scrypt`
+  (x/crypto v0.57.0; registered in `forks.json` and watched like the others),
+  laid over a `SecureBuffer`, with this module's in-place PBKDF2 either side
+  of it. p > 1 runs in sequence, as upstream does.
+
+  A scrypt file names its own cost, so two caps are decided before anything
+  is derived or locked, and both are new exported constants (a minor bump):
+  **`MaxScryptMemory`** (64 MiB) bounds the working set, 128·r·(N + 2·p + 2)
+  bytes, and **`MaxScryptWork`** (N·r·p ≤ 2²²) bounds the time, which the
+  memory cap alone does not — p costs almost no memory: about 0.7 s for a
+  file at the work cap, and a little over 2 s for the slowest parameters the
+  two admit together. A file over either is `ErrUnsupportedKey`, not
+  `ErrRetiredAlgorithm`. Parameters scrypt is not defined for (N not a power
+  of two above 1, or not below 2^(128·r/8)) are malformed.
+
+  **What a caller has to know:** the working set is locked for the parse, so
+  opening such a file needs that much lock budget — 16 MiB for an openssl
+  default file, which is over Windows' default quota. Raise it with
+  `secmem.EnsureMemlockLimit`; without it the call fails with the platform's
+  error, before the derivation, and not as a wrong passphrase. `ADOPTION.md`
+  has the sizing.
+
+  Pinned by RFC 7914's vectors for each piece and the whole, a differential
+  against `x/crypto/scrypt`, five files a real openssl wrote (and the RFC's
+  own 1 GiB example, refused), the heap proof, and a residue-scan scenario
+  (`ParsePrivateKeyWithPassphrase/Ed25519-PKCS8-scrypt`).
+
 - **`secmem-crypto`: the forks are now watched, not just documented.**
   This module carries copies of x/crypto's `argon2`, `blake2b`,
   `bcrypt_pbkdf` and `blowfish`, the standard library's X25519 ladder and the

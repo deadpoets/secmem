@@ -55,6 +55,14 @@ linters:
         linters: [gosec]
         text: "G115"
 
+      # golang.org/x/crypto/scrypt's smix carried by the scrypt fork, pinned
+      # to upstream's text by a test. integer() & uint64(N-1) is scryptROMix's
+      # index into V; Mix refuses any N that is not a power of two above 1
+      # before smix runs, so N-1 is positive. Same reasoning as above.
+      - path: internal/scrypt/scrypt\.go
+        linters: [gosec]
+        text: "G115"
+
       # Verbatim crypto/ecdh ladder (internal/x25519, pinned text-identical to
       # the toolchain's by a test, so it cannot be edited to satisfy a linter).
       # field.Element.SetBytes errors only on a length other than 32, which

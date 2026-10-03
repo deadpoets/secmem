@@ -221,6 +221,13 @@ func borrowOrdered(a, b *secmem.SecureBuffer, fn func(a, b []byte) error) error 
 	})
 }
 
+// newScratchBuffer is secmem.NewEmptyBuffer. A package var so a test can
+// make withScratch's allocation fail the way a host that will not lock the
+// memory makes it fail; production always runs the value defined here.
+var newScratchBuffer = func(size int) (*secmem.SecureBuffer, error) {
+	return secmem.NewEmptyBuffer(size)
+}
+
 // withScratch allocates a locked scratch buffer of size bytes for one call,
 // hands its mapping to fn, and wipes and frees it afterwards whatever fn
 // returned — the wipe runs inside the borrow, before the lock is released.
@@ -230,7 +237,7 @@ func borrowOrdered(a, b *secmem.SecureBuffer, fn func(a, b []byte) error) error 
 // — opensshCrypt inside a container borrow, BcryptPBKDFInto inside a borrow
 // of out — take it without borrowOrdered.
 func withScratch(size int, fn func(mem []byte) error) error {
-	scratch, err := secmem.NewEmptyBuffer(size)
+	scratch, err := newScratchBuffer(size)
 	if err != nil {
 		return fmt.Errorf("allocate kdf workspace: %w", err)
 	}

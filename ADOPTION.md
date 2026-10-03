@@ -162,11 +162,21 @@ where:
 - **Transients** are the buffers helpers allocate for one call. The
   passphrase paths of `ParsePrivateKeyWithPassphrase` and
   `MarshalOpenSSHPrivateKeyWithPassphrase` (and its `Params` form) take a
-  scratch of a couple of pages plus the decoded key (for a PKCS#8 PBES2 file,
-  one page: the PBKDF2 region is under 1 KiB); `BcryptPBKDFInto` takes
-  a workspace of a little over 4 KiB, which is two 4 KiB pages; the parsers
-  allocate the decoded file and the key they return. Multiply by the peak
-  number of concurrent calls.
+  scratch of a couple of pages plus the decoded key (for a PKCS#8 PBES2 file
+  under PBKDF2, one page: the PBKDF2 region is under 1 KiB); `BcryptPBKDFInto`
+  takes a workspace of a little over 4 KiB, which is two 4 KiB pages; the
+  parsers allocate the decoded file and the key they return. Multiply by the
+  peak number of concurrent calls.
+- **A scrypt PBES2 file is the exception among the transients.** The file
+  names its own memory, and `ParsePrivateKeyWithPassphrase` locks all of it
+  for the call: 128·r·(N + 2·p + 2) bytes, which is 16 MiB for what
+  `openssl pkcs8 -scrypt` writes by default and at most `MaxScryptMemory`
+  (64 MiB) for any file it will open. Even the default is twice the 8 MiB
+  systemd default and far over Windows' default quota, so a process that
+  opens such files raises the budget first; without it the call fails at
+  the allocation, with the platform's error, and does not report a wrong
+  passphrase. If the files come from outside, budget for the cap rather
+  than for the default, times the parses that can run at once.
 - **Headroom.** A quarter over the computed peak is a reasonable default; the
   cost of being generous is locked RAM that is otherwise idle, the cost of
   being exact is an allocation failure under load.

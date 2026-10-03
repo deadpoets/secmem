@@ -85,11 +85,12 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 // TestErrRetiredAlgorithm_NotUsedForUnimplemented is what gives the marker
 // its meaning. Everything below is refused today and may well be supported
 // later — an OpenSSH cipher this package does not run (the AES-GCM pair),
-// an unknown KDF, and the parts of PKCS#8 PBES2 that are not implemented
-// (the scrypt KDF, on a real openssl -scrypt file, and the AES-GCM
-// schemes) — so none of them may claim to be retired. Without this test
-// ErrRetiredAlgorithm would decay into a synonym for ErrUnsupportedKey and
-// stop telling a caller anything. PBES2 itself opens now (pbes2_test.go).
+// an unknown KDF, and the AES-GCM schemes of PKCS#8 PBES2 — or is refused
+// for what it would cost rather than for what it is: RFC 7914's own example
+// file, scrypt at sixteen times MaxScryptMemory. None of them may claim to
+// be retired. Without this test ErrRetiredAlgorithm would decay into a
+// synonym for ErrUnsupportedKey and stop telling a caller anything. PBES2
+// itself opens now, under PBKDF2 and under scrypt (pbes2_test.go).
 func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	container := func(cipher, kdf string) []byte {
 		return testContainer(cipher, kdf, testKDFOpts(16, 1), 16)
@@ -103,7 +104,7 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	scryptPEM, scryptRaw := pkcs8RefusedFixture(t, "scrypt")
+	scryptPEM, scryptRaw := pkcs8RefusedFixture(t, "scrypt-rfc7914")
 
 	cases := []struct {
 		name string
@@ -112,8 +113,8 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 		{"aes256-gcm", container("aes256-gcm@openssh.com", "bcrypt")},
 		{"aes128-gcm", container("aes128-gcm@openssh.com", "bcrypt")},
 		{"unknown kdf", container("aes256-ctr", "scrypt")},
-		{"pkcs8 pbes2 scrypt", scryptPEM},
-		{"pkcs8 pbes2 scrypt der", scryptRaw},
+		{"pkcs8 pbes2 scrypt over the memory cap", scryptPEM},
+		{"pkcs8 pbes2 scrypt over the memory cap, der", scryptRaw},
 		{"pkcs8 pbes2 aes-gcm", encryptPKCS8(t, p8, pbes2Spec{scheme: oidAES256GCM})},
 		{"pkcs8 unencrypted", []byte(pemOfType("PRIVATE KEY", "", base64.StdEncoding.EncodeToString(p8)))},
 	}
