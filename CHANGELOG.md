@@ -353,6 +353,15 @@ The core floor is unchanged at v0.7.0.
   a failed probe allocation and an unsupported platform produce the same
   report.
 
+- **Linux: a Scrub window that could not block the preemption signals was
+  reported as suppressing them, and ran unpinned.** `AsyncPreemptSuppressed`
+  was a build-time constant and the window dropped its thread pin on the
+  failure path. A failed mask call (a seccomp filter on `rt_sigprocmask`) now
+  keeps the pin, which the register clear depends on, and
+  `Capabilities().AsyncPreemptSuppressed` reports false from then on. The
+  signal-set helper also takes its word width from the type instead of
+  assuming 64 bits, which was wrong on 386 and arm for a signal above 32.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

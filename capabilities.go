@@ -155,7 +155,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		RegisterScrub: RuntimeSecretActive(),
 
 		FrameScrub:             archFrameScrub,
-		AsyncPreemptSuppressed: asyncPreemptSuppressionSupported,
+		AsyncPreemptSuppressed: asyncPreemptSuppressionInForce(),
 		VectorRegisterClear:    archVectorClear,
 		GPRegisterClear:        archGPClear,
 
