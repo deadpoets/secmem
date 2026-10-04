@@ -204,8 +204,10 @@ func NewBasic(username string, password *secmem.SecureBuffer, base http.RoundTri
 // callers who want the credential kept out of HTTP/2's per-connection HPACK
 // dynamic table (see the package doc). It clears ForceAttemptHTTP2, sets an
 // empty TLSNextProto map (net/http's documented way to disable its bundled
-// http2), and drops "h2" from the TLS config's advertised protocols so the
-// server cannot select it either. base itself is not modified.
+// http2), sets Protocols to HTTP/1 alone (that field overrides the other two
+// when the base set it), and drops "h2" from the TLS config's advertised
+// protocols so the server cannot select it either. base itself is not
+// modified.
 func ForceHTTP1(base *http.Transport) *http.Transport {
 	var t *http.Transport
 	switch {
@@ -220,6 +222,11 @@ func ForceHTTP1(base *http.Transport) *http.Transport {
 	}
 	t.ForceAttemptHTTP2 = false
 	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// Protocols, when set, is consulted ahead of both fields above, and Clone
+	// copied the base's: a base that enabled h2 through it would still speak
+	// h2. A fresh value, so the base's is not written through.
+	t.Protocols = new(http.Protocols)
+	t.Protocols.SetHTTP1(true)
 	if t.TLSClientConfig != nil && len(t.TLSClientConfig.NextProtos) > 0 {
 		kept := t.TLSClientConfig.NextProtos[:0:0]
 		for _, p := range t.TLSClientConfig.NextProtos {

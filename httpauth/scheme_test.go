@@ -238,3 +238,52 @@ func TestForceHTTP1_NilBaseClonesDefault(t *testing.T) {
 		t.Errorf("ForceHTTP1(nil) did not disable h2: ForceAttemptHTTP2=%v TLSNextProto=%v", tr.ForceAttemptHTTP2, tr.TLSNextProto)
 	}
 }
+
+// TestForceHTTP1_OverridesProtocols: a base that enables h2 through the
+// Protocols field — which net/http consults ahead of ForceAttemptHTTP2 and
+// TLSNextProto, and which Clone copies — must come back HTTP/1.1-only too.
+func TestForceHTTP1_OverridesProtocols(t *testing.T) {
+	t.Parallel()
+	tok := newToken(t, []byte("tok"))
+	srv, c, protos := protoServer(t)
+	httptestBase, ok := srv.Client().Transport.(*http.Transport)
+	if !ok {
+		t.Fatalf("httptest client transport is %T", srv.Client().Transport)
+	}
+	// The documented way to get h2 with a custom TLS config.
+	base := &http.Transport{
+		TLSClientConfig: httptestBase.TLSClientConfig.Clone(),
+		Protocols:       new(http.Protocols),
+	}
+	base.Protocols.SetHTTP1(true)
+	base.Protocols.SetHTTP2(true)
+	t.Cleanup(base.CloseIdleConnections)
+
+	// Control: this base does negotiate h2.
+	if err := do(t, httpauth.NewBearer(tok, base), srv.URL); err != nil {
+		t.Fatalf("RoundTrip (h2): %v", err)
+	}
+	forced := httpauth.ForceHTTP1(base)
+	t.Cleanup(forced.CloseIdleConnections)
+	if err := do(t, httpauth.NewBearer(tok, forced), srv.URL); err != nil {
+		t.Fatalf("RoundTrip (forced h1): %v", err)
+	}
+
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(*protos) != 2 {
+		t.Fatalf("server saw %d request(s), want 2", len(*protos))
+	}
+	if (*protos)[0] != "HTTP/2.0" {
+		t.Errorf("control request was %s, want HTTP/2.0 (the base did not enable h2, so the test proves nothing)", (*protos)[0])
+	}
+	if (*protos)[1] != "HTTP/1.1" {
+		t.Errorf("ForceHTTP1 request was %s, want HTTP/1.1", (*protos)[1])
+	}
+	if !base.Protocols.HTTP2() {
+		t.Errorf("ForceHTTP1 modified its argument's Protocols")
+	}
+	if forced.Protocols == nil || !forced.Protocols.HTTP1() || forced.Protocols.HTTP2() || forced.Protocols.UnencryptedHTTP2() {
+		t.Errorf("ForceHTTP1 Protocols = %v, want HTTP/1 only", forced.Protocols)
+	}
+}
