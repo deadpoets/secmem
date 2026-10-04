@@ -28,6 +28,9 @@ type escapeScan struct {
 	acc     accessor
 	taint   map[types.Object]bool
 	aliases map[types.Object]bool // memo for aliasOfBorrowed
+	// results are the closure's own named results. They are declared inside
+	// the closure but hold what it returns, so they count as outside storage.
+	results map[types.Object]bool
 }
 
 func (c *checker) checkCallbackEscapes(acc accessor) {
@@ -39,9 +42,26 @@ func (c *checker) checkCallbackEscapes(acc accessor) {
 		acc:     acc,
 		taint:   make(map[types.Object]bool),
 		aliases: make(map[types.Object]bool),
+		results: c.namedResults(closureType(acc.node)),
 	}
 	s.propagate()
 	s.reportEscapes()
+}
+
+// namedResults returns the objects of a function type's named results.
+func (c *checker) namedResults(ft *ast.FuncType) map[types.Object]bool {
+	objs := make(map[types.Object]bool)
+	if ft == nil || ft.Results == nil {
+		return objs
+	}
+	for _, field := range ft.Results.List {
+		for _, name := range field.Names {
+			if obj := c.pass.TypesInfo.ObjectOf(name); obj != nil && name.Name != "_" {
+				objs[obj] = true
+			}
+		}
+	}
+	return objs
 }
 
 // --- phase 1: taint propagation ---
@@ -136,15 +156,16 @@ func forPairs(lhs, rhs []ast.Expr, fn func(l, r ast.Expr)) {
 }
 
 // taintTarget marks the local a write lands in as tainted. Writes to the
-// borrowed slice itself and to anything outside the closure are not taint
-// (the latter is an escape, reported in phase 2). Returns true on a change.
+// borrowed slice itself and to anything outside the closure — a named result
+// of the closure included — are not taint (the latter is an escape, reported
+// in phase 2). Returns true on a change.
 func (s *escapeScan) taintTarget(target ast.Expr) bool {
 	root := rootIdent(target)
 	if root == nil {
 		return false
 	}
 	obj := s.c.pass.TypesInfo.ObjectOf(root)
-	if obj == nil || s.acc.params[obj] || s.taint[obj] || !withinNode(obj.Pos(), s.acc.node) {
+	if obj == nil || s.acc.params[obj] || s.taint[obj] || !s.isLocal(obj) {
 		return false
 	}
 	s.taint[obj] = true
@@ -296,9 +317,12 @@ func resultCarriesBytes(t types.Type) bool {
 
 // --- inside / outside ---
 
-// isLocal reports whether obj is declared inside the closure.
+// isLocal reports whether obj is declared inside the closure and dies with
+// it. The closure's named results are declared inside but are handed to the
+// caller on return — bare, or after a deferred literal has written them — so
+// they are not local.
 func (s *escapeScan) isLocal(obj types.Object) bool {
-	return obj != nil && withinNode(obj.Pos(), s.acc.node)
+	return obj != nil && withinNode(obj.Pos(), s.acc.node) && !s.results[obj]
 }
 
 // inner reports whether a write THROUGH the value of expr — copy or append
@@ -646,9 +670,10 @@ func (s *escapeScan) taintedReceiver(call *ast.CallExpr) bool {
 }
 
 // checkAssign reports an assignment of a tainted value to a target that can
-// outlive the closure. Assigning to a local VARIABLE never escapes; writing
-// into a field, element or pointee escapes unless that storage is provably
-// inside (see innerStorage).
+// outlive the closure. Assigning to a local VARIABLE never escapes — except
+// to a named result of the closure, which is the return value; writing into a
+// field, element or pointee escapes unless that storage is provably inside
+// (see innerStorage).
 func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
 	var where string
 	switch t := unparen(target).(type) {
@@ -664,6 +689,9 @@ func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
 			return
 		}
 		where = "a variable outside the closure"
+		if s.results[obj] {
+			where = "a named result of the closure"
+		}
 	case *ast.StarExpr:
 		if s.inner(t.X) {
 			return

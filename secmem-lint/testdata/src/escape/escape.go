@@ -99,3 +99,45 @@ func shadowedNameInGoroutineOK(buf *secmem.SecureBuffer, other [][]byte) {
 		}()
 	})
 }
+
+type keyErr struct{ raw []byte }
+
+func (e *keyErr) Error() string { return "bad key" }
+
+// leaksViaNamedResult: a named result of the closure is what the closure
+// returns, so storing the bytes in it is the return, whether the bare return
+// follows or a deferred literal does the store on the way out.
+func leaksViaNamedResult(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytesErr(func(b []byte) (err error) {
+		err = &keyErr{raw: b} // want `secmem-lint: borrowed secret bytes assigned to a named result of the closure`
+		return
+	})
+	_ = buf.WithBytesErr(func(b []byte) (err error) {
+		defer func() {
+			err = &keyErr{raw: b} // want `secmem-lint: borrowed secret bytes assigned to a named result of the closure`
+		}()
+		return nil
+	})
+	_ = buf.WithBytesErr(namedResultDecl)
+}
+
+func namedResultDecl(b []byte) (err error) {
+	err = &keyErr{raw: b[:1]} // want `secmem-lint: borrowed secret bytes assigned to a named result of the closure`
+	return
+}
+
+// namedResultOK: a named result that never holds the bytes is clean, and a
+// nested literal's own named result is a local of the closure.
+func namedResultOK(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytesErr(func(b []byte) (err error) {
+		if len(b) == 0 {
+			err = &keyErr{}
+		}
+		head := func() (h []byte) {
+			h = b[:1]
+			return
+		}
+		_ = head
+		return
+	})
+}
