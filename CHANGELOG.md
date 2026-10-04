@@ -263,6 +263,23 @@ The core floor is unchanged at v0.7.0.
   borrowed is zeroed by then; the secret inside the stuck callback is not,
   and the installer's documentation says so.
 
+- **Linux: `HardenProcess` set `no_new_privs` on one thread and reported it
+  for the process.** The attribute belongs to a thread and is inherited by
+  what that thread creates. A Go program has several threads before `main`
+  runs and forks a child from whichever one the calling goroutine is on, so
+  `os/exec` could still start a setuid binary from another thread while the
+  returned level said it could not (measured: 9 of 10 threads without it).
+  It is now set on every thread. A binary that links cgo cannot do that; there
+  it is set on the calling thread only and `HardenNoNewPriv` is no longer in
+  the returned level, where it used to be reported regardless.
+
+- **`DisableCoreDumps` documentation: `RLIMIT_CORE=0` does not stop a piped
+  core dump.** The godoc said it stops the entire process from dumping. Linux
+  ignores the limit when `core_pattern` is a pipe, the default with
+  systemd-coredump or apport, and hands the image to that program. The godoc
+  and `ADOPTION.md` now say so and point at `HardenProcess`, whose
+  `PR_SET_DUMPABLE=0` does stop it.
+
 - **`ArenaSlot.Release` on one handle from two goroutines could wipe the
   slot's next owner.** The liveness check ran before the region lock and the
   wipe after it, so a Release that waited behind a queued writer resumed

@@ -97,7 +97,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Registers cleared when a borrow or copy (`WithBytes`, `CopyIn`, `CopyOut`, …) returns | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
 | Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) — heap objects erased at the next garbage collection, not on return | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
-| Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
+| Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs on every thread (calling thread only with cgo) | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
 
 The suite has been executed on real **linux/amd64 and linux/arm64** hardware,

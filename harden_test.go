@@ -27,20 +27,28 @@ func TestHardenProcess_DisablesDumpable(t *testing.T) {
 	}
 }
 
+// TestHardenProcess_SetsNoNewPrivs checks the attribute where the level claims
+// it: on every thread. Asking PR_GET_NO_NEW_PRIVS answers for one thread only,
+// and not necessarily the one HardenProcess ran on.
 func TestHardenProcess_SetsNoNewPrivs(t *testing.T) {
 	t.Parallel()
 
-	_, err := HardenProcess(context.Background())
+	level, err := HardenProcess(context.Background())
 	if err != nil {
 		t.Fatalf("HardenProcess: %v", err)
 	}
-
-	nnp, err := unix.PrctlRetInt(unix.PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0)
-	if err != nil {
-		t.Fatalf("PR_GET_NO_NEW_PRIVS: %v", err)
+	if level&HardenNoNewPriv == 0 {
+		if allThreadsSyscallAvailable() {
+			t.Fatal("HardenNoNewPriv not reported although every thread can be reached")
+		}
+		return // a cgo binary: per-thread only, and correctly not claimed
 	}
-	if nnp != 1 {
-		t.Errorf("PR_GET_NO_NEW_PRIVS = %d, want 1 (enabled)", nnp)
+	missing, total, err := threadsWithoutNoNewPrivs()
+	if err != nil {
+		t.Fatalf("reading /proc/self/task: %v", err)
+	}
+	if len(missing) > 0 {
+		t.Errorf("HardenNoNewPriv reported, but %d of %d threads do not have no_new_privs: %v", len(missing), total, missing)
 	}
 }
 
@@ -52,12 +60,13 @@ func TestHardenProcess_ReturnsExpectedLevel(t *testing.T) {
 		t.Fatalf("HardenProcess: %v", err)
 	}
 
-	// On Linux we expect at least NoDump + NoNewPriv.
+	// On Linux we expect NoDump always, and NoNewPriv exactly when the
+	// attribute could be set on every thread (not in a cgo binary).
 	if level&HardenNoDump == 0 {
 		t.Error("HardenNoDump bit not set")
 	}
-	if level&HardenNoNewPriv == 0 {
-		t.Error("HardenNoNewPriv bit not set")
+	if got, want := level&HardenNoNewPriv != 0, allThreadsSyscallAvailable(); got != want {
+		t.Errorf("HardenNoNewPriv reported = %v, want %v (all-threads syscall available = %v)", got, want, want)
 	}
 }
 
