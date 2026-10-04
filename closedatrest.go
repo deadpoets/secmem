@@ -16,14 +16,24 @@ import (
 // of reaching it. That is the property [SecureBuffer.Seal] gives a dormant
 // buffer, applied automatically around every use.
 //
-// What it costs is two page-protection system calls per use that finds the
-// buffer closed (three on Windows, which has to lock the pages again), and
-// the TLB shootdown that goes with them. Concurrent borrows share one open.
+// It is opt-in and is not, and will not become, the default. What it costs is
+// two page-protection system calls per use that finds the buffer closed
+// (three on Windows, which has to lock the pages again), and the TLB
+// shootdown that goes with them, which interrupts every core the process is
+// running on. Measured, a borrow goes from about 13 ns to about 2 µs.
+// Concurrent borrows share one open. That is nothing next to an RSA
+// signature or a password hash, a few percent of an Ed25519 signature, and
+// several times the cost of a short HMAC or a comparison. Use it for a
+// long-lived, high-value key that is used at a low rate (a CA key, a master
+// key), not for per-request or per-session keys.
 //
-// On Windows a no-access page is not locked: VirtualLock does not survive
-// PAGE_NOACCESS, so while the buffer is closed its PLAINTEXT is in pageable
-// memory and can be written to the pagefile. Seal encrypts for that reason;
-// this option does not. On Linux and macOS the lock is unaffected.
+// On Windows, prefer [SecureBuffer.Seal] for a dormant key. A no-access page
+// there is not locked: VirtualLock does not survive PAGE_NOACCESS, so while a
+// closed-at-rest buffer is closed its PLAINTEXT is in pageable memory and can
+// be written to the pagefile. Seal encrypts the contents for that reason; this
+// option does not, which makes it a trade on Windows (inaccessible between
+// uses, but no longer locked) where on Linux and macOS, whose lock is
+// unaffected, it only adds protection.
 //
 // The option applies to SecureBuffer constructors. [NewArena] refuses it: an
 // arena's slots share pages, so one borrow would open all of them.
