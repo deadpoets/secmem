@@ -9,6 +9,7 @@
 // signer will own. The only key type that still touches the heap is an
 // OpenSSH-format RSA key, whose CRT exponents have to be computed; see
 // pkcs1DER in parse_openssh.go for exactly what and why.
+
 package secmemcrypto
 
 import (

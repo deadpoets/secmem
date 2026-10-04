@@ -540,3 +540,37 @@ func TestBufferOptions_NoSecureMemoryPlatform(t *testing.T) {
 	}
 	s.Destroy()
 }
+
+// TestPackageDocLivesInDocGo: a comment directly above a package clause is
+// package documentation, and godoc concatenates every file's. A file header
+// that explains the file is kept apart from the clause by a blank line, so
+// the published overview is doc.go's and nothing else.
+func TestPackageDocLivesInDocGo(t *testing.T) {
+	if runtime.GOOS == "js" || runtime.GOOS == "wasip1" {
+		t.Skip("reads the package source, which a wasm test binary is not run beside")
+	}
+	entries, err := os.ReadDir(".")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fset := token.NewFileSet()
+	sawDoc := false
+	for _, e := range entries {
+		if e.IsDir() || !strings.HasSuffix(e.Name(), ".go") || strings.HasSuffix(e.Name(), "_test.go") {
+			continue
+		}
+		f, err := parser.ParseFile(fset, e.Name(), nil, parser.ParseComments|parser.PackageClauseOnly)
+		if err != nil {
+			t.Fatal(err)
+		}
+		switch {
+		case e.Name() == "doc.go":
+			sawDoc = f.Doc != nil && strings.HasPrefix(f.Doc.Text(), "Package secmemcrypto ")
+		case f.Doc != nil:
+			t.Errorf("%s: its header comment is attached to the package clause and is published as package documentation; put a blank line between them", e.Name())
+		}
+	}
+	if !sawDoc {
+		t.Error("doc.go does not carry the package documentation")
+	}
+}

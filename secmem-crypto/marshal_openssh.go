@@ -7,6 +7,7 @@
 // container is now written in place by openssh_wire.go, so the only heap
 // objects a marshal creates hold public data or ciphertext — and, for the
 // encrypted form, the AES key schedule, which aeswipe.go clears.
+
 package secmemcrypto
 
 import (

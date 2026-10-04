@@ -3,6 +3,7 @@
 // RSASigner keeps — directly into locked memory. parse_encrypted.go opens
 // the passphrase-protected form and feeds the decrypted block to the same
 // private-block parser.
+
 package secmemcrypto
 
 import (

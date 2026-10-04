@@ -1,5 +1,6 @@
 // rsa.go provides RSASigner, a crypto.Signer whose RSA private key lives
 // DER-encoded in a SecureBuffer between operations.
+
 package secmemcrypto
 
 import (

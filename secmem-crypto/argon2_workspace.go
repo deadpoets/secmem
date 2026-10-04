@@ -19,6 +19,7 @@
 // startup, as for any other large SecureBuffer. A caller that wants the
 // heap behaviour has [Argon2Into], and is told by that function's doc what
 // it does not get.
+
 package secmemcrypto
 
 import (

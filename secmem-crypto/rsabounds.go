@@ -9,6 +9,7 @@
 // CPU per parse from whoever opens it. So the encoded lengths are read first,
 // in place, and anything wider than the caps is refused before a single
 // multiplication.
+
 package secmemcrypto
 
 import (

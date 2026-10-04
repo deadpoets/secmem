@@ -35,6 +35,7 @@
 //
 // Verification remains via crypto/ed25519.Verify — public keys are not
 // sensitive and have no FIPS-cache issue.
+
 package secmemcrypto
 
 import (

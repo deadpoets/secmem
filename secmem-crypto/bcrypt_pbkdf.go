@@ -7,6 +7,7 @@
 // state in caller-owned memory (internal/bcryptpbkdf), used by the OpenSSH
 // passphrase paths; exposing it costs nothing beyond the wrapper below and
 // is what [Argon2Into] does for the Argon2 fork.
+
 package secmemcrypto
 
 import (

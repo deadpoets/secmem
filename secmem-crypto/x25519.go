@@ -1,5 +1,6 @@
 // x25519.go provides X25519Key, an X25519 Diffie-Hellman key whose private
 // scalar lives in a SecureBuffer.
+
 package secmemcrypto
 
 import (

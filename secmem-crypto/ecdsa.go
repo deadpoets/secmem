@@ -1,5 +1,6 @@
 // ecdsa.go provides ECDSASigner, a crypto.Signer for the NIST prime curves
 // whose private scalar lives in a SecureBuffer between operations.
+
 package secmemcrypto
 
 import (

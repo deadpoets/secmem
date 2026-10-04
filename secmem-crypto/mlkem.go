@@ -1,5 +1,6 @@
 // mlkem.go provides MLKEM768Key, a post-quantum ML-KEM-768 (FIPS 203)
 // decapsulation key whose seed lives in a SecureBuffer.
+
 package secmemcrypto
 
 import (

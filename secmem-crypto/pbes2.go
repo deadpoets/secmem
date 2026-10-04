@@ -21,6 +21,7 @@
 // SHA-1 that openssl pkcs8 wrote by default before 1.1.0 — and PBES2 over
 // DES, 3DES or RC2. The remedy for all of those is one openssl command,
 // which the error names.
+
 package secmemcrypto
 
 import (

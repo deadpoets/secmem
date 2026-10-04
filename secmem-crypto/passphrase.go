@@ -2,6 +2,7 @@
 // [secmem.SecureBuffer] using the EFF long wordlist — see NOTICE for that
 // file's attribution and license (CC BY 3.0, distinct from this project's
 // own Apache-2.0).
+
 package secmemcrypto
 
 import (

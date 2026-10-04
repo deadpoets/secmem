@@ -9,6 +9,7 @@
 // keys are wiped before the call returns (openssh_cipher.go, aeswipe.go),
 // and chacha20-poly1305@openssh.com over a core of this module's own whose
 // state is stack locals wiped in the call (openssh_chacha.go).
+
 package secmemcrypto
 
 import (

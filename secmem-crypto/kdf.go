@@ -8,6 +8,7 @@
 // the standard library's heap objects and are gated like RSA and ECDSA. In
 // every case the derived key lands only in the SecureBuffer, not in a slice
 // the caller has to remember to wipe.
+
 package secmemcrypto
 
 import (
