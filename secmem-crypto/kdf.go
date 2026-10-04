@@ -304,10 +304,11 @@ func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer,
 		return fmt.Errorf("secmemcrypto: hmac derive: output buffer is %d bytes, want exactly %d (the hash's fixed size)", size, want)
 	}
 
+	o := resolveOptions(opts)
 	if id := inPlaceHashOf(probe); id != hashNone {
 		err := secmem.ScrubErr(func() error {
 			return out.WithBytesErr(func(dst []byte) error {
-				return hmacIntoInPlace(id, dst, secret, info)
+				return hmacIntoInPlace(o.buf, id, dst, secret, info)
 			})
 		})
 		if err != nil {
@@ -315,7 +316,7 @@ func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer,
 		}
 		return nil
 	}
-	if err := resolveOptions(opts).checkHeapTransientsHash("secmemcrypto: hmac derive"); err != nil {
+	if err := o.checkHeapTransientsHash("secmemcrypto: hmac derive"); err != nil {
 		return err
 	}
 	err := secmem.ScrubErr(func() error {
@@ -335,8 +336,8 @@ func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer,
 // HMACSHA256Into is [HMACInto] over SHA-256 — the common case, with the
 // hash named in the symbol so a future variant is a new function, not a
 // changed default.
-func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer) error {
-	return HMACInto(sha256.New, secret, info, out)
+func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
+	return HMACInto(sha256.New, secret, info, out, opts...)
 }
 
 // HKDFInto derives out.Len() bytes from secret using HKDF (RFC 5869) over
@@ -397,10 +398,11 @@ func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureB
 		return fmt.Errorf("secmemcrypto: hkdf derive: output %d exceeds the RFC 5869 limit of %d bytes (255 x hash size)", size, maxOut)
 	}
 
+	o := resolveOptions(opts)
 	if id := inPlaceHashOf(probe); id != hashNone {
 		err := secmem.ScrubErr(func() error {
 			return out.WithBytesErr(func(dst []byte) error {
-				return hkdfInPlace(id, dst, secret, salt, info)
+				return hkdfInPlace(o.buf, id, dst, secret, salt, info)
 			})
 		})
 		if err != nil {
@@ -408,7 +410,7 @@ func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureB
 		}
 		return nil
 	}
-	if err := resolveOptions(opts).checkHeapTransientsHash("secmemcrypto: hkdf derive"); err != nil {
+	if err := o.checkHeapTransientsHash("secmemcrypto: hkdf derive"); err != nil {
 		return err
 	}
 	err := secmem.ScrubErr(func() error {
@@ -429,6 +431,6 @@ func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureB
 // HKDFSHA256Into is [HKDFInto] over SHA-256 — the common case, with the
 // hash named in the symbol so a future variant is a new function, not a
 // changed default.
-func HKDFSHA256Into(secret, salt, info []byte, out *secmem.SecureBuffer) error {
-	return HKDFInto(sha256.New, secret, salt, info, out)
+func HKDFSHA256Into(secret, salt, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
+	return HKDFInto(sha256.New, secret, salt, info, out, opts...)
 }

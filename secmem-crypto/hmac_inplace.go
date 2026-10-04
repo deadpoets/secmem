@@ -285,14 +285,14 @@ func hmacInPlace(h inPlaceHash, dst, scratch, key []byte, parts ...[]byte) {
 // Nothing secret is ever captured by a closure: a captured array would be
 // moved to the heap, which is the whole thing this file exists to avoid. The
 // locked path's closure holds only slice headers.
-func hmacIntoInPlace(h inPlaceHash, dst, secret, info []byte) error {
+func hmacIntoInPlace(b bufferOptions, h inPlaceHash, dst, secret, info []byte) error {
 	n := h.block() + max(len(info), h.size())
 	if n <= hmacStackRegion {
 		var region [hmacStackRegion]byte
 		hmacInPlace(h, dst, region[:n], secret, info)
 		return nil
 	}
-	buf, err := secmem.NewEmptyBuffer(n)
+	buf, err := b.newEmptyBuffer(n)
 	if err != nil {
 		return err
 	}
@@ -308,14 +308,14 @@ func hmacIntoInPlace(h inPlaceHash, dst, secret, info []byte) error {
 // HMAC scratch, and is a stack array when it fits, a locked buffer otherwise;
 // callers run it inside a Scrub window. As in hmacIntoInPlace, no closure
 // captures anything but slice headers.
-func hkdfInPlace(h inPlaceHash, dst, secret, salt, info []byte) error {
+func hkdfInPlace(b bufferOptions, h inPlaceHash, dst, secret, salt, info []byte) error {
 	n := 2*maxHashSize + h.block() + max(len(secret), h.size()+len(info)+1)
 	if n <= hmacStackRegion {
 		var region [hmacStackRegion]byte
 		hkdfCompute(h, dst, region[:n], secret, salt, info)
 		return nil
 	}
-	buf, err := secmem.NewEmptyBuffer(n)
+	buf, err := b.newEmptyBuffer(n)
 	if err != nil {
 		return err
 	}

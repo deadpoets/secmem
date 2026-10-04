@@ -814,7 +814,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ScryptLockRefusal(t *testing.T) {
 	refused := errors.New("simulated: VirtualLock refused")
 	orig := newScratchBuffer
 	var asked []int
-	newScratchBuffer = func(size int) (*secmem.SecureBuffer, error) {
+	newScratchBuffer = func(_ bufferOptions, size int) (*secmem.SecureBuffer, error) {
 		asked = append(asked, size)
 		return nil, refused
 	}

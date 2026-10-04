@@ -208,7 +208,7 @@ func GenerateRSASigner(bits int, opts ...Option) (*RSASigner, error) {
 		// contract staying what it is.
 		der := x509.MarshalPKCS1PrivateKey(key)
 		var berr error
-		buf, berr = secmem.NewBuffer(der)
+		buf, berr = o.buf.newBuffer(der)
 		if berr != nil {
 			secmem.SecureWipe(der)
 		}

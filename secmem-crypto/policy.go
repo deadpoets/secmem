@@ -35,11 +35,67 @@ import (
 // [Encapsulate], which leaves nothing behind, are never refused.
 var ErrHeapTransients = errors.New("secmemcrypto: operation would leave key material on the unprotected heap on this build")
 
-// Option configures a constructor or parser in this package.
+// Option configures a constructor, parser or derivation in this package.
+// Every exported function that allocates a [secmem.SecureBuffer] takes them,
+// and every key type remembers the ones it was built with, for the buffers
+// its methods allocate later.
 type Option func(*options)
 
 type options struct {
 	allowHeapTransients bool
+	buf                 bufferOptions
+}
+
+// bufferOptions is the core options a call was given through
+// [BufferOptions], and the only way this package allocates: every
+// SecureBuffer it creates — a key, an output, a scratch workspace — comes
+// from one of the two methods below, so an option given at the call site
+// reaches all of them. A key type keeps the value it was constructed with.
+// bufferoptions_test.go fails if anything else in the package calls a core
+// constructor.
+type bufferOptions []secmem.Option
+
+func (b bufferOptions) newEmptyBuffer(size int) (*secmem.SecureBuffer, error) {
+	return secmem.NewEmptyBuffer(size, b...)
+}
+
+// newBuffer is secmem.NewBuffer: raw is wiped whether or not it succeeds.
+func (b bufferOptions) newBuffer(raw []byte) (*secmem.SecureBuffer, error) {
+	return secmem.NewBuffer(raw, b...)
+}
+
+// BufferOptions passes core options to every [secmem.SecureBuffer] the call
+// allocates: the buffer a constructor or generator returns inside its key,
+// the outputs a key's methods return later ([X25519Key.SharedSecret],
+// [MLKEM768Key.Decapsulate], the Ed25519 Marshal forms — a key keeps the
+// options it was built with), and the locked scratch a derivation or a
+// parser uses and frees within the call.
+//
+// The core option that exists today is [secmem.WithInsecureFallback]. Without
+// it this package is secure-memory-only: on a platform with no lockable
+// off-heap memory every allocating call fails with an error wrapping
+// [secmem.ErrNoSecureMemory]. With it, there, the same calls succeed on
+// plain heap memory with none of the protections this module's documentation
+// describes — the buffers report Capabilities().Insecure — which is the
+// core's trade, made visible at the call site in the core's own words:
+//
+//	secmemcrypto.GenerateEd25519Signer(
+//		secmemcrypto.BufferOptions(secmem.WithInsecureFallback()))
+//
+// On Linux, macOS and Windows it changes nothing. A buffer the caller
+// allocates and hands in (a seed, an out) is the caller's, and is governed
+// by the options the caller gave the core for it, not by this one.
+//
+// The name follows [AllowHeapTransients] rather than the core's With form:
+// in this package With… names the scoped borrows ([WithAESGCM],
+// [Ed25519Signer.WithSeed]).
+func BufferOptions(opts ...secmem.Option) Option {
+	return func(o *options) {
+		// A fresh backing array each time: options values are copied, and
+		// an append into shared spare capacity would let one call's options
+		// overwrite another's.
+		o.buf = append(o.buf[:len(o.buf):len(o.buf)], opts...)
+	}
 }
 
 // AllowHeapTransients lets [RSASigner], [ECDSASigner] and [MLKEM768Key] be
@@ -64,7 +120,19 @@ func AllowHeapTransients() Option {
 }
 
 // resolveOptions folds opts into one value. A nil Option is ignored.
+//
+// The no-options case returns before the fold on purpose: an Option is
+// called with a pointer to the value being built, which moves that value to
+// the heap, and the functions whose allocation counts classification_test.go
+// pins (the in-place HMAC and HKDF) resolve their options on every call.
 func resolveOptions(opts []Option) options {
+	if len(opts) == 0 {
+		return options{}
+	}
+	return foldOptions(opts)
+}
+
+func foldOptions(opts []Option) options {
 	var o options
 	for _, opt := range opts {
 		if opt != nil {

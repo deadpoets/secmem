@@ -197,7 +197,8 @@ func newECDSASigner(curve elliptic.Curve, scalarBuf *secmem.SecureBuffer, o opti
 // every signature this type makes leaves copies of the private key on the
 // heap that nothing erases there. The check runs before a scalar is drawn.
 func GenerateECDSASigner(curve elliptic.Curve, opts ...Option) (*ECDSASigner, error) {
-	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: generate ecdsa scalar"); err != nil {
+	o := resolveOptions(opts)
+	if err := o.checkHeapTransients("secmemcrypto: generate ecdsa scalar"); err != nil {
 		return nil, err
 	}
 	if curve == nil || !supportedCurve(curve) {
@@ -212,7 +213,7 @@ func GenerateECDSASigner(curve elliptic.Curve, opts ...Option) (*ECDSASigner, er
 		topMask = 0xFF >> excess
 	}
 
-	buf, err := secmem.NewEmptyBuffer(size)
+	buf, err := o.buf.newEmptyBuffer(size)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate scalar buffer: %w", err)
 	}

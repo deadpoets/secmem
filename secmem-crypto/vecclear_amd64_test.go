@@ -61,7 +61,7 @@ func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 
 	// Subject: the window both callers use.
 	err = secmem.ScrubErr(func() error {
-		return opensshCrypt(dst, src, nil, passphrase, salt, 1, cipherAES256CTR, false)
+		return opensshCrypt(nil, dst, src, nil, passphrase, salt, 1, cipherAES256CTR, false)
 	})
 	regprobe.DumpXMM(&got)
 	if errors.Is(err, secmem.ErrNoSecureMemory) {

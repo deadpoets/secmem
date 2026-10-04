@@ -236,7 +236,7 @@ func TestEncapsulateInto_WipesToCapacity(t *testing.T) {
 	t.Parallel()
 	check := func(name string, shared, ct []byte, wantShared, wantWiped, wantCT []byte) {
 		t.Helper()
-		_, ss, err := encapsulateInto(func() ([]byte, []byte, error) { return shared, ct, nil })
+		_, ss, err := encapsulateInto(nil, func() ([]byte, []byte, error) { return shared, ct, nil })
 		if errors.Is(err, secmem.ErrNoSecureMemory) {
 			t.Skipf("%s: %v", name, err)
 		}
@@ -275,7 +275,7 @@ func TestEncapsulateInto_WipesToCapacity(t *testing.T) {
 
 	// A kem error surfaces, and nothing is returned.
 	boom := errors.New("boom")
-	if c, ss, err := encapsulateInto(func() ([]byte, []byte, error) { return nil, nil, boom }); !errors.Is(err, boom) || c != nil || ss != nil {
+	if c, ss, err := encapsulateInto(nil, func() ([]byte, []byte, error) { return nil, nil, boom }); !errors.Is(err, boom) || c != nil || ss != nil {
 		t.Errorf("kem error: got (%v, %v, %v), want (nil, nil, boom)", c, ss, err)
 	}
 }

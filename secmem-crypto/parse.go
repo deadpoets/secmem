@@ -202,13 +202,13 @@ var (
 func parsePrivateKey(data []byte, o options) (Signer, error) {
 	switch {
 	case bytes.HasPrefix(data, opensshMagic):
-		blob, err := copyToBuffer(data)
+		blob, err := copyToBuffer(data, o.buf)
 		if err != nil {
 			return nil, err
 		}
 		return parseOpenSSH(blob, o)
 	case looksLikeDER(data):
-		blob, err := copyToBuffer(data)
+		blob, err := copyToBuffer(data, o.buf)
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +218,7 @@ func parsePrivateKey(data []byte, o options) (Signer, error) {
 		if err != nil {
 			return nil, err
 		}
-		blob, err := decodePEMBody(body)
+		blob, err := decodePEMBody(body, o.buf)
 		if err != nil {
 			return nil, err
 		}
@@ -372,13 +372,13 @@ func nextLine(b []byte) ([]byte, bool) {
 // The standard decoder skips line breaks, so the body is passed as it sits
 // in the file. On any failure the buffer is destroyed (which wipes whatever
 // partial output the decoder produced).
-func decodePEMBody(body []byte) (*secmem.SecureBuffer, error) {
+func decodePEMBody(body []byte, b bufferOptions) (*secmem.SecureBuffer, error) {
 	body = bytes.TrimSpace(body)
 	n := base64.StdEncoding.DecodedLen(len(body))
 	if n == 0 {
 		return nil, fmt.Errorf("%w: empty PEM body", errMalformed)
 	}
-	blob, err := secmem.NewEmptyBuffer(n)
+	blob, err := b.newEmptyBuffer(n)
 	if err != nil {
 		return nil, fmt.Errorf("allocate key buffer: %w", err)
 	}
@@ -408,8 +408,8 @@ func decodePEMBody(body []byte) (*secmem.SecureBuffer, error) {
 
 // copyToBuffer copies raw key bytes into a new SecureBuffer. The source is
 // the caller's and is left alone (see ParsePrivateKey).
-func copyToBuffer(data []byte) (*secmem.SecureBuffer, error) {
-	blob, err := secmem.NewEmptyBuffer(len(data))
+func copyToBuffer(data []byte, b bufferOptions) (*secmem.SecureBuffer, error) {
+	blob, err := b.newEmptyBuffer(len(data))
 	if err != nil {
 		return nil, fmt.Errorf("allocate key buffer: %w", err)
 	}
@@ -556,7 +556,7 @@ func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 				return errMalformed
 			}
 			var err error
-			s, err = ed25519FromSeed(seed, pub)
+			s, err = ed25519FromSeed(seed, pub, o)
 			return err
 		case oid.Equal(oidX25519):
 			return fmt.Errorf("%w: X25519 is an agreement key, not a signer (use NewX25519Key)", ErrUnsupportedKey)
@@ -668,7 +668,7 @@ func ecdsaFromScalar(d []byte, curve elliptic.Curve, pub []byte, o options) (*EC
 	if len(d) == 0 || len(d) > size {
 		return nil, fmt.Errorf("%w: scalar out of range", errMalformed)
 	}
-	out, err := secmem.NewEmptyBuffer(size)
+	out, err := o.buf.newEmptyBuffer(size)
 	if err != nil {
 		return nil, fmt.Errorf("allocate scalar buffer: %w", err)
 	}
@@ -714,11 +714,11 @@ func ecdsaPubMatches(s *ECDSASigner, pub []byte) bool {
 
 // ed25519FromSeed copies a 32-byte seed into a fresh buffer and builds the
 // signer, checking the file's public key (if any) against the derived one.
-func ed25519FromSeed(seed, pub []byte) (*Ed25519Signer, error) {
+func ed25519FromSeed(seed, pub []byte, o options) (*Ed25519Signer, error) {
 	if len(seed) != 32 {
 		return nil, fmt.Errorf("%w: got %d, want 32", ErrBadSeedLength, len(seed))
 	}
-	out, err := secmem.NewEmptyBuffer(len(seed))
+	out, err := o.buf.newEmptyBuffer(len(seed))
 	if err != nil {
 		return nil, fmt.Errorf("allocate seed buffer: %w", err)
 	}
@@ -726,7 +726,7 @@ func ed25519FromSeed(seed, pub []byte) (*Ed25519Signer, error) {
 		_ = out.Destroy()
 		return nil, err
 	}
-	s, err := NewEd25519Signer(out)
+	s, err := newEd25519Signer(out, o)
 	if err != nil {
 		_ = out.Destroy()
 		return nil, err

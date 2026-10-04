@@ -221,11 +221,11 @@ func borrowOrdered(a, b *secmem.SecureBuffer, fn func(a, b []byte) error) error 
 	})
 }
 
-// newScratchBuffer is secmem.NewEmptyBuffer. A package var so a test can
-// make withScratch's allocation fail the way a host that will not lock the
-// memory makes it fail; production always runs the value defined here.
-var newScratchBuffer = func(size int) (*secmem.SecureBuffer, error) {
-	return secmem.NewEmptyBuffer(size)
+// newScratchBuffer allocates withScratch's buffer. A package var so a test
+// can make the allocation fail the way a host that will not lock the memory
+// makes it fail; production always runs the value defined here.
+var newScratchBuffer = func(b bufferOptions, size int) (*secmem.SecureBuffer, error) {
+	return b.newEmptyBuffer(size)
 }
 
 // withScratch allocates a locked scratch buffer of size bytes for one call,
@@ -236,8 +236,8 @@ var newScratchBuffer = func(size int) (*secmem.SecureBuffer, error) {
 // module's ascending-order rule by construction: that is why both KDF paths
 // — opensshCrypt inside a container borrow, BcryptPBKDFInto inside a borrow
 // of out — take it without borrowOrdered.
-func withScratch(size int, fn func(mem []byte) error) error {
-	scratch, err := newScratchBuffer(size)
+func withScratch(b bufferOptions, size int, fn func(mem []byte) error) error {
+	scratch, err := newScratchBuffer(b, size)
 	if err != nil {
 		return fmt.Errorf("allocate kdf workspace: %w", err)
 	}

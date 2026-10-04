@@ -201,7 +201,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, blockSize int, o option
 				return fmt.Errorf("%w: public and private key blocks disagree", errMalformed)
 			}
 			var err error
-			s, err = ed25519FromSeed(sk[:32], pk)
+			s, err = ed25519FromSeed(sk[:32], pk, o)
 			return err
 
 		case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
@@ -260,7 +260,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, blockSize int, o option
 				return fmt.Errorf("%w: public and private key blocks disagree", errMalformed)
 			}
 			var err error
-			der, err = pkcs1DER(n, e, d, prime1, prime2, iqmp)
+			der, err = pkcs1DER(o.buf, n, e, d, prime1, prime2, iqmp)
 			return err
 
 		default:
@@ -324,7 +324,7 @@ func bitLen(b []byte) int {
 // (parse_proof_test.go) now covers for this container too. The DER is
 // byte-identical to x509.MarshalPKCS1PrivateKey's for the same key
 // (parse_openssh_test.go pins that).
-func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
+func pkcs1DER(b bufferOptions, n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 	n, e, d, p, q, iqmp = stripZeros(n), stripZeros(e), stripZeros(d), stripZeros(p), stripZeros(q), stripZeros(iqmp)
 	if len(n) == 0 || len(e) == 0 || len(d) == 0 || len(p) == 0 || len(q) == 0 || len(iqmp) == 0 {
 		return nil, errMalformed
@@ -370,7 +370,7 @@ func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 	}
 	total := 1 + derLengthLen(content) + content
 
-	out, err := secmem.NewEmptyBuffer(total)
+	out, err := b.newEmptyBuffer(total)
 	if err != nil {
 		return nil, fmt.Errorf("allocate RSA key buffer: %w", err)
 	}

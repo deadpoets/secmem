@@ -47,6 +47,7 @@ var x25519Basepoint = [x25519.PointSize]byte{9}
 // running, its stack holds key-dependent state, as any implementation's does.
 type X25519Key struct {
 	scalarBuf *secmem.SecureBuffer
+	buf       bufferOptions // for the buffer each SharedSecret allocates
 }
 
 // GenerateX25519Key generates a fresh X25519 scalar directly into a new
@@ -54,9 +55,11 @@ type X25519Key struct {
 // the scalar is never materialized on the Go heap; see
 // [GenerateEd25519Signer] for the caveat about a replaced Reader.
 //
-// To persist the generated key, use [X25519Key.WithScalar].
-func GenerateX25519Key() (*X25519Key, error) {
-	buf, err := secmem.NewEmptyBuffer(x25519.ScalarSize)
+// To persist the generated key, use [X25519Key.WithScalar]. opts may carry
+// [BufferOptions] for the scalar's buffer and, later, each shared secret's.
+func GenerateX25519Key(opts ...Option) (*X25519Key, error) {
+	o := resolveOptions(opts)
+	buf, err := o.buf.newEmptyBuffer(x25519.ScalarSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate scalar buffer: %w", err)
 	}
@@ -67,7 +70,7 @@ func GenerateX25519Key() (*X25519Key, error) {
 		_ = buf.Destroy()
 		return nil, fmt.Errorf("secmemcrypto: generate scalar: %w", err)
 	}
-	return &X25519Key{scalarBuf: buf}, nil
+	return &X25519Key{scalarBuf: buf, buf: o.buf}, nil
 }
 
 // NewX25519Key wraps an existing 32-byte X25519 scalar already held in a
@@ -77,7 +80,10 @@ func GenerateX25519Key() (*X25519Key, error) {
 // The scalar is stored as given; X25519 clamps it per RFC 7748 at each use,
 // so an unclamped scalar is accepted and behaves identically to its clamped
 // form for PublicKey/SharedSecret.
-func NewX25519Key(scalarBuf *secmem.SecureBuffer) (*X25519Key, error) {
+//
+// The constructor allocates nothing, but the key keeps opts' [BufferOptions]
+// for the buffer each SharedSecret returns.
+func NewX25519Key(scalarBuf *secmem.SecureBuffer, opts ...Option) (*X25519Key, error) {
 	if scalarBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -87,7 +93,7 @@ func NewX25519Key(scalarBuf *secmem.SecureBuffer) (*X25519Key, error) {
 	if n := scalarBuf.Len(); n != x25519.ScalarSize {
 		return nil, fmt.Errorf("%w: got %d, want %d", ErrBadScalarLength, n, x25519.ScalarSize)
 	}
-	return &X25519Key{scalarBuf: scalarBuf}, nil
+	return &X25519Key{scalarBuf: scalarBuf, buf: resolveOptions(opts).buf}, nil
 }
 
 // PublicKey returns the X25519 public key (scalar × basepoint). The public
@@ -123,7 +129,7 @@ func (k *X25519Key) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error)
 	if k.scalarBuf.IsSealed() {
 		return nil, fmt.Errorf("secmemcrypto: shared secret: %w", secmem.ErrSealed)
 	}
-	out, err := secmem.NewEmptyBuffer(x25519.PointSize)
+	out, err := k.buf.newEmptyBuffer(x25519.PointSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate shared secret buffer: %w", err)
 	}

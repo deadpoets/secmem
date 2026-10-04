@@ -160,6 +160,40 @@ than per type: over SHA-2 and SHA-3 they run in place and are never refused,
 and over any other hash they refuse on a legacy build unless given
 `AllowHeapTransients()`.
 
+## Options, and platforms without lockable memory
+
+Every function in this module that allocates a `SecureBuffer` — the
+constructors, generators and parsers, `Encapsulate`,
+`GenerateDicewarePassphrase`, the Argon2 workspace and pool, and the
+derivations that take a locked scratch buffer (`BcryptPBKDFInto`, and
+`HMACInto` / `HKDFInto` and their SHA-256 forms for inputs too long for the
+stack) — takes `...Option`. There are two:
+
+- `AllowHeapTransients()`, above.
+- `BufferOptions(opts ...secmem.Option)` passes core options to every buffer
+  the call allocates. A key remembers the ones it was built with, so the
+  buffers its methods return later — `X25519Key.SharedSecret`,
+  `MLKEM768Key.Decapsulate`, the Ed25519 `MarshalOpenSSHPrivateKey` forms —
+  are allocated the same way, with no option at that call.
+
+The core has one option today, `secmem.WithInsecureFallback()`, and it matters
+on exactly the platforms the core describes: those with no lockable off-heap
+memory (anything but Linux, macOS and Windows). **Without it this module is
+secure-memory-only there**: every allocating call fails with an error
+wrapping `secmem.ErrNoSecureMemory`, which is the core's default and the
+right one. With it,
+
+```go
+key, err := secmemcrypto.GenerateEd25519Signer(
+	secmemcrypto.BufferOptions(secmem.WithInsecureFallback()))
+```
+
+the same calls succeed on plain heap memory, and nothing in the class column
+above holds: those buffers report `Capabilities().Insecure`. On Linux, macOS
+and Windows the option changes nothing. A buffer you allocate yourself and
+hand in — a seed, an output — is governed by the options you gave the core
+for it.
+
 ## The parts that should make you look twice
 
 Three pieces of this module do what a security reviewer is right to be

@@ -155,13 +155,13 @@ func parseEncryptedPrivateKey(data, passphrase []byte, o options) (Signer, error
 	)
 	switch {
 	case bytes.HasPrefix(data, opensshMagic):
-		blob, err = copyToBuffer(data)
+		blob, err = copyToBuffer(data, o.buf)
 	case looksLikeDER(data):
 		if err := derIsEncrypted(data); err != nil {
 			return nil, err
 		}
 		pkcs8 = true
-		blob, err = copyToBuffer(data)
+		blob, err = copyToBuffer(data, o.buf)
 	case bytes.Contains(data, pemBegin):
 		typ, body, perr := pemBlock(data)
 		if errors.Is(perr, ErrEncryptedKey) {
@@ -174,10 +174,10 @@ func parseEncryptedPrivateKey(data, passphrase []byte, o options) (Signer, error
 		}
 		switch string(typ) { // comparison only: no string is allocated
 		case opensshPEMType:
-			blob, err = decodePEMBody(body)
+			blob, err = decodePEMBody(body, o.buf)
 		case "ENCRYPTED PRIVATE KEY":
 			pkcs8 = true
-			blob, err = decodePEMBody(body)
+			blob, err = decodePEMBody(body, o.buf)
 		case "PRIVATE KEY", "EC PRIVATE KEY", "RSA PRIVATE KEY":
 			return nil, ErrNotEncrypted
 		default:
@@ -309,13 +309,13 @@ func parseOpenSSHEncrypted(blob *secmem.SecureBuffer, passphrase []byte, o optio
 			return err
 		}
 
-		plain, err := secmem.NewEmptyBuffer(len(h.privBlock))
+		plain, err := o.buf.newEmptyBuffer(len(h.privBlock))
 		if err != nil {
 			return fmt.Errorf("allocate key buffer: %w", err)
 		}
 		defer func() { _ = plain.Destroy() }()
 		return plain.WithBytesErr(func(p []byte) error {
-			if err := opensshCrypt(p, h.privBlock, h.rest, passphrase, salt, int(rounds), mode, true); err != nil {
+			if err := opensshCrypt(o.buf, p, h.privBlock, h.rest, passphrase, salt, int(rounds), mode, true); err != nil {
 				if errors.Is(err, x509.IncorrectPasswordError) {
 					// chacha20-poly1305's authenticator did not verify: a
 					// wrong passphrase or a modified file, which the tag

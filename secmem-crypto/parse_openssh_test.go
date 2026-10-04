@@ -252,7 +252,7 @@ func TestPKCS1DER_RejectsOversizedIqmp(t *testing.T) {
 	k := testRSAKey()
 	e := big.NewInt(int64(k.E))
 	huge := new(big.Int).Lsh(big.NewInt(1), rsaMaxPrimeBits) // rsaMaxPrimeBits+1 bits
-	if buf, err := pkcs1DER(k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), huge.Bytes()); err == nil {
+	if buf, err := pkcs1DER(nil, k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), huge.Bytes()); err == nil {
 		buf.Destroy()
 		t.Fatal("pkcs1DER accepted an iqmp wider than the prime cap")
 	} else if !errors.Is(err, errMalformed) {
@@ -261,7 +261,7 @@ func TestPKCS1DER_RejectsOversizedIqmp(t *testing.T) {
 	// Exactly at the cap it is a size question for the standard library,
 	// not a bound question for this parser.
 	atCap := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), rsaMaxPrimeBits), big.NewInt(1))
-	if buf, err := pkcs1DER(k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), atCap.Bytes()); err != nil {
+	if buf, err := pkcs1DER(nil, k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), atCap.Bytes()); err != nil {
 		t.Fatalf("pkcs1DER refused an iqmp at the prime cap: %v", err)
 	} else {
 		buf.Destroy()
@@ -466,7 +466,7 @@ func TestPKCS1DER_MatchesX509(t *testing.T) {
 		{"with-sign-bytes", signed(k.N), signed(e), signed(k.D), signed(k.Primes[0]), signed(k.Primes[1]), signed(k.Precomputed.Qinv)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			buf, err := pkcs1DER(tc.n, tc.e, tc.d, tc.p, tc.q, tc.iqmp)
+			buf, err := pkcs1DER(nil, tc.n, tc.e, tc.d, tc.p, tc.q, tc.iqmp)
 			if err != nil {
 				t.Fatal(err)
 			}

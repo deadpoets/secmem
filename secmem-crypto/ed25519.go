@@ -64,13 +64,23 @@ import (
 type Ed25519Signer struct {
 	seedBuf *secmem.SecureBuffer
 	pubKey  ed25519.PublicKey
+	buf     bufferOptions // for the buffers the Marshal forms allocate
 }
 
 // NewEd25519Signer wraps an existing 32-byte Ed25519 seed already held in a
 // SecureBuffer. On success, the Ed25519Signer owns seedBuf — call [Ed25519Signer.Destroy]
 // to release it, not seedBuf.Destroy directly. On failure, ownership is not
 // transferred; the caller is still responsible for seedBuf.
-func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
+//
+// The constructor allocates nothing, but the signer keeps opts'
+// [BufferOptions] for the buffers its Marshal methods allocate.
+func NewEd25519Signer(seedBuf *secmem.SecureBuffer, opts ...Option) (*Ed25519Signer, error) {
+	return newEd25519Signer(seedBuf, resolveOptions(opts))
+}
+
+// newEd25519Signer is NewEd25519Signer with its options already resolved,
+// shared with the generator and the parsers.
+func newEd25519Signer(seedBuf *secmem.SecureBuffer, o options) (*Ed25519Signer, error) {
 	if seedBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -93,7 +103,7 @@ func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
 		return nil, fmt.Errorf("secmemcrypto: derive public key: %w", err)
 	}
 
-	return &Ed25519Signer{seedBuf: seedBuf, pubKey: pub}, nil
+	return &Ed25519Signer{seedBuf: seedBuf, pubKey: pub, buf: o.buf}, nil
 }
 
 // GenerateEd25519Signer generates a fresh Ed25519 seed directly into a new
@@ -103,9 +113,11 @@ func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
 // that replaces rand.Reader with a buffering reader routes seed bytes
 // through that reader's own memory, outside this library's control.
 //
-// To persist the generated key, use [Ed25519Signer.WithSeed].
-func GenerateEd25519Signer() (*Ed25519Signer, error) {
-	seedBuf, err := secmem.NewEmptyBuffer(ed25519.SeedSize)
+// To persist the generated key, use [Ed25519Signer.WithSeed]. opts may carry
+// [BufferOptions] for the seed's buffer.
+func GenerateEd25519Signer(opts ...Option) (*Ed25519Signer, error) {
+	o := resolveOptions(opts)
+	seedBuf, err := o.buf.newEmptyBuffer(ed25519.SeedSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate seed buffer: %w", err)
 	}
@@ -118,7 +130,7 @@ func GenerateEd25519Signer() (*Ed25519Signer, error) {
 		return nil, fmt.Errorf("secmemcrypto: generate seed: %w", err)
 	}
 
-	signer, err := NewEd25519Signer(seedBuf)
+	signer, err := newEd25519Signer(seedBuf, o)
 	if err != nil {
 		_ = seedBuf.Destroy()
 		return nil, err

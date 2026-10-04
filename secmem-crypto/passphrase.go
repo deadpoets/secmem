@@ -138,14 +138,16 @@ func drawWordIndex(bound int64) (int64, error) {
 // a shared page, so they are outside the shared-table channel selectWord
 // closes; they could at most leak cumulative word lengths to an observer
 // already co-resident on the core, which the threat model excludes.
-func GenerateDicewarePassphrase(n int) (*secmem.SecureBuffer, error) {
-	return generateDiceware(n, stringWordList(effWords()), drawWordIndex)
+//
+// opts may carry [BufferOptions] for the returned buffer.
+func GenerateDicewarePassphrase(n int, opts ...Option) (*secmem.SecureBuffer, error) {
+	return generateDiceware(resolveOptions(opts).buf, n, stringWordList(effWords()), drawWordIndex)
 }
 
 // generateDiceware is [GenerateDicewarePassphrase] with the wordlist and the
 // draw injected, so tests can pin the output for fixed random bytes and
 // observe the access pattern without a package-level seam.
-func generateDiceware(n int, words wordList, draw func(bound int64) (int64, error)) (*secmem.SecureBuffer, error) {
+func generateDiceware(b bufferOptions, n int, words wordList, draw func(bound int64) (int64, error)) (*secmem.SecureBuffer, error) {
 	if n < 1 {
 		return nil, fmt.Errorf("secmemcrypto: generate diceware passphrase: n must be >= 1, got %d", n)
 	}
@@ -163,7 +165,7 @@ func generateDiceware(n int, words wordList, draw func(bound int64) (int64, erro
 		// Room for n longest words plus separators; the length actually
 		// used is only known once the words are chosen, and choosing them
 		// outside the buffer is what this function exists to avoid.
-		buf, err := secmem.NewEmptyBuffer(n*maxLen + (n - 1))
+		buf, err := b.newEmptyBuffer(n*maxLen + (n - 1))
 		if err != nil {
 			return fmt.Errorf("secmemcrypto: allocate passphrase buffer: %w", err)
 		}

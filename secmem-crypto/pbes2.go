@@ -506,12 +506,12 @@ func oidIsRetiredPBE(oid asn1.ObjectIdentifier) bool {
 // is this function's failure. As in opensshCrypt, what the hashes' and
 // AES's assembly leave in the vector registers is the caller's Scrub
 // window's to clear.
-func pbes2Decrypt(dst []byte, f pbes2File, passphrase []byte) error {
+func pbes2Decrypt(b bufferOptions, dst []byte, f pbes2File, passphrase []byte) error {
 	kdfRegion := pbkdf2RegionSize(f.prf, len(f.salt))
 	if f.scrypt {
 		kdfRegion = scryptRegionSize(len(f.salt), f.n, f.r, f.p)
 	}
-	return withScratch(kdfRegion+f.keyLen+cipherScratch, func(mem []byte) (err error) {
+	return withScratch(b, kdfRegion+f.keyLen+cipherScratch, func(mem []byte) (err error) {
 		// The KDF's region leads: scrypt views it as 32-bit words, and the
 		// start of the mapping is what is known to be aligned. Its capacity
 		// stops where the key starts, so a KDF that slices past the region
@@ -584,12 +584,12 @@ func parsePKCS8Encrypted(blob *secmem.SecureBuffer, passphrase []byte, o options
 		if err != nil {
 			return err
 		}
-		plain, err = secmem.NewEmptyBuffer(len(f.ct))
+		plain, err = o.buf.newEmptyBuffer(len(f.ct))
 		if err != nil {
 			return fmt.Errorf("allocate key buffer: %w", err)
 		}
 		return plain.WithBytesErr(func(p []byte) error {
-			if err := pbes2Decrypt(p, f, passphrase); err != nil {
+			if err := pbes2Decrypt(o.buf, p, f, passphrase); err != nil {
 				// Not a verdict on the file: the parameters were checked
 				// above, so this is the workspace failing to lock or the
 				// AES schedule wipe failing closed, which the caller must
