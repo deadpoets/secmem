@@ -199,8 +199,10 @@ state behind — the 64 MiB matrix, the pre-hash H0, a scratch block on each
 worker goroutine's stack, and a BLAKE2b digest holding the raw password —
 and no wrapper can reach it: `runtime/secret.Do` does not extend to
 goroutines the wrapped function spawns. The fork keeps every piece of that
-state in one workspace, wipes it before returning, computes the BLAKE2b
-steps on the stack, and runs each worker inside its own `Scrub` window.
+state in one workspace, wipes it before returning, hashes the password in
+through that workspace a block at a time (so no input is too long for it),
+computes the remaining BLAKE2b steps on the stack, and runs each worker
+inside its own `Scrub` window.
 
 The output is byte-identical to upstream. That is pinned by the RFC 9106 §5
 vectors for all three variants, a differential table and fuzz target against

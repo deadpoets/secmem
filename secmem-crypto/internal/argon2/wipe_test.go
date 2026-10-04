@@ -14,7 +14,8 @@ func workspaceResidue(ws *Workspace) map[string][]byte {
 		"block0":    ws.block0[:],
 		"hashIn":    ws.hashIn[:],
 		"hashState": ws.hashState[:],
-		"initInput": ws.initInput[:cap(ws.initInput)],
+		"h0Block":   ws.h0Block[:],
+		"h0Chain":   unsafe.Slice((*byte)(unsafe.Pointer(ws.h0Chain)), h0ChainSize),
 	}
 	r["B"] = unsafe.Slice((*byte)(unsafe.Pointer(&ws.b[0])), len(ws.b)*int(unsafe.Sizeof(block{})))
 	for i := range ws.lanes {
@@ -51,9 +52,9 @@ func TestWorkspaceWipe(t *testing.T) {
 
 		for name, region := range workspaceResidue(ws) {
 			switch name {
-			case "initInput", "hashIn", "hashState":
+			case "h0Block", "h0Chain", "hashIn", "hashState":
 				// Derive wipes these itself as soon as it is done with them;
-				// TestInitInputWiped covers the control for initInput.
+				// TestH0StateWiped covers the control for the H0 pair.
 				if !isZero(region) {
 					t.Errorf("mode %d: %s not cleared by Derive itself", mode, name)
 				}
@@ -117,22 +118,36 @@ func TestBind_LayoutCoversRegion(t *testing.T) {
 	mustPanic("misaligned region", func() { Bind(make([]byte, WorkspaceSize(64, 1)+8)[1:], 64, 1) })
 }
 
-// TestInitInputWiped pins the H0 input separately: it is the one region
-// that holds the raw password, and Derive itself must clear it before
-// Wipe, because it is done with it as soon as H0 exists. The control is
-// that the buffer was sized to hold the password at all.
-func TestInitInputWiped(t *testing.T) {
+// TestH0StateWiped pins the H0 staging block and chaining value separately:
+// the block is the one region that holds the raw password, and initHash
+// itself must clear both, because it is done with them as soon as H0 exists.
+// The control absorbs the same password without finalising: its tail must
+// then be in the block and the chaining value non-zero, or the assertions
+// after it would be vacuous.
+func TestH0StateWiped(t *testing.T) {
 	ws := NewWorkspace(8, 1)
-	password := []byte("the password itself, verbatim, in the H0 input")
-	Derive(make([]byte, 32), ModeID, password, []byte("salt"), nil, nil, 1, ws)
-	if cap(ws.initInput) < 24+16+len(password)+4 {
-		t.Fatalf("control failed: H0 input buffer capacity %d cannot have held the password", cap(ws.initInput))
+	password := bytes.Repeat([]byte("the password itself, verbatim, in the H0 input; "), 8)
+	chain := unsafe.Slice((*byte)(unsafe.Pointer(ws.h0Chain)), h0ChainSize)
+
+	*ws.h0Chain = iv
+	var c [2]uint64
+	ws.h0Absorb(&c, 0, password)
+	if !bytes.Contains(ws.h0Block[:], password[len(password)-32:]) {
+		t.Fatal("control failed: absorbing the password did not leave its tail in the staging block")
 	}
-	if bytes.Contains(ws.initInput[:cap(ws.initInput)], password) {
-		t.Fatal("password still present in the H0 input buffer after Derive")
+	if c[0] == 0 || isZero(chain) {
+		t.Fatal("control failed: absorbing the password compressed no block")
 	}
-	if !isZero(ws.initInput[:cap(ws.initInput)]) {
-		t.Fatal("H0 input buffer not zero after Derive")
+
+	ws.initHash(password, nil, nil, nil, 1, 32, ModeID)
+	if !isZero(ws.h0Block[:]) {
+		t.Fatal("H0 staging block not zero after initHash")
+	}
+	if !isZero(chain) {
+		t.Fatal("H0 chaining value not zero after initHash")
+	}
+	if isZero(ws.h0[:]) {
+		t.Fatal("control failed: initHash produced no H0")
 	}
 	ws.Wipe()
 }

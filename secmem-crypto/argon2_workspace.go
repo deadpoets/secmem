@@ -11,8 +11,10 @@
 // [Argon2Pool] holds several for concurrent callers with a fixed ceiling on
 // locked memory.
 //
-// Neither falls back to the heap. A host whose lock budget cannot hold the
-// workspace fails at construction, before the first login, with the
+// Neither falls back to the heap, for the workspace or for any input: the
+// password, salt, Secret and Data are hashed into H0 block by block inside
+// the locked region whatever their length. A host whose lock budget cannot
+// hold the workspace fails at construction, before the first login, with the
 // platform's error; raise the budget with [secmem.EnsureMemlockLimit] at
 // startup, as for any other large SecureBuffer. A caller that wants the
 // heap behaviour has [Argon2Into], and is told by that function's doc what

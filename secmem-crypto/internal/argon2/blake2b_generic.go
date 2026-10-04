@@ -5,11 +5,13 @@
 //
 // Forked from golang.org/x/crypto/blake2b v0.56.0 for secmem-crypto: the
 // portable compression function and the one-shot finalisation, so that H'
-// can produce any digest length 1..64 with its whole state on the stack.
+// can produce any digest length 1..64 with its whole state on the stack and
+// H0 can be streamed with its state in the Workspace (see initHash).
 // hashBlocksGeneric and precomputed are verbatim; checkSum is upstream's
-// with hashBlocks replaced by hashBlocksGeneric. Only the lengths that
-// x/crypto has no one-shot function for come through here (see sumTo), so
-// the lack of assembly does not matter.
+// with hashBlocks replaced by hashBlocksGeneric. What comes through here is
+// H0 and the H' lengths that x/crypto has no one-shot function for (see
+// sumTo): a few blocks per derivation against a matrix of thousands, so the
+// lack of assembly does not matter.
 
 package argon2
 

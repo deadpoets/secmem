@@ -138,15 +138,19 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 // fork (internal/argon2; see its package documentation for the full list
 // of changes and the licence) in which:
 //
-//   - the matrix, every worker's scratch, H0, the H' scratch and the H0
-//     input (the one buffer holding the raw password) live in one
-//     workspace the parent goroutine owns and wipes with [secmem.SecureWipe]
-//     before this function returns — deterministically, not at the
-//     collector's convenience;
-//   - H0 and H' are computed with stack-only BLAKE2b (x/crypto's one-shot
-//     functions, and a forked portable finalisation for the output lengths
-//     they do not cover), so no heap digest ever holds the password or the
-//     final block (upstream's does, and neither Sum nor Reset clears it);
+//   - the matrix, every worker's scratch, H0, the H' scratch and the
+//     state of the H0 hash (whose 128-byte block is the one place the raw
+//     password is copied to) live in one workspace the parent goroutine
+//     owns and wipes with [secmem.SecureWipe] before this function returns
+//     — deterministically, not at the collector's convenience;
+//   - H0 is hashed one block at a time through a forked BLAKE2b
+//     compression function with its state in that workspace, so the
+//     password, salt, Secret and Data are never assembled into one buffer
+//     and may be any length; H' is computed with stack-only BLAKE2b
+//     (x/crypto's one-shot functions, and a forked portable finalisation
+//     for the output lengths they do not cover). No heap digest ever holds
+//     the password or the final block (upstream's does, and neither Sum
+//     nor Reset clears it);
 //   - the parent's hashing phases run under [secmem.Scrub], and so does
 //     each worker goroutine — a goroutine can open a window on itself even
 //     though its spawner's window does not reach it — so that on a
@@ -162,10 +166,10 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 //   - During the call the workspace is ordinary Go heap: pageable, part of
 //     any core dump or minidump taken while the derivation runs, and not
 //     registered with secmem, so [secmem.WipeAllSecrets] and the
-//     termination wipe do not cover it. The H0 input in it holds the
-//     password and Secret side by side. [Argon2Workspace] runs the same
-//     derivation with the working state in a locked, registered
-//     SecureBuffer instead, and [Argon2Pool] shares several between
+//     termination wipe do not cover it. The H0 block in it holds up to
+//     128 bytes of the password and Secret at a time. [Argon2Workspace]
+//     runs the same derivation with the working state in a locked,
+//     registered SecureBuffer instead, and [Argon2Pool] shares several between
 //     callers; they fail at construction when the lock budget is too
 //     small rather than falling back to this path, so which posture a
 //     program has is decided where it can be seen.
