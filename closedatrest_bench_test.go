@@ -13,7 +13,7 @@ import "testing"
 // The callback reads one byte, so what is measured is the borrow itself.
 func BenchmarkBorrow(b *testing.B) {
 	var sink byte
-	read := func(p []byte) { sink ^= p[0] }
+	read := func(p []byte) { sink ^= p[0] } //nolint:secmem-lint // one byte of an all-zero benchmark buffer, read so the borrow is not optimised away
 
 	b.Run("open", func(b *testing.B) {
 		buf, err := NewBuffer(make([]byte, 32))

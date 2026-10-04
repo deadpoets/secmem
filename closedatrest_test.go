@@ -148,7 +148,7 @@ func TestClosedAtRest_EveryMethodOpensAndCloses(t *testing.T) {
 		{"ReadOnly", buf.ReadOnly},
 		{"read while read-only", func() error {
 			return buf.WithBytes(func(b []byte) {
-				if string(b) != "read-from" {
+				if !bytes.Equal(b, []byte("read-from")) {
 					t.Errorf("contents = %q", b) //nolint:secmem-lint // a test fixture, not a secret
 				}
 			})

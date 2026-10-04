@@ -316,13 +316,19 @@ func TestArena_ReleaseWipesSlot(t *testing.T) {
 
 	_ = slot.Release()
 
-	// Re-acquire the same index.
+	// Re-acquire the same index. Reuse is first-in, first-out, so the slot
+	// that was never used comes back first and the released one after it.
+	other, err := a.Acquire()
+	if err != nil {
+		t.Fatalf("Acquire: %v", err)
+	}
+	defer func() { _ = other.Release() }()
 	slot2, err := a.Acquire()
 	if err != nil {
 		t.Fatalf("re-Acquire: %v", err)
 	}
 	if slot2.Index() != idx {
-		t.Skipf("different slot index assigned (%d != %d) — skip wipe check", slot2.Index(), idx)
+		t.Fatalf("re-acquired slot %d, want the released slot %d: the wipe check has nothing to look at", slot2.Index(), idx)
 	}
 	defer func() { _ = slot2.Release() }()
 
