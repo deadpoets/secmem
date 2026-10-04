@@ -201,3 +201,20 @@ func mprotectSecretMem(region secRegion, prot int) error {
 	var oldProtect uint32
 	return windows.VirtualProtect(addr, uintptr(len(region.inner)), protect, &oldProtect)
 }
+
+// relockSecretMem locks the committed middle again after a seal cycle.
+// PAGE_NOACCESS takes a page out of the working set and Windows drops its
+// VirtualLock with it (STATUS_WAS_UNLOCKED); restoring PAGE_READWRITE does
+// not bring the lock back. VirtualLock on pages that are still locked
+// succeeds, so calling this after any protection change is safe.
+func relockSecretMem(region secRegion) error {
+	if len(region.inner) == 0 {
+		return nil
+	}
+	//nolint:gosec // G103: recovering VirtualAlloc address for VirtualLock.
+	addr := uintptr(unsafe.Pointer(&region.inner[0]))
+	if err := windows.VirtualLock(addr, uintptr(len(region.inner))); err != nil {
+		return fmt.Errorf("VirtualLock: %w", err)
+	}
+	return nil
+}

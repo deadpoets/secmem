@@ -340,3 +340,8 @@ func unmapOnError(b []byte) {
 	}
 	_ = unix.Munmap(b)
 }
+
+// relockSecretMem is a no-op here: only Windows drops a page lock when the
+// protection becomes no-access (see mlock_windows.go). mprotect(PROT_NONE)
+// leaves mlock in force.
+func relockSecretMem(_ secRegion) error { return nil }

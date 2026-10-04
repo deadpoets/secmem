@@ -49,6 +49,12 @@ these are the operational differences a Windows deployment has to plan for.
   contents in place with `CryptProtectMemory`, so a dump taken while sealed
   holds ciphertext; `Seal` fails closed (stays sealed) if the cipher rollback
   on a protection failure also fails.
+- **A sealed page is not locked.** `PAGE_NOACCESS` takes the page out of the
+  working set, and Windows drops its `VirtualLock` when it does. While sealed
+  the page holds `CryptProtectMemory` ciphertext and may be paged out as
+  such; `Capabilities().Mlocked` describes the unsealed state. `Unseal` locks
+  the page again before it decrypts, and fails (staying sealed) if the lock
+  is refused.
 - **Asynchronous preemption cannot be suppressed.** The runtime preempts by
   `SuspendThread` and `SetThreadContext`, which nothing in userspace masks.
   `Scrub` still runs the frame wipe (`Capabilities.FrameScrub`), but

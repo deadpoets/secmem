@@ -400,6 +400,10 @@ func (s *SecureBuffer) Destroy() error {
 	verify := s.sealed && s.sealTagged && !s.wiped.Load()
 	if verify || s.sealCipher.Load() {
 		if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err == nil {
+			// Best-effort re-lock (see Unseal): the plaintext is about to
+			// exist for the length of the wipe. A refusal must not stop the
+			// teardown.
+			_ = relockSecretMem(s.region)
 			if verify {
 				if verr := s.sealVerify(); errors.Is(verr, ErrIntegrity) {
 					integrityErr = verr
@@ -724,6 +728,15 @@ func (s *SecureBuffer) Unseal() error {
 	}
 	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
+	}
+	// Windows dropped the page lock when Seal made the page no-access, and
+	// lifting the protection does not restore it. Lock again BEFORE the
+	// decrypt, so the plaintext never exists in a pageable page; if the lock
+	// is refused (the working-set quota it gave up has gone elsewhere),
+	// re-protect and stay sealed rather than hand out an unlocked secret.
+	if err := relockSecretMem(s.region); err != nil {
+		_ = mprotectSecretMem(s.region, 0 /*PROT_NONE*/)
+		return fmt.Errorf("secmem.SecureBuffer.Unseal: restoring the page lock: %w", err)
 	}
 	// Verify before anything reads or transforms the bytes. On a mismatch
 	// the buffer stays sealed — the altered secret is never handed out, see
