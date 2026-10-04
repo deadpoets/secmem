@@ -106,33 +106,43 @@ func TestPBKDF2_MatchesCryptoPBKDF2(t *testing.T) {
 }
 
 // TestPBKDF2_WipesRegion: the region holds the running T, U, the pre-hashed
-// password and the HMAC scratch; every byte is zero when the call returns,
-// and was not zero throughout (the control: a region that was never
-// written proves nothing).
+// password, both padded keys with their messages, and the HMAC scratch;
+// every byte is zero when pbkdf2Compute returns. The control is the same
+// derivation stopped before the wipe: each of those parts must then be
+// non-zero, in the region — a derivation that kept its state anywhere else
+// would leave the region zero and make the wipe assertion pass for nothing.
 func TestPBKDF2_WipesRegion(t *testing.T) {
 	for _, prf := range pbkdf2PRFs {
 		t.Run(prf.name, func(t *testing.T) {
-			password := []byte(strings.Repeat("p", prf.id.block()+1)) // long enough to be pre-hashed
+			size, block := prf.id.size(), prf.id.block()
+			password := []byte(strings.Repeat("p", block+1)) // long enough to be pre-hashed
 			salt := randBytes(t, 16)
 			region := make([]byte, pbkdf2RegionSize(prf.id, len(salt)))
-			dst := make([]byte, 2*prf.id.size())
-			var touched bool
-			// Observe the region mid-run through a one-iteration call whose
-			// T and U are still the last HMAC output, then the wipe.
-			pbkdf2Compute(prf.id, dst, region, password, salt, 3)
-			for _, b := range region {
-				if b != 0 {
-					touched = true
+			dst := make([]byte, 2*size)
+
+			pbkdf2Run(prf.id, dst, region, password, salt, 3)
+			inStart, outStart := 3*maxHashSize, 3*maxHashSize+block+maxHashSize
+			for name, part := range map[string][]byte{
+				"T":               region[:size],
+				"U":               region[maxHashSize : maxHashSize+size],
+				"hashed password": region[2*maxHashSize : 2*maxHashSize+size],
+				"ipad || U":       region[inStart : inStart+block+size],
+				"opad || inner":   region[outStart : outStart+block+size],
+			} {
+				if bytes.Equal(part, make([]byte, len(part))) {
+					t.Errorf("control failed: %s is all zero before the wipe; the derivation is not using the region", name)
 				}
 			}
-			if touched {
-				t.Fatal("region is not zero after the call")
+			want := bytes.Clone(dst)
+
+			clear(region)
+			clear(dst)
+			pbkdf2Compute(prf.id, dst, region, password, salt, 3)
+			if !bytes.Equal(dst, want) {
+				t.Fatal("pbkdf2Compute and pbkdf2Run derive different bytes")
 			}
-			// The control: run the pieces by hand and see the region used.
-			hashed := region[2*maxHashSize : 2*maxHashSize+prf.id.size()]
-			prf.id.sum(hashed, password)
-			if bytes.Equal(hashed, make([]byte, len(hashed))) {
-				t.Fatal("control: the region was not written")
+			if !bytes.Equal(region, make([]byte, len(region))) {
+				t.Fatal("region is not zero after the call")
 			}
 		})
 	}
