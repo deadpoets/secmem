@@ -256,3 +256,52 @@ func TestHMACHKDF_NilHashConstructorResult(t *testing.T) {
 		t.Error("HKDFInto accepted a constructor that returns nil")
 	}
 }
+
+// TestHMACInPlace_RefusesShortScratch: a scratch region too small for the
+// message is a bug in the caller's size arithmetic, and must stop there. The
+// alternative — copying as much of the message as fits — returns a
+// well-formed MAC of a truncated message, which nothing downstream can tell
+// from a right one.
+func TestHMACInPlace_RefusesShortScratch(t *testing.T) {
+	key, msg := []byte("key"), bytes.Repeat([]byte("m"), 100)
+	h := hashSHA256
+	var dst [32]byte
+
+	full := make([]byte, hmacScratchSize(h, len(msg)))
+	hmacInPlace(h, dst[:], full, key, msg[:60], msg[60:])
+	mac := hmac.New(sha256.New, key)
+	mac.Write(msg)
+	if want := mac.Sum(nil); !bytes.Equal(dst[:], want) {
+		t.Fatalf("control failed: a region of exactly hmacScratchSize gives %x, want %x", dst, want)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("a scratch region one byte short was accepted, and produced the MAC %x", dst)
+		}
+	}()
+	hmacInPlace(h, dst[:], make([]byte, len(full)-1), key, msg[:60], msg[60:])
+}
+
+// TestInPlaceHash_PreSeededConstructor: a constructor that returns a
+// standard digest with input already absorbed is not the plain hash, and
+// must not be computed as it; and having seen one must not cost the plain
+// constructor its in-place path. The cache is process-wide, so the test
+// empties it first and puts it back. Must not call t.Parallel().
+func TestInPlaceHash_PreSeededConstructor(t *testing.T) {
+	saved := inPlaceHashSeen.Load()
+	inPlaceHashSeen.Store(nil)
+	defer inPlaceHashSeen.Store(saved)
+
+	seeded := func() hash.Hash {
+		h := sha256.New()
+		h.Write([]byte("a prefix the one-shot knows nothing about"))
+		return h
+	}
+	if id := inPlaceHashOf(seeded()); id != hashNone {
+		t.Errorf("a pre-seeded SHA-256 digest was identified as in-place hash %d", id)
+	}
+	if id := inPlaceHashOf(sha256.New()); id != hashSHA256 {
+		t.Errorf("after a pre-seeded digest was refused, plain sha256.New is identified as %d, want SHA-256", id)
+	}
+}

@@ -2,6 +2,7 @@
 // crypto.Signer) to golang.org/x/crypto/ssh with legacy ssh-rsa (SHA-1)
 // unreachable. The egress path for persisting a key as an OpenSSH
 // private-key file is marshal_openssh.go.
+
 package secmemcrypto
 
 import (

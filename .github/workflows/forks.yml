@@ -206,7 +206,7 @@ jobs:
             "./internal/argon2@TestUpstreamIdentity@2"
             "./internal/bcryptpbkdf@TestUpstreamIdentity@3"
             "./internal/scrypt@TestUpstreamIdentity@2"
-            ".@TestWipeAESBlock|TestResolveAESGCMLayout|TestWipeRSAFIPSKey|TestRSAFIPSSecretViews|TestWipeMLKEMDecapsulationKey|TestWipeECDHPrivateKey|TestInPlaceHash|TestForks_@15"
+            ".@TestWipeAESBlock|TestResolveAESGCMLayout|TestWipeRSAFIPSKey|TestRSAFIPSSecretViews|TestWipeMLKEMDecapsulationKey|TestInPlaceHash|TestForks_@15"
           )
           # @ separates the three fields because a -run pattern contains |.
           for entry in "${checks[@]}"; do

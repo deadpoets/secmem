@@ -1,7 +1,9 @@
 //go:build !race
 
-// Allocation counts are only meaningful without the race detector's
-// instrumentation; the non-race CI jobs execute this file.
+// Allocation counts and the memory profile are only meaningful without the
+// race detector's instrumentation, so the -race jobs do not compile this file.
+// CI runs it in test-noescape (linux/amd64, linux/arm64, windows/amd64) and in
+// test-386-linux.
 
 package secmemcrypto
 

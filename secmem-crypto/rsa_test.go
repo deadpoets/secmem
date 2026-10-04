@@ -3,6 +3,7 @@ package secmemcrypto
 import (
 	"bytes"
 	"crypto"
+	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/ed25519"
 	"crypto/elliptic"
@@ -385,5 +386,132 @@ func TestGenerateRSASigner_RejectsTinyKeys(t *testing.T) {
 	// surfaces instead of being swallowed.
 	if _, err := GenerateRSASigner(512, AllowHeapTransients()); err == nil {
 		t.Error("expected error for a 512-bit key")
+	}
+}
+
+// TestRSASigner_PKCS8ParsesInPlace: a signer built from PKCS#8 DER signs
+// from the RSAPrivateKey inside its buffer, not from a copy of it. The
+// standard library's PKCS#8 parser copies the wrapped key — the whole
+// private key, contiguous and directly parseable — into a fresh heap slice
+// before parsing it, which nothing wipes; a PKCS#1 signer makes no such
+// copy. So the two must allocate exactly alike, at construction and per
+// signature, for the same key.
+func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
+	std := stdlibRSAKey(t)
+	p1 := x509.MarshalPKCS1PrivateKey(std)
+	p8, err := x509.MarshalPKCS8PrivateKey(std)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(der []byte) (*secmem.SecureBuffer, *RSASigner) {
+		buf, err := secmem.NewBuffer(bytes.Clone(der))
+		if err != nil {
+			t.Skipf("no secure memory: %v", err)
+		}
+		s, err := NewRSASigner(buf, AllowHeapTransients())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return buf, s
+	}
+	buf1, s1 := build(p1)
+	defer s1.Destroy()
+	buf8, s8 := build(p8)
+	defer s8.Destroy()
+
+	digest := sha256.Sum256([]byte("in place"))
+	sign := func(s *RSASigner) func() {
+		return func() {
+			if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if a1, a8 := testing.AllocsPerRun(20, sign(s1)), testing.AllocsPerRun(20, sign(s8)); a8 != a1 {
+		t.Errorf("Sign allocates %.0f times for a PKCS#8 signer and %.0f for a PKCS#1 signer of the same key: the wrapped key is being copied out of the buffer", a8, a1)
+	}
+	construct := func(buf *secmem.SecureBuffer) func() {
+		return func() {
+			if _, err := NewRSASigner(buf, AllowHeapTransients()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if a1, a8 := testing.AllocsPerRun(20, construct(buf1)), testing.AllocsPerRun(20, construct(buf8)); a8 != a1 {
+		t.Errorf("NewRSASigner allocates %.0f times for PKCS#8 DER and %.0f for PKCS#1 DER of the same key", a8, a1)
+	}
+}
+
+// TestNewRSASigner_RejectsNonRSAWithoutParsing: a PKCS#8 structure for
+// another algorithm is refused from its algorithm identifier, read in place.
+// Handing it to crypto/x509 to find out what it holds would put that key on
+// the heap — in copies only some of which can be wiped, and for key types
+// the standard library adds later, none. The wipe hook is the witness: it
+// can only be reached with a parsed key in hand. Must not call t.Parallel():
+// it swaps a package var.
+func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
+	materialized := 0
+	orig := wipeECDSAPrivateKey
+	wipeECDSAPrivateKey = func(k *ecdsa.PrivateKey) {
+		materialized++
+		orig(k)
+	}
+	defer func() { wipeECDSAPrivateKey = orig }()
+
+	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	xKey, err := ecdh.X25519().GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, edKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		name string
+		key  any
+		want string
+	}{
+		{"ECDSA", ecKey, "ECDSA"},
+		{"Ed25519", edKey, "Ed25519"},
+		{"X25519", xKey, "X25519"},
+	} {
+		der, err := x509.MarshalPKCS8PrivateKey(c.key)
+		if err != nil {
+			t.Fatal(err)
+		}
+		buf, err := secmem.NewBuffer(der)
+		if err != nil {
+			t.Skipf("no secure memory: %v", err)
+		}
+		allocs := testing.AllocsPerRun(10, func() {
+			if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), c.want) {
+				t.Fatalf("%s: error = %v, want mention of %s", c.name, err, c.want)
+			}
+		})
+		// What a refusal allocates is its error; a parse of any of these
+		// keys allocates several times that.
+		if allocs > 6 {
+			t.Errorf("%s: the refusal allocates %.0f times; the key is being parsed to be refused", c.name, allocs)
+		}
+		buf.Destroy()
+	}
+	if materialized != 0 {
+		t.Errorf("refusing a non-RSA PKCS#8 key materialized a private key %d times", materialized)
+	}
+
+	// An algorithm with no name here is refused the same way.
+	other := pkcs8WrapRSA(t, []byte{0x30, 0x00})
+	other = bytes.Replace(other, oidRSADER, []byte{0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x0a}, 1) // id-RSASSA-PSS
+	buf, err := secmem.NewBuffer(other)
+	if err != nil {
+		t.Skipf("no secure memory: %v", err)
+	}
+	defer buf.Destroy()
+	if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "not RSA") {
+		t.Fatalf("unknown algorithm: %v, want a refusal saying it is not RSA", err)
 	}
 }

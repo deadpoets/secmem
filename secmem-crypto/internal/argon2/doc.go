@@ -25,8 +25,8 @@
 //
 //   - Every piece of working state lives in a [Workspace] the caller owns:
 //     the matrix, one scratch struct per lane (addresses / in / blamka's
-//     tmp), H0, the H' scratch, and the H0 input buffer. No block is a
-//     stack local of a worker goroutine any more, and the parent wipes
+//     tmp), H0, the H' scratch, and the state of the H0 hash. No block is
+//     a stack local of a worker goroutine any more, and the parent wipes
 //     everything deterministically after wg.Wait().
 //   - Each worker goroutine runs its segment inside a secmem.Scrub window
 //     of its own (runtime/secret does not reach spawned goroutines from
@@ -37,10 +37,15 @@
 //     first two blocks per lane, the final extraction) run in windows too.
 //   - The output is written into a caller-supplied slice ([Derive]) instead
 //     of a freshly allocated one, so it can be a SecureBuffer's mapping.
-//   - H0 and H' are stack-only: blake2b.Sum512/Sum384/Sum256 where x/crypto
-//     has a one-shot function, and a forked portable finalisation
-//     (blake2b_generic.go) for the other lengths, instead of blake2b.New,
-//     so no heap digest ever holds the password or the final block.
+//   - No heap digest ever holds the password or the final block, as
+//     upstream's blake2b.New ones do. H0 is streamed through the forked
+//     portable compression function (blake2b_generic.go) one block at a
+//     time, with the chaining value and the block being filled in the
+//     Workspace: the password, salt, K and X are never assembled into one
+//     buffer, so none of them has a length the Workspace cannot take and
+//     none is copied anywhere else. H' is stack-only: blake2b.Sum512/
+//     Sum384/Sum256 where x/crypto has a one-shot function, and the forked
+//     portable finalisation for the other lengths.
 //   - Every window is a secmem.Scrub window, so on amd64 and arm64 the
 //     vector registers (where the SSE blamka and BLAKE2b's AVX2 code leave
 //     block state) are cleared on the way out by the core, on the thread
@@ -51,7 +56,8 @@
 //
 // The block-processing core (blamka, indexAlpha, phi, the segment schedule)
 // is unchanged; blamka_amd64.s is byte-identical to upstream and
-// upstream_identity_test.go checks that, and the verbatim functions,
+// upstream_identity_test.go checks that, the verbatim functions, and the
+// BLAKE2b copies (which differ from upstream only by a package qualifier),
 // against the x/crypto the module resolves. Output is byte-for-byte
 // identical to upstream for the same inputs — argon2_test.go checks that
 // directly against golang.org/x/crypto/argon2 as well as against the RFC

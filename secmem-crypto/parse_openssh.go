@@ -3,6 +3,7 @@
 // RSASigner keeps — directly into locked memory. parse_encrypted.go opens
 // the passphrase-protected form and feeds the decrypted block to the same
 // private-block parser.
+
 package secmemcrypto
 
 import (
@@ -201,7 +202,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, blockSize int, o option
 				return fmt.Errorf("%w: public and private key blocks disagree", errMalformed)
 			}
 			var err error
-			s, err = ed25519FromSeed(sk[:32], pk)
+			s, err = ed25519FromSeed(sk[:32], pk, o)
 			return err
 
 		case "ecdsa-sha2-nistp256", "ecdsa-sha2-nistp384", "ecdsa-sha2-nistp521":
@@ -260,7 +261,7 @@ func parseOpenSSHPrivateBlock(privBlock, pubBlob []byte, blockSize int, o option
 				return fmt.Errorf("%w: public and private key blocks disagree", errMalformed)
 			}
 			var err error
-			der, err = pkcs1DER(n, e, d, prime1, prime2, iqmp)
+			der, err = pkcs1DER(o.buf, n, e, d, prime1, prime2, iqmp)
 			return err
 
 		default:
@@ -312,20 +313,6 @@ func bitLen(b []byte) int {
 	return (len(b)-1)*8 + bits.Len8(b[0])
 }
 
-// Bounds mirrored from x/crypto/ssh's OpenSSH RSA parser: the modulus cap is
-// OpenSSH's own maximum, the prime cap bounds the CRT arithmetic below, and
-// the exponent rules reject values that would make that arithmetic or the
-// later validation expensive or meaningless. iqmp = q⁻¹ mod p is below p by
-// definition and so shares the prime cap; without that, it is the one
-// integer whose size the file could set freely, and the DER below would be
-// sized by it. d is bounded by reduceMod, which refuses a dividend wider
-// than the modulus cap.
-const (
-	rsaMaxModulusBits  = 16384
-	rsaMaxPrimeBits    = 8192
-	rsaMaxExponentBits = 24
-)
-
 // pkcs1DER assembles an RSAPrivateKey (RFC 8017 A.1.2) from the six integers
 // an OpenSSH file carries and returns it in a new SecureBuffer, ready for
 // NewRSASigner. The file does not hold the CRT exponents dp = d mod (p-1) and
@@ -338,20 +325,19 @@ const (
 // (parse_proof_test.go) now covers for this container too. The DER is
 // byte-identical to x509.MarshalPKCS1PrivateKey's for the same key
 // (parse_openssh_test.go pins that).
-func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
+func pkcs1DER(b bufferOptions, n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 	n, e, d, p, q, iqmp = stripZeros(n), stripZeros(e), stripZeros(d), stripZeros(p), stripZeros(q), stripZeros(iqmp)
 	if len(n) == 0 || len(e) == 0 || len(d) == 0 || len(p) == 0 || len(q) == 0 || len(iqmp) == 0 {
 		return nil, errMalformed
 	}
-	switch {
-	case bitLen(n) > rsaMaxModulusBits:
-		return nil, fmt.Errorf("%w: RSA modulus too large", errMalformed)
-	case bitLen(p) > rsaMaxPrimeBits || bitLen(q) > rsaMaxPrimeBits:
-		return nil, fmt.Errorf("%w: RSA prime too large", errMalformed)
-	case bitLen(iqmp) > rsaMaxPrimeBits:
-		return nil, fmt.Errorf("%w: RSA CRT coefficient too large", errMalformed)
-	case bitLen(e) > rsaMaxExponentBits || bitLen(e) < 2 || e[len(e)-1]&1 == 0:
-		return nil, fmt.Errorf("%w: RSA public exponent", errMalformed)
+	// The size rule every RSA key meets (rsabounds.go), applied here as
+	// well as on the assembled DER because the arithmetic below runs first
+	// and its stack arrays are sized by the prime cap. iqmp = q⁻¹ mod p is
+	// below p by definition and so is bounded like one; without that it is
+	// the one integer whose size the file could set freely, and the DER
+	// below would be sized by it.
+	if err := checkRSAIntegers(n, e, d, p, q, iqmp); err != nil {
+		return nil, err
 	}
 
 	// p-1, q-1, dp and dq, each the width of its prime, on the stack.
@@ -385,7 +371,7 @@ func pkcs1DER(n, e, d, p, q, iqmp []byte) (*secmem.SecureBuffer, error) {
 	}
 	total := 1 + derLengthLen(content) + content
 
-	out, err := secmem.NewEmptyBuffer(total)
+	out, err := b.newEmptyBuffer(total)
 	if err != nil {
 		return nil, fmt.Errorf("allocate RSA key buffer: %w", err)
 	}

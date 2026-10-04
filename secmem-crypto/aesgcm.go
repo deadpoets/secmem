@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -41,7 +42,9 @@ var ErrAEADOutOfScope = errors.New("secmemcrypto: AEAD used after its WithAESGCM
 // fn may use the AEAD any way cipher.AEAD allows, including with [SealFrom]
 // and [OpenInto] to keep the plaintext in locked memory too. It must not
 // keep it: the AEAD fn receives panics with [ErrAEADOutOfScope] if Seal or
-// Open is called after fn has returned.
+// Open is called after fn has returned. If fn hands the AEAD to another
+// goroutine, WithAESGCM waits for a Seal or Open already in progress there
+// before it wipes anything — so it does not return until that call does.
 //
 // Build the AEAD per use rather than keeping one for a session: that is what
 // keeps the round keys off the heap between uses. It costs a key expansion
@@ -53,15 +56,23 @@ var ErrAEADOutOfScope = errors.New("secmemcrypto: AEAD used after its WithAESGCM
 // this wipes; that is the operation, and no stdlib AES avoids it.
 //
 // The wipe reaches the objects through unexported fields, resolved by
-// reflection and pinned to the toolchain by a tripwire test. If the layout
-// is not the one expected, WithAESGCM returns an error before the key is
-// expanded, so a toolchain change can never leave a schedule behind silently.
+// reflection and pinned to the toolchain by a tripwire test. Every field of
+// both objects has to be one this package knows — a schedule or table it
+// wipes, or a size it knows to be public — or WithAESGCM returns an error
+// before the key is expanded: a toolchain that renames a field, or adds one,
+// is refused rather than half-wiped. What no such check can see is an
+// existing field that starts to hold something else; for the toolchains CI
+// runs, the tripwire test's own oracle (the wiped object no longer computes
+// AES-GCM under the key) covers that.
 func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error {
 	if key == nil {
 		return errors.New("secmemcrypto: with aes-gcm: nil key buffer")
 	}
 	if fn == nil {
 		return errors.New("secmemcrypto: with aes-gcm: nil callback")
+	}
+	if key.IsDestroyed() {
+		return fmt.Errorf("secmemcrypto: with aes-gcm: %w", secmem.ErrDestroyed)
 	}
 	switch key.Len() {
 	case 16, 24, 32:
@@ -88,7 +99,7 @@ func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error
 				withAESGCMProbe(blk, aead)
 			}
 			scoped := &scopedAEAD{aead: aead}
-			defer scoped.done.Store(true)
+			defer scoped.close()
 			return fn(scoped)
 		})
 	})
@@ -103,23 +114,42 @@ func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error
 var withAESGCMProbe func(blk cipher.Block, aead cipher.AEAD)
 
 // scopedAEAD refuses Seal and Open once its WithAESGCM callback has returned.
+//
+// Each Seal and Open holds mu for reading across the whole inner call, and
+// close takes it for writing, so leaving the scope waits for a call another
+// goroutine already started instead of wiping the schedule under it. A check
+// at entry alone would let that call finish its remaining blocks under
+// zeroed round keys and return ciphertext as if nothing had happened.
 type scopedAEAD struct {
 	aead cipher.AEAD
-	done atomic.Bool
+	mu   sync.RWMutex
+	done bool // guarded by mu
+}
+
+// close ends the scope: it waits for calls in flight, and every later one
+// panics.
+func (s *scopedAEAD) close() {
+	s.mu.Lock()
+	s.done = true
+	s.mu.Unlock()
 }
 
 func (s *scopedAEAD) NonceSize() int { return s.aead.NonceSize() }
 func (s *scopedAEAD) Overhead() int  { return s.aead.Overhead() }
 
 func (s *scopedAEAD) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
-	if s.done.Load() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.done {
 		panic(ErrAEADOutOfScope)
 	}
 	return s.aead.Seal(dst, nonce, plaintext, additionalData)
 }
 
 func (s *scopedAEAD) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) {
-	if s.done.Load() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.done {
 		panic(ErrAEADOutOfScope)
 	}
 	return s.aead.Open(dst, nonce, ciphertext, additionalData)
@@ -169,12 +199,20 @@ func aesGCMLayoutReady() (*aesGCMLayout, error) {
 	return l, nil
 }
 
+// aesGCMPublicFields are the fields of *GCM that hold no key material; with
+// "cipher" and "productTable" they are all of them, on every architecture
+// this package's wipe supports. (s390x's GCM carries a hashKey instead, and
+// is refused — as its unexpanded Block already is.)
+var aesGCMPublicFields = [...]string{"nonceSize", "tagSize"}
+
 // resolveAESGCMLayout finds, inside *GCM, the round-key arrays of the
 // embedded copy of the Block ("cipher", then "enc" and "dec") and, where
 // present, the GHASH table ("productTable", a byte array). It fails — never
 // returns a partial layout — when the type is not a pointer to a struct, a
-// round-key array is missing or not [N]uint32, or productTable exists but is
-// not a byte array.
+// round-key array is missing or not [N]uint32, productTable exists but is
+// not a byte array, or either struct has a field that is neither one of
+// those nor known to be public (see unaccountedField): a renamed table is
+// such a field.
 func resolveAESGCMLayout(t reflect.Type) (*aesGCMLayout, error) {
 	fail := func(format string, args ...any) (*aesGCMLayout, error) {
 		return nil, fmt.Errorf("secmemcrypto: with aes-gcm: "+format+" on %s; refusing to expand a key whose schedule could not be wiped", append(args, runtime.Version())...)
@@ -200,6 +238,12 @@ func resolveAESGCMLayout(t reflect.Type) (*aesGCMLayout, error) {
 			return fail("%v.productTable is %s, want a byte array", t, pf.Type)
 		}
 		l.regions = append(l.regions, aesGCMRegion{"productTable", promotedFieldOffset(st, pf), int(pf.Type.Size())})
+	}
+	if name := unaccountedField(st, append([]string{"cipher", "productTable"}, aesGCMPublicFields[:]...)...); name != "" {
+		return fail("%v has a field %q this package does not know to be public", t, name)
+	}
+	if name := unaccountedField(cf.Type, aesBlockFields[:]...); name != "" {
+		return fail("%v.cipher has a field %q this package does not know to be public", t, name)
 	}
 	return l, nil
 }

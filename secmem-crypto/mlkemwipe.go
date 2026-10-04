@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"slices"
 	"sync/atomic"
 	"unsafe"
 
@@ -31,6 +32,10 @@ const mlkemKeyField = "key"
 // decryptionKey). Everything else in the struct is the encapsulation key.
 var mlkemSecretFields = [...]string{"d", "z", "s"}
 
+// mlkemPublicFields names that everything else: ρ and H(ek), and the
+// encapsulation key's t and A. A field in neither list fails the wipe.
+var mlkemPublicFields = [...]string{"ρ", "h", "t", "a"}
+
 // mlkemLayout is the resolved position of the FIPS key pointer inside the
 // outer type and of each secret array inside the inner one, or the reason
 // they could not be resolved.
@@ -53,6 +58,8 @@ func mlkemLayoutFor(dk *mlkem.DecapsulationKey768) *mlkemLayout {
 	keyOff, inner, err := mlkemInnerType(t)
 	if err != nil {
 		l.err = err
+	} else if name := unaccountedField(inner, append(mlkemSecretFields[:], mlkemPublicFields[:]...)...); name != "" {
+		l.err = fmt.Errorf("secmemcrypto: wipe mlkem key: %v has a field %q this package does not know to be public on %s; the expanded key was NOT wiped", inner, name, runtime.Version())
 	} else {
 		l.keyOff = keyOff
 		for i, field := range mlkemSecretFields {
@@ -73,6 +80,9 @@ func mlkemLayoutFor(dk *mlkem.DecapsulationKey768) *mlkemLayout {
 func mlkemInnerType(t reflect.Type) (uintptr, reflect.Type, error) {
 	if t == nil || t.Kind() != reflect.Pointer || t.Elem().Kind() != reflect.Struct {
 		return 0, nil, fmt.Errorf("secmemcrypto: wipe mlkem key: %v is not a pointer to a struct on %s; the expanded key was NOT wiped", t, runtime.Version())
+	}
+	if name := unaccountedField(t.Elem(), mlkemKeyField); name != "" {
+		return 0, nil, fmt.Errorf("secmemcrypto: wipe mlkem key: %v has a field %q besides the key pointer on %s; the expanded key was NOT wiped", t, name, runtime.Version())
 	}
 	sf, ok := t.Elem().FieldByName(mlkemKeyField)
 	if !ok {
@@ -105,6 +115,32 @@ func mlkemArrayField(st reflect.Type, field string) (uintptr, int, error) {
 		}
 	}
 	return 0, 0, fmt.Errorf("secmemcrypto: wipe mlkem key: %v.%s is %s on %s, want a non-empty array of unsigned integers; the expanded key was NOT wiped", st, field, sf.Type, runtime.Version())
+}
+
+// unaccountedField returns the name of the first field of struct type st
+// that is not in known, or "" when every field is. Embedded structs are
+// looked through, so the names are the ones a selector would reach.
+//
+// It is what makes each reflective wipe in this package an account of the
+// whole object rather than a list of the fields it happens to know: a wipe
+// resolves the secrets by name, then requires everything else to be a field
+// it knows to be public. A toolchain that renames a secret, or adds one,
+// then fails the wipe — and the operation — instead of leaving that field
+// behind with no error.
+func unaccountedField(st reflect.Type, known ...string) string {
+	for i := range st.NumField() {
+		sf := st.Field(i)
+		if sf.Anonymous && sf.Type.Kind() == reflect.Struct {
+			if name := unaccountedField(sf.Type, known...); name != "" {
+				return name
+			}
+			continue
+		}
+		if !slices.Contains(known, sf.Name) {
+			return sf.Name
+		}
+	}
+	return ""
 }
 
 // promotedFieldOffset returns sf's byte offset from the start of st. A

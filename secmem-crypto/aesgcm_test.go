@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 	"unsafe"
 
 	"github.com/deadpoets/secmem"
@@ -295,4 +296,70 @@ func TestResolveAESGCMLayout_RefusesUnexpectedShapes(t *testing.T) {
 	if l, err := resolveAESGCMLayout(reflect.TypeOf(&portable{})); err != nil || len(l.regions) != 2 {
 		t.Errorf("a GCM without a GHASH table (the portable build): %+v, %v; want the two round-key arrays", l, err)
 	}
+}
+
+// TestWithAESGCM_DestroyedKey: a destroyed key is reported as destroyed, as
+// every other entry point reports it, not as a key of the wrong size.
+func TestWithAESGCM_DestroyedKey(t *testing.T) {
+	key, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		t.Skipf("no secure memory: %v", err)
+	}
+	key.Destroy()
+	err = WithAESGCM(key, func(cipher.AEAD) error { return nil })
+	if !errors.Is(err, secmem.ErrDestroyed) {
+		t.Fatalf("WithAESGCM on a destroyed key: %v, want an error wrapping secmem.ErrDestroyed", err)
+	}
+}
+
+// blockingAEAD is an AEAD whose Seal announces itself and then waits, so a
+// test can hold a call in flight.
+type blockingAEAD struct {
+	cipher.AEAD
+	entered, release chan struct{}
+}
+
+func (b *blockingAEAD) Seal(dst, _, _, _ []byte) []byte {
+	close(b.entered)
+	<-b.release
+	return dst
+}
+
+// TestScopedAEAD_CloseWaitsForInFlightCalls: leaving the WithAESGCM scope
+// wipes the key schedule, so it has to wait for a Seal that another
+// goroutine already started — or that Seal finishes its remaining blocks
+// under zeroed round keys and returns ciphertext with no error, which is the
+// outcome ErrAEADOutOfScope exists to rule out. The interleaving is forced:
+// the inner Seal is held open while the scope closes.
+func TestScopedAEAD_CloseWaitsForInFlightCalls(t *testing.T) {
+	inner := &blockingAEAD{entered: make(chan struct{}), release: make(chan struct{})}
+	scoped := &scopedAEAD{aead: inner}
+
+	sealed := make(chan struct{})
+	go func() {
+		defer close(sealed)
+		scoped.Seal(nil, nil, nil, nil)
+	}()
+	<-inner.entered
+
+	closed := make(chan struct{})
+	go func() {
+		defer close(closed)
+		scoped.close()
+	}()
+	select {
+	case <-closed:
+		t.Fatal("the scope closed while a Seal was in flight; the wipe that follows would run under it")
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(inner.release)
+	<-sealed
+	<-closed
+	defer func() {
+		if err, _ := recover().(error); !errors.Is(err, ErrAEADOutOfScope) {
+			t.Fatalf("Seal after the scope closed: recovered %v, want ErrAEADOutOfScope", err)
+		}
+	}()
+	scoped.Seal(nil, nil, nil, nil)
 }

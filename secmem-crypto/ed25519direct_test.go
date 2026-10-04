@@ -177,6 +177,34 @@ func TestSignEd25519Direct_ByteIdenticalToStdlib(t *testing.T) {
 	}
 }
 
+// TestSignEd25519Direct_LongMessagesMatchStdlib covers the other branch of
+// the nonce computation: a message over ed25519NonceStackBytes has its nonce
+// pre-image assembled in a heap buffer instead of the stack array. The
+// lengths sit on both sides of that boundary and well past it.
+func TestSignEd25519Direct_LongMessagesMatchStdlib(t *testing.T) {
+	t.Parallel()
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("GenerateKey: %v", err)
+	}
+	for _, n := range []int{ed25519NonceStackBytes - 1, ed25519NonceStackBytes, ed25519NonceStackBytes + 1, 2*ed25519NonceStackBytes + 17, 64 << 10} {
+		msg := make([]byte, n)
+		if _, err := rand.Read(msg); err != nil {
+			t.Fatal(err)
+		}
+		ourSig, err := signEd25519Direct(priv.Seed(), msg)
+		if err != nil {
+			t.Fatalf("%d bytes: signEd25519Direct: %v", n, err)
+		}
+		if stdlibSig := ed25519.Sign(priv, msg); !bytes.Equal(ourSig, stdlibSig) {
+			t.Errorf("%d bytes: signature differs from stdlib\n  ours:   %x\n  stdlib: %x", n, ourSig, stdlibSig)
+		}
+		if !ed25519.Verify(pub, msg, ourSig) {
+			t.Errorf("%d bytes: stdlib Verify rejected our signature", n)
+		}
+	}
+}
+
 func TestDeriveEd25519PublicKey_MatchesStdlib(t *testing.T) {
 	t.Parallel()
 	for _, vec := range rfc8032Vectors {

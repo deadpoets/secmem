@@ -45,6 +45,14 @@ func pbkdf2RegionSize(h inPlaceHash, saltLen int) int {
 // object this file avoids — so each hash absorbs its pad block again; the
 // cost at the largest count the parser accepts is about a second.
 func pbkdf2Compute(h inPlaceHash, dst, region, password, salt []byte, iter int) {
+	pbkdf2Run(h, dst, region, password, salt, iter)
+	secmem.SecureWipe(region)
+}
+
+// pbkdf2Run is pbkdf2Compute without the final wipe: the derivation, leaving
+// its working state in region. Only pbkdf2Compute calls it; it is separate
+// so the test of the wipe can first see what there is to wipe.
+func pbkdf2Run(h inPlaceHash, dst, region, password, salt []byte, iter int) {
 	size, block := h.size(), h.block()
 	t := region[:size]
 	u := region[maxHashSize : maxHashSize+size]
@@ -79,5 +87,4 @@ func pbkdf2Compute(h inPlaceHash, dst, region, password, salt []byte, iter int) 
 		}
 		off += copy(dst[off:], t)
 	}
-	secmem.SecureWipe(region)
 }

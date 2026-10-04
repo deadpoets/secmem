@@ -43,6 +43,17 @@ var rsaFIPSSecretFields = [...]struct {
 	{"qInv", rsaNat},
 }
 
+// The fields of each struct on the way that hold nothing secret. Together
+// with the secret ones they must be every field there is (see
+// unaccountedField in mlkemwipe.go): a FIPS-form key, a Modulus or a Nat
+// with a field in neither list is not a layout this wipe can vouch for.
+var (
+	rsaPrecomputedFields = [...]string{"Dp", "Dq", "Qinv", "CRTValues", rsaFIPSField} // the exported ones are wipeRSAPrivateKey's
+	rsaFIPSPublicFields  = [...]string{"pub", "fipsApproved"}
+	rsaModulusFields     = [...]string{"nat", "odd", "m0inv", "rr"} // odd is public; the rest are wiped
+	rsaNatFields         = [...]string{"limbs"}
+)
+
 type rsaFIPSKind uint8
 
 const (
@@ -57,9 +68,15 @@ func rsaWipeErr(format string, args ...any) error {
 
 // rsaFIPSKey returns the FIPS-form key reachable from key (a struct Value,
 // possibly the zero Value when the pointer is nil) or an error when the
-// field is not where this toolchain is expected to keep it.
+// field is not where this toolchain is expected to keep it, or
+// PrecomputedValues has a field this package has never seen — which is
+// where a relocated FIPS key would be.
 func rsaFIPSKey(key *rsa.PrivateKey) (reflect.Value, error) {
-	f := reflect.ValueOf(key).Elem().FieldByName("Precomputed").FieldByName(rsaFIPSField)
+	pre := reflect.ValueOf(key).Elem().FieldByName("Precomputed")
+	if name := unaccountedField(pre.Type(), rsaPrecomputedFields[:]...); name != "" {
+		return reflect.Value{}, rsaWipeErr("rsa.PrecomputedValues has a field %q this package does not know", name)
+	}
+	f := pre.FieldByName(rsaFIPSField)
 	if !f.IsValid() {
 		return reflect.Value{}, rsaWipeErr("rsa.PrecomputedValues has no field %q", rsaFIPSField)
 	}
@@ -80,6 +97,13 @@ func rsaFIPSKey(key *rsa.PrivateKey) (reflect.Value, error) {
 // it as its independent path to the storage; production goes through it
 // from wipeRSAFIPSKey.
 func rsaFIPSSecretViews(fips reflect.Value) ([][]byte, error) {
+	known := rsaFIPSPublicFields[:]
+	for _, sf := range rsaFIPSSecretFields {
+		known = append(known, sf.name)
+	}
+	if name := unaccountedField(fips.Type(), known...); name != "" {
+		return nil, rsaWipeErr("%s has a field %q this package does not know to be public", fips.Type(), name)
+	}
 	var views [][]byte
 	for _, sf := range rsaFIPSSecretFields {
 		f := fips.FieldByName(sf.name)
@@ -114,6 +138,9 @@ func appendNatView(views [][]byte, f reflect.Value, name string) ([][]byte, erro
 	if f.Kind() != reflect.Pointer || f.Type().Elem().Kind() != reflect.Struct {
 		return nil, rsaWipeErr("%s is %s, want *bigmod.Nat", name, f.Type())
 	}
+	if field := unaccountedField(f.Type().Elem(), rsaNatFields[:]...); field != "" {
+		return nil, rsaWipeErr("%s points to %s, which has a field %q this package does not know", name, f.Type().Elem(), field)
+	}
 	if f.IsNil() {
 		return views, nil
 	}
@@ -129,6 +156,9 @@ func appendNatView(views [][]byte, f reflect.Value, name string) ([][]byte, erro
 func appendModulusView(views [][]byte, f reflect.Value, name string) ([][]byte, error) {
 	if f.Kind() != reflect.Pointer || f.Type().Elem().Kind() != reflect.Struct {
 		return nil, rsaWipeErr("%s is %s, want *bigmod.Modulus", name, f.Type())
+	}
+	if field := unaccountedField(f.Type().Elem(), rsaModulusFields[:]...); field != "" {
+		return nil, rsaWipeErr("%s points to %s, which has a field %q this package does not know", name, f.Type().Elem(), field)
 	}
 	if f.IsNil() {
 		return views, nil
@@ -160,9 +190,13 @@ func sliceBytes(v reflect.Value) []byte {
 
 // wipeRSAFIPSKey zeroes every secret field of the FIPS-form key inside a
 // *rsa.PrivateKey — d, p, q (with their Montgomery constants), dP, dQ and
-// qInv — leaving the public modulus intact. A key without one (the pointer
-// is nil) has nothing to wipe and is not an error. When the layout cannot
-// be resolved it returns an error instead of silently doing nothing;
+// qInv — leaving the public modulus intact. A key with a private exponent
+// and no FIPS form is an error, not "nothing to wipe": every key this
+// package wipes was precomputed by the standard library, which is what
+// builds that form, so its absence means the form is kept somewhere this
+// function does not look. (A key with no private exponent has no secret in
+// either form.) When the layout cannot be resolved it returns an error
+// instead of silently doing nothing;
 // wipeRSAPrivateKey folds that into its result and every caller into its
 // own, so no caller is told an operation was cleaned up while the key is
 // still live on the heap.
@@ -175,7 +209,10 @@ func wipeRSAFIPSKey(key *rsa.PrivateKey) error {
 		return err
 	}
 	if !fips.IsValid() {
-		return nil
+		if key.D == nil {
+			return nil
+		}
+		return rsaWipeErr("the key has a private exponent but no rsa.PrecomputedValues.%s", rsaFIPSField)
 	}
 	views, err := rsaFIPSSecretViews(fips)
 	if err != nil {

@@ -11,7 +11,7 @@ import (
 )
 
 // These tests pin wipeAESBlock to the current toolchain, the way
-// rsa_wipe_tripwire_test.go pins the ECDH scalar wipe: the helper reaches
+// rsawipe_test.go pins the RSA FIPS-key wipe: the helper reaches
 // crypto/aes's unexported round-key arrays by name via reflection, which no
 // compiler check protects, so a stdlib refactor must turn into a red run on
 // the first CI pass of a new Go version — not into a wipe that quietly

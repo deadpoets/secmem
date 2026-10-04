@@ -7,6 +7,7 @@
 // state in caller-owned memory (internal/bcryptpbkdf), used by the OpenSSH
 // passphrase paths; exposing it costs nothing beyond the wrapper below and
 // is what [Argon2Into] does for the Argon2 fork.
+
 package secmemcrypto
 
 import (
@@ -97,7 +98,9 @@ const MaxBcryptPBKDFKeyLen = bcryptpbkdf.MaxKeyLen
 // be allocated or locked. The input bounds are checked before the workspace
 // is allocated, by the same function the fork checks them with, so a
 // rejected call costs nothing and leaves out untouched.
-func BcryptPBKDFInto(password, salt []byte, rounds int, out *secmem.SecureBuffer) error {
+//
+// opts may carry [BufferOptions] for the workspace.
+func BcryptPBKDFInto(password, salt []byte, rounds int, out *secmem.SecureBuffer, opts ...Option) error {
 	if out == nil {
 		return errors.New("secmemcrypto: bcrypt_pbkdf derive: nil output buffer")
 	}
@@ -107,9 +110,10 @@ func BcryptPBKDFInto(password, salt []byte, rounds int, out *secmem.SecureBuffer
 	if err := bcryptpbkdf.Check(out.Len(), password, salt, rounds); err != nil {
 		return fmt.Errorf("secmemcrypto: bcrypt_pbkdf derive: %w", err)
 	}
+	buf := resolveOptions(opts).buf
 	err := secmem.ScrubErr(func() error {
 		return out.WithBytesErr(func(dst []byte) error {
-			return withScratch(bcryptpbkdf.Size, func(mem []byte) error {
+			return withScratch(buf, bcryptpbkdf.Size, func(mem []byte) error {
 				return bcryptpbkdf.Derive(dst, password, salt, rounds, bcryptpbkdf.Bind(mem))
 			})
 		})

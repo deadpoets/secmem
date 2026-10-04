@@ -68,7 +68,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `MLKEM768Key` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction; crypto/mlkem's hash states and polynomials stay on the stack in the Scrub window. What remains is the 32-byte message each `Decapsulate` recovers, a heap slice nothing can reach, which gives that ciphertext's shared key. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **contained** (the decapsulation key); **runtimesecret-only** (each decapsulation's shared key) |
 | `Encapsulate` | the sender side: the shared key crypto/mlkem returns shares a heap slice with the encryption randomness, which recovers it from the public ciphertext, and the whole slice is wiped; the message and the digest that absorbs it stay on the stack in the Scrub window | **contained** |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string; every draw reads the whole wordlist | **contained** |
-| `WipeEd25519Scalar` | overwrites an `edwards25519.Scalar` with the zero scalar through its exported `Set`; no reflection | — |
+| `WipeEd25519Scalar` | overwrites a `filippo.io/edwards25519` scalar with zero through its exported `Set`; the helper the in-place Ed25519 signer wipes its own scalars with | — |
 
 ## What each signer actually buys you
 
@@ -160,6 +160,40 @@ than per type: over SHA-2 and SHA-3 they run in place and are never refused,
 and over any other hash they refuse on a legacy build unless given
 `AllowHeapTransients()`.
 
+## Options, and platforms without lockable memory
+
+Every function in this module that allocates a `SecureBuffer` — the
+constructors, generators and parsers, `Encapsulate`,
+`GenerateDicewarePassphrase`, the Argon2 workspace and pool, and the
+derivations that take a locked scratch buffer (`BcryptPBKDFInto`, and
+`HMACInto` / `HKDFInto` and their SHA-256 forms for inputs too long for the
+stack) — takes `...Option`. There are two:
+
+- `AllowHeapTransients()`, above.
+- `BufferOptions(opts ...secmem.Option)` passes core options to every buffer
+  the call allocates. A key remembers the ones it was built with, so the
+  buffers its methods return later — `X25519Key.SharedSecret`,
+  `MLKEM768Key.Decapsulate`, the Ed25519 `MarshalOpenSSHPrivateKey` forms —
+  are allocated the same way, with no option at that call.
+
+The core has one option today, `secmem.WithInsecureFallback()`, and it matters
+on exactly the platforms the core describes: those with no lockable off-heap
+memory (anything but Linux, macOS and Windows). **Without it this module is
+secure-memory-only there**: every allocating call fails with an error
+wrapping `secmem.ErrNoSecureMemory`, which is the core's default and the
+right one. With it,
+
+```go
+key, err := secmemcrypto.GenerateEd25519Signer(
+	secmemcrypto.BufferOptions(secmem.WithInsecureFallback()))
+```
+
+the same calls succeed on plain heap memory, and nothing in the class column
+above holds: those buffers report `Capabilities().Insecure`. On Linux, macOS
+and Windows the option changes nothing. A buffer you allocate yourself and
+hand in — a seed, an output — is governed by the options you gave the core
+for it.
+
 ## The parts that should make you look twice
 
 Three pieces of this module do what a security reviewer is right to be
@@ -199,8 +233,10 @@ state behind — the 64 MiB matrix, the pre-hash H0, a scratch block on each
 worker goroutine's stack, and a BLAKE2b digest holding the raw password —
 and no wrapper can reach it: `runtime/secret.Do` does not extend to
 goroutines the wrapped function spawns. The fork keeps every piece of that
-state in one workspace, wipes it before returning, computes the BLAKE2b
-steps on the stack, and runs each worker inside its own `Scrub` window.
+state in one workspace, wipes it before returning, hashes the password in
+through that workspace a block at a time (so no input is too long for it),
+computes the remaining BLAKE2b steps on the stack, and runs each worker
+inside its own `Scrub` window.
 
 The output is byte-identical to upstream. That is pinned by the RFC 9106 §5
 vectors for all three variants, a differential table and fuzz target against

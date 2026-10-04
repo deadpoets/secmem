@@ -1,6 +1,7 @@
 // aead.go decrypts into and encrypts from a [secmem.SecureBuffer], so the
 // plaintext of an AEAD operation never lands on the ordinary Go heap as an
 // intermediate the caller has to remember to wipe.
+
 package secmemcrypto
 
 import (

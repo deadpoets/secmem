@@ -570,7 +570,7 @@ func commentRange(t *testing.T, raw []byte) (start, end int) {
 	salt, rounds := kdfOptsOf(t, raw)
 	plain := make([]byte, len(h.privBlock))
 	defer secmem.SecureWipe(plain)
-	if err := opensshCrypt(plain, h.privBlock, h.rest, []byte(testPassphrase), salt, int(rounds), opensshCipherByName(h.cipher), true); err != nil {
+	if err := opensshCrypt(nil, plain, h.privBlock, h.rest, []byte(testPassphrase), salt, int(rounds), opensshCipherByName(h.cipher), true); err != nil {
 		t.Fatal(err)
 	}
 	r := sshReader{plain}

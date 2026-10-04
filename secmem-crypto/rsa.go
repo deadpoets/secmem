@@ -1,12 +1,11 @@
 // rsa.go provides RSASigner, a crypto.Signer whose RSA private key lives
 // DER-encoded in a SecureBuffer between operations.
+
 package secmemcrypto
 
 import (
+	"bytes"
 	"crypto"
-	"crypto/ecdh"
-	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -14,9 +13,10 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"reflect"
 	"runtime"
-	"unsafe"
+
+	"golang.org/x/crypto/cryptobyte"
+	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
 
 	"github.com/deadpoets/secmem"
 )
@@ -25,7 +25,9 @@ import (
 // (PKCS#1 or PKCS#8) in a [secmem.SecureBuffer] between operations.
 //
 // Honesty caveat — transient materialization, at RSA scale: every Sign call
-// parses the DER into a full *rsa.PrivateKey on the Go heap — D, both
+// parses the RSAPrivateKey structure where it lies in the buffer (for PKCS#8
+// DER, the element inside the wrapper: the DER itself is never copied) into
+// a full *rsa.PrivateKey on the Go heap — D, both
 // primes, and the CRT exponents as big.Ints, plus the standard library's
 // FIPS-form key (a second copy of every secret integer as bigmod limbs,
 // which x509's parser builds and every Sign uses) — signs with the standard
@@ -86,8 +88,12 @@ import (
 // are safe (the underlying buffer takes a read lock per borrow).
 type RSASigner struct {
 	derBuf *secmem.SecureBuffer
-	pkcs8  bool
-	pub    *rsa.PublicKey
+	// Where the RSAPrivateKey (PKCS#1) structure sits in derBuf: all of it,
+	// or the content of a PKCS#8 wrapper's OCTET STRING. Sign parses that
+	// span in place; handing the wrapper to crypto/x509 instead would have
+	// it copy the whole key to the heap first.
+	keyOff, keyLen int
+	pub            *rsa.PublicKey
 }
 
 // NewRSASigner wraps an RSA private key, DER-encoded as PKCS#1 ("RSA
@@ -101,9 +107,15 @@ type RSASigner struct {
 // only the DER bytes in the SecureBuffer — and wipe the intermediate
 // decode, which lived on the plain heap.
 //
-// Key size is not checked here: the standard library rejects keys smaller
-// than 1024 bits at Sign time (see the crypto/rsa package documentation,
-// including the rsa1024min GODEBUG escape hatch for tests).
+// The smallest key size is not checked here: the standard library rejects
+// keys smaller than 1024 bits at Sign time (see the crypto/rsa package
+// documentation, including the rsa1024min GODEBUG escape hatch for tests).
+// The largest is: a modulus over 16384 bits, a prime over 8192, a public
+// exponent over 24 bits (or even, or 1), or more than five primes is refused
+// from the encoded lengths, before the standard library validates the key —
+// work that grows with the square of those sizes, on DER that may have come
+// from a file. [ParsePrivateKey] and [ParsePrivateKeyWithPassphrase] reach
+// this constructor for every container, so the rule is the same for all.
 //
 // On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
 // without the experiment) this refuses with an error wrapping
@@ -128,20 +140,31 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 	}
 
 	var (
-		pub   *rsa.PublicKey
-		pkcs8 bool
+		pub            *rsa.PublicKey
+		keyOff, keyLen int
 	)
 	err := secmem.ScrubErr(func() error {
 		return derBuf.WithBytesErr(func(der []byte) (err error) {
-			key, perr := parseRSAPrivateKey(der, false)
-			if perr != nil {
-				var p8err error
-				key, p8err = parseRSAPrivateKey(der, true)
-				if p8err != nil {
-					return errors.Join(perr, p8err)
-				}
-				pkcs8 = true
+			pkcs1, lerr := locatePKCS1(der)
+			if lerr != nil {
+				return lerr
 			}
+			if pkcs1 == nil {
+				return rejectNonRSAPKCS8(der)
+			}
+			if err := checkPKCS1Size(pkcs1); err != nil {
+				return err
+			}
+			key, perr := parsePKCS1(pkcs1)
+			if perr != nil {
+				return perr
+			}
+			// pkcs1 is a sub-slice of der; its position is what Sign needs.
+			off, ok := subsliceOffset(der, pkcs1)
+			if !ok {
+				return errors.Join(errors.New("secmemcrypto: internal: RSA key not located inside its buffer"), wipeRSAPrivateKey(key))
+			}
+			keyOff, keyLen = off, len(pkcs1)
 			defer func() { err = errors.Join(err, wipeRSAPrivateKey(key)) }()
 			// Copy the embedded struct out so nothing retains the transient
 			// *PrivateKey — holding &key.PublicKey would keep the whole key,
@@ -154,7 +177,7 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: new rsa signer: %w", err)
 	}
-	return &RSASigner{derBuf: derBuf, pkcs8: pkcs8, pub: pub}, nil
+	return &RSASigner{derBuf: derBuf, keyOff: keyOff, keyLen: keyLen, pub: pub}, nil
 }
 
 // GenerateRSASigner generates a fresh RSA key of the given bit size with
@@ -169,7 +192,8 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 // matters to your threat model, generate RSA keys in an HSM/KMS and import
 // the DER instead.
 //
-// The standard library rejects bits < 1024.
+// The standard library rejects bits < 1024, and this function rejects bits
+// over 16384, the largest key [NewRSASigner] accepts.
 //
 // On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
 // without the experiment) this refuses with an error wrapping
@@ -180,6 +204,9 @@ func GenerateRSASigner(bits int, opts ...Option) (*RSASigner, error) {
 	o := resolveOptions(opts)
 	if err := o.checkHeapTransients("secmemcrypto: generate rsa key"); err != nil {
 		return nil, err
+	}
+	if bits > rsaMaxModulusBits {
+		return nil, fmt.Errorf("secmemcrypto: generate rsa key: %d bits is too large (the maximum is %d)", bits, rsaMaxModulusBits)
 	}
 	var buf *secmem.SecureBuffer
 	err := secmem.ScrubErr(func() (err error) {
@@ -195,7 +222,7 @@ func GenerateRSASigner(bits int, opts ...Option) (*RSASigner, error) {
 		// contract staying what it is.
 		der := x509.MarshalPKCS1PrivateKey(key)
 		var berr error
-		buf, berr = secmem.NewBuffer(der)
+		buf, berr = o.buf.newBuffer(der)
 		if berr != nil {
 			secmem.SecureWipe(der)
 		}
@@ -250,7 +277,10 @@ func (s *RSASigner) Sign(random io.Reader, digest []byte, opts crypto.SignerOpts
 	var sig []byte
 	err := secmem.ScrubErr(func() error {
 		return s.derBuf.WithBytesErr(func(der []byte) (err error) {
-			priv, perr := parseRSAPrivateKey(der, s.pkcs8)
+			if s.keyOff < 0 || s.keyLen < 0 || s.keyOff+s.keyLen > len(der) {
+				return errors.New("secmemcrypto: key buffer is shorter than the key it was built with")
+			}
+			priv, perr := parsePKCS1(der[s.keyOff : s.keyOff+s.keyLen])
 			if perr != nil {
 				return perr
 			}
@@ -302,91 +332,53 @@ func (s *RSASigner) Destroy() error {
 	return s.derBuf.Destroy()
 }
 
-// parseRSAPrivateKey parses der as PKCS#1 (pkcs8 false) or PKCS#8 (pkcs8
-// true). A PKCS#8 blob holding a non-RSA key is rejected — after wiping
-// what the parse materialized, where the key type allows it.
-func parseRSAPrivateKey(der []byte, pkcs8 bool) (*rsa.PrivateKey, error) {
-	if !pkcs8 {
-		key, err := x509.ParsePKCS1PrivateKey(der)
-		if err != nil {
-			return nil, fmt.Errorf("secmemcrypto: parse PKCS#1: %w", err)
-		}
-		return key, nil
+// subsliceOffset returns where inner starts within outer, given that inner
+// was obtained by slicing outer. Two slices of one array end at the same
+// place, so the offset is the difference of their capacities; the address
+// comparison confirms it rather than trusting how inner was sliced.
+func subsliceOffset(outer, inner []byte) (int, bool) {
+	off := cap(outer) - cap(inner)
+	if len(inner) == 0 || off < 0 || off+len(inner) > len(outer) || &outer[off] != &inner[0] {
+		return 0, false
 	}
-	keyAny, err := x509.ParsePKCS8PrivateKey(der)
+	return off, true
+}
+
+// parsePKCS1 parses an RSAPrivateKey structure with the standard library.
+// For a key that arrived as PKCS#8 this is still the right call, on the
+// wrapped element: x509.ParsePKCS8PrivateKey does exactly this for an RSA
+// key, after copying the element to the heap.
+func parsePKCS1(pkcs1 []byte) (*rsa.PrivateKey, error) {
+	key, err := x509.ParsePKCS1PrivateKey(pkcs1)
 	if err != nil {
-		return nil, fmt.Errorf("secmemcrypto: parse PKCS#8: %w", err)
+		return nil, fmt.Errorf("secmemcrypto: parse PKCS#1: %w", err)
 	}
-	switch k := keyAny.(type) {
-	case *rsa.PrivateKey:
-		return k, nil
-	case *ecdsa.PrivateKey:
-		wipeECDSAPrivateKey(k)
-		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an ECDSA key, not RSA (store its raw scalar in a SecureBuffer and use NewECDSASigner)")
-	case ed25519.PrivateKey:
-		secmem.SecureWipe(k)
-		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
-	case *ecdh.PrivateKey:
-		err := errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
-		// The wipe is reflection-based. If it could not locate the scalar,
-		// say so in the rejection rather than imply the parsed key was
-		// cleaned up.
-		if werr := wipeECDHPrivateKey(k); werr != nil {
-			err = errors.Join(err, werr)
-		}
-		return nil, err
+	return key, nil
+}
+
+// rejectNonRSAPKCS8 is the constructor's answer for a PKCS#8 structure
+// whose algorithm is not RSA: an error that says what the key is and where
+// to take it. The algorithm identifier is read in place and nothing is
+// parsed — asking crypto/x509 what the structure holds would put that key on
+// the heap to answer, in copies this package can only partly wipe (and, for
+// key types the standard library adds later, not at all).
+func rejectNonRSAPKCS8(der []byte) error {
+	in := cryptobyte.String(der)
+	var seq, version, alg, oid cryptobyte.String
+	if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadASN1(&version, cbasn1.INTEGER) ||
+		!seq.ReadASN1(&alg, cbasn1.SEQUENCE) || !alg.ReadASN1(&oid, cbasn1.OBJECT_IDENTIFIER) {
+		return errNotRSADER
+	}
+	switch {
+	case bytes.Equal(oid, []byte{0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01}): // id-ecPublicKey
+		return errors.New("secmemcrypto: PKCS#8 DER holds an ECDSA key, not RSA (store its raw scalar in a SecureBuffer and use NewECDSASigner)")
+	case bytes.Equal(oid, []byte{0x2b, 0x65, 0x70}): // id-Ed25519
+		return errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
+	case bytes.Equal(oid, []byte{0x2b, 0x65, 0x6e}), bytes.Equal(oid, []byte{0x2b, 0x65, 0x6f}): // id-X25519, id-X448
+		return errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
 	default:
-		return nil, fmt.Errorf("secmemcrypto: PKCS#8 DER holds a %T, not an RSA key", keyAny)
+		return errors.New("secmemcrypto: PKCS#8 DER holds a key of another algorithm, not RSA")
 	}
-}
-
-// ecdhScalarField names the unexported []byte field of crypto/ecdh.PrivateKey
-// holding the parsed scalar ("privateKey []byte" in go1.26's ecdh.go).
-// crypto/ecdh exposes no in-place zeroization and Bytes() returns a copy, so
-// the parsed key's own scalar is reachable only through this field.
-// TestWipeECDHPrivateKey_Tripwire fails on any toolchain where the name or
-// shape stops resolving, so a crypto/ecdh refactor shows up as a red test
-// run, not as a wipe that quietly stopped wiping.
-const ecdhScalarField = "privateKey"
-
-// ecdhScalar returns the scalar held in k's unexported field named field,
-// aliasing the parsed key's own backing array (no copy). It fails — never
-// returns a detached or empty slice — when the field is missing or is not a
-// []byte, the two ways a stdlib refactor would break the lookup. The name is
-// a parameter only so the tripwire test can drive that failure path on a
-// real key.
-func ecdhScalar(k *ecdh.PrivateKey, field string) ([]byte, error) {
-	f := reflect.ValueOf(k).Elem().FieldByName(field)
-	if !f.IsValid() {
-		return nil, fmt.Errorf("secmemcrypto: wipe ecdh key: crypto/ecdh.PrivateKey has no field %q on %s; the parsed scalar was NOT wiped", field, runtime.Version())
-	}
-	if f.Kind() != reflect.Slice || f.Type().Elem().Kind() != reflect.Uint8 {
-		return nil, fmt.Errorf("secmemcrypto: wipe ecdh key: crypto/ecdh.PrivateKey.%s is %s on %s, want []byte; the parsed scalar was NOT wiped", field, f.Type(), runtime.Version())
-	}
-	//nolint:gosec // G103: audited — aliasing the parsed key's own addressable scalar field in place; no foreign memory is dereferenced.
-	return reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Bytes(), nil
-}
-
-// wipeECDHPrivateKey zeroes the scalar inside a parsed *ecdh.PrivateKey
-// through [ecdhScalar]. When the scalar cannot be located it returns an
-// error instead of silently doing nothing: the only caller is a rejection
-// path, which folds the error into the rejection, so no caller is told a
-// key was discarded cleanly while its scalar is still live on the heap.
-//
-// Like [wipeECDSAPrivateKey] it is a package var so a test can wrap it to
-// prove the reject path fires the wipe on the live transient; production
-// always runs the value defined here.
-var wipeECDHPrivateKey = func(k *ecdh.PrivateKey) error {
-	if k == nil {
-		return nil
-	}
-	scalar, err := ecdhScalar(k, ecdhScalarField)
-	if err != nil {
-		return err
-	}
-	secmem.SecureWipe(scalar)
-	runtime.KeepAlive(k)
-	return nil
 }
 
 // wipeRSAPrivateKey zeroes the secret material of a transiently
