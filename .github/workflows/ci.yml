@@ -86,7 +86,9 @@ jobs:
   #     workspace test skips there by design; auditing it would mean an
   #     allowlist for a lane that proves nothing about skipping.
   #   - secmem-lint "test analyzer": analysistest over testdata, asserting
-  #     diagnostics rather than runtime protections; the module has no t.Skip.
+  #     diagnostics rather than runtime protections. Its one t.Skip is the
+  #     method-table guard's, taken only when the sibling modules are not
+  #     beside it, which a checkout of this repo never is.
   #   - examples "vet + race test": the illustrative module, outside the
   #     workspace; its tests are the ssh-agent's x/crypto/ssh/agent interop
   #     and availability suites and the password-login timing tests, none
