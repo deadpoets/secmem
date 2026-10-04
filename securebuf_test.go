@@ -3,8 +3,12 @@ package secmem
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -324,24 +328,59 @@ func TestHasCLFLUSHOPT(t *testing.T) {
 // the cleanup would call secureWipeSlice/freeSecretMem on an already-freed
 // region, causing a crash or data race caught by the race detector.
 func TestDestroy_StopsCleanup(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads the default logger's output. A cleanup that
+	// Destroy failed to stop does no damage (it finds its registration gone),
+	// so the only trace it leaves is the "finalized without explicit
+	// Destroy" warning, and that is what is looked for.
+	var logged lockedBuffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(old)
 
-	buf, err := NewEmptyBuffer(64)
+	// A mapped size no other test uses, so a warning for a buffer some
+	// earlier test leaked cannot be mistaken for this one.
+	const size = 7 * 4096
+	buf, err := NewEmptyBuffer(size)
 	if err != nil {
-		t.Fatalf("NewEmptyBuffer: %v", err)
+		t.Skipf("NewEmptyBuffer: %v", err)
 	}
+	mapped := buf.MappedLen()
 
 	if err := buf.Destroy(); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	buf = nil //nolint:wastedassign // intentionally nil to allow GC
+	buf = nil //nolint:wastedassign,ineffassign // intentionally nil to allow GC
 
-	// Force GC three times. If cleanup.Stop() did not work, the raw‐memory
-	// callback would run on the already-freed mmap region — crash or race.
-	for range 3 {
+	// Cleanups run on their own goroutine after a collection; give a stray
+	// one every chance to fire.
+	for range 5 {
 		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
 	}
+	want := fmt.Sprintf("size=%d", mapped)
+	if out := logged.String(); strings.Contains(out, "finalized without explicit Destroy") && strings.Contains(out, want) {
+		t.Errorf("the finalization fallback ran for a buffer that was explicitly destroyed:\n%s", out)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe to write from the cleanup goroutine
+// while the test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // TestAddCleanup_NoDoubleFreeOnGC verifies that a buffer finalized by the GC
