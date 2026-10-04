@@ -275,6 +275,13 @@ type arenaState struct {
 	// still region.inner == nil under mu.
 	destroyed atomic.Bool
 
+	// released is set by Destroy once the slab has been wiped and unmapped. It
+	// is what IsDestroyed reports: destroyed above turns true while Destroy is
+	// still waiting for callbacks and the slab still holds live secrets.
+	// Atomic so IsDestroyed takes no lock and stays callable from inside a
+	// slot callback.
+	released atomic.Bool
+
 	// wiped is set by WipeAllSecrets when the slab was wiped in place and
 	// deliberately left mapped. Shared with janitorRegion — the emergency path
 	// holds no *SecureArena, so this flag is how it reaches one. Acquire then
@@ -514,6 +521,7 @@ func (a *SecureArena) Destroy() error {
 	// If the cleanup or emergency-wipe path already released it, do not touch raw.
 	err := emergencyJanitor.release(a.janitorKey, true)
 	a.region = secRegion{}
+	a.released.Store(true)
 
 	runtime.KeepAlive(a.arenaState)
 
@@ -523,12 +531,15 @@ func (a *SecureArena) Destroy() error {
 	return nil
 }
 
-// IsDestroyed reports whether the arena has been destroyed.
+// IsDestroyed reports whether the arena has been destroyed: its slab wiped and
+// unmapped. While a [SecureArena.Destroy] is still waiting for a borrowing
+// callback to return it reports false, although Acquire and new borrows are
+// already refused — the secrets are still in memory until Destroy returns.
 func (a *SecureArena) IsDestroyed() bool {
 	if a == nil || a.arenaState == nil {
 		return true
 	}
-	return a.destroyed.Load()
+	return a.released.Load()
 }
 
 // ---------------------------------------------------------------------------

@@ -307,6 +307,13 @@ The core floor is unchanged at v0.7.0.
   room for fewer than were read. `NewBufferFromReader` still refuses an empty
   source with `io.EOF`, now by decision and documented.
 
+- **`SecureArena.IsDestroyed` turned true before the slab was wiped.** It
+  returned the fail-fast flag `Destroy` raises before taking the lock, so it
+  said "destroyed" while `Destroy` was still waiting on a borrow that was
+  reading plaintext. It now reports true once the slab is wiped and unmapped,
+  as `SecureBuffer.IsDestroyed` does. `Acquire` and new borrows are still
+  refused from the moment `Destroy` is called.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.
