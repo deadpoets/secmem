@@ -1,6 +1,8 @@
 //go:build unix
 
-// secmem-agent: a minimal SSH agent whose keys never touch the Go heap.
+// secmem-agent: a minimal SSH agent whose keys are never at rest on the Go
+// heap. The wire message an add arrives in is one heap buffer, wiped after
+// dispatch.
 //
 //	$ go run . &
 //	$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent/agent.sock  # printed at start
@@ -19,7 +21,7 @@
 //	mlock budget raised up front          EnsureMemlockLimit      main.go
 //	wipe on SIGINT/SIGTERM                InstallTerminationWipe  main.go
 //	wire transients wiped every message   SecureWipe              serveConn
-//	log output cannot leak secrets        redact.NewHandler       main.go
+//	log output is filtered                redact.NewHandler       main.go
 //	honest capability report at boot      Probe().Warnings()      main.go
 //
 // Two plain-Go controls guard the socket's availability rather than the
@@ -151,7 +153,7 @@ func run(socketPath string, allowHeapTransients bool, logger *slog.Logger) error
 	}
 
 	// Which identities this build will hold without breaking the "keys
-	// never on the heap" claim. Ed25519 signs in place everywhere; ECDSA
+	// never at rest on the heap" claim. Ed25519 signs in place everywhere; ECDSA
 	// signs through the standard library, whose per-signature copies of
 	// the scalar only runtime/secret erases.
 	switch {

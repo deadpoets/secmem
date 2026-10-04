@@ -1,11 +1,12 @@
 # hardened-ssh-agent
 
-A working SSH agent, about a thousand lines, whose private keys **never
-exist on the Go heap** — and are unreadable by a stray read inside this
+A working SSH agent, about a thousand lines, whose private keys are **never
+at rest on the Go heap** — and are unreadable by a stray read inside this
 process, or by a passive reader of its memory where the platform allows,
-except during the microseconds of an actual signature. That holds for every
-identity it accepts by default; ECDSA is the one place it needs a build
-flag or an explicit opt-in, set out below. The limits are in the
+except during the microseconds of an actual signature. The wire message an
+`ssh-add` arrives in is one heap buffer, wiped after dispatch. That holds
+for every identity it accepts by default; ECDSA is the one place it needs a
+build flag or an explicit opt-in, set out below. The limits are in the
 threat-model section.
 
 It speaks the standard agent protocol over `SSH_AUTH_SOCK`. Real `ssh`,
@@ -69,7 +70,11 @@ storage *is* [secmem](../../README.md).
 
 An `ssh-add` message arrives carrying a private key. `proto.go` parses it
 with subslice-only readers — no copies — so a single `secmem.SecureWipe` of
-the message buffer at the end of the request destroys every transient.
+the message buffer at the end of the request destroys every transient (a
+message that never arrives in full is wiped where the read fails). That
+buffer is ordinary heap memory: an add's key is in it from arrival until
+the wipe, which includes any wait for the keyring lock behind another
+connection's Argon2 derivation.
 Before that wipe, the seed/scalar has been copied into a `SecureBuffer`
 (off-heap, mlocked, guard-paged, canaried, dump-excluded), a
 `secmem-crypto` signer wraps it, and the buffer is **sealed**: `PROT_NONE`,
@@ -190,7 +195,7 @@ whatever `UNLOCK`s arrived before it, at most 64 of them. `keyring.go`'s
 `Unlock` comment gives the reasoning and the alternative it rejected.
 
 ECDSA identities accepted through `-allow-heap-transients` fall outside the
-"never on the heap" claim: each signature leaves unwiped copies of the
+"never at rest on the heap" claim: each signature leaves unwiped copies of the
 scalar on the heap, one of them cached until the collector evicts it. See
 the "ECDSA identities" section above and `secmem-crypto`'s README.
 

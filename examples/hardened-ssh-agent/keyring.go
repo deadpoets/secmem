@@ -100,7 +100,7 @@ type Keyring struct {
 	// allowHeapTransients admits ECDSA identities on a build where every
 	// ECDSA signature leaves unwiped copies of the private scalar on the Go
 	// heap: any build without GOEXPERIMENT=runtimesecret. Off by default,
-	// so this agent's "keys never exist on the heap" holds for what it
+	// so this agent's "keys never at rest on the heap" holds for what it
 	// accepts; the operator turns it on with -allow-heap-transients.
 	allowHeapTransients bool
 }
