@@ -272,3 +272,22 @@ func TestX25519Key_TruncatedBuffer(t *testing.T) {
 		}()
 	}
 }
+
+// TestX25519Key_LowOrderPointIsASentinel: the one failure of SharedSecret a
+// caller has to tell apart — a peer key that forces an all-zero secret — is
+// matchable with errors.Is, not by its text.
+func TestX25519Key_LowOrderPointIsASentinel(t *testing.T) {
+	k, err := GenerateX25519Key()
+	if err != nil {
+		t.Skipf("no secure memory: %v", err)
+	}
+	defer k.Destroy()
+	ss, err := k.SharedSecret([32]byte{}) // u = 0 has order 4
+	if err == nil {
+		ss.Destroy()
+		t.Fatal("a low-order peer key produced a shared secret")
+	}
+	if !errors.Is(err, ErrLowOrderPoint) {
+		t.Fatalf("%v, want an error wrapping ErrLowOrderPoint", err)
+	}
+}

@@ -19,9 +19,10 @@ import (
 // bytes for P-224/P-256/P-384/P-521).
 var ErrBadScalarLength = errors.New("secmemcrypto: bad scalar length")
 
-// errLowOrderPoint is returned by SharedSecret for a peer public key whose
-// shared secret would be all zero.
-var errLowOrderPoint = errors.New("bad input point: low order point")
+// ErrLowOrderPoint is returned, wrapped, by [X25519Key.SharedSecret] for a
+// peer public key whose shared secret would be all zero: one of the
+// low-order points, which a peer sends by mistake or to force a known key.
+var ErrLowOrderPoint = errors.New("bad input point: low order point")
 
 // x25519Basepoint is the canonical base point, u = 9.
 var x25519Basepoint = [x25519.PointSize]byte{9}
@@ -135,7 +136,8 @@ func checkX25519Scalar(scalar []byte) error {
 // in a new SecureBuffer (the caller owns and must Destroy it). The secret is
 // computed directly into that buffer. It errors if peerPub is a low-order
 // point — X25519 would yield an all-zero shared secret, which must never be
-// used as key material — or if this key is destroyed or sealed.
+// used as key material; that error wraps [ErrLowOrderPoint] — or if this key
+// is destroyed or sealed.
 func (k *X25519Key) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error) {
 	if k == nil || k.scalarBuf == nil || k.scalarBuf.IsDestroyed() {
 		return nil, fmt.Errorf("secmemcrypto: shared secret: %w", secmem.ErrDestroyed)
@@ -156,7 +158,7 @@ func (k *X25519Key) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error)
 				x25519.ScalarMult((*[x25519.PointSize]byte)(dst), (*[x25519.ScalarSize]byte)(scalar), &peerPub)
 				var zero [x25519.PointSize]byte
 				if subtle.ConstantTimeCompare(dst, zero[:]) == 1 {
-					return errLowOrderPoint
+					return ErrLowOrderPoint
 				}
 				return nil
 			})
