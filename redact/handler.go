@@ -48,10 +48,17 @@ import (
 //     The walk follows the pointers it can Interface() at every depth,
 //     which is more than fmt does (fmt prints a nested pointer as an
 //     address), because a secret two structs down is still a secret. Where
-//     it can call them it honours a value's own rendering methods as fmt's
-//     %v does — [fmt.Formatter], error, [fmt.Stringer] — plus
-//     [encoding.TextMarshaler]; a [slog.LogValuer] is resolved at the
-//     attribute level before the walk. It cannot call methods on a value
+//     it can call them it honours a value's own rendering methods: first
+//     the ones fmt's %v does — [fmt.Formatter], error, [fmt.Stringer] —
+//     then [encoding.TextMarshaler], [slog.LogValuer] (resolved, at any
+//     depth, as slog resolves one at the attribute level),
+//     [encoding/json.Marshaler] (its JSON text, as text) and
+//     [fmt.GoStringer]. A method declared on the pointer is called for a
+//     value held directly too, and one that panics or returns an error
+//     leaves a tag, not the value's fields. Only a struct with none of
+//     these is walked, and then EVERY field is printed, as %+v prints it:
+//     unexported fields and fields tagged `json:"-"` included, because
+//     struct tags are not consulted. It cannot call methods on a value
 //     reached through an UNEXPORTED field, so there it does two things fmt
 //     does too: a pointer is printed as "<ptr>" and not followed, and a
 //     value whose type has any such method (or GoString, LogValue,
@@ -308,6 +315,10 @@ func (w capWriter) Write(p []byte) (int, error) {
 // panicTag replaces a value whose own rendering method panicked.
 const panicTag = "[REDACTED:panic]"
 
+// marshalErrorTag replaces a value whose MarshalText or MarshalJSON returned
+// an error.
+const marshalErrorTag = "[REDACTED:marshal_error]"
+
 // callGuarded runs call, which invokes a method of the value rv holds, and
 // recovers a panic from it as fmt and slog's own handlers do: a logging call
 // must not take the program down because a value's method did. It reports
@@ -368,8 +379,8 @@ func selfRendering(t reflect.Type) bool {
 
 // render produces a %+v-like text form of v with the key set applied to
 // struct field names and map keys (as components appended to path), []byte
-// treated as text, and error/Stringer/TextMarshaler honoured where fmt and
-// slog would honour them. The result is meant for the Sanitizer, not for
+// treated as text, and a value's own rendering methods honoured (see
+// renderByMethod). The result is meant for the Sanitizer, not for
 // round-tripping.
 func (h *Handler) render(v any, path []string) string {
 	var b strings.Builder
@@ -391,24 +402,29 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 	}
 	w := capWriter{b}
 	if rv.CanInterface() {
-		switch x := rv.Interface().(type) {
-		case []byte:
-			_, _ = w.Write(x)
+		x := rv.Interface()
+		if raw, ok := x.([]byte); ok {
+			_, _ = w.Write(raw)
 			return
-		case fmt.Formatter, error, fmt.Stringer:
-			// What fmt's %v honours, in fmt's order: Format first, then Error
-			// and String. Through fmt rather than a direct call, because fmt
-			// recovers a panicking method and this would not.
-			_, _ = fmt.Fprint(w, x)
+		}
+		if h.renderByMethod(b, rv, x, path, depth) {
 			return
-		case encoding.TextMarshaler:
-			var text []byte
-			var err error
-			if !callGuarded(b, rv, func() { text, err = x.MarshalText() }) {
-				return
+		}
+		// Nothing in the value's own method set, but the type is still
+		// self-rendering: the method is declared on the pointer. fmt would
+		// print such a value's fields; encoding/json takes its address when
+		// it can. Here the method always wins, through the value's address or
+		// the address of a copy, so a type that redacts itself is not taken
+		// apart for having been held by value.
+		if k := rv.Kind(); k != reflect.Pointer && k != reflect.Interface && selfRendering(rv.Type()) {
+			var p reflect.Value
+			if rv.CanAddr() {
+				p = rv.Addr()
+			} else {
+				p = reflect.New(rv.Type())
+				p.Elem().Set(rv)
 			}
-			if err == nil {
-				_, _ = w.Write(text)
+			if h.renderByMethod(b, p, p.Interface(), path, depth) {
 				return
 			}
 		}
@@ -498,6 +514,94 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		// Through the capped writer: a string field is the most common
 		// carrier of large text, and the cap must bound it too.
 		_, _ = fmt.Fprint(w, rv)
+	}
+}
+
+// renderByMethod renders x, the value rv holds, through the first of its own
+// rendering methods and reports whether it had one. The order is fmt's for
+// %v — Format, then Error, then String — followed by what slog and the
+// encoders honour: MarshalText, LogValue, MarshalJSON, and last GoString. A
+// value that has any of them is never walked, even when the method fails.
+func (h *Handler) renderByMethod(b *strings.Builder, rv reflect.Value, x any, path []string, depth int) bool {
+	w := capWriter{b}
+	switch x := x.(type) {
+	case fmt.Formatter, error, fmt.Stringer:
+		// Through fmt rather than a direct call, because fmt recovers a
+		// panicking method.
+		_, _ = fmt.Fprint(w, x)
+	case encoding.TextMarshaler:
+		var text []byte
+		var err error
+		if callGuarded(b, rv, func() { text, err = x.MarshalText() }) {
+			writeMarshaled(w, text, err)
+		}
+	case slog.LogValuer:
+		// Resolved here as slog resolves one at the attribute level, so the
+		// type's chosen log form stands in for it at any depth.
+		var v slog.Value
+		if callGuarded(b, rv, func() { v = x.LogValue() }) {
+			h.renderLogValue(b, v.Resolve(), path, depth+1)
+		}
+	case json.Marshaler:
+		// The JSON text as it stands, quotes included: the result is one
+		// string for the Sanitizer, not a document.
+		var text []byte
+		var err error
+		if callGuarded(b, rv, func() { text, err = x.MarshalJSON() }) {
+			writeMarshaled(w, text, err)
+		}
+	case fmt.GoStringer:
+		_, _ = fmt.Fprintf(w, "%#v", x)
+	default:
+		return false
+	}
+	return true
+}
+
+// writeMarshaled writes a MarshalText or MarshalJSON result, or the error tag
+// when the method refused.
+func writeMarshaled(w capWriter, text []byte, err error) {
+	if err != nil {
+		w.b.WriteString(marshalErrorTag)
+		return
+	}
+	_, _ = w.Write(text)
+}
+
+// renderLogValue renders a resolved [slog.Value]: an Any value goes back
+// through the walk, a group is rendered member by member in slog's own
+// "[k=v k=v]" form with the key set applied, and every other kind is its
+// String.
+func (h *Handler) renderLogValue(b *strings.Builder, v slog.Value, path []string, depth int) {
+	if depth > maxRenderDepth {
+		b.WriteString("...")
+		return
+	}
+	switch v.Kind() {
+	case slog.KindAny:
+		h.renderValue(b, reflect.ValueOf(v.Any()), path, depth)
+	case slog.KindGroup:
+		b.WriteByte('[')
+		for i, a := range v.Group() {
+			if b.Len() > renderCap {
+				break
+			}
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			_, _ = capWriter{b}.Write([]byte(a.Key))
+			b.WriteByte('=')
+			comps := splitKey(a.Key)
+			full := appendPath(path, comps)
+			if h.keys.match(full, len(comps)) {
+				b.WriteString(keyTag)
+				continue
+			}
+			h.renderLogValue(b, a.Value.Resolve(), full, depth+1)
+		}
+		b.WriteByte(']')
+	default:
+		_, _ = fmt.Fprint(capWriter{b}, v)
 	}
 }
 
