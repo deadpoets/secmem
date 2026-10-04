@@ -378,8 +378,11 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	tmp := make([]byte, size)
 	defer secureWipeSlice(tmp)
 	n, err := io.ReadFull(r, tmp)
-	if errors.Is(err, io.ErrUnexpectedEOF) {
-		// Reader had fewer bytes than buffer — partial fill is acceptable.
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		// Reader had fewer bytes than buffer — partial fill is acceptable,
+		// and so is no fill at all: io.ReadFull reports a source that was
+		// already at EOF as io.EOF, which io.ReaderFrom does not treat as an
+		// error.
 		err = nil
 	}
 	if err != nil {
@@ -405,20 +408,29 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 		s.mu.unlock()
 		return 0, ErrReadOnly
 	}
-	copy(s.data, tmp[:n])
+	// The count returned is what was stored: a Truncate between the size
+	// snapshot above and this copy leaves room for fewer bytes than were read.
+	n = copy(s.data, tmp[:n])
 	s.mu.unlock()
 	return int64(n), nil
 }
 
 // NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.
 // The returned buffer may be partially filled if r returns fewer than size bytes;
-// the returned count reports how many bytes were read.
+// the returned count reports how many bytes were read, so check it where a
+// short secret is not acceptable. A source that yields nothing at all is
+// refused with [io.EOF] and no buffer: an empty key file is far more often a
+// mistake than a secret, and unlike [SecureBuffer.ReadFrom], which follows
+// [io.ReaderFrom] and reports (0, nil), a constructor can say so.
 func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, int64, error) {
 	buf, err := NewEmptyBuffer(size, opts...)
 	if err != nil {
 		return nil, 0, err
 	}
 	n, err := buf.ReadFrom(r)
+	if err == nil && n == 0 {
+		err = io.EOF
+	}
 	if err != nil {
 		_ = buf.Destroy()
 		return nil, n, err

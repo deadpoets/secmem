@@ -300,6 +300,13 @@ The core floor is unchanged at v0.7.0.
   failed instead of reaching the documented `ErrNoSecureMemory` stub. The
   inherited-ignore record is now per platform.
 
+- **`SecureBuffer.ReadFrom` returned `io.EOF` for a source with nothing in
+  it.** `io.ReaderFrom` does not report EOF as an error, and a source with one
+  byte was already a successful partial fill. It now returns `(0, nil)`, and
+  the count is the number of bytes stored when a concurrent `Truncate` left
+  room for fewer than were read. `NewBufferFromReader` still refuses an empty
+  source with `io.EOF`, now by decision and documented.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.
