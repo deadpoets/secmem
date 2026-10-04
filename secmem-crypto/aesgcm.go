@@ -19,6 +19,7 @@ import (
 	"fmt"
 	"reflect"
 	"runtime"
+	"sync"
 	"sync/atomic"
 	"unsafe"
 
@@ -41,7 +42,9 @@ var ErrAEADOutOfScope = errors.New("secmemcrypto: AEAD used after its WithAESGCM
 // fn may use the AEAD any way cipher.AEAD allows, including with [SealFrom]
 // and [OpenInto] to keep the plaintext in locked memory too. It must not
 // keep it: the AEAD fn receives panics with [ErrAEADOutOfScope] if Seal or
-// Open is called after fn has returned.
+// Open is called after fn has returned. If fn hands the AEAD to another
+// goroutine, WithAESGCM waits for a Seal or Open already in progress there
+// before it wipes anything — so it does not return until that call does.
 //
 // Build the AEAD per use rather than keeping one for a session: that is what
 // keeps the round keys off the heap between uses. It costs a key expansion
@@ -96,7 +99,7 @@ func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error
 				withAESGCMProbe(blk, aead)
 			}
 			scoped := &scopedAEAD{aead: aead}
-			defer scoped.done.Store(true)
+			defer scoped.close()
 			return fn(scoped)
 		})
 	})
@@ -111,23 +114,42 @@ func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error
 var withAESGCMProbe func(blk cipher.Block, aead cipher.AEAD)
 
 // scopedAEAD refuses Seal and Open once its WithAESGCM callback has returned.
+//
+// Each Seal and Open holds mu for reading across the whole inner call, and
+// close takes it for writing, so leaving the scope waits for a call another
+// goroutine already started instead of wiping the schedule under it. A check
+// at entry alone would let that call finish its remaining blocks under
+// zeroed round keys and return ciphertext as if nothing had happened.
 type scopedAEAD struct {
 	aead cipher.AEAD
-	done atomic.Bool
+	mu   sync.RWMutex
+	done bool // guarded by mu
+}
+
+// close ends the scope: it waits for calls in flight, and every later one
+// panics.
+func (s *scopedAEAD) close() {
+	s.mu.Lock()
+	s.done = true
+	s.mu.Unlock()
 }
 
 func (s *scopedAEAD) NonceSize() int { return s.aead.NonceSize() }
 func (s *scopedAEAD) Overhead() int  { return s.aead.Overhead() }
 
 func (s *scopedAEAD) Seal(dst, nonce, plaintext, additionalData []byte) []byte {
-	if s.done.Load() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.done {
 		panic(ErrAEADOutOfScope)
 	}
 	return s.aead.Seal(dst, nonce, plaintext, additionalData)
 }
 
 func (s *scopedAEAD) Open(dst, nonce, ciphertext, additionalData []byte) ([]byte, error) {
-	if s.done.Load() {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	if s.done {
 		panic(ErrAEADOutOfScope)
 	}
 	return s.aead.Open(dst, nonce, ciphertext, additionalData)
