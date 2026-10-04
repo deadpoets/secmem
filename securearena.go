@@ -36,6 +36,22 @@
 //   - SecureArena: many small, same-size, short-lived secrets (SSH session
 //     keys, ephemeral HMAC keys, per-request nonces).  One slab, one mlock.
 //
+// # No isolation between slots
+//
+// The slots of an arena are neighbours in one mapping, and nothing but the
+// handle's generation check stands between them. That check guards the API:
+// a released or recycled [ArenaSlot] is refused. It does not guard memory. A
+// slice wrongly kept from a slot's callback stays a valid pointer into the
+// slab for as long as the arena lives: after the slot is released it reads
+// the zeros the release wrote, and once the slot is acquired again it reads
+// and writes the NEXT tenant's secret, with no fault and no error. Neither
+// the destroy-time quarantine nor [WithClosedAtRest] applies to a slot: both
+// work on whole mappings, and the slab stays mapped and open while any slot
+// is in use. Released slots are reused first-in, first-out, which puts every
+// other free slot between a release and the reuse of that slot; that delays
+// the aliasing and does not prevent it. Where a secret must be isolated from
+// such a bug in the code that handles another, give it its own SecureBuffer.
+//
 // # Concurrency Model
 //
 //   - mu (bufferRWLock): rLock held during any WithBytes/WithBytesErr callback
@@ -143,9 +159,10 @@ type slotMeta struct {
 	// cannot guarantee — atomic.Uint64 carries the align64 marker that makes
 	// the compiler enforce it.
 	//
-	// 64 bits, not 32, because the guard has to outlive the counter. The free
-	// list is LIFO, so churn on one slot increments the SAME counter twice per
-	// acquire/release cycle; a 32-bit counter would wrap in minutes on a busy
+	// 64 bits, not 32, because the guard has to outlive the counter. Every
+	// acquire/release cycle of a slot increments its counter twice, and an
+	// arena with one free slot cycles the SAME slot every time whatever the
+	// list order; a 32-bit counter would wrap in minutes on a busy
 	// server, after which a stale handle matches again and can read, overwrite,
 	// or free a slot another owner is live in. 64 bits is not reachable.
 	generation atomic.Uint64
@@ -218,9 +235,10 @@ type arenaState struct {
 	// the arena that scales with count; see NewArena on why that matters.
 	slots []slotMeta
 
-	// freeHead is the head of the intrusive LIFO free list threaded through
-	// slots[i].next, or -1 when the arena is full. It is what makes Acquire and
-	// Release O(1) rather than a scan over slots. Guarded by alloc.
+	// freeHead and freeTail are the two ends of the intrusive FIFO free list
+	// threaded through slots[i].next; both are -1 when the arena is full.
+	// Acquire pops the head, Release appends at the tail, and both are O(1)
+	// rather than a scan over slots. Guarded by alloc.
 	//
 	// Invariant: a slot is reachable from freeHead at most once, and exactly
 	// when its generation is EVEN (see slotMeta.generation). Release enforces
@@ -235,14 +253,19 @@ type arenaState struct {
 	//
 	// Seeded so slots[i].next == i+1 and the last is -1, which makes the first
 	// Acquires pop 0, 1, 2, … — the natural order a fresh arena used to hand
-	// out, preserved because it is the observable part. After any Release the
-	// order is most-recently-freed-first, which is deliberate: a just-released
-	// slot is the one most likely to still be cache-warm.
+	// out, preserved because it is the observable part. A released slot goes
+	// to the tail, so it is the LAST free slot to be handed out again. The
+	// list used to be most-recently-freed-first, for cache warmth; that also
+	// made a slot's next tenant arrive as soon as possible, which is the worst
+	// order for a caller who wrongly kept a slice from the previous one (see
+	// "No isolation between slots" on SecureArena). The warmth was not worth
+	// that.
 	//
 	// int32 to match slotMeta.next, so the whole free list is one width and no
 	// narrowing conversion exists anywhere to get wrong. NewArena's count
 	// ceiling is what makes that width sufficient.
 	freeHead int32
+	freeTail int32
 
 	// live is the number of acquired slots, cached so LiveCount is O(1) instead
 	// of walking the free list. Guarded by alloc, and updated in the same
@@ -442,6 +465,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 		region:   region,
 		slots:    slots,
 		freeHead: 0,
+		freeTail: int32(count - 1), //nolint:gosec // G115: count <= math.MaxInt32, checked above
 		slotSize: slotSize,
 		stride:   stride,
 		count:    count,
@@ -576,6 +600,9 @@ func (a *SecureArena) Acquire() (*ArenaSlot, error) {
 		return nil, ErrArenaFull
 	}
 	a.freeHead = a.slots[i].next
+	if a.freeHead < 0 {
+		a.freeTail = -1 // that was the last free slot
+	}
 	// Clear the link on the way out: a live slot must not carry a stale index.
 	// It costs one store and makes "reachable from freeHead" and "generation is
 	// even" checkable against each other rather than merely believed.
@@ -883,15 +910,21 @@ func (s *ArenaSlot) Release() error {
 	// Arena was destroyed concurrently — Destroy already wiped everything.
 	s.arena.mu.rUnlock()
 
-	// NOW put the slot back — it is only available for re-Acquire after the
-	// wipe completes. The claim above made this goroutine the only one that
-	// can get here for this handle, so the push needs no re-check: one handle,
-	// one push. (A double push on the intrusive list would point slots[i].next
-	// at i and hand that one slot out forever.)
+	// NOW put the slot back, at the tail — it is only available for re-Acquire
+	// after the wipe completes, and after every slot that was already free.
+	// The claim above made this goroutine the only one that can get here for
+	// this handle, so the append needs no re-check: one handle, one append.
+	// (A double append on the intrusive list would point slots[i].next at i
+	// and hand that one slot out forever.)
 	s.arena.alloc.Lock()
 	s.arena.live--
-	s.arena.slots[s.idx].next = s.arena.freeHead
-	s.arena.freeHead = s.idx
+	s.arena.slots[s.idx].next = -1
+	if tail := s.arena.freeTail; tail >= 0 {
+		s.arena.slots[tail].next = s.idx
+	} else {
+		s.arena.freeHead = s.idx // the list was empty
+	}
+	s.arena.freeTail = s.idx
 	s.arena.alloc.Unlock()
 
 	if violated {
