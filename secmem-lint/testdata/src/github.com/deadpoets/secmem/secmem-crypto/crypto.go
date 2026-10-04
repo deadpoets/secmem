@@ -81,3 +81,21 @@ func (k *MLKEM768Key) EncapsulationKeyBytes() ([]byte, error)    { return nil, n
 func (k *MLKEM768Key) Decapsulate(ciphertext []byte) (*secmem.SecureBuffer, error) {
 	return nil, nil
 }
+
+// Constructors and owned types for the strict fixtures. Every one hands the
+// caller something with a Destroy to call: a concrete key, the Signer
+// interface the parsers return, a locked Argon2 workspace.
+type Option func()
+
+func GenerateX25519Key(opts ...Option) (*X25519Key, error) { return &X25519Key{}, nil }
+
+func ParsePrivateKey(data []byte, opts ...Option) (Signer, error) { return &Ed25519Signer{}, nil }
+
+type Argon2Workspace struct{}
+
+func (w *Argon2Workspace) Destroy() error { return nil }
+func (w *Argon2Workspace) Size() int      { return 0 }
+
+func NewArgon2Workspace(memory uint32, threads uint8, opts ...Option) (*Argon2Workspace, error) {
+	return &Argon2Workspace{}, nil
+}

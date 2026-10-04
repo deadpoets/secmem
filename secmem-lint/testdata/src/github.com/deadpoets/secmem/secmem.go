@@ -30,6 +30,8 @@ func (s Secret) WithBytes(fn func([]byte)) error { return nil }
 
 func NewBuffer(raw []byte) (*SecureBuffer, error) { return &SecureBuffer{}, nil }
 
+func NewSecret(raw []byte) (Secret, error) { return Secret{}, nil }
+
 func SecureWipe(b []byte) {}
 
 // SecureArena / ArenaSlot mirror the core's locking: a slot borrow holds the
