@@ -15,7 +15,40 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
+
+// TerminationWipeTimeout is how long the handler installed by
+// [InstallTerminationWipe] waits for [WipeAllSecrets] before it goes on to
+// terminate the process anyway. WipeAllSecrets waits for every borrowing
+// callback to return, and one that never does would otherwise hold the handler
+// forever, with the signal's default disposition suppressed the whole time.
+const TerminationWipeTimeout = 5 * time.Second
+
+// terminationWipeTimeout is the bound the handler uses; a variable so a test
+// does not have to wait out the real one.
+var terminationWipeTimeout = TerminationWipeTimeout
+
+// wipeAllSecretsBounded runs [WipeAllSecrets] and waits for it for at most
+// timeout. It reports whether the wipe finished. When it did not, the wipe is
+// still running: everything that was not borrowed is already zeroed (the first
+// pass does not wait), and each borrowed region is wiped the moment its
+// callback returns, if the process lives that long.
+func wipeAllSecretsBounded(timeout time.Duration) (completed bool) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = WipeAllSecrets()
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // errInheritedIgnored stands in for the re-raise's result when the signal
 // was already ignored at install time. The kill(2) itself would succeed —
@@ -142,6 +175,19 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 //
 // Use [InstallTerminationWipeNoExit] if your own handler owns the exit.
 //
+// # The wipe is bounded
+//
+// [WipeAllSecrets] waits for every borrowing callback to return, so a callback
+// that is blocked (on I/O, on a lock, or on a nested call into its own buffer)
+// would hold the handler in the wipe indefinitely: the process would not
+// terminate, and with this handler still registered no later signal would
+// terminate it either. The handler therefore waits [TerminationWipeTimeout]
+// and then proceeds exactly as if the wipe had finished, with a warning
+// logged. By then every secret that was not borrowed is already zeroed. The
+// one inside the stuck callback is not, and the process is about to end with
+// it in memory: a secret that a running callback is reading cannot be zeroed
+// underneath it. Keep borrowing callbacks short.
+//
 // # After the signal
 //
 // Once it has re-raised, the handler is finished: it does not register again,
@@ -236,7 +282,11 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				if !ok {
 					return
 				}
-				_ = WipeAllSecrets()
+				if !wipeAllSecretsBounded(terminationWipeTimeout) {
+					slog.Warn("secmem: a borrowing callback did not return in time; every other secret is wiped, the borrowed one is not, and termination proceeds",
+						slog.String("signal", sig.String()),
+						slog.Duration("waited", terminationWipeTimeout))
+				}
 				// Deregister only our own channel — never the process-global
 				// signal.Reset/Ignore. If we were the last handler the default
 				// disposition is restored so the re-raise below terminates the

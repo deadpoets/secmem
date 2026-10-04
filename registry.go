@@ -653,6 +653,11 @@ func (j *janitor) wipeAllInPlace() error {
 // path must be bounded, run WipeAllSecrets in its own goroutine and exit on a
 // timer — the first pass will have done its work regardless — and keep
 // borrowing callbacks short, which the borrowing contract asks for anyway.
+// [InstallTerminationWipe] does exactly that, with [TerminationWipeTimeout].
+//
+// A callback also blocks it by calling back into its own buffer while this
+// call is queued: Len, MappedLen, IsSealed and IsDestroyed take the same read
+// lock the access methods do, and the lock prefers the waiting writer.
 //
 // secmem installs NO signal handler on its own. For automatic wiping on
 // termination signals, call [InstallTerminationWipe] once at startup, or wire

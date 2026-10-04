@@ -236,6 +236,17 @@ The core floor is unchanged at v0.7.0.
   before it decrypts and stays sealed if the lock is refused. A sealed page
   itself is unlocked ciphertext, which `WINDOWS.md` now says.
 
+- **`InstallTerminationWipe` could hang behind one borrowing callback.** The
+  handler called `WipeAllSecrets` synchronously, and that call waits for every
+  borrow. A callback blocked on I/O, or one that called `Len` or `IsSealed` on
+  its own buffer while the wipe was queued, kept the handler from reaching
+  the re-raise: every other secret was zeroed, the process ran on, and later
+  signals were swallowed by the handler's own registration. The handler now
+  waits `TerminationWipeTimeout` (5 s, a new exported constant) and then
+  terminates as it would have, with a warning logged. Everything that was not
+  borrowed is zeroed by then; the secret inside the stuck callback is not,
+  and the installer's documentation says so.
+
 - **`ArenaSlot.Release` on one handle from two goroutines could wipe the
   slot's next owner.** The liveness check ran before the region lock and the
   wipe after it, so a Release that waited behind a queued writer resumed

@@ -32,13 +32,15 @@ import (
 // The RLock is held for the entire callback, so Destroy blocks until fn returns.
 // This is the preferred access pattern; use WithBytesErr when fn returns an error.
 //
-// NOT REENTRANT: fn MUST NOT call any access method on the SAME buffer
-// (WithBytes, WithBytesErr, CopyOut, ConstantTimeEqual, …). The lock is writer-
-// preferring, so if another goroutine calls Destroy/CopyIn/Seal/ReadOnly while
-// fn holds the read lock, a nested same-buffer read lock would block on the
-// waiting writer while that writer blocks on fn's outstanding read lock —
-// a deadlock. Nesting access to a DIFFERENT buffer (e.g. the decrypt-into
-// pattern: key.WithBytesErr → out.WithBytesErr) is safe and expected.
+// NOT REENTRANT: fn MUST NOT call any method on the SAME buffer that takes its
+// lock: the access methods (WithBytes, WithBytesErr, CopyOut, ConstantTimeEqual,
+// …) and equally the queries Len, MappedLen, IsSealed and IsDestroyed. The
+// lock is writer-preferring, so if another goroutine calls
+// Destroy/CopyIn/Seal/ReadOnly, or [WipeAllSecrets] runs, while fn holds the
+// read lock, a nested same-buffer read lock would block on the waiting writer
+// while that writer blocks on fn's outstanding read lock — a deadlock. Nesting
+// access to a DIFFERENT buffer (e.g. the decrypt-into pattern:
+// key.WithBytesErr → out.WithBytesErr) is safe and expected.
 //
 // READ-ONLY BUFFERS: while the buffer is read-only ([SecureBuffer.ReadOnly])
 // the slice is backed by a PROT_READ page. A write through it is not
