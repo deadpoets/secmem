@@ -25,7 +25,9 @@ import (
 // (PKCS#1 or PKCS#8) in a [secmem.SecureBuffer] between operations.
 //
 // Honesty caveat — transient materialization, at RSA scale: every Sign call
-// parses the DER into a full *rsa.PrivateKey on the Go heap — D, both
+// parses the RSAPrivateKey structure where it lies in the buffer (for PKCS#8
+// DER, the element inside the wrapper: the DER itself is never copied) into
+// a full *rsa.PrivateKey on the Go heap — D, both
 // primes, and the CRT exponents as big.Ints, plus the standard library's
 // FIPS-form key (a second copy of every secret integer as bigmod limbs,
 // which x509's parser builds and every Sign uses) — signs with the standard
@@ -86,8 +88,12 @@ import (
 // are safe (the underlying buffer takes a read lock per borrow).
 type RSASigner struct {
 	derBuf *secmem.SecureBuffer
-	pkcs8  bool
-	pub    *rsa.PublicKey
+	// Where the RSAPrivateKey (PKCS#1) structure sits in derBuf: all of it,
+	// or the content of a PKCS#8 wrapper's OCTET STRING. Sign parses that
+	// span in place; handing the wrapper to crypto/x509 instead would have
+	// it copy the whole key to the heap first.
+	keyOff, keyLen int
+	pub            *rsa.PublicKey
 }
 
 // NewRSASigner wraps an RSA private key, DER-encoded as PKCS#1 ("RSA
@@ -134,23 +140,31 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 	}
 
 	var (
-		pub   *rsa.PublicKey
-		pkcs8 bool
+		pub            *rsa.PublicKey
+		keyOff, keyLen int
 	)
 	err := secmem.ScrubErr(func() error {
 		return derBuf.WithBytesErr(func(der []byte) (err error) {
-			if err := checkRSAKeySize(der); err != nil {
+			pkcs1, _, lerr := locatePKCS1(der)
+			if lerr != nil {
+				return lerr
+			}
+			if pkcs1 == nil {
+				return rejectNonRSAPKCS8(der)
+			}
+			if err := checkPKCS1Size(pkcs1); err != nil {
 				return err
 			}
-			key, perr := parseRSAPrivateKey(der, false)
+			key, perr := parsePKCS1(pkcs1)
 			if perr != nil {
-				var p8err error
-				key, p8err = parseRSAPrivateKey(der, true)
-				if p8err != nil {
-					return errors.Join(perr, p8err)
-				}
-				pkcs8 = true
+				return perr
 			}
+			// pkcs1 is a sub-slice of der; its position is what Sign needs.
+			off, ok := subsliceOffset(der, pkcs1)
+			if !ok {
+				return errors.Join(errors.New("secmemcrypto: internal: RSA key not located inside its buffer"), wipeRSAPrivateKey(key))
+			}
+			keyOff, keyLen = off, len(pkcs1)
 			defer func() { err = errors.Join(err, wipeRSAPrivateKey(key)) }()
 			// Copy the embedded struct out so nothing retains the transient
 			// *PrivateKey — holding &key.PublicKey would keep the whole key,
@@ -163,7 +177,7 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: new rsa signer: %w", err)
 	}
-	return &RSASigner{derBuf: derBuf, pkcs8: pkcs8, pub: pub}, nil
+	return &RSASigner{derBuf: derBuf, keyOff: keyOff, keyLen: keyLen, pub: pub}, nil
 }
 
 // GenerateRSASigner generates a fresh RSA key of the given bit size with
@@ -263,7 +277,10 @@ func (s *RSASigner) Sign(random io.Reader, digest []byte, opts crypto.SignerOpts
 	var sig []byte
 	err := secmem.ScrubErr(func() error {
 		return s.derBuf.WithBytesErr(func(der []byte) (err error) {
-			priv, perr := parseRSAPrivateKey(der, s.pkcs8)
+			if s.keyOff < 0 || s.keyLen < 0 || s.keyOff+s.keyLen > len(der) {
+				return errors.New("secmemcrypto: key buffer is shorter than the key it was built with")
+			}
+			priv, perr := parsePKCS1(der[s.keyOff : s.keyOff+s.keyLen])
 			if perr != nil {
 				return perr
 			}
@@ -315,30 +332,50 @@ func (s *RSASigner) Destroy() error {
 	return s.derBuf.Destroy()
 }
 
-// parseRSAPrivateKey parses der as PKCS#1 (pkcs8 false) or PKCS#8 (pkcs8
-// true). A PKCS#8 blob holding a non-RSA key is rejected — after wiping
-// what the parse materialized, where the key type allows it.
-func parseRSAPrivateKey(der []byte, pkcs8 bool) (*rsa.PrivateKey, error) {
-	if !pkcs8 {
-		key, err := x509.ParsePKCS1PrivateKey(der)
-		if err != nil {
-			return nil, fmt.Errorf("secmemcrypto: parse PKCS#1: %w", err)
-		}
-		return key, nil
+// subsliceOffset returns where inner starts within outer, given that inner
+// was obtained by slicing outer. Two slices of one array end at the same
+// place, so the offset is the difference of their capacities; the address
+// comparison confirms it rather than trusting how inner was sliced.
+func subsliceOffset(outer, inner []byte) (int, bool) {
+	off := cap(outer) - cap(inner)
+	if len(inner) == 0 || off < 0 || off+len(inner) > len(outer) || &outer[off] != &inner[0] {
+		return 0, false
 	}
+	return off, true
+}
+
+// parsePKCS1 parses an RSAPrivateKey structure with the standard library.
+// For a key that arrived as PKCS#8 this is still the right call, on the
+// wrapped element: x509.ParsePKCS8PrivateKey does exactly this for an RSA
+// key, after copying the element to the heap.
+func parsePKCS1(pkcs1 []byte) (*rsa.PrivateKey, error) {
+	key, err := x509.ParsePKCS1PrivateKey(pkcs1)
+	if err != nil {
+		return nil, fmt.Errorf("secmemcrypto: parse PKCS#1: %w", err)
+	}
+	return key, nil
+}
+
+// rejectNonRSAPKCS8 is the constructor's answer for a PKCS#8 structure
+// whose algorithm is not RSA: an error that says what the key is and where
+// to take it — after wiping what the parse that found that out
+// materialized, where the key type allows it.
+func rejectNonRSAPKCS8(der []byte) error {
 	keyAny, err := x509.ParsePKCS8PrivateKey(der)
 	if err != nil {
-		return nil, fmt.Errorf("secmemcrypto: parse PKCS#8: %w", err)
+		return fmt.Errorf("secmemcrypto: parse PKCS#8: %w", err)
 	}
 	switch k := keyAny.(type) {
 	case *rsa.PrivateKey:
-		return k, nil
+		// Not reachable while crypto/x509 reads the same algorithm
+		// identifier locatePKCS1 did; wiped and refused if it ever is.
+		return errors.Join(errors.New("secmemcrypto: PKCS#8 DER was read as RSA by crypto/x509 but not by this package"), wipeRSAPrivateKey(k))
 	case *ecdsa.PrivateKey:
 		wipeECDSAPrivateKey(k)
-		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an ECDSA key, not RSA (store its raw scalar in a SecureBuffer and use NewECDSASigner)")
+		return errors.New("secmemcrypto: PKCS#8 DER holds an ECDSA key, not RSA (store its raw scalar in a SecureBuffer and use NewECDSASigner)")
 	case ed25519.PrivateKey:
 		secmem.SecureWipe(k)
-		return nil, errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
+		return errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
 	case *ecdh.PrivateKey:
 		err := errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
 		// The wipe is reflection-based. If it could not locate the scalar,
@@ -347,9 +384,9 @@ func parseRSAPrivateKey(der []byte, pkcs8 bool) (*rsa.PrivateKey, error) {
 		if werr := wipeECDHPrivateKey(k); werr != nil {
 			err = errors.Join(err, werr)
 		}
-		return nil, err
+		return err
 	default:
-		return nil, fmt.Errorf("secmemcrypto: PKCS#8 DER holds a %T, not an RSA key", keyAny)
+		return fmt.Errorf("secmemcrypto: PKCS#8 DER holds a %T, not an RSA key", keyAny)
 	}
 }
 

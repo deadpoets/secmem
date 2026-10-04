@@ -387,3 +387,56 @@ func TestGenerateRSASigner_RejectsTinyKeys(t *testing.T) {
 		t.Error("expected error for a 512-bit key")
 	}
 }
+
+// TestRSASigner_PKCS8ParsesInPlace: a signer built from PKCS#8 DER signs
+// from the RSAPrivateKey inside its buffer, not from a copy of it. The
+// standard library's PKCS#8 parser copies the wrapped key — the whole
+// private key, contiguous and directly parseable — into a fresh heap slice
+// before parsing it, which nothing wipes; a PKCS#1 signer makes no such
+// copy. So the two must allocate exactly alike, at construction and per
+// signature, for the same key.
+func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
+	std := stdlibRSAKey(t)
+	p1 := x509.MarshalPKCS1PrivateKey(std)
+	p8, err := x509.MarshalPKCS8PrivateKey(std)
+	if err != nil {
+		t.Fatal(err)
+	}
+	build := func(der []byte) (*secmem.SecureBuffer, *RSASigner) {
+		buf, err := secmem.NewBuffer(bytes.Clone(der))
+		if err != nil {
+			t.Skipf("no secure memory: %v", err)
+		}
+		s, err := NewRSASigner(buf, AllowHeapTransients())
+		if err != nil {
+			t.Fatal(err)
+		}
+		return buf, s
+	}
+	buf1, s1 := build(p1)
+	defer s1.Destroy()
+	buf8, s8 := build(p8)
+	defer s8.Destroy()
+
+	digest := sha256.Sum256([]byte("in place"))
+	sign := func(s *RSASigner) func() {
+		return func() {
+			if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if a1, a8 := testing.AllocsPerRun(20, sign(s1)), testing.AllocsPerRun(20, sign(s8)); a8 != a1 {
+		t.Errorf("Sign allocates %.0f times for a PKCS#8 signer and %.0f for a PKCS#1 signer of the same key: the wrapped key is being copied out of the buffer", a8, a1)
+	}
+	construct := func(buf *secmem.SecureBuffer) func() {
+		return func() {
+			if _, err := NewRSASigner(buf, AllowHeapTransients()); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+	if a1, a8 := testing.AllocsPerRun(20, construct(buf1)), testing.AllocsPerRun(20, construct(buf8)); a8 != a1 {
+		t.Errorf("NewRSASigner allocates %.0f times for PKCS#8 DER and %.0f for PKCS#1 DER of the same key", a8, a1)
+	}
+}

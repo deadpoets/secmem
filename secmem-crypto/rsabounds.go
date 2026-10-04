@@ -103,16 +103,22 @@ func locatePKCS1(der []byte) (pkcs1 []byte, wrapped bool, err error) {
 // (1.2.840.113549.1.1.1), for comparing in place.
 var oidRSADER = []byte{0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01} //nolint:gochecknoglobals // read-only constant
 
-// checkRSAKeySize reads the lengths of the integers of the RSA key in der
-// (PKCS#1 or PKCS#8) and applies the caps. It reads der in place and copies
-// nothing: every value below is a sub-slice of der, and only its length and
-// its first and last bytes are looked at. A PKCS#8 structure for another
-// algorithm passes — it holds no RSA key to measure.
+// checkRSAKeySize is checkPKCS1Size for the RSA key in der, PKCS#1 or
+// PKCS#8. A PKCS#8 structure for another algorithm passes — it holds no RSA
+// key to measure.
 func checkRSAKeySize(der []byte) error {
 	pkcs1, _, err := locatePKCS1(der)
 	if err != nil || pkcs1 == nil {
 		return err
 	}
+	return checkPKCS1Size(pkcs1)
+}
+
+// checkPKCS1Size reads the lengths of the integers of an RSAPrivateKey and
+// applies the caps. It reads the structure in place and copies nothing:
+// every value below is a sub-slice of it, and only its length and its first
+// and last bytes are looked at.
+func checkPKCS1Size(pkcs1 []byte) error {
 	in := cryptobyte.String(pkcs1)
 	var seq, version cryptobyte.String
 	if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadASN1(&version, cbasn1.INTEGER) {
