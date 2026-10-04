@@ -233,11 +233,16 @@ func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds
 	if err != nil {
 		return nil, fmt.Errorf("allocate openssh private key buffer: %w", err)
 	}
-	if err := borrowOrdered(cont, out, func(c, o []byte) error {
-		if n := pemEncode(o, opensshPEMType, c); n != len(o) {
-			return errors.New("internal: PEM layout mismatch")
-		}
-		return nil
+	// In a window of its own: without a passphrase the container still holds
+	// the seed in clear, and the base64 pass moves it through registers and
+	// the encoder's frames like any other read of it.
+	if err := secmem.ScrubErr(func() error {
+		return borrowOrdered(cont, out, func(c, o []byte) error {
+			if n := pemEncode(o, opensshPEMType, c); n != len(o) {
+				return errors.New("internal: PEM layout mismatch")
+			}
+			return nil
+		})
 	}); err != nil {
 		_ = out.Destroy()
 		return nil, err
