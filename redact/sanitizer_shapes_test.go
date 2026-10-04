@@ -55,6 +55,12 @@ func TestSanitize_CredentialShapes(t *testing.T) {
 		{"jwt alone", "id " + sampleJWT, sampleJWT, "jwt"},
 		{"x-api-key header", "X-Api-Key: hunter2", "hunter2", "api_key_field"},
 		{"env api key", "OPENAI_API_KEY=hunter2", "hunter2", "api_key_field"},
+		{"header map bearer", "hdr=map[Authorization:[Bearer 9f8e7d6c5b4a39281706f5e4d3c2b1a0]]", "9f8e7d6c5b4a39281706f5e4d3c2b1a0", "authorization_header"},
+		{"header map basic", "map[Accept:[*/*] Authorization:[Basic dXNlcjpodW50ZXIy]]", "dXNlcjpodW50ZXIy", "authorization_header"},
+		{"header json array", `{"Authorization":["Bearer abc.def"],"Accept":["*/*"]}`, "abc.def", "authorization_header"},
+		{"single-quoted key", "{'password': 'hunter2'}", "hunter2", "password_field"},
+		{"bracketed key", "user[password]=hunter2", "hunter2", "password_field"},
+		{"percent-encoded bracketed key", "user%5Bpassword%5D=hunter2", "hunter2", "password_field"},
 	}
 	for _, c := range cases {
 		got := s.Sanitize(c.in)
@@ -75,6 +81,20 @@ func TestSanitize_EscapedJSONDoesNotSwallowSiblings(t *testing.T) {
 	got := redact.NewDefaultSanitizer().Sanitize(`{\"password\":\"hunter2\",\"user\":\"bob\"}`)
 	if !strings.Contains(got, `\"user\":\"bob\"`) {
 		t.Errorf("sibling field was swallowed: %q", got)
+	}
+}
+
+// TestSanitize_BracketedHeaderDoesNotSwallowSiblings: the bracketed
+// Authorization value ends at its own closing bracket, so the header after it
+// in a printed http.Header survives.
+func TestSanitize_BracketedHeaderDoesNotSwallowSiblings(t *testing.T) {
+	t.Parallel()
+	got := redact.NewDefaultSanitizer().Sanitize("map[Authorization:[Bearer abc def] User-Agent:[curl/8]]")
+	if strings.Contains(got, "abc") || strings.Contains(got, "def") {
+		t.Errorf("credential survived: %q", got)
+	}
+	if !strings.Contains(got, "User-Agent:[curl/8]") {
+		t.Errorf("sibling header was swallowed: %q", got)
 	}
 }
 
