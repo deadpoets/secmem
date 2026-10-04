@@ -421,12 +421,14 @@ and is not.
   secret *lives*; it is not a substitute for a post-quantum handshake.
 
 - **Post-quantum signatures (ML-DSA / FIPS 204) are deferred, deliberately.**
-  The Go standard library does not yet ship `crypto/mldsa` (as of Go 1.26),
-  and secmem-crypto will not vendor a third-party PQ implementation — the
-  same discipline that governs the rest of the module: work around the
-  standard library only where it is broken for off-heap keys, never merely to
-  add an algorithm. A hardened ML-DSA signer follows if and when the standard
-  library ships the primitive.
+  `crypto/mldsa` ships in the standard library from Go 1.27, but these
+  modules' floor is Go 1.26, where it does not exist, and its signing path
+  uses about 66 KiB of stack (measured on go1.27.1), twice the 32 KiB band a
+  legacy `Scrub` window wipes. secmem-crypto will not vendor a third-party PQ
+  implementation — the same discipline that governs the rest of the module:
+  work around the standard library only where it is broken for off-heap keys,
+  never merely to add an algorithm. A hardened ML-DSA signer follows once the
+  floor reaches Go 1.27 and the window covers that path.
 
 ## Composition
 
