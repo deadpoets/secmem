@@ -23,10 +23,10 @@ package secmem
 // (non-inlined) stack frame. Goroutines start on a small stack (2 KiB on
 // Linux and macOS, 8 KiB on Windows; adaptive since Go 1.19), so on a
 // shallow call that allocation triggers a stack copy (morestack): a single
-// deferred wipe would then run on the RELOCATED stack, zeroing the fresh copy
+// wipe after fn would then run on the RELOCATED stack, zeroing the fresh copy
 // while fn's real residue sits on the old segment the runtime just freed —
 // untouched. Calling the wipe once on entry forces any growth to happen BEFORE
-// fn writes a secret and pre-cleans the band; the deferred call is then
+// fn writes a secret and pre-cleans the band; the second call is then
 // guaranteed to run in place.
 //
 // The entry wipe orders that growth, it does not make it free. morestack copies
@@ -138,7 +138,7 @@ func Scrub(fn func()) {
 	var exit scrubExit
 	defer exit.goexitBackstop()
 
-	p := scrubCall(fn)
+	p, panicked := scrubCall(fn)
 
 	// fn's frames are dead now — after a panic too, because scrubCall
 	// recovered it and returned. The registers are cleared first, on the
@@ -151,7 +151,7 @@ func Scrub(fn func()) {
 	wipeScratchFrameFull()
 	exit.done = true
 
-	if p != nil {
+	if panicked {
 		panic(p)
 	}
 }
@@ -170,35 +170,51 @@ func ScrubErr(fn func() error) error {
 	var exit scrubExit
 	defer exit.goexitBackstop()
 
-	p, err := scrubCallErr(fn)
+	p, panicked, err := scrubCallErr(fn)
 
 	clearRegisters()
 	wipeScratchFrameFull()
 	exit.done = true
 
-	if p != nil {
+	if panicked {
 		panic(p)
 	}
 	return err
 }
 
-// scrubCall runs fn and returns the value it panicked with, or nil. The
+// scrubCall runs fn and reports whether it panicked, and with what. The
 // recover happens in this frame's deferred call, which is what pops the stack
 // back to here: once scrubCall has returned, every frame fn had live at the
 // panic is dead stack below the caller, exactly where the caller's wipe
-// reaches. Mirrors runtime/secret's doHelper. Since Go 1.21 recover reports
-// every panic as non-nil (panic(nil) arrives as *runtime.PanicNilError), so a
-// nil result means fn returned.
-func scrubCall(fn func()) (p any) {
-	defer func() { p = recover() }()
+// reaches. Mirrors runtime/secret's doHelper.
+//
+// panicked is tracked separately from the recovered value because the value
+// does not settle it: under GODEBUG=panicnil=1 a panic(nil) recovers as nil,
+// and a window that read nil as "fn returned" absorbed the panic and handed
+// its caller a normal return. (runtime.Goexit also reaches the deferred call
+// without fn having returned, but then scrubCall never returns either, so what
+// it sets is not read.)
+func scrubCall(fn func()) (p any, panicked bool) {
+	returned := false
+	defer func() {
+		p = recover()
+		panicked = !returned
+	}()
 	fn()
-	return nil
+	returned = true
+	return nil, false
 }
 
 // scrubCallErr is scrubCall for a fn that returns an error.
-func scrubCallErr(fn func() error) (p any, err error) {
-	defer func() { p = recover() }()
-	return nil, fn()
+func scrubCallErr(fn func() error) (p any, panicked bool, err error) {
+	returned := false
+	defer func() {
+		p = recover()
+		panicked = !returned
+	}()
+	err = fn()
+	returned = true
+	return nil, false, err
 }
 
 // scrubExit is the deferred backstop for runtime.Goexit inside fn: the

@@ -2,6 +2,7 @@ package secmem
 
 import (
 	"bytes"
+	"errors"
 	"testing"
 )
 
@@ -102,18 +103,22 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 			t.Fatalf("WipeAllSecrets: %v", err)
 		}
 		for name, b := range map[string]*SecureBuffer{"live": live, "truncated": buf} {
-			if err := b.WithBytes(func(data []byte) {
-				if i := firstNonZero(data[:cap(data)]); i >= 0 {
-					t.Fatalf("WipeAllSecrets left byte %d of the %s buffer non-zero (%#x)", i, name, data[i]) //nolint:secmem-lint // diagnostic on failure only; reports the one non-zero byte of a wiped region
-				}
-				// Whole secret area, canary slack included: the in-place
-				// wipe must not stop at the data's end. Read under the
-				// borrow's lock, as the region cannot move or unmap here.
-				if i := firstNonZero(b.region.inner); i >= 0 {
-					t.Fatalf("WipeAllSecrets left byte %d of the %s buffer's %d-byte secret area non-zero (%#x)", i, name, len(b.region.inner), b.region.inner[i])
-				}
-			}); err != nil {
-				t.Fatalf("WithBytes after WipeAllSecrets (%s): %v", name, err)
+			// A borrow is refused once the buffer is wiped, so read the
+			// mapping directly, under the read lock that keeps it mapped.
+			// Whole secret area, canary slack included: the in-place wipe
+			// must not stop at the data's end.
+			b.mu.rLock()
+			i := firstNonZero(b.region.inner)
+			var left byte
+			if i >= 0 {
+				left = b.region.inner[i]
+			}
+			b.mu.rUnlock()
+			if i >= 0 {
+				t.Fatalf("WipeAllSecrets left byte %d of the %s buffer's %d-byte secret area non-zero (%#x)", i, name, len(b.region.inner), left)
+			}
+			if err := b.WithBytes(func([]byte) {}); !errors.Is(err, ErrWiped) {
+				t.Fatalf("WithBytes after WipeAllSecrets (%s) = %v, want ErrWiped", name, err)
 			}
 		}
 

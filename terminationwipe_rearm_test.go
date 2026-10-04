@@ -49,25 +49,22 @@ func TestCompleteTermination_ReportsRearm(t *testing.T) {
 	}
 }
 
-// waitWiped polls buf until every byte reads as zero or the deadline passes.
-// The handler wipes before it does anything else, so a buffer reading as zeros
-// is the proof that a signal reached it. An access error is returned as such:
-// a wiped region stays mapped and readable, so any error here is a bug.
+// waitWiped polls buf until a borrow is refused with ErrWiped or the deadline
+// passes. The handler wipes before it does anything else, so that refusal is
+// the proof that a signal reached it. Any other access error is returned as
+// such: nothing else in these tests makes a borrow fail.
 func waitWiped(buf *SecureBuffer, timeout time.Duration) (wiped bool, err error) {
 	deadline := time.Now().Add(timeout)
 	for {
-		wiped = true
-		if err := buf.WithBytes(func(b []byte) {
-			for _, x := range b {
-				if x != 0 {
-					wiped = false
-				}
-			}
-		}); err != nil {
+		err := buf.WithBytes(func([]byte) {})
+		if errors.Is(err, ErrWiped) {
+			return true, nil
+		}
+		if err != nil {
 			return false, err
 		}
-		if wiped || time.Now().After(deadline) {
-			return wiped, nil
+		if time.Now().After(deadline) {
+			return false, nil
 		}
 		time.Sleep(5 * time.Millisecond)
 	}

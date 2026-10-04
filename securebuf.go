@@ -47,7 +47,33 @@ import (
 // WARNING: Never retain a reference from [SecureBuffer.WithBytes]
 // beyond the buffer's lifetime.  After Destroy,
 // the backing memory is unmapped; any retained slice becomes a dangling pointer.
+//
+// # Copies are aliases
+//
+// Use a SecureBuffer through the pointer the constructors return. A copy of
+// the value (c := *buf) or an assignment through the pointer (*a = *b) does
+// not duplicate anything: like a copied [os.File], it is a second handle on
+// the same region, the same lock and the same state. Sealing, truncating or
+// destroying through one handle is seen by every other, and Destroy on any of
+// them destroys the buffer for all. The secret is never copied this way, and a
+// handle cannot be left pointing at memory that another handle unmapped.
+//
+// The zero value is a destroyed buffer: every method returns what it returns
+// after Destroy.
 type SecureBuffer struct {
+	// Every field lives behind this one pointer, so that liveness cannot
+	// differ between two copies of the struct. Nil in the zero value, which
+	// is why the zero value reads as destroyed; never nil in a buffer a
+	// constructor returned, and never reset (a destroyed buffer is one whose
+	// state says so, visible to every copy).
+	*bufferState
+}
+
+// bufferState is a SecureBuffer's state. One exists per allocation, shared by
+// every copy of the SecureBuffer that refers to it, and it is what the
+// AddCleanup fallback is attached to: the region is released when the last
+// handle is gone, not when the first one is.
+type bufferState struct {
 	// data is the usable portion, region.inner[:size:size]. Access is
 	// controlled via methods — never exported directly to prevent heap
 	// copies. The capacity is clamped to the requested size so no re-slice
@@ -94,10 +120,11 @@ type SecureBuffer struct {
 
 	// wiped is set by WipeAllSecrets when this buffer's region was wiped in
 	// place and deliberately left mapped. Shared with janitorRegion, which is
-	// how the emergency path reaches a buffer it holds no pointer to. Reads
-	// still work and return the zeros; every mutator refuses with ErrWiped, so
-	// a process that keeps running after an emergency wipe cannot write a fresh
-	// secret into a region the wipe already reported as handled.
+	// how the emergency path reaches a buffer it holds no pointer to. Every
+	// borrow, read and mutator refuses with ErrWiped, so a process that keeps
+	// running after an emergency wipe can neither compute with the zeros as if
+	// they were a key nor write a fresh secret into a region the wipe already
+	// reported as handled.
 	wiped *atomic.Bool
 
 	// backing records which protections this allocation actually received.
@@ -249,11 +276,11 @@ func (s *SecureBuffer) fillInitial(raw []byte) error {
 // through emergencyJanitor's raw-mapping registry.
 //
 // On a refused registration (identity collision — see nextJanitorKey) the
-// region, which already holds the caller's secret, is wiped and released
-// here and the error returned: a buffer no wipe path can reach must not
-// exist.
+// region is wiped and released here and the error returned: a buffer no wipe
+// path can reach must not exist. It holds no secret yet — the constructors
+// copy after registering, see fillInitial — so the wipe is belt and braces.
 func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureBuffer, error) {
-	sb := &SecureBuffer{
+	st := &bufferState{
 		data:       data,
 		region:     region,
 		mu:         newBufferRWLock(),
@@ -261,6 +288,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureB
 		sealCipher: new(atomic.Bool),
 		wiped:      new(atomic.Bool),
 	}
+	sb := &SecureBuffer{bufferState: st}
 
 	// The canary zone is the slack between the caller's size and the page
 	// boundary, described once, here, from the construction-time size. The
@@ -280,16 +308,18 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureB
 	sb.janitorKey = key
 
 	// Safety-net cleanup: if the caller forgets Destroy(), this wipes and frees
-	// the mmap'd region when the *SecureBuffer is GC'd.
+	// the mmap'd region when the buffer's state is GC'd. It is attached to the
+	// state, not to sb: a copy of the SecureBuffer value shares the state, and
+	// the region must outlive every such copy, not just the first handle.
 	//
-	// runtime.AddCleanup callbacks MUST NOT reference sb directly (that would
-	// keep sb alive and prevent the cleanup from running).  The raw slice is
+	// runtime.AddCleanup callbacks MUST NOT reference st directly (that would
+	// keep it alive and prevent the cleanup from running).  The raw slice is
 	// passed as the argument, capturing only the off-heap mapping metadata.
 	//
-	// IMPORTANT: The cleanup fires when sb becomes unreachable — NOT when all
-	// references to data are gone.  Any retained []byte from WithBytes
-	// becomes a dangling pointer after the cleanup runs.
-	sb.cleanup = runtime.AddCleanup(sb, func(key uint64) {
+	// IMPORTANT: The cleanup fires when the last handle becomes unreachable —
+	// NOT when all references to data are gone.  Any retained []byte from
+	// WithBytes becomes a dangling pointer after the cleanup runs.
+	st.cleanup = runtime.AddCleanup(st, func(key uint64) {
 		slog.Warn("secmem: SecureBuffer finalized without explicit Destroy()",
 			slog.Int("size", len(region.inner)),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
@@ -322,9 +352,11 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureB
 //     concurrently between Stop() and the wipe.
 //
 // Destroy is idempotent and goroutine-safe.  After Destroy, IsDestroyed()
-// returns true and all subsequent method calls return ErrDestroyed.
+// returns true and all subsequent method calls return ErrDestroyed — through
+// this handle and through every copy of it (see "Copies are aliases" on
+// [SecureBuffer]).
 func (s *SecureBuffer) Destroy() error {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return nil
 	}
 
@@ -362,10 +394,10 @@ func (s *SecureBuffer) Destroy() error {
 	s.region = secRegion{}
 
 	// Step 6 — ensure the GC does not run the cleanup concurrently between
-	// Stop() and here.  KeepAlive pins s in the liveness analysis until this
-	// point, preventing the finalizer goroutine from scheduling the already-
-	// Stopped cleanup during the wipe window.
-	runtime.KeepAlive(s)
+	// Stop() and here.  KeepAlive pins the state in the liveness analysis until
+	// this point, preventing the finalizer goroutine from scheduling the
+	// already-Stopped cleanup during the wipe window.
+	runtime.KeepAlive(s.bufferState)
 
 	if err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Destroy: %w", err)
@@ -375,7 +407,7 @@ func (s *SecureBuffer) Destroy() error {
 
 // IsDestroyed reports whether the buffer has been destroyed.
 func (s *SecureBuffer) IsDestroyed() bool {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return true
 	}
 	s.mu.rLock()
@@ -390,7 +422,7 @@ func (s *SecureBuffer) IsDestroyed() bool {
 // Len returns the usable size of the buffer (the size requested by the caller).
 // May be smaller than [MappedLen] due to page-rounding.
 func (s *SecureBuffer) Len() int {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0
 	}
 	s.mu.rLock()
@@ -403,7 +435,7 @@ func (s *SecureBuffer) Len() int {
 // page size (≥ Len). The PROT_NONE guard pages bracketing the area are NOT
 // counted — they are reserved address space, not lockable memory.
 func (s *SecureBuffer) MappedLen() int {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0
 	}
 	s.mu.rLock()
@@ -413,7 +445,7 @@ func (s *SecureBuffer) MappedLen() int {
 
 // ReadOnly sets the buffer's memory protection to read-only.
 // This prevents accidental overwrites once a secret is fully loaded.
-// Call [ReadWrite] before [Destroy] to restore write access.
+// [Destroy] needs no [ReadWrite] first: it restores write access itself.
 //
 // The exclusive lock is held to drain all in-flight Write/SetByteAt calls
 // before the mprotect, preventing a SIGSEGV from a concurrent write hitting a
@@ -434,6 +466,9 @@ func (s *SecureBuffer) ReadOnly() error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.ReadOnly: nil receiver")
 	}
+	if s.bufferState == nil {
+		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrDestroyed)
+	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.region.inner == nil {
@@ -452,14 +487,17 @@ func (s *SecureBuffer) ReadOnly() error {
 	return nil
 }
 
-// ReadWrite restores read-write access to the buffer.
-// Must be called before [Destroy] if [ReadOnly] was previously applied.
+// ReadWrite restores read-write access to the buffer. It is not needed before
+// [Destroy], which makes the region writable for its own wipe.
 //
 // The exclusive lock is held to drain all in-flight access before the
 // mprotect.
 func (s *SecureBuffer) ReadWrite() error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.ReadWrite: nil receiver")
+	}
+	if s.bufferState == nil {
+		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrDestroyed)
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
@@ -518,6 +556,9 @@ func (s *SecureBuffer) ReadWrite() error {
 func (s *SecureBuffer) Seal() error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.Seal: nil receiver")
+	}
+	if s.bufferState == nil {
+		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", ErrDestroyed)
 	}
 	s.mu.lock()
 	defer s.mu.unlock()
@@ -611,6 +652,9 @@ func (s *SecureBuffer) Unseal() error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.Unseal: nil receiver")
 	}
+	if s.bufferState == nil {
+		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", ErrDestroyed)
+	}
 	s.mu.lock()
 	defer s.mu.unlock()
 	if s.region.inner == nil {
@@ -640,7 +684,17 @@ func (s *SecureBuffer) Unseal() error {
 	// mutator then refuses with ErrReadOnly instead of faulting. On failure the
 	// buffer stays sealed (fail closed) rather than exposing a writable region.
 	if s.readOnly {
-		if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
+		if err := unsealRestoreReadOnly(s.region); err != nil {
+			// The region is read-write plaintext at this point, which is not
+			// what sealed means, and Seal would return nil without touching
+			// it. Seal it again: encrypt where the seal cipher applies, then
+			// protect. Both best-effort — the error returned is the restore's
+			// — but the cipher flag follows what actually happened, so a
+			// later Unseal decrypts exactly when there is ciphertext.
+			if applied, eerr := sealEncrypt(s.region); eerr == nil && applied {
+				s.sealCipher.Store(true)
+			}
+			_ = sealProtect(s.region)
 			return fmt.Errorf("secmem.SecureBuffer.Unseal: restoring read-only: %w", err)
 		}
 	}
@@ -648,9 +702,16 @@ func (s *SecureBuffer) Unseal() error {
 	return nil
 }
 
+// unsealRestoreReadOnly is Unseal's PROT_READ step for a buffer that was
+// read-only when sealed. A package var for the reason sealProtect is one: so a
+// test can make it fail and drive the path that has to seal again.
+var unsealRestoreReadOnly = func(region secRegion) error {
+	return mprotectSecretMem(region, 1 /*PROT_READ*/)
+}
+
 // IsSealed reports whether the buffer is currently in the sealed (PROT_NONE) state.
 func (s *SecureBuffer) IsSealed() bool {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return false
 	}
 	s.mu.rLock()
@@ -667,6 +728,9 @@ func (s *SecureBuffer) IsSealed() bool {
 func (s *SecureBuffer) Truncate(n int) error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.Truncate: nil receiver")
+	}
+	if s.bufferState == nil {
+		return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", ErrDestroyed)
 	}
 	s.mu.lock()
 	defer s.mu.unlock()

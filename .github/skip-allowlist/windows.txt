@@ -10,3 +10,8 @@ github.com/deadpoets/secmem TestScrub_ClearsVectorRegistersZMMHi
 # Seed #1 is the empty plaintext: a zero-length buffer is refused by the core
 # by design, so this seed skips on every platform.
 github.com/deadpoets/secmem/secmem-crypto FuzzOpenInto_RoundTrip/seed#1
+
+# Making the working-set minimum hard needs SeIncreaseWorkingSetPrivilege. A
+# default user token has it; a runner whose token does not cannot set up the
+# state this test is about.
+github.com/deadpoets/secmem TestEnsureMemlockLimit_KeepsAHardMinimum

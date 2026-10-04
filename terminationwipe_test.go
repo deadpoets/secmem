@@ -7,8 +7,8 @@ import (
 )
 
 // TestWipeAllSecrets wipes every registered secret in place: the contents are
-// gone, a subsequent access does not fault (the region stays mapped) and reads
-// back as zeros.
+// gone, the region stays mapped and holds zeros, and a subsequent borrow is
+// refused with ErrWiped rather than handed those zeros.
 func TestWipeAllSecrets(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
@@ -24,19 +24,10 @@ func TestWipeAllSecrets(t *testing.T) {
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
-	sawNonZero := false
-	if err := buf.WithBytes(func(b []byte) {
-		for _, x := range b {
-			if x != 0 {
-				sawNonZero = true
-			}
-		}
-	}); err != nil {
-		t.Fatalf("access after WipeAllSecrets returned %v (must read the wiped-but-mapped region)", err)
-	}
-	if sawNonZero {
+	if !bufRegionIsZero(t, buf) {
 		t.Fatal("secret survived WipeAllSecrets")
 	}
+	requireWiped(t, "WithBytes", buf.WithBytes(func([]byte) {}))
 }
 
 // TestInstallTerminationWipe_UninstallClean verifies install then uninstall is

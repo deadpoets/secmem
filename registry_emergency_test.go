@@ -3,6 +3,7 @@ package secmem
 import (
 	"bytes"
 	"errors"
+	"io"
 	"sync"
 	"testing"
 	"time"
@@ -52,20 +53,9 @@ func TestWipeAllSecrets_UnborrowedBuffersWipeWhileOneIsBorrowed(t *testing.T) {
 	// that a regression (one blocking pass, borrow-first) would blow through
 	// because the borrow only releases after this loop succeeds.
 	deadline := time.Now().Add(5 * time.Second)
-	for {
-		zeroed := true
-		if err := idle.WithBytes(func(b []byte) {
-			for _, x := range b {
-				if x != 0 {
-					zeroed = false
-				}
-			}
-		}); err != nil {
-			t.Fatalf("idle.WithBytes: %v", err)
-		}
-		if zeroed {
-			break
-		}
+	// Read the region itself: once the wipe has taken the idle buffer a borrow
+	// returns ErrWiped, and until then it shows the secret.
+	for !bufRegionIsZero(t, idle) {
 		if time.Now().After(deadline) {
 			close(releaseCallback)
 			<-borrowDone
@@ -81,13 +71,11 @@ func TestWipeAllSecrets_UnborrowedBuffersWipeWhileOneIsBorrowed(t *testing.T) {
 	if err := <-wipeDone; err != nil {
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
-	if err := borrowed.WithBytes(func(b []byte) {
-		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Error("previously-borrowed buffer survived the emergency wipe")
-		}
-	}); err != nil {
-		t.Fatalf("borrowed.WithBytes after wipe: %v", err)
+	if !bufRegionIsZero(t, borrowed) {
+		t.Error("previously-borrowed buffer survived the emergency wipe")
 	}
+	requireWiped(t, "borrowed.WithBytes", borrowed.WithBytes(func([]byte) {}))
+	requireWiped(t, "idle.WithBytes", idle.WithBytes(func([]byte) {}))
 }
 
 // TestWipeAllSecrets_TransientBorrowDoesNotStrandOtherSecrets pins the second
@@ -184,20 +172,7 @@ func TestWipeAllSecrets_TransientBorrowDoesNotStrandOtherSecrets(t *testing.T) {
 	// unrelated borrow is still held.
 	freeIdle()
 	deadline := time.Now().Add(10 * time.Second)
-	for {
-		zeroed := true
-		if err := idle.WithBytes(func(p []byte) {
-			for _, x := range p {
-				if x != 0 {
-					zeroed = false
-				}
-			}
-		}); err != nil {
-			t.Fatalf("idle.WithBytes: %v", err)
-		}
-		if zeroed {
-			break
-		}
+	for !bufRegionIsZero(t, idle) {
 		if time.Now().After(deadline) {
 			t.Error("idle buffer still holds its secret while an unrelated buffer is borrowed — " +
 				"the emergency wipe's blocking pass serialized it behind another region's borrow")
@@ -208,8 +183,8 @@ func TestWipeAllSecrets_TransientBorrowDoesNotStrandOtherSecrets(t *testing.T) {
 }
 
 // TestWipeAllSecrets_DestroyReclaimsMapping covers the deferred unmap. The
-// emergency wipe deliberately leaves regions mapped so a late access reads
-// zeros instead of faulting — but once the owner calls Destroy it has stated
+// emergency wipe deliberately leaves regions mapped so a slice a caller
+// wrongly retained does not fault — but once the owner calls Destroy it has stated
 // nothing is using the buffer, so the address space must be reclaimed rather
 // than leaked until process exit.
 func TestWipeAllSecrets_DestroyReclaimsMapping(t *testing.T) {
@@ -233,9 +208,10 @@ func TestWipeAllSecrets_DestroyReclaimsMapping(t *testing.T) {
 	if !retained {
 		t.Fatal("wiped-in-place region was not retained for later reclamation")
 	}
-	if err := buf.WithBytes(func([]byte) {}); err != nil {
-		t.Fatalf("access after emergency wipe = %v, want nil (region must stay mapped)", err)
+	if !bufRegionIsZero(t, buf) { // also proves the region is still mapped
+		t.Fatal("region retained after the emergency wipe is not zero")
 	}
+	requireWiped(t, "WithBytes", buf.WithBytes(func([]byte) {}))
 
 	if err := buf.Destroy(); err != nil {
 		t.Fatalf("Destroy after emergency wipe: %v", err)
@@ -284,7 +260,7 @@ func TestTryLock_FailsWhileHeld(t *testing.T) {
 // inside the blocking wipe pass. That pass must not remove a region from the
 // registry before it holds the region's lock: a Destroy already queued on that
 // same lock would reach janitor.release with the key in NEITHER map, report
-// success, and never unmap — and the retainWiped landing afterwards would
+// success, and never unmap — and the move to the wiped set landing afterwards would
 // strand the mapping in the wiped set, which nothing collects. The result is a
 // permanently leaked (and still mlock'd) mapping, from the very API pair
 // WipeAllSecrets documents as safe to use concurrently.
@@ -372,12 +348,12 @@ func waitForWritersWaiting(t *testing.T, l *bufferRWLock, want int) {
 }
 
 // TestWipeAllSecrets_MarksOwnerDead pins the deadness contract. The emergency
-// path wipes in place and deliberately leaves the region MAPPED so a late read
-// gets zeros instead of a fault — but that same decision used to leave the
-// buffer fully writable, so a process still running (a panic-recovery handler
-// is a documented call site) could put a FRESH secret into a region the wipe
-// had already reported as handled. Reads must keep working; every mutation must
-// now refuse.
+// path wipes in place and deliberately leaves the region MAPPED so a retained
+// slice does not fault — but that same decision used to leave the buffer fully
+// usable: a process still running (a panic-recovery handler is a documented
+// call site) could put a FRESH secret into a region the wipe had already
+// reported as handled, or borrow the zeros and compute with them as a key.
+// Every borrow and every mutation must refuse.
 func TestWipeAllSecrets_MarksOwnerDead(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
@@ -392,34 +368,37 @@ func TestWipeAllSecrets_MarksOwnerDead(t *testing.T) {
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
-	// Reads still work and see zeros — the documented no-fault guarantee.
-	if err := buf.WithBytes(func(b []byte) {
-		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("read after emergency wipe returned non-zero bytes: %x", b) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
-		}
-	}); err != nil {
-		t.Errorf("WithBytes after emergency wipe = %v, want nil (reads must not fault or fail)", err)
+	// The region is zero and still mapped.
+	if !bufRegionIsZero(t, buf) {
+		t.Error("region is not zero after the emergency wipe")
 	}
 
-	// Every mutation refuses, and does so as both ErrWiped and ErrDestroyed so
-	// existing errors.Is(err, ErrDestroyed) callers keep working.
+	// Every borrow and every mutation refuses, and does so as both ErrWiped
+	// and ErrDestroyed so existing errors.Is(err, ErrDestroyed) callers keep
+	// working. A borrow that succeeded here would hand its caller an all-zero
+	// "key" with a nil error.
+	called := false
 	mutations := map[string]error{
-		"CopyIn":    errOf(func() error { _, e := buf.CopyIn([]byte{1}, 0); return e }),
-		"SetByteAt": buf.SetByteAt(0, 1),
-		"Truncate":  buf.Truncate(1),
-		"ReadFrom":  errOf(func() error { _, e := buf.ReadFrom(bytes.NewReader([]byte{1})); return e }),
-		"Seal":      buf.Seal(),
-		"Unseal":    buf.Unseal(),
-		"ReadOnly":  buf.ReadOnly(),
-		"ReadWrite": buf.ReadWrite(),
+		"WithBytes":         buf.WithBytes(func([]byte) { called = true }),
+		"WithBytesErr":      buf.WithBytesErr(func([]byte) error { called = true; return nil }),
+		"CopyOut":           errOf(func() error { _, e := buf.CopyOut(make([]byte, 1), 0); return e }),
+		"ByteAt":            errOf(func() error { _, e := buf.ByteAt(0); return e }),
+		"ConstantTimeEqual": errOf(func() error { _, e := buf.ConstantTimeEqual([]byte{0}); return e }),
+		"WriteTo":           errOf(func() error { _, e := buf.WriteTo(io.Discard); return e }),
+		"CopyIn":            errOf(func() error { _, e := buf.CopyIn([]byte{1}, 0); return e }),
+		"SetByteAt":         buf.SetByteAt(0, 1),
+		"Truncate":          buf.Truncate(1),
+		"ReadFrom":          errOf(func() error { _, e := buf.ReadFrom(bytes.NewReader([]byte{1})); return e }),
+		"Seal":              buf.Seal(),
+		"Unseal":            buf.Unseal(),
+		"ReadOnly":          buf.ReadOnly(),
+		"ReadWrite":         buf.ReadWrite(),
 	}
 	for name, err := range mutations {
-		if !errors.Is(err, ErrWiped) {
-			t.Errorf("%s after emergency wipe = %v, want ErrWiped", name, err)
-		}
-		if !errors.Is(err, ErrDestroyed) {
-			t.Errorf("%s error does not satisfy errors.Is(err, ErrDestroyed): %v", name, err)
-		}
+		requireWiped(t, name, err)
+	}
+	if called {
+		t.Error("a borrow callback ran on an emergency-wiped buffer")
 	}
 }
 
@@ -443,17 +422,12 @@ func TestWipeAllSecrets_ArenaRefusesAcquire(t *testing.T) {
 	}
 }
 
-// TestWipeAllSecrets_RewipesSlotWrittenThroughLiveHandle covers the one path
-// deadness does NOT close, which is why the emergency sweep still visits the
-// already-wiped set.
-//
-// ArenaSlot.WithBytes hands out a single slice used for both reading and
-// writing; there is no way to permit the read and refuse the write, and reads
-// must keep working. So a caller holding a slot acquired BEFORE the wipe can
-// still write through it afterwards. Acquire refuses, which stops new slots,
-// but this handle is already out. The second wipe has to catch it — and it only
-// can because wipeAllInPlace sweeps janitor.wiped as well as janitor.regions.
-func TestWipeAllSecrets_RewipesSlotWrittenThroughLiveHandle(t *testing.T) {
+// TestWipeAllSecrets_PreWipeSlotHandleIsRefused closes what used to be the one
+// path deadness left open. ArenaSlot.WithBytes hands out a single slice for
+// reading and writing, so while borrows on a wiped slab were allowed, a handle
+// acquired BEFORE the wipe could still write a fresh secret into it and read
+// its zeros back as key material. The borrow is now refused outright.
+func TestWipeAllSecrets_PreWipeSlotHandleIsRefused(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
 	}
@@ -467,23 +441,23 @@ func TestWipeAllSecrets_RewipesSlotWrittenThroughLiveHandle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Acquire: %v", err)
 	}
+	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
+		t.Fatalf("fill: %v", err)
+	}
 	if err := WipeAllSecrets(); err != nil {
-		t.Fatalf("first WipeAllSecrets: %v", err)
+		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
-	// The handle predates the wipe, so it still writes.
-	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
-		t.Fatalf("WithBytes through a pre-wipe handle: %v", err)
+	called := false
+	requireWiped(t, "WithBytes through a pre-wipe handle",
+		slot.WithBytes(func([]byte) { called = true }))
+	requireWiped(t, "WithBytesErr through a pre-wipe handle",
+		slot.WithBytesErr(func([]byte) error { called = true; return nil }))
+	if called {
+		t.Error("a borrow callback ran on a slot of an emergency-wiped arena")
 	}
-	if err := WipeAllSecrets(); err != nil {
-		t.Fatalf("second WipeAllSecrets: %v", err)
-	}
-	if err := slot.WithBytes(func(b []byte) {
-		if !bytes.Equal(b, make([]byte, len(b))) {
-			t.Errorf("bytes written through a live handle after the first wipe survived the second: %x", b) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
-		}
-	}); err != nil {
-		t.Fatalf("WithBytes after the second wipe: %v", err)
+	if !slotRegionIsZero(t, slot) {
+		t.Error("slot contents survived the emergency wipe")
 	}
 }
 

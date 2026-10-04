@@ -12,13 +12,12 @@ import (
 //
 // WipeAllSecrets zeroes the whole slab in place — canary strips included — and
 // leaves it mapped. The janitor clears its own canary layout for exactly that
-// reason (retainWiped), but Release re-verified the slot's strip itself and so
+// reason (moveToWipedIf), but Release re-verified the slot's strip itself and so
 // saw zeros where the pattern should be: it reported ErrCanaryViolation, a
 // documented memory-safety bug report, for an overflow that never happened,
 // on every slot released after the wipe. Release is teardown, not reuse: it
-// must still wipe the slot (a write through the pre-wipe handle is the one
-// gap WipeAllSecrets documents), still return it to the pool, and report
-// nothing.
+// must still wipe the slot (a slice retained from before the wipe can still
+// write to the mapped slab), still return it to the pool, and report nothing.
 func TestArena_ReleaseAfterWipeAllSecretsIsClean(t *testing.T) {
 	if !platformHasSecureMemory {
 		t.Skip("no secure memory on this platform")
@@ -60,14 +59,17 @@ func TestArena_ReleaseAfterWipeAllSecretsIsClean(t *testing.T) {
 		t.Errorf("LiveCount() after Release = %d, want 1 (slot must go back to the pool)", got)
 	}
 
-	// The documented gap: a handle that predates the wipe still writes. Release
-	// is the owner's last chance to zero that, so the wipe must not be skipped
-	// along with the canary check.
-	if err := written.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
-		t.Fatalf("WithBytes through a pre-wipe handle: %v", err)
-	}
+	// A borrow through a handle that predates the wipe is refused, but a slice
+	// retained from an earlier callback still writes to the mapped slab.
+	// Release is the owner's last chance to zero that, so the wipe must not be
+	// skipped along with the canary check. Plant the bytes the way such a
+	// slice would, straight into the slab.
+	requireWiped(t, "WithBytes through a pre-wipe handle", written.WithBytes(func([]byte) {}))
 	start := written.Index() * a.stride
 	end := start + a.slotSize
+	a.mu.rLock()
+	copy(a.region.inner[start:end], bytes.Repeat([]byte{0xC3}, a.slotSize))
+	a.mu.rUnlock()
 	if err := written.Release(); err != nil {
 		t.Fatalf("Release of a slot written after the wipe = %v, want nil", err)
 	}

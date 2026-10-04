@@ -79,13 +79,10 @@ func TestRedact_SecureBuffer_NoCrashNoLeak(t *testing.T) {
 	assertRedacted(t, secret, *buf)
 }
 
-// TestRedact_SecureArena_NoCrashNoLeak covers SecureArena itself, via the
-// embedded-arenaRedactor path. Only the pointer form is exercised: unlike
-// SecureBuffer, copying a SecureArena BY VALUE is already a go vet copylocks
-// error (it holds a value sync.Mutex) — go vet main.go with a bare
-// fmt.Printf("%v", *arena) confirms vet rejects that call outright, so
-// lint-clean code can never produce the dereferenced-value case redact.go's
-// embedding also happens to cover. Only the pointer path is a real scenario.
+// TestRedact_SecureArena_NoCrashNoLeak covers SecureArena itself, as a pointer
+// and as a dereferenced value. The value form is reachable: a SecureArena is
+// one pointer to its shared state, so vet has nothing to object to in
+// fmt.Printf("%v", *arena).
 func TestRedact_SecureArena_NoCrashNoLeak(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
@@ -95,6 +92,7 @@ func TestRedact_SecureArena_NoCrashNoLeak(t *testing.T) {
 	defer func() { _ = a.Destroy() }()
 
 	assertRedacted(t, "", a)
+	assertRedacted(t, "", *a)
 }
 
 // TestRedact_ArenaSlot_NoCrashNoLeak covers a LIVE slot from a real Acquire

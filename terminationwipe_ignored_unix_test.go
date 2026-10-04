@@ -27,9 +27,9 @@ const inheritedIgnoreChildEnv = "SECMEM_TEST_INHERITED_IGNORE_CHILD"
 // buffer, installs the default termination wipe, and waits.
 //
 // Measured before the fix: the child reported SIGINT ignored at start, the
-// wipe ran on the signal (the buffer read as zeros), the re-raise "succeeded"
+// wipe ran on the signal (the buffer was zeroed), the re-raise "succeeded"
 // — kill(2) accepts a signal the kernel then discards — and the child ran on
-// for as long as it liked, reads returning zeros and mutations ErrWiped,
+// for as long as it liked, every secret gone,
 // exiting normally with status 0. That is the state WipeAllSecrets does not
 // support and that the installer's documentation said only Windows could
 // reach.
@@ -169,14 +169,7 @@ func inheritedIgnoreChild() {
 	_ = os.Stdout.Sync()
 
 	time.Sleep(4 * time.Second)
-	wiped := true
-	_ = buf.WithBytes(func(b []byte) {
-		for _, x := range b {
-			if x != 0 {
-				wiped = false
-			}
-		}
-	})
+	wiped := errors.Is(buf.WithBytes(func([]byte) {}), ErrWiped)
 	fmt.Printf("child: still running after the signal window, secret wiped=%v\n", wiped)
 	fmt.Println("child: SURVIVED")
 	os.Exit(0)

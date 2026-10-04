@@ -32,13 +32,15 @@ import (
 // The RLock is held for the entire callback, so Destroy blocks until fn returns.
 // This is the preferred access pattern; use WithBytesErr when fn returns an error.
 //
-// NOT REENTRANT: fn MUST NOT call any access method on the SAME buffer
-// (WithBytes, WithBytesErr, CopyOut, ConstantTimeEqual, …). The lock is writer-
-// preferring, so if another goroutine calls Destroy/CopyIn/Seal/ReadOnly while
-// fn holds the read lock, a nested same-buffer read lock would block on the
-// waiting writer while that writer blocks on fn's outstanding read lock —
-// a deadlock. Nesting access to a DIFFERENT buffer (e.g. the decrypt-into
-// pattern: key.WithBytesErr → out.WithBytesErr) is safe and expected.
+// NOT REENTRANT: fn MUST NOT call any method on the SAME buffer that takes its
+// lock: the access methods (WithBytes, WithBytesErr, CopyOut, ConstantTimeEqual,
+// …) and equally the queries Len, MappedLen, IsSealed and IsDestroyed. The
+// lock is writer-preferring, so if another goroutine calls
+// Destroy/CopyIn/Seal/ReadOnly, or [WipeAllSecrets] runs, while fn holds the
+// read lock, a nested same-buffer read lock would block on the waiting writer
+// while that writer blocks on fn's outstanding read lock — a deadlock. Nesting
+// access to a DIFFERENT buffer (e.g. the decrypt-into pattern:
+// key.WithBytesErr → out.WithBytesErr) is safe and expected.
 //
 // READ-ONLY BUFFERS: while the buffer is read-only ([SecureBuffer.ReadOnly])
 // the slice is backed by a PROT_READ page. A write through it is not
@@ -55,12 +57,13 @@ import (
 // residue test. That covers what fn leaves behind; a preemption landing while
 // fn is still running is only prevented inside a [Scrub] window.
 //
-// Returns ErrDestroyed if the buffer has been destroyed.
+// Returns ErrDestroyed if the buffer has been destroyed, and [ErrWiped] (which
+// wraps it) if [WipeAllSecrets] emptied it; fn is not called in either case.
 func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytes: nil fn")
 	}
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
 	}
 	defer clearRegisters() // registered first, so it runs last, after the unlock
@@ -68,6 +71,9 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	defer s.mu.rUnlock()
 	if s.data == nil {
 		return ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return ErrWiped
 	}
 	if s.sealed {
 		return ErrSealed
@@ -77,7 +83,8 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 }
 
 // WithBytesErr is like WithBytes but fn may return an error, which is propagated.
-// Returns ErrDestroyed if the buffer has been destroyed; fn is not called in that case.
+// Returns ErrDestroyed if the buffer has been destroyed and [ErrWiped] if
+// [WipeAllSecrets] emptied it; fn is not called in either case.
 //
 // NOT REENTRANT: as with [SecureBuffer.WithBytes], fn must not call another
 // access method on the same buffer (deadlock risk under a concurrent writer);
@@ -88,7 +95,7 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytesErr: nil fn")
 	}
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -96,6 +103,9 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	defer s.mu.rUnlock()
 	if s.data == nil {
 		return ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return ErrWiped
 	}
 	if s.sealed {
 		return ErrSealed
@@ -151,7 +161,7 @@ func (s *SecureBuffer) ExposeString() (string, error) {
 // itself an off-heap region, no heap copy occurs. If dst is heap-allocated,
 // the caller is responsible for wiping it.
 func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -159,6 +169,9 @@ func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 	defer s.mu.rUnlock()
 	if s.data == nil {
 		return 0, ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return 0, ErrWiped
 	}
 	if s.sealed {
 		return 0, ErrSealed
@@ -177,7 +190,7 @@ func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 // serializing all concurrent writes and preventing races with
 // ReadOnly/ReadWrite page-protection changes.
 func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -208,7 +221,7 @@ func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 // returns an error instead, honoring the library's "no panics in library
 // code" policy.
 func (s *SecureBuffer) ByteAt(i int) (byte, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // one secret byte still moves through a register; see WithBytes
@@ -216,6 +229,9 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 	defer s.mu.rUnlock()
 	if s.data == nil {
 		return 0, ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return 0, ErrWiped
 	}
 	if s.sealed {
 		return 0, ErrSealed
@@ -232,7 +248,7 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 // The exclusive lock is held to prevent races with ReadOnly/ReadWrite and
 // concurrent Write calls.
 func (s *SecureBuffer) SetByteAt(i int, v byte) error {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
 	}
 	defer clearRegisters() // see ByteAt
@@ -261,7 +277,7 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 // against other. Returns (false, nil) when lengths differ.
 // Returns (false, ErrDestroyed) if the buffer has been destroyed.
 func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return false, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -269,6 +285,9 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 	defer s.mu.rUnlock()
 	if s.data == nil {
 		return false, ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return false, ErrWiped
 	}
 	if s.sealed {
 		return false, ErrSealed
@@ -289,7 +308,7 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 // NOTE: For network or pipe targets, wrap w with a write deadline before
 // calling WriteTo to bound the lifetime of the in-flight copy.
 func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -297,6 +316,10 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 	if s.data == nil {
 		s.mu.rUnlock()
 		return 0, ErrDestroyed
+	}
+	if s.wiped.Load() {
+		s.mu.rUnlock()
+		return 0, ErrWiped
 	}
 	if s.sealed {
 		s.mu.rUnlock()
@@ -322,7 +345,7 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 // (including the emergency-wipe path). The temporary slice is wiped via
 // secureWipeSlice after the copy regardless of outcome.
 func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -355,8 +378,11 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	tmp := make([]byte, size)
 	defer secureWipeSlice(tmp)
 	n, err := io.ReadFull(r, tmp)
-	if errors.Is(err, io.ErrUnexpectedEOF) {
-		// Reader had fewer bytes than buffer — partial fill is acceptable.
+	if errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
+		// Reader had fewer bytes than buffer — partial fill is acceptable,
+		// and so is no fill at all: io.ReadFull reports a source that was
+		// already at EOF as io.EOF, which io.ReaderFrom does not treat as an
+		// error.
 		err = nil
 	}
 	if err != nil {
@@ -382,20 +408,29 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 		s.mu.unlock()
 		return 0, ErrReadOnly
 	}
-	copy(s.data, tmp[:n])
+	// The count returned is what was stored: a Truncate between the size
+	// snapshot above and this copy leaves room for fewer bytes than were read.
+	n = copy(s.data, tmp[:n])
 	s.mu.unlock()
 	return int64(n), nil
 }
 
 // NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.
 // The returned buffer may be partially filled if r returns fewer than size bytes;
-// the returned count reports how many bytes were read.
+// the returned count reports how many bytes were read, so check it where a
+// short secret is not acceptable. A source that yields nothing at all is
+// refused with [io.EOF] and no buffer: an empty key file is far more often a
+// mistake than a secret, and unlike [SecureBuffer.ReadFrom], which follows
+// [io.ReaderFrom] and reports (0, nil), a constructor can say so.
 func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, int64, error) {
 	buf, err := NewEmptyBuffer(size, opts...)
 	if err != nil {
 		return nil, 0, err
 	}
 	n, err := buf.ReadFrom(r)
+	if err == nil && n == 0 {
+		err = io.EOF
+	}
 	if err != nil {
 		_ = buf.Destroy()
 		return nil, n, err

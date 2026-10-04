@@ -88,7 +88,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Excluded from crash dumps | ⚠ MADV_DONTDUMP | ⚠ MADV_DONTDUMP | ✗ | ⚠ WER exclusion (reported by the registration call, not verified by a dump) | ✗ |
 | Not inherited across fork | ⚠ MADV_DONTFORK | ⚠ MADV_DONTFORK | ✗ | n/a | ✗ |
 | No THP/KSM secret copies | ✓ madvise | ✓ madvise | n/a | n/a | ✗ |
-| Guaranteed wipe on destroy | ✓ asm + cache flush (the zeros are read back; the flush is structural, not measured) | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64/arm64) | ⚠ barriered store loop, no flush |
+| Guaranteed wipe on destroy | ✓ asm + cache flush (the zeros are read back; the flush is structural, not measured) | ✓ (amd64/arm64 asm; else ⚠ barriered store loop) | ✓ asm | ✓ asm (amd64; arm64 is built, never executed: see [WINDOWS.md](WINDOWS.md)) | ⚠ barriered store loop, no flush |
 | Guard pages + overflow canary | ✓ | ✓ | ✓ | ✓ | ✗ (heap fallback) |
 | Stack-frame scrub inside [`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub) | ✓ asm | ✓ asm on amd64/arm64; ✗ stub elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ stub |
 | No async register dump into the window (preemption signal blocked) | ✓ SIGURG+SIGPROF | ✓ SIGURG+SIGPROF | ✗ no `pthread_sigmask` binding | ✗ unmaskable (`SetThreadContext`) | ✗ |
@@ -97,7 +97,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Registers cleared when a borrow or copy (`WithBytes`, `CopyIn`, `CopyOut`, …) returns | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
 | Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) — heap objects erased at the next garbage collection, not on return | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
-| Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
+| Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs on every thread (calling thread only with cgo) | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
 
 The suite has been executed on real **linux/amd64 and linux/arm64** hardware,

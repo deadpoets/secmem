@@ -3,6 +3,7 @@ package secmem
 import (
 	"bytes"
 	"errors"
+	"reflect"
 	"testing"
 )
 
@@ -39,6 +40,13 @@ func TestEmergencyWipe_WriteAccessNotRestored_DoesNotFlagWiped(t *testing.T) {
 		t.Fatalf("ReadOnly: %v", err)
 	}
 
+	emergencyJanitor.mu.Lock()
+	before, registered := emergencyJanitor.regions[arena.janitorKey]
+	emergencyJanitor.mu.Unlock()
+	if !registered {
+		t.Fatal("arena is not in the janitor's live set before the wipe")
+	}
+
 	refused := errors.New("forced: mprotect refused")
 	saved := restoreWriteAccess
 	restoreWriteAccess = func(secRegion, int) error { return refused }
@@ -50,6 +58,24 @@ func TestEmergencyWipe_WriteAccessNotRestored_DoesNotFlagWiped(t *testing.T) {
 	}
 	if arena.wiped.Load() {
 		t.Fatal("a slab that was not wiped is flagged wiped")
+	}
+	// The registration says the same thing: the pass files a region under
+	// "wiped" before it wipes, with the canary layout erased because a wipe
+	// destroys the pattern. Nothing was wiped here, so the region has to be
+	// back in the live set with its layout, or a later overflow into a strip
+	// would go unreported at Destroy and the "already zero" set would hold a
+	// live secret.
+	emergencyJanitor.mu.Lock()
+	after, stillLive := emergencyJanitor.regions[arena.janitorKey]
+	_, filedWiped := emergencyJanitor.wiped[arena.janitorKey]
+	emergencyJanitor.mu.Unlock()
+	if filedWiped {
+		t.Error("a slab that was not wiped is filed in the janitor's wiped set")
+	}
+	if !stillLive {
+		t.Error("a slab that was not wiped is no longer in the janitor's live set")
+	} else if !reflect.DeepEqual(after.canary, before.canary) {
+		t.Errorf("canary layout after the skipped wipe = %+v, want %+v as registered", after.canary, before.canary)
 	}
 	// Honest state: the secret is still there ...
 	intact := false

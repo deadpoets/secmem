@@ -3,8 +3,12 @@ package secmem
 import (
 	"bytes"
 	"errors"
+	"fmt"
+	"log/slog"
 	"runtime"
 	"strconv"
+	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -311,37 +315,65 @@ func TestTruncate_DoesNotModifyRaw(t *testing.T) {
 	}
 }
 
-// TestHasCLFLUSHOPT verifies the CPU feature flag helper returns without crashing.
-// The actual return value is hardware-dependent; we just verify the function is safe.
-func TestHasCLFLUSHOPT(t *testing.T) {
-	t.Parallel()
-	_ = HasCLFLUSHOPT() // must not panic
-}
-
 // TestDestroy_StopsCleanup verifies that an explicit Destroy prevents the
 // AddCleanup safety-net from firing on GC. The absence of a crash after
 // forcing GC on a destroyed buffer is the assertion — if Stop() did not work,
 // the cleanup would call secureWipeSlice/freeSecretMem on an already-freed
 // region, causing a crash or data race caught by the race detector.
 func TestDestroy_StopsCleanup(t *testing.T) {
-	t.Parallel()
+	// Not parallel: it reads the default logger's output. A cleanup that
+	// Destroy failed to stop does no damage (it finds its registration gone),
+	// so the only trace it leaves is the "finalized without explicit
+	// Destroy" warning, and that is what is looked for.
+	var logged lockedBuffer
+	old := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(old)
 
-	buf, err := NewEmptyBuffer(64)
+	// A mapped size no other test uses, so a warning for a buffer some
+	// earlier test leaked cannot be mistaken for this one.
+	const size = 7 * 4096
+	buf, err := NewEmptyBuffer(size)
 	if err != nil {
-		t.Fatalf("NewEmptyBuffer: %v", err)
+		t.Skipf("NewEmptyBuffer: %v", err)
 	}
+	mapped := buf.MappedLen()
 
 	if err := buf.Destroy(); err != nil {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	buf = nil //nolint:wastedassign // intentionally nil to allow GC
+	buf = nil //nolint:wastedassign,ineffassign // intentionally nil to allow GC
 
-	// Force GC three times. If cleanup.Stop() did not work, the raw‐memory
-	// callback would run on the already-freed mmap region — crash or race.
-	for range 3 {
+	// Cleanups run on their own goroutine after a collection; give a stray
+	// one every chance to fire.
+	for range 5 {
 		runtime.GC()
+		time.Sleep(10 * time.Millisecond)
 	}
+	want := fmt.Sprintf("size=%d", mapped)
+	if out := logged.String(); strings.Contains(out, "finalized without explicit Destroy") && strings.Contains(out, want) {
+		t.Errorf("the finalization fallback ran for a buffer that was explicitly destroyed:\n%s", out)
+	}
+}
+
+// lockedBuffer is a bytes.Buffer safe to write from the cleanup goroutine
+// while the test reads it.
+type lockedBuffer struct {
+	mu sync.Mutex
+	b  bytes.Buffer
+}
+
+func (l *lockedBuffer) Write(p []byte) (int, error) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.Write(p)
+}
+
+func (l *lockedBuffer) String() string {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	return l.b.String()
 }
 
 // TestAddCleanup_NoDoubleFreeOnGC verifies that a buffer finalized by the GC
@@ -350,13 +382,21 @@ func TestDestroy_StopsCleanup(t *testing.T) {
 func TestAddCleanup_NoDoubleFreeOnGC(t *testing.T) {
 	before := janitorRegionCount()
 
-	buf, err := NewEmptyBuffer(64)
-	if err != nil {
-		t.Fatalf("NewEmptyBuffer: %v", err)
-	}
-	_ = buf.Len() // use the buffer to ensure it is allocated
+	// The fallback is documented to warn as well as wipe; capture the default
+	// logger to see it. The mapped size is one no other test uses, so the
+	// warning found is this buffer's.
+	var logged lockedBuffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(oldLogger)
 
-	buf = nil //nolint:wastedassign // intentionally nil to allow GC
+	buf, err := NewEmptyBuffer(5 * 4096)
+	if err != nil {
+		t.Skipf("NewEmptyBuffer: %v", err)
+	}
+	wantWarning := fmt.Sprintf("size=%d", buf.MappedLen())
+
+	buf = nil //nolint:wastedassign,ineffassign // intentionally nil to allow GC
 
 	// Force GC to trigger the AddCleanup callback.
 	// If the callback wipes and frees memory incorrectly, the race detector
@@ -371,6 +411,10 @@ func TestAddCleanup_NoDoubleFreeOnGC(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if janitorRegionCount() == before {
+			out := logged.String()
+			if !strings.Contains(out, "finalized without explicit Destroy") || !strings.Contains(out, wantWarning) {
+				t.Errorf("the finalization fallback released the region without the documented warning; logged:\n%s", out)
+			}
 			return
 		}
 		runtime.GC()

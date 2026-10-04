@@ -226,7 +226,11 @@ non-root and containers.
 Before the first secret exists:
 
 1. `HardenProcess` and `DisableCoreDumps`, so the process is non-dumpable
-   before there is anything to dump.
+   before there is anything to dump. Call both: on a Linux host whose
+   `core_pattern` pipes dumps to a program (systemd-coredump, apport) the
+   kernel ignores the `RLIMIT_CORE=0` that `DisableCoreDumps` sets, and only
+   `HardenProcess` stops the dump. Check the level `HardenProcess` returns
+   rather than assuming it: a cgo binary does not get `HardenNoNewPriv`.
 2. `EnsureMemlockLimit` with the budget from section 4.
 3. `Probe`, and log its `Warnings` (they contain no secrets). Decide in
    advance which capabilities your deployment requires and refuse to start

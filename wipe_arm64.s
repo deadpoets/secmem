@@ -4,7 +4,10 @@
 //   DMB ISHST  — Data Memory Barrier, Inner Shareable, Stores only
 //   DMB ISH    — Data Memory Barrier, Inner Shareable, Loads and Stores
 //   DC CIVAC   — Data Cache Clean and Invalidate by Virtual Address to PoC
-//                SYS #3, C7, C14, #1 — available to EL0 (unprivileged)
+//                SYS #3, C7, C14, #1 — usable from EL0 (unprivileged) only
+//                where the OS sets SCTLR_EL1.UCI; otherwise it traps. Linux
+//                and macOS set it, and this routine runs there in CI. It has
+//                never been executed on windows/arm64 (see WINDOWS.md).
 //   DSB ISH    — Data Synchronization Barrier, Inner Shareable
 //   ISB SY     — Instruction Synchronization Barrier, full system
 //
@@ -17,7 +20,9 @@
 // DC CIVAC encoding (SYS #3, C7, C14, #1, Xt):
 //   Base: 0xD50B7E20 | Rt  — e.g. DC CIVAC, R2 = 0xD50B7E22
 //
-// Cache line size: 64 bytes (standard ARMv8-A minimum and Hetzner Ampere value).
+// Cache line size: 64 bytes, the value on the cores this has run on (Ampere,
+// Apple, Graviton). The architectural minimum is 16; a core with shorter lines
+// would have some of them skipped by the flush loop, not by the zeroing.
 
 #include "textflag.h"
 

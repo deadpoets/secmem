@@ -13,8 +13,9 @@ var zeroFrameSize uint64 = 32768
 
 // wipeScratchFrameFull allocates a 32 KiB local frame and zeros it with STP of
 // the zero register, then DMB ISHST. Scrub/ScrubErr call it on entry (to
-// reserve headroom and force any stack growth before secrets exist) and defer
-// it (to burn the band fn's call tree used). Must NOT be inlined — inlining
+// reserve headroom and force any stack growth before secrets exist) and again
+// once fn's frames are dead (to burn the band fn's call tree used; see
+// scrub_legacy.go). Must NOT be inlined — inlining
 // would merge the frame into the caller's and defeat both jobs.
 //
 //go:noescape

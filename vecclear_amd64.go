@@ -29,8 +29,8 @@ import "golang.org/x/sys/cpu"
 //
 // The residue is a property of the thread that ran fn, so the window pins the
 // goroutine to its OS thread (suppressAsyncPreempt) before fn starts and the
-// clear runs as the first deferred call after fn returns, on the same thread,
-// before the frame wipe and before the pin is released.
+// clear runs as the first thing after fn's frames are dead, on the same
+// thread, before the frame wipe and before the pin is released.
 //
 // # Why it is trusted
 //
