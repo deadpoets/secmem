@@ -14,8 +14,8 @@ It speaks the standard agent protocol over `SSH_AUTH_SOCK`. Real `ssh`,
 
 ```console
 $ go run . &
-SSH_AUTH_SOCK=/run/user/1000/secmem-agent-4242/agent.sock; export SSH_AUTH_SOCK;
-$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent-4242/agent.sock
+SSH_AUTH_SOCK=/run/user/1000/secmem-agent-2893461072/agent.sock; export SSH_AUTH_SOCK;
+$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent-2893461072/agent.sock
 $ ssh-add ~/.ssh/id_ed25519
 Identity added: /home/you/.ssh/id_ed25519 (you@laptop)
 $ ssh-add -T ~/.ssh/id_ed25519.pub      # OpenSSH's own sign-and-verify test

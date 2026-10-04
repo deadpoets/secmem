@@ -5,7 +5,7 @@
 // dispatch.
 //
 //	$ go run . &
-//	$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent/agent.sock  # printed at start
+//	$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent-2893461072/agent.sock  # printed at start
 //	$ ssh-add ~/.ssh/id_ed25519
 //	$ ssh somewhere
 //
@@ -180,11 +180,14 @@ func run(socketPath string, allowHeapTransients bool, logger *slog.Logger) error
 		if base == "" {
 			base = os.TempDir()
 		}
-		dir := filepath.Join(base, fmt.Sprintf("secmem-agent-%d", os.Getpid()))
-		//nolint:gosec // G703: dir is $XDG_RUNTIME_DIR (or the temp dir) joined with our own pid — not attacker-controlled path input.
-		if err := os.Mkdir(dir, 0o700); err != nil {
-			return fmt.Errorf("creating socket dir: %w", err)
+		dir, err := newSocketDir(base)
+		if err != nil {
+			return err
 		}
+		// Deferred before the socket's own removal below, so it runs after
+		// it and finds the directory empty.
+		//nolint:gosec // G703: dir is the directory MkdirTemp just created under $XDG_RUNTIME_DIR (or the temp dir); removing it is intended.
+		defer func() { _ = os.Remove(dir) }()
 		socketPath = filepath.Join(dir, "agent.sock")
 	}
 
@@ -225,6 +228,20 @@ func run(socketPath string, allowHeapTransients bool, logger *slog.Logger) error
 	fmt.Printf("SSH_AUTH_SOCK=%s; export SSH_AUTH_SOCK;\n", socketPath)
 
 	return serve(ctx, ln, keyring, logger)
+}
+
+// newSocketDir creates the private directory the default socket lives in,
+// under base, and returns its path. MkdirTemp gives it mode 0700 and a
+// random name it has just created: a name derived from the pid could be
+// left over from an earlier run under the same pid, or made first by
+// another user of a shared temp dir, and either one stops the agent
+// starting.
+func newSocketDir(base string) (string, error) {
+	dir, err := os.MkdirTemp(base, "secmem-agent-")
+	if err != nil {
+		return "", fmt.Errorf("creating socket dir: %w", err)
+	}
+	return dir, nil
 }
 
 // serve accepts connections on ln and serves each on its own goroutine, at
