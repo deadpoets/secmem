@@ -17,5 +17,5 @@ An entry that stops skipping is reported as a note by the audit; remove it.
 | `linux-residue.txt` | `test-residue` — the out-of-process key residue scan, legacy and `runtimesecret`; nothing may skip |
 | `linux-386.txt` | `test-386-linux` — no `memfd_secret` on 32-bit |
 | `darwin.txt` | `test` (macos-latest) |
-| `windows.txt` | `test` (windows-latest) |
+| `windows.txt` | `test` (windows-latest), `test-noescape` (windows-latest) |
 | `windows-residue.txt` | `test-residue-windows` — the key residue scan on windows/amd64 |

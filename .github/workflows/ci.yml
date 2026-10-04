@@ -217,14 +217,24 @@ jobs:
           memlock: unlimited
           args: ""
 
-  # Run the AllocsPerRun no-heap-escape gates on the primary 64-bit targets.
-  # They are //go:build !race (alloc counts are not meaningful under the race
-  # detector), so the -race jobs skip them and only test-386-linux would
-  # otherwise run them — but OpenInto's GCM path is assembly on amd64/arm64 and
-  # generic on 386, so the deployed architectures must run the gates too.
-  # Audited like every other proof: the gates have no t.Skip, so nothing may
-  # skip, and a rename that empties the -run pattern fails the step (the audit
-  # refuses a run with no test events) instead of passing as "no tests to run".
+  # Run the //go:build !race allocation proofs on the primary 64-bit targets.
+  # Alloc counts and the memory profile are not meaningful under the race
+  # detector, so the -race jobs do not compile those files and only
+  # test-386-linux would otherwise run them. But the code they measure differs
+  # by target: OpenInto's GCM path and the SHA-2 block functions are assembly
+  # on amd64/arm64 and generic on 386, and the standard library under the
+  # parser and marshal proofs changes with the toolchain, so the deployed
+  # targets must run them too: linux/amd64 on both toolchains, linux/arm64,
+  # and windows/amd64 on both toolchains.
+  #
+  # The core step selects its gates by name (its other !race proofs, the
+  # register clears, have their own step in the test jobs). The secmem-crypto
+  # step runs the WHOLE suite without -race instead of a -run pattern: a
+  # pattern is how the classification, parser and marshal proofs once ran on
+  # no 64-bit lane at all, and a new !race file is covered here without
+  # anyone remembering to widen it. The residue scans are skipped by name
+  # because they have their own lanes, with their own (empty) allowlists.
+  # Audited like every other proof, and a run with no test events fails.
   test-noescape:
     name: test-noescape (${{ matrix.runner }})${{ matrix.go == 'oldstable' && ' [oldstable]' || '' }}
     strategy:
@@ -234,6 +244,8 @@ jobs:
         go: [stable]
         include:
           - { runner: ubuntu-latest, go: oldstable }
+          - { runner: windows-latest, go: stable }
+          - { runner: windows-latest, go: oldstable }
     runs-on: ${{ matrix.runner }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -244,14 +256,17 @@ jobs:
       - name: no-heap-escape gates (core)
         uses: ./.github/actions/test-audited
         with:
-          allowlist: linux
+          allowlist: ${{ runner.os == 'Linux' && 'linux' || 'windows' }}
           args: "-count=1 -run TestNoHeapEscape"
-      - name: no-heap-escape gates (secmem-crypto)
+      # memlock: without -run the locked Argon2 workspace tests run here too,
+      # and they skip under a hosted runner's default limit.
+      - name: allocation proofs, whole suite without -race (secmem-crypto)
         uses: ./.github/actions/test-audited
         with:
           working-directory: secmem-crypto
-          allowlist: linux
-          args: "-count=1 -run TestNoHeapEscape"
+          allowlist: ${{ runner.os == 'Linux' && 'linux' || 'windows' }}
+          memlock: unlimited
+          args: "-count=1 -skip '^(TestKeyResidue|TestResidue)'"
 
   # The out-of-process key residue proof (secmem-crypto/residue_test.go and
   # its per-OS halves): a parent freezes a victim subprocess and scans its

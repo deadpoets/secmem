@@ -23,11 +23,16 @@ that is said outright rather than dressed up.
 - **Executed on 32-bit x86** (`GOARCH=386`), not merely compiled — the wipe
   helpers manipulate `big.Word` limbs whose width differs on 386. Runs without
   `-race` (the detector needs 64-bit).
-- **The no-heap-escape gates run where the deployed code runs.** The
-  `testing.AllocsPerRun` gates are `//go:build !race`, so the race jobs skip
-  them; dedicated `test-noescape` jobs run them on linux/amd64 and
-  linux/arm64 (where `OpenInto`'s GCM path is assembly), and the 386 job runs
-  them on the generic path.
+- **The allocation proofs run where the deployed code runs.** The
+  `testing.AllocsPerRun` gates and the memory-profile proofs (the
+  classification, parser, marshal and `BcryptPBKDFInto` tests) are
+  `//go:build !race`, so the race jobs do not compile them. The
+  `test-noescape` jobs run them on linux/amd64 and windows/amd64 (both
+  toolchains) and on linux/arm64: the core's gates by name, and
+  `secmem-crypto`'s by running its whole suite without `-race`, less the
+  residue scans, so a new `!race` file needs no pattern widened. The 386 job
+  runs them on the generic path. macOS runs none of them: every `secmem-crypto`
+  step there is `-race`.
 - **No test skips silently.** Every test step runs `go test -json` through
   `internal/skipaudit`, which prints each skipped test with the reason its
   `t.Skip` gave and fails the job on any skip that is not on that lane's
