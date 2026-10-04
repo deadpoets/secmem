@@ -48,8 +48,10 @@
 // channel, the variables of a range over a tainted iterator function (the sole
 // variable of for v := range seq; of for k, v := range seq2, v always and k
 // only when its type is a byte or can otherwise hold bytes, so an integer index
-// key stays clean), method calls on a tainted value, and func literals that
-// capture one.
+// key stays clean), the variable a type switch binds over a tainted value
+// (switch t := v.(type), in every clause but one whose case is a plain number
+// or bool), method calls on a tainted value, and func literals that capture
+// one.
 // Lengths, comparisons and the slice's address as a uintptr are not tainted,
 // and neither is the result of a sink: a leak is reported once, at the sink.
 //
@@ -59,9 +61,11 @@
 //   - append(dst, tainted...) / append(dst, tainted) / copy(dst, tainted) where
 //     dst is memory outside the closure.
 //   - a tainted value assigned to a variable declared outside the closure, or
-//     to a field / element / pointee whose storage is outside it; sent on a
-//     channel; returned from the closure; handed to a goroutine; or passed to
-//     panic.
+//     to a field / element / pointee whose storage is outside it, by an
+//     assignment or by a range clause written with = (for _, outer = range x);
+//     sent on a channel; returned from the closure, as a return operand or by
+//     being stored in one of its named results (err = &myErr{b}; return, also
+//     from a deferred literal); handed to a goroutine; or passed to panic.
 //   - a tainted value in any argument of a known standard-library sink, or as
 //     the receiver of a sink method (the table in sinks.go): fmt, log, log/slog
 //     (including the package-level slog.With) and testing log methods, the
@@ -75,12 +79,18 @@
 //     parsers, KDFs and ed25519.PrivateKey methods that copy a key into heap
 //     state. Interface-typed writers (io.Writer, net.Conn) are the intended
 //     egress and are not flagged.
-//   - a lock-taking secmem method called synchronously on the SAME buffer
-//     inside its own closure, the receiver matched by identity through field
-//     chains, embedded-field promotions (e.Len() and e.SecureBuffer.Len() are
-//     the same buffer), single-assignment aliases and method values. The
-//     read-only inspectors count too: the lock is writer-preferring, so a
-//     nested read deadlocks once a writer is queued.
+//   - a lock-taking secmem or secmem-crypto method called synchronously on
+//     the SAME buffer or key inside its own closure, the receiver matched by
+//     identity through field chains, embedded-field promotions (e.Len() and
+//     e.SecureBuffer.Len() are the same buffer), single-assignment aliases and
+//     method values. The read-only inspectors count too: the lock is
+//     writer-preferring, so a nested read deadlocks once a writer is queued.
+//     A secmem-crypto key borrows its own buffer to sign, agree, decapsulate
+//     or marshal, so Sign, SignMessage, SharedSecret, PublicKey, Decapsulate
+//     and MarshalOpenSSHPrivateKey* inside the key's own WithSeed / WithScalar
+//     / WithDER are flagged; Public, Equal and EncapsulationKeyBytes read the
+//     cached public half and are not. The methods are classified per type
+//     (methodLocks in reentrancy.go); through an interface the name decides.
 //   - inside an ArenaSlot borrow: Release on the same slot, and Destroy /
 //     ReadOnly / ReadWrite on the slot's arena when the slot came from
 //     slot, err := arena.Acquire() in the same function (they take the
@@ -103,9 +113,11 @@
 // The -strict flag (off by default; `go vet -vettool=... -strict ./...`)
 // enables the higher-noise, heuristic checks:
 //
-//   - a locally constructed SecureBuffer / signer / key — x, err := New…(…)
-//     or var x, err = New…(…) — that is never Destroyed and never handed off
-//     (returned or passed on): add a defer Destroy().
+//   - a locally constructed secmem / secmem-crypto value with a Destroy — a
+//     buffer, arena, Secret, key, parsed Signer, Argon2 workspace or pool —
+//     bound by x, err := New…(…) or var x, err = New…(…), that is never
+//     Destroyed and never handed off (returned or passed on): add a defer
+//     Destroy().
 //   - a secret-named identifier (password, token, apiKey, …) held in a plain
 //     string rather than a *secmem.SecureBuffer.
 //   - a borrowing closure the analyzer cannot resolve, a closure passed through
