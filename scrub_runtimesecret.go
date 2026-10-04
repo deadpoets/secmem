@@ -58,7 +58,14 @@ func Scrub(fn func()) {
 	// (scrub_vecclear_test.go runs here too), and so the clear does not depend
 	// on which registers a given runtime version's erasure happens to cover.
 	defer clearRegisters()
-	secret.Do(fn)
+	returned := false
+	secret.Do(func() {
+		fn()
+		returned = true
+	})
+	if !returned {
+		reraiseNilPanic()
+	}
 }
 
 // ScrubErr is [Scrub] for a fn that returns an error. The returned error
@@ -73,8 +80,25 @@ func ScrubErr(fn func() error) error {
 	defer window.restore()
 	defer clearRegisters() // redundant under runtime/secret; see Scrub
 	var err error
-	secret.Do(func() { err = fn() })
+	returned := false
+	secret.Do(func() {
+		err = fn()
+		returned = true
+	})
+	if !returned {
+		reraiseNilPanic()
+	}
 	return err
+}
+
+// reraiseNilPanic re-raises the one panic secret.Do does not: under
+// GODEBUG=panicnil=1 a panic(nil) recovers as nil, Do takes that for a normal
+// return, and the window would hand its caller a success for a function that
+// never finished. Do returning without fn having returned can only be that
+// case (a real panic is re-raised by Do, and Goexit never comes back here).
+func reraiseNilPanic() {
+	var p any
+	panic(p)
 }
 
 // RuntimeSecretActive reports whether runtime/secret erasure is active in this

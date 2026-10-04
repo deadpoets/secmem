@@ -362,6 +362,12 @@ The core floor is unchanged at v0.7.0.
   signal-set helper also takes its word width from the type instead of
   assuming 64 bits, which was wrong on 386 and arm for a signal above 32.
 
+- **`Scrub` and `ScrubErr` swallowed `panic(nil)` under
+  `GODEBUG=panicnil=1`.** With that setting the panic recovers as nil, which
+  the window read as "fn returned": `Scrub` returned normally and `ScrubErr`
+  returned a nil error for a function that never finished. Both builds of the
+  window now track whether fn returned and re-raise when it did not.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

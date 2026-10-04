@@ -18,9 +18,9 @@ func legacyWindowNoClear(fn func()) {
 	defer window.restore()
 
 	wipeScratchFrameFull()
-	p := scrubCall(fn)
+	p, panicked := scrubCall(fn)
 	wipeScratchFrameFull()
-	if p != nil {
+	if panicked {
 		panic(p)
 	}
 }
