@@ -164,14 +164,6 @@ mark the stability commitment.
 
 ### Fixed
 
-- **Windows: a buffer that had been sealed was no longer locked.**
-  `PAGE_NOACCESS` takes a page out of the working set and Windows drops its
-  `VirtualLock` with it; `Unseal` restored the protection but never the lock,
-  so after one `Seal`/`Unseal` the plaintext sat in a pageable page while
-  `Capabilities().Mlocked` still said true. `Unseal` now locks the page again
-  before it decrypts and stays sealed if the lock is refused. A sealed page
-  itself is unlocked ciphertext, which `WINDOWS.md` now says.
-
 - **`InstallTerminationWipe` could hang behind one borrowing callback.** The
   handler called `WipeAllSecrets` synchronously, and that call waits for every
   borrow. A callback blocked on I/O, or one that called `Len` or `IsSealed` on
