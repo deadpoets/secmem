@@ -156,6 +156,33 @@ func TestMLKEM768_Decapsulate_InvalidCiphertext(t *testing.T) {
 	if _, err := k.Decapsulate(make([]byte, 10)); err == nil {
 		t.Error("expected error for wrong-length ciphertext")
 	}
+
+	// A ciphertext of the right length with one bit flipped: no error, and
+	// not the key the sender holds. This is what Decapsulate's doc tells
+	// callers not to read a nil error as.
+	ek, err := k.EncapsulationKeyBytes()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ct, sent, err := Encapsulate(ek)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer sent.Destroy()
+	ct[0] ^= 1
+	got, err := k.Decapsulate(ct)
+	if err != nil {
+		t.Fatalf("a tampered ciphertext of the right length errored (%v); the doc says it does not", err)
+	}
+	defer got.Destroy()
+	if err := sent.WithBytesErr(func(want []byte) error {
+		if equal, err := got.ConstantTimeEqual(want); err != nil || equal {
+			t.Errorf("a tampered ciphertext decapsulated to the sender's key (equal=%v, err=%v)", equal, err)
+		}
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
 }
 
 func TestNewMLKEM768Key_BadInputs(t *testing.T) {

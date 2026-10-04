@@ -171,8 +171,18 @@ func (k *MLKEM768Key) EncapsulationKeyBytes() ([]byte, error) {
 
 // Decapsulate recovers the shared key from a ciphertext produced against
 // this key's encapsulation key, returning it in a new SecureBuffer (the
-// caller owns and must Destroy it). It errors if the ciphertext is invalid,
-// or if this key is destroyed or sealed. The expansion and decapsulation
+// caller owns and must Destroy it). It errors if the ciphertext has the
+// wrong length, or if this key is destroyed or sealed.
+//
+// A nil error is not evidence that the ciphertext was made for this key. A
+// ciphertext of the right length that was corrupted, forged, or encapsulated
+// to another key decapsulates without error to a different, pseudorandom
+// shared key: FIPS 203's implicit rejection, which exists so that the
+// failure cannot be observed. Whether both sides hold the same key is for
+// the protocol to confirm — a MAC or an AEAD under the derived key fails on
+// the first message — not for this error.
+//
+// The expansion and decapsulation
 // run inside [secmem.ScrubErr], and the expanded key is wiped before
 // return; an error wrapping the wipe's failure means the expansion could
 // not be located and is still live on the heap.
