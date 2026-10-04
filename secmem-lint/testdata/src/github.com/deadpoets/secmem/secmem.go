@@ -52,3 +52,11 @@ func (s *ArenaSlot) Release() error                           { return nil }
 func (s *ArenaSlot) IsLive() bool                             { return true }
 
 func NewArena(slotSize, count int) (*SecureArena, error) { return &SecureArena{}, nil }
+
+// Lock-free methods, present so the reentrancy fixtures can show they stay
+// quiet inside a borrow: none of them touches the buffer's lock.
+func (b *SecureBuffer) LockOrder() uint64 { return 0 }
+func (b SecureBuffer) String() string     { return "" }
+func (s *ArenaSlot) Index() int           { return 0 }
+func (s Secret) String() string           { return "" }
+func (s Secret) Destroy() error           { return nil }
