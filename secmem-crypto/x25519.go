@@ -107,6 +107,9 @@ func (k *X25519Key) PublicKey() ([32]byte, error) {
 	var pub [32]byte
 	err := secmem.ScrubErr(func() error {
 		return k.scalarBuf.WithBytesErr(func(scalar []byte) error {
+			if err := checkX25519Scalar(scalar); err != nil {
+				return err
+			}
 			x25519.ScalarMult(&pub, (*[x25519.ScalarSize]byte)(scalar), &x25519Basepoint)
 			return nil
 		})
@@ -115,6 +118,17 @@ func (k *X25519Key) PublicKey() ([32]byte, error) {
 		return [32]byte{}, fmt.Errorf("secmemcrypto: public key: %w", err)
 	}
 	return pub, nil
+}
+
+// checkX25519Scalar re-checks, inside a borrow, the length the constructor
+// checked: the buffer can have been truncated since through a reference the
+// caller kept, and the conversion to the ladder's array type panics on a
+// short slice.
+func checkX25519Scalar(scalar []byte) error {
+	if len(scalar) != x25519.ScalarSize {
+		return fmt.Errorf("%w: got %d, want %d", ErrBadScalarLength, len(scalar), x25519.ScalarSize)
+	}
+	return nil
 }
 
 // SharedSecret computes the X25519 shared secret with peerPub and returns it
@@ -135,6 +149,9 @@ func (k *X25519Key) SharedSecret(peerPub [32]byte) (*secmem.SecureBuffer, error)
 	}
 	err = secmem.ScrubErr(func() error {
 		return k.scalarBuf.WithBytesErr(func(scalar []byte) error {
+			if err := checkX25519Scalar(scalar); err != nil {
+				return err
+			}
 			return out.WithBytesErr(func(dst []byte) error {
 				x25519.ScalarMult((*[x25519.PointSize]byte)(dst), (*[x25519.ScalarSize]byte)(scalar), &peerPub)
 				var zero [x25519.PointSize]byte

@@ -232,3 +232,43 @@ func TestX25519Key_NilAndDestroyed(t *testing.T) {
 		t.Errorf("double Destroy not idempotent: %v", err)
 	}
 }
+
+// TestX25519Key_TruncatedBuffer: the length checked at construction is
+// checked again at each use. A caller that kept the buffer's reference can
+// still Truncate it, and the key must then answer with ErrBadScalarLength,
+// not panic converting a short slice to the ladder's array.
+func TestX25519Key_TruncatedBuffer(t *testing.T) {
+	buf, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		t.Skipf("no secure memory: %v", err)
+	}
+	k, err := NewX25519Key(buf)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer k.Destroy()
+	if err := buf.Truncate(16); err != nil {
+		t.Fatal(err)
+	}
+	for name, use := range map[string]func() error{
+		"PublicKey": func() error { _, err := k.PublicKey(); return err },
+		"SharedSecret": func() error {
+			ss, err := k.SharedSecret([32]byte{9})
+			if err == nil {
+				ss.Destroy()
+			}
+			return err
+		},
+	} {
+		func() {
+			defer func() {
+				if r := recover(); r != nil {
+					t.Errorf("%s on a truncated key panicked: %v", name, r)
+				}
+			}()
+			if err := use(); !errors.Is(err, ErrBadScalarLength) {
+				t.Errorf("%s on a truncated key: %v, want ErrBadScalarLength", name, err)
+			}
+		}()
+	}
+}
