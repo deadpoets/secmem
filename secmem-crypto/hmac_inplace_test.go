@@ -256,3 +256,29 @@ func TestHMACHKDF_NilHashConstructorResult(t *testing.T) {
 		t.Error("HKDFInto accepted a constructor that returns nil")
 	}
 }
+
+// TestHMACInPlace_RefusesShortScratch: a scratch region too small for the
+// message is a bug in the caller's size arithmetic, and must stop there. The
+// alternative — copying as much of the message as fits — returns a
+// well-formed MAC of a truncated message, which nothing downstream can tell
+// from a right one.
+func TestHMACInPlace_RefusesShortScratch(t *testing.T) {
+	key, msg := []byte("key"), bytes.Repeat([]byte("m"), 100)
+	h := hashSHA256
+	var dst [32]byte
+
+	full := make([]byte, hmacScratchSize(h, len(msg)))
+	hmacInPlace(h, dst[:], full, key, msg[:60], msg[60:])
+	mac := hmac.New(sha256.New, key)
+	mac.Write(msg)
+	if want := mac.Sum(nil); !bytes.Equal(dst[:], want) {
+		t.Fatalf("control failed: a region of exactly hmacScratchSize gives %x, want %x", dst, want)
+	}
+
+	defer func() {
+		if recover() == nil {
+			t.Fatalf("a scratch region one byte short was accepted, and produced the MAC %x", dst)
+		}
+	}()
+	hmacInPlace(h, dst[:], make([]byte, len(full)-1), key, msg[:60], msg[60:])
+}

@@ -238,15 +238,31 @@ func inPlaceHashOf(probe hash.Hash) inPlaceHash {
 	}
 }
 
+// hmacScratchSize is the scratch hmacInPlace needs for a message of msgLen
+// bytes: the padded key, then the larger of the message (the inner hash's
+// input) and one digest (the outer hash's).
+func hmacScratchSize(h inPlaceHash, msgLen int) int {
+	return h.block() + max(msgLen, h.size())
+}
+
 // hmacInPlace computes HMAC-h(key, parts...) into dst[:h.size()], using
-// scratch for pad || message. scratch must hold h.block() plus the larger of
-// the message's length and h.size(). A key longer than the block is hashed
+// scratch for pad || message. scratch must hold hmacScratchSize bytes for
+// the parts' total length; a shorter one panics, before anything is written,
+// because copying what fits would return the MAC of a truncated message — a
+// wrong key that looks like a right one. A key longer than the block is hashed
 // first, as RFC 2104 requires. dst may alias a part: every part is copied
 // into scratch before dst is written. Everything secret this writes — the
 // padded key, the message copy, the inner digest — is in scratch or a local,
 // and is wiped before return.
 func hmacInPlace(h inPlaceHash, dst, scratch, key []byte, parts ...[]byte) {
 	size, block := h.size(), h.block()
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	if len(scratch) < hmacScratchSize(h, total) {
+		panic("secmemcrypto: internal: HMAC scratch region smaller than the message")
+	}
 	var hashedKey [maxHashSize]byte
 	if len(key) > block {
 		h.sum(hashedKey[:], key)
@@ -286,7 +302,7 @@ func hmacInPlace(h inPlaceHash, dst, scratch, key []byte, parts ...[]byte) {
 // moved to the heap, which is the whole thing this file exists to avoid. The
 // locked path's closure holds only slice headers.
 func hmacIntoInPlace(b bufferOptions, h inPlaceHash, dst, secret, info []byte) error {
-	n := h.block() + max(len(info), h.size())
+	n := hmacScratchSize(h, len(info))
 	if n <= hmacStackRegion {
 		var region [hmacStackRegion]byte
 		hmacInPlace(h, dst, region[:n], secret, info)
