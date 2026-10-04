@@ -135,8 +135,9 @@ type slotMeta struct {
 	// the callback itself, which the single-owner rule forbids.
 	//
 	// atomic.Uint64 rather than a plain uint64 for two reasons. The borrow path
-	// and IsLive read it outside arena.alloc while Acquire/Release write it
-	// under alloc, which without atomics is a data race. And on 32-bit
+	// and IsLive read it outside arena.alloc, Acquire writes it under alloc and
+	// Release retires it by compare-and-swap under the region read lock,
+	// which without atomics is a data race. And on 32-bit
 	// platforms (the executed GOARCH=386 leg) a 64-bit atomic requires 8-byte
 	// alignment that a plain uint64 field at the mercy of slice-element layout
 	// cannot guarantee — atomic.Uint64 carries the align64 marker that makes
@@ -762,13 +763,12 @@ func (s *ArenaSlot) Release() error {
 		return nil
 	}
 
-	// Verify + wipe FIRST — under rLock to prevent Destroy from unmapping
-	// mid-wipe. The slot's generation is still the handle's odd value, so it is
-	// not on the free list and no other goroutine can Acquire the same index
-	// until the commit below flips it even.
+	// Refuse, claim, then verify + wipe — all under rLock, which keeps Destroy
+	// from unmapping mid-wipe.
 	var violated bool
 	s.arena.mu.rLock()
-	if s.arena.region.inner != nil {
+	live := s.arena.region.inner != nil
+	if live {
 		if s.arena.readOnly && !s.arena.wiped.Load() {
 			// The slab is PROT_READ; the canary re-arm and slot wipe below are
 			// writes that would fault the process. Refuse cleanly instead. The
@@ -791,6 +791,21 @@ func (s *ArenaSlot) Release() error {
 			s.arena.mu.rUnlock()
 			return fmt.Errorf("secmem.ArenaSlot.Release: %w", ErrReadOnly)
 		}
+	}
+	// The claim: retire the handle (odd -> even) BEFORE the wipe, and let
+	// exactly one Release win it. The early check above is advisory — two
+	// goroutines releasing one handle both pass it, and a Release that then
+	// waits here behind a queued writer resumes after the other has finished
+	// and the slot has been re-acquired. Wiping on the strength of that stale
+	// check zeroed the next owner's secret. The loser of the CAS has nothing
+	// left to do. The winner's slot is neither live (even generation) nor on
+	// the free list until the push below, so no Acquire can reach it while it
+	// is being wiped.
+	if !s.arena.slots[s.idx].generation.CompareAndSwap(s.generation, s.generation+1) {
+		s.arena.mu.rUnlock()
+		return nil
+	}
+	if live {
 		start := int(s.idx) * s.arena.stride
 		end := start + s.arena.slotSize
 		// After an emergency wipe the strip holds zeros, not the pattern:
@@ -818,23 +833,15 @@ func (s *ArenaSlot) Release() error {
 	// Arena was destroyed concurrently — Destroy already wiped everything.
 	s.arena.mu.rUnlock()
 
-	// NOW mark free — slot is only available for re-Acquire after wipe completes.
-	//
-	// The generation is re-checked under alloc before the slot goes back on the
-	// free list. The early check above is not enough: two goroutines calling
-	// Release on the SAME handle can both pass it, and pushing twice would put
-	// one slot on the list twice — handing the same secret bytes to two live
-	// owners. On the intrusive list it is worse still: slots[i].next would point
-	// at i, and every future Acquire would hand out that one slot forever. The
-	// first committer's odd->even increment is what makes the second's re-check
-	// fail; this re-check is the only thing preventing the cycle.
+	// NOW put the slot back — it is only available for re-Acquire after the
+	// wipe completes. The claim above made this goroutine the only one that
+	// can get here for this handle, so the push needs no re-check: one handle,
+	// one push. (A double push on the intrusive list would point slots[i].next
+	// at i and hand that one slot out forever.)
 	s.arena.alloc.Lock()
-	if s.arena.slots[s.idx].generation.Load() == s.generation {
-		s.arena.slots[s.idx].generation.Add(1) // odd -> even: handle dead from here
-		s.arena.live--
-		s.arena.slots[s.idx].next = s.arena.freeHead
-		s.arena.freeHead = s.idx
-	}
+	s.arena.live--
+	s.arena.slots[s.idx].next = s.arena.freeHead
+	s.arena.freeHead = s.idx
 	s.arena.alloc.Unlock()
 
 	if violated {

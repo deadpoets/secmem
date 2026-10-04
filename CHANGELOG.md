@@ -211,6 +211,21 @@ The core floor is unchanged at v0.7.0.
 
 ### Fixed
 
+- **Windows: a buffer that had been sealed was no longer locked.**
+  `PAGE_NOACCESS` takes a page out of the working set and Windows drops its
+  `VirtualLock` with it; `Unseal` restored the protection but never the lock,
+  so after one `Seal`/`Unseal` the plaintext sat in a pageable page while
+  `Capabilities().Mlocked` still said true. `Unseal` now locks the page again
+  before it decrypts and stays sealed if the lock is refused. A sealed page
+  itself is unlocked ciphertext, which `WINDOWS.md` now says.
+
+- **`ArenaSlot.Release` on one handle from two goroutines could wipe the
+  slot's next owner.** The liveness check ran before the region lock and the
+  wipe after it, so a Release that waited behind a queued writer resumed
+  after the other Release had finished and the slot had been re-acquired, and
+  zeroed the new secret. Release now retires the handle by compare-and-swap
+  under the lock, before the wipe; the loser does nothing.
+
 - **`secmem-crypto` documentation: the X25519 copy never said which Go
   release it came from.** `internal/x25519/x25519.go` and `NOTICE` named
   go1.26; `doc.go` claimed text identity with "the toolchain's own"
