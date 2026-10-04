@@ -61,6 +61,11 @@ const (
 // developer with the source, not for the person typing the password.
 var errLoginFailed = errors.New("login failed")
 
+// errUserExists is register's refusal of a name that already has a record.
+// Unlike a login, a registration cannot hide whether the name is taken:
+// accepting it would mean replacing the account.
+var errUserExists = errors.New("user already exists")
+
 // dummySalt and dummyStored stand in for the record of a user who does not
 // exist, so that login runs the same Argon2id derivation against them that it
 // runs against a real record and a refusal costs the same either way. Their
@@ -146,8 +151,22 @@ func register(user string, password *secmem.SecureBuffer) error {
 	if err != nil {
 		return err
 	}
+	// O_EXCL: the record is created, never replaced. Writing over an
+	// existing one would let whoever can register set a new password on
+	// someone else's account.
 	//nolint:gosec // G703: user is validated to a bare name (no path separators) in run().
-	if err := os.WriteFile(dbPath(user), []byte(record), 0o600); err != nil {
+	f, err := os.OpenFile(dbPath(user), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%w: %s", errUserExists, user)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(record); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	fmt.Println("registered", user)
