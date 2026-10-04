@@ -340,6 +340,12 @@ The core floor is unchanged at v0.7.0.
   recorded as ciphertext. Such an area is now refused and `Seal` returns the
   error.
 
+- **Windows: `EnsureMemlockLimit` turned a hard working-set limit soft.** It
+  read the process's quota flags and then wrote both limits back with the
+  soft flags, so a minimum the application or its launcher had made hard grew
+  in size and lost its enforcement. The flags that were read are now written
+  back unchanged.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

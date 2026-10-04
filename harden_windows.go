@@ -88,10 +88,14 @@ func disableCoreDumps() error {
 		errors.ErrUnsupported)
 }
 
-// QUOTA_LIMITS_HARDWS_* flags for SetProcessWorkingSetSizeEx. Both limits
-// are left SOFT (the *_DISABLE flags): under memory pressure the memory
-// manager may trim the working set below the minimum, which matches rlimit
-// semantics — a budget, not a reservation.
+// workingSetFlags returns the quota flags to write back with new sizes: the
+// ones the process already had, so a minimum or maximum that the application
+// or its launcher made hard stays hard. Raising a size while dropping its
+// enforcement would lower the budget this function promises never to lower.
+//
+// A limit with neither flag reported is set SOFT (the *_DISABLE flags): under
+// memory pressure the memory manager may trim the working set below the
+// minimum, which matches rlimit semantics — a budget, not a reservation.
 //
 // The trade-off, stated because the name of the alternative suggests it
 // would help the secrets: a hard minimum (QUOTA_LIMITS_HARDWS_MIN_ENABLE)
@@ -103,8 +107,22 @@ func disableCoreDumps() error {
 // write locked pages to the pagefile is the memory manager outswapping an
 // idle process's ENTIRE working set (see Capabilities.Mlocked); whether a
 // hard minimum exempts a process from that is not documented and has not
-// been measured here, so it is not claimed, and the budget stays soft.
-const quotaLimitsSoft = 0x2 | 0x8 // HARDWS_MIN_DISABLE | HARDWS_MAX_DISABLE
+// been measured here, so it is not claimed, and this function never makes a
+// limit hard itself.
+func workingSetFlags(current uint32) uint32 {
+	const (
+		minEnable, minDisable = 0x1, 0x2 // QUOTA_LIMITS_HARDWS_MIN_*
+		maxEnable, maxDisable = 0x4, 0x8 // QUOTA_LIMITS_HARDWS_MAX_*
+	)
+	flags := current & (minEnable | minDisable | maxEnable | maxDisable)
+	if flags&(minEnable|minDisable) == 0 {
+		flags |= minDisable
+	}
+	if flags&(maxEnable|maxDisable) == 0 {
+		flags |= maxDisable
+	}
+	return flags
+}
 
 // ensureMemlockLimit raises the minimum working-set size so at least bytes of
 // VirtualLock'd memory fit (the lockable ceiling on Windows is the minimum
@@ -161,7 +179,7 @@ func ensureMemlockLimit(bytes uint64) (uint64, error) {
 		memlockTestHook()
 	}
 
-	if err := windows.SetProcessWorkingSetSizeEx(h, newMin, newMax, quotaLimitsSoft); err != nil {
+	if err := windows.SetProcessWorkingSetSizeEx(h, newMin, newMax, workingSetFlags(flags)); err != nil {
 		return inForce, fmt.Errorf("secmem.EnsureMemlockLimit: SetProcessWorkingSetSizeEx(min=%d): %w", newMin, err)
 	}
 	// Report what was set, not what was asked for. The bound check above
