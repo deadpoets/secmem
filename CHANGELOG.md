@@ -368,6 +368,11 @@ The core floor is unchanged at v0.7.0.
   returned a nil error for a function that never finished. Both builds of the
   window now track whether fn returned and re-raise when it did not.
 
+- **Windows: an unknown page-protection value was applied as read-write.**
+  The internal protection mapping sent everything other than "none" and
+  "read" to `PAGE_READWRITE` and returned success. It now refuses a value it
+  does not know.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

@@ -190,8 +190,12 @@ func mprotectSecretMem(region secRegion, prot int) error {
 		protect = windows.PAGE_NOACCESS
 	case 1: // PROT_READ
 		protect = windows.PAGE_READONLY
-	default: // PROT_READ|PROT_WRITE
+	case 3: // PROT_READ|PROT_WRITE
 		protect = windows.PAGE_READWRITE
+	default:
+		// Refused rather than mapped to something: the only safe guess is
+		// no guess, and the permissive one this used to make failed open.
+		return fmt.Errorf("mprotectSecretMem: unsupported protection %d", prot)
 	}
 
 	var oldProtect uint32
