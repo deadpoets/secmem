@@ -15,6 +15,19 @@ mark the stability commitment.
 
 ### Added
 
+- **`WithClosedAtRest`: a buffer that is no-access except while in use.** A
+  construction option for `SecureBuffer`. The pages are `PROT_NONE` /
+  `PAGE_NOACCESS` at rest, opened for a borrowing callback or an access
+  method and closed when the last concurrent one ends, so a stray read
+  elsewhere in the process, or a slice kept from an earlier callback, faults
+  instead of reaching the secret. It costs two page-protection system calls
+  per use that finds the buffer closed (about 2 µs per borrow against 13 ns
+  measured on both Linux and Windows); buffers built without it are not
+  slowed. On Windows a closed page is not locked, so its plaintext is
+  pageable while closed; `Seal` encrypts for that reason and this option does
+  not. It is off by default, reported as `Capabilities().ClosedAtRest`, and
+  refused by `NewArena`.
+
 - **Destroy-time quarantine (Linux, Windows).** `Destroy` used to unmap a
   region, and the next allocation was usually given the same addresses, so a
   slice wrongly retained from a callback became a view of a different live

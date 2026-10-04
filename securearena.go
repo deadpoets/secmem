@@ -374,6 +374,12 @@ type ArenaSlot struct {
 // and size arenas from something you do not control, bound count yourself. See
 // [EnsureMemlockLimit].
 func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
+	cfg := applyOptions(opts)
+	if cfg.closedAtRest {
+		// Slots share pages: opening the slab for one borrow would open every
+		// slot, which is not what the option promises.
+		return nil, errors.New("secmem.NewArena: WithClosedAtRest applies to SecureBuffer only")
+	}
 	if slotSize <= 0 {
 		return nil, fmt.Errorf("secmem.NewArena: slotSize must be > 0, got %d", slotSize)
 	}

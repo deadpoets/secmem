@@ -133,6 +133,12 @@ type Capabilities struct {
 	// for [Probe], and for a [SecureArena], which has no Seal.
 	UnauthenticatedSeal bool
 
+	// ClosedAtRest reports that this buffer was built with [WithClosedAtRest]:
+	// its pages are no-access except while a borrow or an access method is
+	// using it. An opt-in, so its absence is not a degradation and produces no
+	// warning. Always false in a [Probe] report and for an arena.
+	ClosedAtRest bool
+
 	// DestroyQuarantine reports that a destroyed region is kept for a while
 	// as a no-access reservation instead of being unmapped at once, so a
 	// slice wrongly retained past Destroy faults rather than aliasing the
@@ -160,6 +166,10 @@ type allocInfo struct {
 	// choice (WithUnauthenticatedSeal); it rides here because this is what
 	// Capabilities reads.
 	unauthenticatedSeal bool
+
+	// closedAtRest is not the allocator's to report: newSecureBuffer sets it
+	// when the buffer was built with WithClosedAtRest.
+	closedAtRest bool
 }
 
 // capsFromAlloc composes a Capabilities report from a specific allocation's
@@ -185,6 +195,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		Insecure:   info.insecure,
 
 		UnauthenticatedSeal: info.unauthenticatedSeal,
+		ClosedAtRest:        info.closedAtRest,
 		DestroyQuarantine:   info.guardPages && quarantineInForce(),
 	}
 }
@@ -296,6 +307,9 @@ func (c Capabilities) String() string {
 	flag("gp-clear", c.GPRegisterClear)
 	flag("guard-pages", c.GuardPages)
 	flag("destroy-quarantine", c.DestroyQuarantine)
+	if c.ClosedAtRest { // an opt-in: listed when on, not counted missing when off
+		have = append(have, "closed-at-rest")
+	}
 
 	var b strings.Builder
 	b.WriteString(c.GOOS)

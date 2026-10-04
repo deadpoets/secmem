@@ -111,6 +111,21 @@ var faultProbeCases = map[string]func() (skip bool){
 		return false
 	},
 
+	// A slice kept from a callback of a live closed-at-rest buffer: the page
+	// is no-access again once the callback has returned, so the read MUST
+	// fault.
+	"closed_at_rest_retained": func() bool {
+		buf, err := NewEmptyBuffer(64, WithClosedAtRest())
+		if err != nil {
+			return true
+		}
+		defer func() { _ = buf.Destroy() }()
+		var retained []byte
+		_ = buf.WithBytes(func(b []byte) { retained = b }) //nolint:secmem-lint // the retained slice is the misuse under test
+		announceAndRead(uintptr(unsafe.Pointer(&retained[0])))
+		return false
+	},
+
 	// Controls for the harness itself: deaths that are NOT a fault at the
 	// announced address, which the parent must report as inconclusive rather
 	// than as a passing guard-page proof.
