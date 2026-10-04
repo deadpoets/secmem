@@ -473,6 +473,11 @@ jobs:
             goarch: amd64
           - goos: windows
             goarch: arm64
+          # windows/amd64 is executed by the test job, but `go test` runs only
+          # a subset of vet's analyzers; this row gives the Windows files the
+          # full `go vet` the other targets get.
+          - goos: windows
+            goarch: amd64
           # 32-bit Windows: the only build where a uint32 bound written as
           # int(^uint32(0)) overflows int. Nothing else in the matrix is both
           # windows and 32-bit, so without this row that break ships.
@@ -561,6 +566,42 @@ jobs:
         with:
           version: v2.14.0
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        with:
+          version: v2.14.0
+          working-directory: secmem-crypto
+      # The two passes above analyse the runner's GOOS, so on their own the
+      # Windows and Darwin files (mlock_windows.go, harden_windows.go,
+      # sealcipher_windows.go, mlock_darwin.go, ...) are never linted, and
+      # .golangci.yml's exclusion for mlock_windows.go is never exercised.
+      # golangci-lint type-checks for the GOOS it is given without executing
+      # anything; cgo is off so no foreign C toolchain is looked for.
+      - name: golangci-lint (core, GOOS=windows)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: windows
+          CGO_ENABLED: "0"
+        with:
+          version: v2.14.0
+      - name: golangci-lint (secmem-crypto, GOOS=windows)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: windows
+          CGO_ENABLED: "0"
+        with:
+          version: v2.14.0
+          working-directory: secmem-crypto
+      - name: golangci-lint (core, GOOS=darwin)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: darwin
+          CGO_ENABLED: "0"
+        with:
+          version: v2.14.0
+      - name: golangci-lint (secmem-crypto, GOOS=darwin)
+        uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
+        env:
+          GOOS: darwin
+          CGO_ENABLED: "0"
         with:
           version: v2.14.0
           working-directory: secmem-crypto
