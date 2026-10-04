@@ -68,7 +68,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `MLKEM768Key` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction; crypto/mlkem's hash states and polynomials stay on the stack in the Scrub window. What remains is the 32-byte message each `Decapsulate` recovers, a heap slice nothing can reach, which gives that ciphertext's shared key. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **contained** (the decapsulation key); **runtimesecret-only** (each decapsulation's shared key) |
 | `Encapsulate` | the sender side: the shared key crypto/mlkem returns shares a heap slice with the encryption randomness, which recovers it from the public ciphertext, and the whole slice is wiped; the message and the digest that absorbs it stay on the stack in the Scrub window | **contained** |
 | `GenerateDicewarePassphrase` | assembled in the buffer's own memory, no intermediate string; every draw reads the whole wordlist | **contained** |
-| `WipeEd25519Scalar` | reaches `edwards25519.Scalar`'s unexported fields | — |
+| `WipeEd25519Scalar` | overwrites an `edwards25519.Scalar` with the zero scalar through its exported `Set`; no reflection | — |
 
 ## What each signer actually buys you
 

@@ -94,6 +94,41 @@ mark the stability commitment.
 - **`httpauth`: the request body is closed when `RoundTrip` fails before
   calling the base transport** (cleartext refusal, missing token, token read
   error), as the `RoundTripper` contract requires.
+- **CI: `secmem-crypto`'s `//go:build !race` allocation proofs ran on no
+  audited 64-bit lane.** `test-noescape` selected `TestNoHeapEscape` only, so
+  the classification, parser, marshal and `BcryptPBKDFInto` proofs ran only on
+  linux/386. That job now runs the module's whole suite without `-race`, less
+  the residue scans, and gains windows/amd64 legs on both toolchains.
+
+- **CI: the Windows and Darwin source files are linted** (`GOOS=windows` and
+  `GOOS=darwin` golangci-lint passes), and windows/amd64 gets the full
+  `go vet`.
+
+- **Docs: ADOPTION.md no longer says every helper in the boundary table runs
+  in a `Scrub` window.** `NewBuffer`, `NewBufferFromReader`, `ReadFrom` and
+  `WriteTo` clear registers on return and open none. ADOPTION.md and
+  ENVIRONMENTS.md named `ErrNoSecureMemory` for a refused lock; it is the
+  wrapped `mlock`/`VirtualLock` error.
+
+- **Docs: TESTING.md names the `go test` steps that are not skip-audited**,
+  and CONTRIBUTING.md no longer hard-codes a required-check count.
+
+- **`examples/hardened-ssh-agent`: a message that fails to arrive in full is
+  wiped.** It used to be dropped with whatever part of a key had arrived. The
+  example's headline now says keys are never *at rest* on the heap.
+
+- **`examples/hardened-ssh-agent`: `ssh-add -t` lifetimes are enforced on
+  the wall clock.** The deadline carried Go's monotonic reading, which stops
+  during a suspend, so a key outlived its lifetime by the time asleep.
+
+- **`examples/hardened-ssh-agent`: the default socket directory has a random
+  name and is removed on exit.** The pid-named one was left behind and made a
+  restart under the same pid fail.
+
+- **`examples/password-login`: `register` refuses a name that already has a
+  record** instead of replacing its verifier, and the password prompt removes
+  a whole character on backspace, clears on ^U, ends on ^D and refuses other
+  control keys instead of storing them in the password.
 
 ## [secmem-crypto/v0.9.0] - 2026-10-03
 
