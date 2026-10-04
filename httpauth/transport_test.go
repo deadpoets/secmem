@@ -594,3 +594,60 @@ func TestRoundTrip_ConcurrentUse(t *testing.T) {
 		}
 	}
 }
+
+// closeTracker is a request body that records whether it was closed.
+type closeTracker struct {
+	*strings.Reader
+	closed bool
+}
+
+func (c *closeTracker) Close() error {
+	c.closed = true
+	return nil
+}
+
+// TestRoundTrip_ClosesTheBodyWhenItRefuses: a RoundTripper must close the
+// request body on every path, errors included; http.Client relies on it, and
+// a pipe or file body is otherwise left open when the request is never sent.
+func TestRoundTrip_ClosesTheBodyWhenItRefuses(t *testing.T) {
+	t.Parallel()
+	live := newToken(t, []byte("tok"))
+	destroyed := newToken(t, []byte("tok"))
+	if err := destroyed.Destroy(); err != nil {
+		t.Fatalf("Destroy: %v", err)
+	}
+	base := &errBase{header: "Authorization"}
+	var nilTransport *httpauth.Transport
+	cases := []struct {
+		name   string
+		tr     http.RoundTripper
+		target string
+		want   error
+	}{
+		{"cleartext refused", httpauth.NewBearer(live, base), "http://example.invalid/", httpauth.ErrInsecureScheme},
+		{"nil token", httpauth.NewBearer(nil, base), "https://example.invalid/", httpauth.ErrNoToken},
+		{"destroyed token", httpauth.NewBearer(destroyed, base), "https://example.invalid/", secmem.ErrDestroyed},
+		{"basic username", httpauth.NewBasic("a:b", live, base), "https://example.invalid/", httpauth.ErrBasicUsername},
+		{"nil transport", nilTransport, "https://example.invalid/", nil},
+	}
+	for _, c := range cases {
+		body := &closeTracker{Reader: strings.NewReader("payload")}
+		req, err := http.NewRequest(http.MethodPost, c.target, body)
+		if err != nil {
+			t.Fatalf("NewRequest: %v", err)
+		}
+		resp, err := c.tr.RoundTrip(req)
+		if resp != nil {
+			_ = resp.Body.Close()
+		}
+		if err == nil || (c.want != nil && !errors.Is(err, c.want)) {
+			t.Errorf("%s: err = %v, want %v", c.name, err, c.want)
+		}
+		if !body.closed {
+			t.Errorf("%s: the request body was not closed", c.name)
+		}
+	}
+	if base.req != nil {
+		t.Errorf("a refused request reached Base")
+	}
+}

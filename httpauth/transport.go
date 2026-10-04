@@ -254,13 +254,15 @@ func ForceHTTP1(base *http.Transport) *http.Transport {
 // unchanged and the Token is not touched. A request for an admitted host
 // over a scheme other than https fails with [ErrInsecureScheme] unless
 // [Transport.AllowInsecureHTTP] or an "http://" Hosts entry opted in; it is
-// not sent.
+// not sent. The request body is closed on every path, including the ones
+// that fail before Base is called.
 //
 // Errors: [ErrNilRequest]; [ErrInsecureScheme]; [ErrNoToken] for a nil
 // Token; an error wrapping [secmem.ErrDestroyed] or [secmem.ErrSealed] for a
 // Token in that state; [ErrBasicUsername]; otherwise whatever Base returns.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t == nil {
+		closeBody(req)
 		return nil, errors.New("httpauth: RoundTrip on a nil *Transport")
 	}
 	if req == nil {
@@ -270,9 +272,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	case forward:
 		return t.base().RoundTrip(req)
 	case refuse:
+		closeBody(req)
 		return nil, ErrInsecureScheme
 	}
 	if t.Token == nil {
+		closeBody(req)
 		return nil, ErrNoToken
 	}
 
@@ -299,6 +303,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		value, err = t.headerValue()
 	}
 	if err != nil {
+		closeBody(req)
 		return nil, err
 	}
 	name := t.header()
@@ -318,6 +323,15 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		resp.Request = req
 	}
 	return resp, rerr
+}
+
+// closeBody closes req's body on a path where the request is never handed to
+// Base. A RoundTripper must close the body on every path, errors included:
+// http.Client does not, and a pipe or file body would stay open.
+func closeBody(req *http.Request) {
+	if req != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
 }
 
 // decision is what RoundTrip does with a request.
