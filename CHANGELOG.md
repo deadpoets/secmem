@@ -334,6 +334,12 @@ The core floor is unchanged at v0.7.0.
   comment always promised: the allocation is reported as not excluded
   (`Capabilities().NoDump` false).
 
+- **Windows: `Seal` on an area of 4 GiB or more encrypted only part of it.**
+  `CryptProtectMemory` takes its length as a DWORD and the length was passed
+  unchecked, so the cipher covered the size modulo 2^32 and the buffer was
+  recorded as ciphertext. Such an area is now refused and `Seal` returns the
+  error.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

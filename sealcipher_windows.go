@@ -25,6 +25,7 @@ package secmem
 
 import (
 	"fmt"
+	"math"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -52,19 +53,36 @@ func sealCipherCall(proc *windows.LazyProc, region secRegion) error {
 	if len(inner) == 0 {
 		return nil
 	}
-	if len(inner)%cryptProtectMemoryBlockSize != 0 {
-		return fmt.Errorf("secmem: seal cipher: area %d bytes is not a multiple of %d", len(inner), cryptProtectMemoryBlockSize)
+	n, err := sealCipherLen(len(inner))
+	if err != nil {
+		return err
 	}
 	r1, _, callErr := proc.Call(
 		//nolint:gosec // G103: passing the secret area's address to the crypt32 in-place cipher; OS-mapped, audited.
 		uintptr(unsafe.Pointer(&inner[0])),
-		uintptr(len(inner)),
+		uintptr(n),
 		cryptProtectMemorySameProcess,
 	)
 	if r1 == 0 {
 		return fmt.Errorf("secmem: %s: %w", proc.Name, callErr)
 	}
 	return nil
+}
+
+// sealCipherLen returns the byte count to pass to the cipher for an area of n
+// bytes, or an error when the cipher cannot cover it. CryptProtectMemory takes
+// the length as a DWORD: an area of 4 GiB or more would be encrypted only for
+// its length modulo 2^32 while Seal recorded it as ciphertext, so it is
+// refused and Seal fails visibly. Compared in uint64 for the reason given in
+// werExcludeFromDumps.
+func sealCipherLen(n int) (uint32, error) {
+	if n%cryptProtectMemoryBlockSize != 0 {
+		return 0, fmt.Errorf("secmem: seal cipher: area %d bytes is not a multiple of %d", n, cryptProtectMemoryBlockSize)
+	}
+	if n < 0 || uint64(n) > uint64(math.MaxUint32) {
+		return 0, fmt.Errorf("secmem: seal cipher: area %d bytes exceeds the %d-byte limit of one cipher call", n, uint64(math.MaxUint32))
+	}
+	return uint32(n), nil
 }
 
 // sealEncrypt encrypts the secret area in place with the kernel-held per-boot
