@@ -264,9 +264,9 @@ func TestBufferOptionsReachEveryAllocation(t *testing.T) {
 	}
 
 	// measure runs f and requires every buffer created in it to have been
-	// given the option, and at least min of them to exist (so that a call
+	// given the option, and at least atLeast of them to exist (so that a call
 	// that silently allocates nothing does not pass as "all forwarded").
-	measure := func(name string, min uint64, f func()) {
+	measure := func(name string, atLeast uint64, f func()) {
 		t.Helper()
 		before, start := applied.Load(), ordinal()
 		f()
@@ -275,8 +275,8 @@ func TestBufferOptionsReachEveryAllocation(t *testing.T) {
 		switch {
 		case created != got:
 			t.Errorf("%s: %d SecureBuffers were created, %d of them with the caller's core options", name, created, got)
-		case created < min:
-			t.Errorf("%s: created %d SecureBuffers, expected at least %d; the measurement is not seeing the call", name, created, min)
+		case created < atLeast:
+			t.Errorf("%s: created %d SecureBuffers, expected at least %d; the measurement is not seeing the call", name, created, atLeast)
 		}
 	}
 	ok := func(err error) {
@@ -296,7 +296,10 @@ func TestBufferOptionsReachEveryAllocation(t *testing.T) {
 	read := func(b *secmem.SecureBuffer) []byte {
 		t.Helper()
 		var out []byte
-		ok(b.WithBytesErr(func(p []byte) error { out = bytes.Clone(p); return nil }))
+		ok(b.WithBytesErr(func(p []byte) error {
+			out = bytes.Clone(p) //nolint:secmem-lint // test egress of a throwaway test key, to feed it back to the parsers
+			return nil
+		}))
 		return out
 	}
 	passphrase := []byte(testPassphrase)
@@ -406,9 +409,9 @@ func TestBufferOptionsReachEveryAllocation(t *testing.T) {
 	ecSEC1, err := x509.MarshalECPrivateKey(ecKey)
 	ok(err)
 	rsaKey := testRSAKey()
-	parse := func(name string, min uint64, data []byte) {
+	parse := func(name string, atLeast uint64, data []byte) {
 		t.Helper()
-		measure("ParsePrivateKey/"+name, min, func() {
+		measure("ParsePrivateKey/"+name, atLeast, func() {
 			s, err := ParsePrivateKey(data, with, allow)
 			ok(err)
 			s.Destroy()
@@ -527,7 +530,10 @@ func TestBufferOptions_NoSecureMemoryPlatform(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := plain.WithBytesErr(func(b []byte) error { pemKey = bytes.Clone(b); return nil }); err != nil {
+	if err := plain.WithBytesErr(func(b []byte) error {
+		pemKey = bytes.Clone(b) //nolint:secmem-lint // test egress of a throwaway test key, to feed it back to the parser
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
 	plain.Destroy()

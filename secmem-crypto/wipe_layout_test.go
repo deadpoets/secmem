@@ -119,12 +119,12 @@ func TestRSAFIPSSecretViews_RefusesUnknownFields(t *testing.T) {
 		rr    *nat
 	}
 	type current struct {
-		pub          struct{ N *nat }
+		pub          struct{ N *nat } //nolint:unused // reflected shape only
 		d            *nat
 		p, q         *modulus
 		dP, dQ       []byte
 		qInv         *nat
-		fipsApproved bool
+		fipsApproved bool //nolint:unused // reflected shape only
 	}
 	one := func() *nat { return &nat{limbs: []uint{1}} }
 	mod := func() *modulus { return &modulus{nat: one(), rr: one(), m0inv: 1, odd: true} }
@@ -134,28 +134,28 @@ func TestRSAFIPSSecretViews_RefusesUnknownFields(t *testing.T) {
 	}
 
 	type grownKey struct {
-		pub          struct{ N *nat }
+		pub          struct{ N *nat } //nolint:unused // reflected shape only
 		d            *nat
 		p, q         *modulus
 		dP, dQ       []byte
 		qInv         *nat
-		fipsApproved bool
+		fipsApproved bool //nolint:unused // reflected shape only
 		dCache       []byte
 	}
 	type grownModulus struct {
 		nat   *nat
-		odd   bool
+		odd   bool //nolint:unused // reflected shape only
 		m0inv uint
 		rr    *nat
 		r3    *nat
 	}
 	type keyWithGrownModulus struct {
-		pub          struct{ N *nat }
+		pub          struct{ N *nat } //nolint:unused // reflected shape only
 		d            *nat
 		p, q         *grownModulus
 		dP, dQ       []byte
 		qInv         *nat
-		fipsApproved bool
+		fipsApproved bool //nolint:unused // reflected shape only
 	}
 	gmod := func() *grownModulus { return &grownModulus{nat: one(), rr: one(), r3: one(), m0inv: 1} }
 	for name, c := range map[string]struct {
@@ -184,7 +184,7 @@ func TestResolveAESLayout_RefusesUnknownFields(t *testing.T) {
 		rounds   int        //nolint:unused // reflected shape only
 		enc, dec [60]uint32 //nolint:unused // reflected shape only
 	}
-	type current struct{ expanded }
+	type current struct{ expanded } //nolint:unused // reflected shape only
 	if l := resolveAESLayout(reflect.TypeOf(&current{})); l.err != nil {
 		t.Fatalf("control failed: today's layout does not resolve: %v", l.err)
 	}
@@ -200,11 +200,11 @@ func TestResolveAESLayout_RefusesUnknownFields(t *testing.T) {
 }
 
 func TestUnaccountedField(t *testing.T) {
-	type inner struct{ s, t int }
+	type inner struct{ s, t int } //nolint:unused // reflected shape only
 	type outer struct {
-		d int
-		inner
-		named inner
+		d     int   //nolint:unused // reflected shape only
+		inner       //nolint:unused // reflected shape only
+		named inner //nolint:unused // reflected shape only
 	}
 	st := reflect.TypeOf(outer{})
 	if got := unaccountedField(st, "d", "s", "t", "named"); got != "" {

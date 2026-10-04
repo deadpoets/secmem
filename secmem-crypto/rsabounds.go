@@ -68,35 +68,35 @@ var errNotRSADER = errors.New("DER is neither a PKCS#1 RSAPrivateKey nor a PKCS#
 
 // locatePKCS1 finds the RSAPrivateKey (RFC 8017 A.1.2) in der, which is
 // either that structure or a PKCS#8 PrivateKeyInfo around it, and returns it
-// as a sub-slice of der: nothing is copied. wrapped reports the PKCS#8 form.
+// as a sub-slice of der: nothing is copied.
 // A PrivateKeyInfo for another algorithm returns a nil slice and no error —
 // there is no RSA key in it to locate, and the caller says so in its own
 // words. Anything else is errNotRSADER.
 //
 // The two are told apart by the element after the version: an INTEGER (the
 // modulus) or a SEQUENCE (the AlgorithmIdentifier).
-func locatePKCS1(der []byte) (pkcs1 []byte, wrapped bool, err error) {
+func locatePKCS1(der []byte) (pkcs1 []byte, err error) {
 	in := cryptobyte.String(der)
 	var seq cryptobyte.String
 	var version cryptobyte.String
 	if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadASN1(&version, cbasn1.INTEGER) {
-		return nil, false, errNotRSADER
+		return nil, errNotRSADER
 	}
 	switch {
 	case seq.PeekASN1Tag(cbasn1.INTEGER):
-		return der, false, nil
+		return der, nil
 	case seq.PeekASN1Tag(cbasn1.SEQUENCE):
 		var alg, oid, priv cryptobyte.String
 		if !seq.ReadASN1(&alg, cbasn1.SEQUENCE) || !alg.ReadASN1(&oid, cbasn1.OBJECT_IDENTIFIER) ||
 			!seq.ReadASN1(&priv, cbasn1.OCTET_STRING) {
-			return nil, false, errNotRSADER
+			return nil, errNotRSADER
 		}
 		if !bytes.Equal(oid, oidRSADER) {
-			return nil, true, nil
+			return nil, nil
 		}
-		return priv, true, nil
+		return priv, nil
 	default:
-		return nil, false, errNotRSADER
+		return nil, errNotRSADER
 	}
 }
 
@@ -108,7 +108,7 @@ var oidRSADER = []byte{0x2a, 0x86, 0x48, 0x86, 0xf7, 0x0d, 0x01, 0x01, 0x01} //n
 // PKCS#8. A PKCS#8 structure for another algorithm passes — it holds no RSA
 // key to measure.
 func checkRSAKeySize(der []byte) error {
-	pkcs1, _, err := locatePKCS1(der)
+	pkcs1, err := locatePKCS1(der)
 	if err != nil || pkcs1 == nil {
 		return err
 	}

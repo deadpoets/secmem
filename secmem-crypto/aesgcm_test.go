@@ -357,8 +357,8 @@ func TestScopedAEAD_CloseWaitsForInFlightCalls(t *testing.T) {
 	<-sealed
 	<-closed
 	defer func() {
-		if r := recover(); r != ErrAEADOutOfScope {
-			t.Fatalf("Seal after the scope closed: recovered %v, want ErrAEADOutOfScope", r)
+		if err, _ := recover().(error); !errors.Is(err, ErrAEADOutOfScope) {
+			t.Fatalf("Seal after the scope closed: recovered %v, want ErrAEADOutOfScope", err)
 		}
 	}()
 	scoped.Seal(nil, nil, nil, nil)

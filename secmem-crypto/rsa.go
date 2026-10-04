@@ -145,7 +145,7 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 	)
 	err := secmem.ScrubErr(func() error {
 		return derBuf.WithBytesErr(func(der []byte) (err error) {
-			pkcs1, _, lerr := locatePKCS1(der)
+			pkcs1, lerr := locatePKCS1(der)
 			if lerr != nil {
 				return lerr
 			}
