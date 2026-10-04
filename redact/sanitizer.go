@@ -37,12 +37,17 @@
 //     `%3D`-separated forms, under a single-quoted or bracketed key
 //     (`user[password]=`), and an Authorization value inside a printed or
 //     JSON-encoded header map (`map[Authorization:[Bearer x]]`). NOT
-//     covered: a credential whose key and value
-//     are separated across two log attributes (`"k", "password=", "v", "x"`);
+//     covered: a credential whose key and value are separated across two
+//     log attributes (`"k", "password=", "v", "x"`);
 //     a secret embedded in prose with no key and no recognizable format; a
 //     low-entropy or short secret (fewer than 40 base64/hex characters) with
-//     no key; a key name outside the built-in list unless you add a rule; a
-//     PEM body whose header was cut off by truncation before the sanitizer
+//     no key; a long keyless token the entropy rules do not recognise,
+//     because an unpadded run must mix upper case, lower case and a digit
+//     and a hex run must stand as a word of its own — so a single-case
+//     token (base32 or bech32, an age "AGE-SECRET-KEY-1…") and hex glued to
+//     a prefix by an underscore ("dop_v1_<64 hex>") pass unless a rule
+//     names their format; a key name outside the built-in list unless you
+//     add a rule; a PEM body whose header was cut off by truncation before the sanitizer
 //     saw it. The [Handler] adds KEY-based redaction for structured log
 //     attributes, which covers the first gap for attributes with a
 //     credential-shaped key but not for a value logged under an innocent one.
