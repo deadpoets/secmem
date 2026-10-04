@@ -287,10 +287,12 @@ func appendPath(path, comps []string) []string {
 // ── Any rendering ───────────────────────────────────────────────────────────
 
 // renderCap bounds the text produced for one Any value. Sanitize truncates
-// at its own maxLen afterwards; the cap only keeps a huge slice from being
-// rendered in full first. Every write into the builder goes through
-// capWriter, so a single []byte, String() or MarshalText result larger than
-// the cap is cut too, not only the sum of many small ones.
+// at its own maxLen afterwards; the cap only keeps a huge value from being
+// rendered in full first. Every write of caller data goes through capWriter,
+// so a single []byte, String() or MarshalText result larger than the cap is
+// cut too, and every loop over members stops once the cap is passed, so the
+// names of a great many small members are bounded as well. The overshoot is
+// at most one struct field name and a few delimiters.
 const renderCap = 1 << 16
 
 // maxRenderDepth bounds pointer and container nesting, which also breaks
@@ -312,6 +314,18 @@ func (w capWriter) Write(p []byte) (int, error) {
 			p = p[:room]
 		}
 		w.b.Write(p)
+	}
+	return n, nil
+}
+
+// WriteString is Write for a string, without the conversion.
+func (w capWriter) WriteString(s string) (int, error) {
+	n := len(s)
+	if room := renderCap - w.b.Len(); room > 0 {
+		if len(s) > room {
+			s = s[:room]
+		}
+		w.b.WriteString(s)
 	}
 	return n, nil
 }
@@ -470,7 +484,7 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 	case reflect.Struct:
 		b.WriteByte('{')
 		t := rv.Type()
-		for i := 0; i < rv.NumField(); i++ {
+		for i := 0; i < rv.NumField() && b.Len() <= renderCap; i++ {
 			if i > 0 {
 				b.WriteByte(' ')
 			}
@@ -482,24 +496,7 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		b.WriteByte('}')
 	case reflect.Map:
 		b.WriteString("map[")
-		keys := rv.MapKeys()
-		names := make([]string, len(keys))
-		for i, k := range keys {
-			names[i] = fmt.Sprint(k)
-		}
-		order := make([]int, len(keys))
-		for i := range order {
-			order[i] = i
-		}
-		sort.SliceStable(order, func(i, j int) bool { return names[order[i]] < names[order[j]] })
-		for n, i := range order {
-			if n > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteString(names[i])
-			b.WriteByte(':')
-			h.renderField(b, names[i], rv.MapIndex(keys[i]), path, depth)
-		}
+		h.renderMap(b, rv, path, depth)
 		b.WriteByte(']')
 	case reflect.Slice, reflect.Array:
 		if rv.Type().Elem().Kind() == reflect.Uint8 {
@@ -527,6 +524,56 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		// carrier of large text, and the cap must bound it too.
 		_, _ = fmt.Fprint(w, rv)
 	}
+}
+
+// maxSortedMapLen is the largest map rendered in sorted key order. Sorting
+// needs every key formatted first, which for a map with a great many entries
+// is exactly the unbounded work the render cap exists to prevent; a larger
+// map is rendered in iteration order and cut at the cap.
+const maxSortedMapLen = 1024
+
+// renderMap writes the entries of the map rv as "key:value" pairs, stopping
+// once the render cap is reached.
+func (h *Handler) renderMap(b *strings.Builder, rv reflect.Value, path []string, depth int) {
+	entry := func(n int, name string, v reflect.Value) {
+		if n > 0 {
+			b.WriteByte(' ')
+		}
+		_, _ = capWriter{b}.WriteString(name)
+		b.WriteByte(':')
+		h.renderField(b, name, v, path, depth)
+	}
+	if rv.Len() > maxSortedMapLen {
+		iter := rv.MapRange()
+		for n := 0; iter.Next() && b.Len() <= renderCap; n++ {
+			entry(n, mapKeyName(iter.Key()), iter.Value())
+		}
+		return
+	}
+	keys := rv.MapKeys()
+	names := make([]string, len(keys))
+	for i, k := range keys {
+		names[i] = mapKeyName(k)
+	}
+	order := make([]int, len(keys))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool { return names[order[i]] < names[order[j]] })
+	for n, i := range order {
+		if b.Len() > renderCap {
+			break
+		}
+		entry(n, names[i], rv.MapIndex(keys[i]))
+	}
+}
+
+// mapKeyName formats a map key as fmt would, cut at the render cap: a key is
+// caller data like any value and may be as large.
+func mapKeyName(k reflect.Value) string {
+	var nb strings.Builder
+	_, _ = fmt.Fprint(capWriter{&nb}, k)
+	return nb.String()
 }
 
 // byteView returns the bytes of rv, a slice or array of a uint8 kind, without
@@ -616,7 +663,7 @@ func (h *Handler) renderLogValue(b *strings.Builder, v slog.Value, path []string
 			if i > 0 {
 				b.WriteByte(' ')
 			}
-			_, _ = capWriter{b}.Write([]byte(a.Key))
+			_, _ = capWriter{b}.WriteString(a.Key)
 			b.WriteByte('=')
 			comps := splitKey(a.Key)
 			full := appendPath(path, comps)
