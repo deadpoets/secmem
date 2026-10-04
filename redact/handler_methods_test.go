@@ -134,3 +134,59 @@ func TestHandler_SelfRenderingTypesAreNotTakenApart(t *testing.T) {
 		})
 	}
 }
+
+// rawBody is a defined byte-slice type with no methods, as json.RawMessage
+// was before go1.27 and ed25519.PrivateKey is.
+type rawBody []byte
+
+type bytesHolder struct {
+	id  string
+	raw []byte
+}
+
+type arrayHolder struct {
+	id  string
+	key [16]byte
+}
+
+// TestHandler_ByteShapesAreText: the walk treats []byte as text so the value
+// rules can see it. A defined byte-slice type, a []byte in an unexported
+// field and a byte array used to miss that case and reach the sink as a list
+// of decimals, which no rule matches and anyone can decode.
+func TestHandler_ByteShapesAreText(t *testing.T) {
+	t.Parallel()
+	const body = "password=hunter2x"
+	var arr [16]byte
+	copy(arr[:], "pwd=hunter2x")
+	cases := []struct {
+		name  string
+		value any
+	}{
+		{"defined byte slice", rawBody(body)},
+		{"defined byte slice in an exported field", struct{ Body rawBody }{Body: rawBody(body)}},
+		{"byte slice in an unexported field", bytesHolder{id: "x", raw: []byte(body)}},
+		{"byte array", arr},
+		{"pointer to byte array", &arr},
+		{"byte array in an unexported field", arrayHolder{id: "x", key: arr}},
+		{"slice of byte arrays", [][16]byte{arr}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			text, js, tbuf, jbuf := sinks()
+			text.Info("m", "v", c.value)
+			js.Info("m", "v", c.value)
+			for sink, out := range map[string]string{"text": tbuf.String(), "json": jbuf.String()} {
+				if strings.Contains(out, "hunter2x") {
+					t.Errorf("%s: secret reached the sink: %s", sink, out)
+				}
+				// "hun" as fmt prints bytes one by one.
+				if strings.Contains(out, "104 117 110") {
+					t.Errorf("%s: bytes reached the sink as decimals: %s", sink, out)
+				}
+				if !strings.Contains(out, "[REDACTED:password_field]") {
+					t.Errorf("%s: the value rule did not see the bytes as text: %s", sink, out)
+				}
+			}
+		})
+	}
+}

@@ -37,7 +37,9 @@ import (
 //   - VALUE-based: the message and every string-shaped value go through the
 //     Sanitizer. A [slog.KindAny] value is rendered to text first, in a
 //     %+v-like form, by a reflection walk that applies the key set to struct
-//     field names and map keys along the way and treats []byte as text; the
+//     field names and map keys along the way and treats bytes as text
+//     ([]byte, a defined byte-slice type with no method of its own, and a
+//     byte array alike); the
 //     sanitized rendering is then emitted as ONE STRING attribute. The
 //     structured shape of an Any value is therefore lost at the sink — a
 //     JSON handler writes a string where it used to write an object or an
@@ -498,6 +500,14 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		}
 		b.WriteByte(']')
 	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			// Bytes are text whatever the type around them: a defined
+			// byte-slice type, a []byte the walk cannot Interface() and a
+			// byte array all land here, and printed element by element they
+			// would be decimals no value rule can match.
+			_, _ = w.Write(byteView(rv))
+			return
+		}
 		b.WriteByte('[')
 		for i := 0; i < rv.Len(); i++ {
 			if i > 0 {
@@ -515,6 +525,21 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		// carrier of large text, and the cap must bound it too.
 		_, _ = fmt.Fprint(w, rv)
 	}
+}
+
+// byteView returns the bytes of rv, a slice or array of a uint8 kind, without
+// reading more than the render cap can use. A slice is returned as it is —
+// reflect allows that for an unexported field too — and an array, which may
+// not be addressable, is copied element by element.
+func byteView(rv reflect.Value) []byte {
+	if rv.Kind() == reflect.Slice {
+		return rv.Bytes()
+	}
+	out := make([]byte, min(rv.Len(), renderCap))
+	for i := range out {
+		out[i] = byte(rv.Index(i).Uint()) //nolint:gosec // G115: the element kind is uint8
+	}
+	return out
 }
 
 // renderByMethod renders x, the value rv holds, through the first of its own
