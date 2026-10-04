@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"net/url"
 	"strings"
 	"testing"
 
@@ -274,5 +275,62 @@ func TestHandler_AnyNilPassesThrough(t *testing.T) {
 	js.Info("m", slog.Any("v", nil))
 	if !strings.Contains(jbuf.String(), `"v":null`) {
 		t.Errorf("nil Any was altered: %s", jbuf.String())
+	}
+}
+
+// TestHandler_KeyComponentsSplitOnAnyPunctuation: a key is split wherever a
+// rune is neither a letter nor a digit, so the bracketed, parenthesised and
+// comma-joined spellings forms and query encoders produce are components like
+// any other.
+func TestHandler_KeyComponentsSplitOnAnyPunctuation(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		attr slog.Attr
+	}{
+		{"bracketed", slog.String("user[password]", "plainval")},
+		{"parenthesised", slog.String("user(password)", "plainval")},
+		{"comma", slog.String("user,password", "plainval")},
+		{"at sign", slog.String("db@token", "plainval")},
+		{"map key", slog.Any("form", url.Values{"user[password]": {"plainval"}})},
+	}
+	for _, c := range cases {
+		text, js, tbuf, jbuf := sinks()
+		text.Info("m", c.attr)
+		js.Info("m", c.attr)
+		for sink, out := range map[string]string{"text": tbuf.String(), "json": jbuf.String()} {
+			if strings.Contains(out, "plainval") {
+				t.Errorf("%s (%s): value leaked: %s", c.name, sink, out)
+			}
+		}
+	}
+}
+
+// TestHandler_KeyVocabularyCoversTheSanitizers: every key name the
+// Sanitizer's key=value, Authorization and Cookie rules recognise in text is
+// also a sensitive attribute key, so the two lists cannot drift apart
+// unnoticed. The names are the rules' alternations spelled out.
+func TestHandler_KeyVocabularyCoversTheSanitizers(t *testing.T) {
+	t.Parallel()
+	names := []string{
+		"password", "passwd", "passphrase", "pass", "pwd",
+		"secret", "secret_key", "secret_access_key", "private_key", "signing_key",
+		"credential", "credentials",
+		"token", "bearer", "api_key", "apikey", "auth",
+		"authorization", "proxy_authorization",
+		"cookie", "cookies", "set_cookie", "set_cookies",
+	}
+	s := redact.NewDefaultSanitizer()
+	for _, name := range names {
+		// The name must really be one the text rules know, or this list has
+		// drifted instead.
+		if got := s.Sanitize(name + "=plainval"); strings.Contains(got, "plainval") {
+			t.Errorf("%q is not a Sanitizer key name: %q", name, got)
+		}
+		text, _, tbuf, _ := sinks()
+		text.Info("m", slog.Int(name, 424242))
+		if out := tbuf.String(); !strings.Contains(out, "[REDACTED:key]") {
+			t.Errorf("%q is a Sanitizer key name but not a sensitive attribute key: %s", name, out)
+		}
 	}
 }

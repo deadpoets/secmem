@@ -26,9 +26,11 @@ import (
 //     group, LogValuer, Any. A group whose own name is sensitive is replaced
 //     as a whole; so is everything beneath a [Handler.WithGroup] name that
 //     is. The key is compared case-insensitively, as a whole and as
-//     components split on "_", "-", ".", "/", ":", space, digit runs and
-//     CamelCase boundaries, so "DB_PASSWORD", "db.password", "accessToken"
-//     and "x-api-key" all match; a multi-component entry such as "api_key"
+//     components split on every character that is not a letter or a digit
+//     ("_", "-", ".", "/", ":", space, brackets, any other punctuation), on
+//     digit runs and on CamelCase boundaries, so "DB_PASSWORD",
+//     "db.password", "user[password]", "accessToken" and "x-api-key" all
+//     match; a multi-component entry such as "api_key"
 //     matches the same components across an enclosing group ("api" group,
 //     "key" key). A sensitive LogValuer is not resolved. Extend the set with
 //     [WithSensitiveKeys]; drop the defaults with
@@ -105,7 +107,7 @@ type handlerConfig struct {
 
 // WithSensitiveKeys adds keys to the set whose values [Handler] redacts
 // wholesale. Each entry is matched like the defaults: case-insensitively, as
-// a whole key or as a run of "_"/"-"/"."-separated (or CamelCase) components.
+// a whole key or as a run of punctuation-separated (or CamelCase) components.
 func WithSensitiveKeys(keys ...string) HandlerOption {
 	return func(c *handlerConfig) { c.keys = append(c.keys, keys...) }
 }
@@ -131,7 +133,7 @@ func DefaultSensitiveKeys() []string {
 		"token", "access_token", "refresh_token", "id_token", "session_token", "jwt",
 		"api_key", "apikey", "x_api_key",
 		"authorization", "auth", "bearer",
-		"cookie", "set_cookie", "session",
+		"cookie", "cookies", "set_cookie", "session",
 		"private_key", "privatekey", "signing_key", "secret_access_key",
 		"credential", "credentials",
 	}
@@ -693,9 +695,10 @@ func equalComps(a, b []string) bool {
 	return true
 }
 
-// splitKey lower-cases key and splits it into components on "_", "-", ".",
-// "/", ":", whitespace, letter/digit boundaries and CamelCase boundaries
-// ("accessToken" → access, token; "HTTPPassword" → http, password).
+// splitKey lower-cases key and splits it into components on every rune that
+// is not a letter, a digit or a combining mark, on letter/digit boundaries
+// and on CamelCase boundaries ("accessToken" → access, token; "HTTPPassword"
+// → http, password; "user[password]" → user, password).
 func splitKey(key string) []string {
 	if key == "" {
 		return nil
@@ -711,7 +714,7 @@ func splitKey(key string) []string {
 	}
 	for i, r := range runes {
 		switch {
-		case r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || unicode.IsSpace(r):
+		case !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r):
 			flush()
 			continue
 		case i > 0 && len(cur) > 0:
