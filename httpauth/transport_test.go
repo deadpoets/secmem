@@ -209,6 +209,10 @@ func TestLiteralWithBasicPrefix_IsPlainHeaderNotBase64(t *testing.T) {
 	}
 }
 
+// TestRoundTrip_CallerRequestUntouchedAndResponseRequestScrubbed: the
+// credential goes out on a clone, and neither the caller's request nor the
+// response — whose Request field is the caller's request again — holds it
+// afterwards.
 func TestRoundTrip_CallerRequestUntouchedAndResponseRequestScrubbed(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
@@ -235,14 +239,14 @@ func TestRoundTrip_CallerRequestUntouchedAndResponseRequestScrubbed(t *testing.T
 	if resp.Request == nil {
 		t.Fatal("response has no Request")
 	}
-	if resp.Request == req {
-		t.Error("response.Request is the caller's request; RoundTrip must send a clone")
+	if resp.Request != req {
+		t.Error("response.Request is not the caller's request; the clone that carried the credential is still reachable from the response")
 	}
 	if _, present := resp.Request.Header["Authorization"]; present {
 		t.Errorf("response.Request still carries Authorization = %q", resp.Request.Header.Get("Authorization"))
 	}
 	if got := resp.Request.Header.Get("X-Keep"); got != "1" {
-		t.Errorf("unrelated header lost from the clone: X-Keep = %q", got)
+		t.Errorf("unrelated header lost: X-Keep = %q", got)
 	}
 }
 
@@ -264,7 +268,10 @@ func (b *errBase) RoundTrip(req *http.Request) (*http.Response, error) {
 	return nil, errBaseFailed
 }
 
-func TestRoundTrip_HeaderDeletedFromCloneEvenWhenBaseFails(t *testing.T) {
+// TestRoundTrip_CloneIsNotModifiedAfterBaseReturns: Base may still be reading
+// the request it was handed after it returns, so the clone must be exactly as
+// Base received it — on the error path too, where nothing else could tell.
+func TestRoundTrip_CloneIsNotModifiedAfterBaseReturns(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
 	base := &errBase{header: "Authorization"}
@@ -277,8 +284,8 @@ func TestRoundTrip_HeaderDeletedFromCloneEvenWhenBaseFails(t *testing.T) {
 	if !base.present || base.seen != "Bearer tok" {
 		t.Fatalf("base saw Authorization = %q (present=%v), want %q", base.seen, base.present, "Bearer tok")
 	}
-	if _, present := base.req.Header["Authorization"]; present {
-		t.Errorf("clone still carries Authorization after a failed round trip")
+	if got := base.req.Header.Get("Authorization"); got != "Bearer tok" {
+		t.Errorf("the request Base holds was modified after it returned: Authorization = %q", got)
 	}
 }
 
