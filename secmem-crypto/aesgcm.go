@@ -68,6 +68,9 @@ func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error
 	if fn == nil {
 		return errors.New("secmemcrypto: with aes-gcm: nil callback")
 	}
+	if key.IsDestroyed() {
+		return fmt.Errorf("secmemcrypto: with aes-gcm: %w", secmem.ErrDestroyed)
+	}
 	switch key.Len() {
 	case 16, 24, 32:
 	default:

@@ -296,3 +296,17 @@ func TestResolveAESGCMLayout_RefusesUnexpectedShapes(t *testing.T) {
 		t.Errorf("a GCM without a GHASH table (the portable build): %+v, %v; want the two round-key arrays", l, err)
 	}
 }
+
+// TestWithAESGCM_DestroyedKey: a destroyed key is reported as destroyed, as
+// every other entry point reports it, not as a key of the wrong size.
+func TestWithAESGCM_DestroyedKey(t *testing.T) {
+	key, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		t.Skipf("no secure memory: %v", err)
+	}
+	key.Destroy()
+	err = WithAESGCM(key, func(cipher.AEAD) error { return nil })
+	if !errors.Is(err, secmem.ErrDestroyed) {
+		t.Fatalf("WithAESGCM on a destroyed key: %v, want an error wrapping secmem.ErrDestroyed", err)
+	}
+}
