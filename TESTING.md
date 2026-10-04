@@ -33,10 +33,14 @@ that is said outright rather than dressed up.
   residue scans, so a new `!race` file needs no pattern widened. The 386 job
   runs them on the generic path. macOS runs none of them: every `secmem-crypto`
   step there is `-race`.
-- **No test skips silently.** Every test step runs `go test -json` through
-  `internal/skipaudit`, which prints each skipped test with the reason its
-  `t.Skip` gave and fails the job on any skip that is not on that lane's
-  allowlist (`.github/skip-allowlist/<lane>.txt`, one reason per entry). A
+- **No proof skips silently.** Every step that runs a proof runs
+  `go test -json` through `internal/skipaudit`, which prints each skipped
+  test with the reason its `t.Skip` gave and fails the job on any skip that
+  is not on that lane's allowlist (`.github/skip-allowlist/<lane>.txt`, one
+  reason per entry). Four `go test` steps are plain and not audited, on
+  purpose, and the header of `ci.yml` gives the reason for each: both steps
+  of `released-deps`, `secmem-lint`'s analyzer tests, and the examples'
+  race tests. A
   skip is a proof that stopped running; whether that is the environment or
   the claim is decided in a reviewed diff to the allowlist, not in a log
   nobody reads. The Windows list was measured; the Linux and macOS lists were
