@@ -3,10 +3,8 @@
 package secmemcrypto
 
 import (
+	"bytes"
 	"crypto"
-	"crypto/ecdh"
-	"crypto/ecdsa"
-	"crypto/ed25519"
 	"crypto/rand"
 	"crypto/rsa"
 	"crypto/x509"
@@ -14,9 +12,10 @@ import (
 	"fmt"
 	"io"
 	"math/big"
-	"reflect"
 	"runtime"
-	"unsafe"
+
+	"golang.org/x/crypto/cryptobyte"
+	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
 
 	"github.com/deadpoets/secmem"
 )
@@ -358,85 +357,27 @@ func parsePKCS1(pkcs1 []byte) (*rsa.PrivateKey, error) {
 
 // rejectNonRSAPKCS8 is the constructor's answer for a PKCS#8 structure
 // whose algorithm is not RSA: an error that says what the key is and where
-// to take it — after wiping what the parse that found that out
-// materialized, where the key type allows it.
+// to take it. The algorithm identifier is read in place and nothing is
+// parsed — asking crypto/x509 what the structure holds would put that key on
+// the heap to answer, in copies this package can only partly wipe (and, for
+// key types the standard library adds later, not at all).
 func rejectNonRSAPKCS8(der []byte) error {
-	keyAny, err := x509.ParsePKCS8PrivateKey(der)
-	if err != nil {
-		return fmt.Errorf("secmemcrypto: parse PKCS#8: %w", err)
+	in := cryptobyte.String(der)
+	var seq, version, alg, oid cryptobyte.String
+	if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadASN1(&version, cbasn1.INTEGER) ||
+		!seq.ReadASN1(&alg, cbasn1.SEQUENCE) || !alg.ReadASN1(&oid, cbasn1.OBJECT_IDENTIFIER) {
+		return errNotRSADER
 	}
-	switch k := keyAny.(type) {
-	case *rsa.PrivateKey:
-		// Not reachable while crypto/x509 reads the same algorithm
-		// identifier locatePKCS1 did; wiped and refused if it ever is.
-		return errors.Join(errors.New("secmemcrypto: PKCS#8 DER was read as RSA by crypto/x509 but not by this package"), wipeRSAPrivateKey(k))
-	case *ecdsa.PrivateKey:
-		wipeECDSAPrivateKey(k)
+	switch {
+	case bytes.Equal(oid, []byte{0x2a, 0x86, 0x48, 0xce, 0x3d, 0x02, 0x01}): // id-ecPublicKey
 		return errors.New("secmemcrypto: PKCS#8 DER holds an ECDSA key, not RSA (store its raw scalar in a SecureBuffer and use NewECDSASigner)")
-	case ed25519.PrivateKey:
-		secmem.SecureWipe(k)
+	case bytes.Equal(oid, []byte{0x2b, 0x65, 0x70}): // id-Ed25519
 		return errors.New("secmemcrypto: PKCS#8 DER holds an Ed25519 key, not RSA (store its seed in a SecureBuffer and use NewEd25519Signer)")
-	case *ecdh.PrivateKey:
-		err := errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
-		// The wipe is reflection-based. If it could not locate the scalar,
-		// say so in the rejection rather than imply the parsed key was
-		// cleaned up.
-		if werr := wipeECDHPrivateKey(k); werr != nil {
-			err = errors.Join(err, werr)
-		}
-		return err
+	case bytes.Equal(oid, []byte{0x2b, 0x65, 0x6e}), bytes.Equal(oid, []byte{0x2b, 0x65, 0x6f}): // id-X25519, id-X448
+		return errors.New("secmemcrypto: PKCS#8 DER holds an ECDH (X25519/X448) key, not RSA (store its scalar in a SecureBuffer and use X25519Key)")
 	default:
-		return fmt.Errorf("secmemcrypto: PKCS#8 DER holds a %T, not an RSA key", keyAny)
+		return errors.New("secmemcrypto: PKCS#8 DER holds a key of another algorithm, not RSA")
 	}
-}
-
-// ecdhScalarField names the unexported []byte field of crypto/ecdh.PrivateKey
-// holding the parsed scalar ("privateKey []byte" in go1.26's ecdh.go).
-// crypto/ecdh exposes no in-place zeroization and Bytes() returns a copy, so
-// the parsed key's own scalar is reachable only through this field.
-// TestWipeECDHPrivateKey_Tripwire fails on any toolchain where the name or
-// shape stops resolving, so a crypto/ecdh refactor shows up as a red test
-// run, not as a wipe that quietly stopped wiping.
-const ecdhScalarField = "privateKey"
-
-// ecdhScalar returns the scalar held in k's unexported field named field,
-// aliasing the parsed key's own backing array (no copy). It fails — never
-// returns a detached or empty slice — when the field is missing or is not a
-// []byte, the two ways a stdlib refactor would break the lookup. The name is
-// a parameter only so the tripwire test can drive that failure path on a
-// real key.
-func ecdhScalar(k *ecdh.PrivateKey, field string) ([]byte, error) {
-	f := reflect.ValueOf(k).Elem().FieldByName(field)
-	if !f.IsValid() {
-		return nil, fmt.Errorf("secmemcrypto: wipe ecdh key: crypto/ecdh.PrivateKey has no field %q on %s; the parsed scalar was NOT wiped", field, runtime.Version())
-	}
-	if f.Kind() != reflect.Slice || f.Type().Elem().Kind() != reflect.Uint8 {
-		return nil, fmt.Errorf("secmemcrypto: wipe ecdh key: crypto/ecdh.PrivateKey.%s is %s on %s, want []byte; the parsed scalar was NOT wiped", field, f.Type(), runtime.Version())
-	}
-	//nolint:gosec // G103: audited — aliasing the parsed key's own addressable scalar field in place; no foreign memory is dereferenced.
-	return reflect.NewAt(f.Type(), unsafe.Pointer(f.UnsafeAddr())).Elem().Bytes(), nil
-}
-
-// wipeECDHPrivateKey zeroes the scalar inside a parsed *ecdh.PrivateKey
-// through [ecdhScalar]. When the scalar cannot be located it returns an
-// error instead of silently doing nothing: the only caller is a rejection
-// path, which folds the error into the rejection, so no caller is told a
-// key was discarded cleanly while its scalar is still live on the heap.
-//
-// Like [wipeECDSAPrivateKey] it is a package var so a test can wrap it to
-// prove the reject path fires the wipe on the live transient; production
-// always runs the value defined here.
-var wipeECDHPrivateKey = func(k *ecdh.PrivateKey) error {
-	if k == nil {
-		return nil
-	}
-	scalar, err := ecdhScalar(k, ecdhScalarField)
-	if err != nil {
-		return err
-	}
-	secmem.SecureWipe(scalar)
-	runtime.KeepAlive(k)
-	return nil
 }
 
 // wipeRSAPrivateKey zeroes the secret material of a transiently
