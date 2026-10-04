@@ -466,7 +466,9 @@ func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 }
 
 // rsaFromDER hands a PKCS#1 or PKCS#8 RSA DER buffer to NewRSASigner, which
-// takes ownership; the DER is the durable form an RSASigner keeps.
+// takes ownership; the DER is the durable form an RSASigner keeps. Every
+// container's RSA route ends here, so the constructor's size rule
+// (rsabounds.go) is the same for all of them.
 func rsaFromDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	s, err := newRSASigner(blob, o)
 	if err != nil {

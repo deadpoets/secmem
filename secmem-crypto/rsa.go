@@ -101,9 +101,15 @@ type RSASigner struct {
 // only the DER bytes in the SecureBuffer — and wipe the intermediate
 // decode, which lived on the plain heap.
 //
-// Key size is not checked here: the standard library rejects keys smaller
-// than 1024 bits at Sign time (see the crypto/rsa package documentation,
-// including the rsa1024min GODEBUG escape hatch for tests).
+// The smallest key size is not checked here: the standard library rejects
+// keys smaller than 1024 bits at Sign time (see the crypto/rsa package
+// documentation, including the rsa1024min GODEBUG escape hatch for tests).
+// The largest is: a modulus over 16384 bits, a prime over 8192, a public
+// exponent over 24 bits (or even, or 1), or more than five primes is refused
+// from the encoded lengths, before the standard library validates the key —
+// work that grows with the square of those sizes, on DER that may have come
+// from a file. [ParsePrivateKey] and [ParsePrivateKeyWithPassphrase] reach
+// this constructor for every container, so the rule is the same for all.
 //
 // On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
 // without the experiment) this refuses with an error wrapping
@@ -133,6 +139,9 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 	)
 	err := secmem.ScrubErr(func() error {
 		return derBuf.WithBytesErr(func(der []byte) (err error) {
+			if err := checkRSAKeySize(der); err != nil {
+				return err
+			}
 			key, perr := parseRSAPrivateKey(der, false)
 			if perr != nil {
 				var p8err error
@@ -169,7 +178,8 @@ func newRSASigner(derBuf *secmem.SecureBuffer, o options) (*RSASigner, error) {
 // matters to your threat model, generate RSA keys in an HSM/KMS and import
 // the DER instead.
 //
-// The standard library rejects bits < 1024.
+// The standard library rejects bits < 1024, and this function rejects bits
+// over 16384, the largest key [NewRSASigner] accepts.
 //
 // On a build without GOEXPERIMENT=runtimesecret (Windows, macOS, and Linux
 // without the experiment) this refuses with an error wrapping
@@ -180,6 +190,9 @@ func GenerateRSASigner(bits int, opts ...Option) (*RSASigner, error) {
 	o := resolveOptions(opts)
 	if err := o.checkHeapTransients("secmemcrypto: generate rsa key"); err != nil {
 		return nil, err
+	}
+	if bits > rsaMaxModulusBits {
+		return nil, fmt.Errorf("secmemcrypto: generate rsa key: %d bits is too large (the maximum is %d)", bits, rsaMaxModulusBits)
 	}
 	var buf *secmem.SecureBuffer
 	err := secmem.ScrubErr(func() (err error) {
