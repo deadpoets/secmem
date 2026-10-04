@@ -38,9 +38,9 @@ type janitorRegion struct {
 	// place and left mapped. It is shared with the owning SecureBuffer or
 	// SecureArena, which is the whole point: the janitor deliberately holds no
 	// owner pointer, so this flag is the only channel by which the owner can
-	// learn its secret is gone and refuse to be reused. Reads still succeed
-	// (they return the zeros), which keeps the documented "a late access reads
-	// zeros rather than faulting" guarantee; every mutation returns ErrWiped.
+	// learn its secret is gone and refuse to be reused: every borrow, read and
+	// mutation returns ErrWiped. The region stays mapped only so that a slice
+	// retained past its callback does not fault.
 	wiped *atomic.Bool
 }
 
@@ -306,8 +306,8 @@ var errWipeSkipped = errors.New("secmem: janitor: write access could not be rest
 // process is exiting imminently and the kernel reclaims every mapping on exit,
 // so the region is wiped but left MAPPED. Unmapping it while application
 // goroutines are still running in the shutdown window would turn any late
-// access into a use-after-munmap SIGSEGV; a wiped-but-mapped region instead
-// reads as zeros. The explicit Destroy path (wrapper nil'd under the lock) and
+// retained slice's access into a use-after-munmap SIGSEGV; a wiped-but-mapped
+// region instead holds zeros. The explicit Destroy path (wrapper nil'd under the lock) and
 // the GC-cleanup path (wrapper unreachable) have no such live accessor and pass
 // unmap=true to fully release.
 //
@@ -373,7 +373,8 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 
 	if !unmap {
 		// Emergency-wipe path: secret is wiped; leave the region mapped so a
-		// late access reads zeros rather than faulting on freed memory.
+		// slice retained past its callback sees zeros rather than faulting on
+		// freed memory.
 		return canaryErr
 	}
 
@@ -611,26 +612,28 @@ func (j *janitor) wipeAllInPlace() error {
 //
 //   - Regions are wiped in place but NOT unmapped: the process is assumed to be
 //     terminating and the kernel reclaims the mappings on exit. Unmapping while
-//     another goroutine might still hold a buffer would risk a use-after-munmap
-//     fault, so a read of an already-wiped buffer returns zeroed bytes, never a
-//     fault. A later explicit [SecureBuffer.Destroy] (or the GC cleanup, once
+//     another goroutine might still hold a slice it kept from a callback
+//     would risk a use-after-munmap fault; left mapped, such a slice sees
+//     zeros. A later explicit [SecureBuffer.Destroy] (or the GC cleanup, once
 //     the wrapper is unreachable) does complete the unmap — by then the caller
 //     has stated it is done with the buffer, so the mapping is reclaimed rather
 //     than held until exit.
 //
 //   - After this call every affected buffer is dead: its secret is gone and it
-//     cannot be reused. Reads still succeed and return zeros — the region is
-//     deliberately left mapped so a late access does not fault — but every
-//     mutating method returns [ErrWiped] (which wraps [ErrDestroyed]), and
-//     [SecureArena.Acquire] refuses. This is a one-way emergency wipe, not a
-//     reusable clear. Teardown is not a mutation: [ArenaSlot.Release] on a
-//     slot acquired before the wipe still succeeds, and reports no canary
-//     violation for the strips the wipe zeroed.
+//     cannot be reused. Every borrow, read and mutation returns [ErrWiped]
+//     (which wraps [ErrDestroyed]): WithBytes and WithBytesErr on a buffer or
+//     on a slot acquired before the wipe, CopyOut, ByteAt, ConstantTimeEqual,
+//     WriteTo, every mutating method, and [SecureArena.Acquire]. A key that
+//     was wiped therefore fails its next operation instead of computing with
+//     zeros. This is a one-way emergency wipe, not a reusable clear. Teardown
+//     is not refused: Destroy works, and [ArenaSlot.Release] on a slot
+//     acquired before the wipe still succeeds and reports no canary violation
+//     for the strips the wipe zeroed.
 //
-//     One gap, stated rather than papered over: an [ArenaSlot] acquired BEFORE
-//     the wipe still hands out a writable slice, because WithBytes returns one
-//     slice for reading and writing and reads have to keep working. A later
-//     WipeAllSecrets does catch anything written that way — the sweep covers
+//     One gap, stated rather than papered over: a slice kept past the
+//     callback that produced it (already a contract violation) still reaches
+//     the mapped region and can write to it. A later WipeAllSecrets, Release
+//     or Destroy does zero anything written that way — the sweep covers
 //     regions already wiped once, precisely for this case.
 //
 //   - Safe to call concurrently with Destroy and from multiple goroutines; each

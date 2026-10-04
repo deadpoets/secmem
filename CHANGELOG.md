@@ -209,6 +209,23 @@ The core floor is unchanged at v0.7.0.
   copied packages between v0.56.0 and v0.57.0, and the X25519 ladder is
   text-identical from go1.26 through go1.27.
 
+### Changed
+
+- **A borrow on an emergency-wiped buffer or arena returns `ErrWiped`.**
+  After `WipeAllSecrets` the region is left mapped, and until now only the
+  mutating methods refused: `WithBytes`, `WithBytesErr`, `CopyOut`, `ByteAt`,
+  `ConstantTimeEqual` and `WriteTo` kept succeeding and handed out the zeros,
+  as did `ArenaSlot.WithBytes` on a slot acquired before the wipe. A process
+  that survived the wipe (`InstallTerminationWipeNoExit`, a handler of its
+  own, a recovered panic) could therefore run AES-GCM, X25519, ML-KEM or
+  Ed25519 under an all-zero key and be told it worked. All of them now return
+  `ErrWiped`, which wraps `ErrDestroyed`, and the callback is not called. The
+  pre-wipe slot handle that could still write a fresh secret into a wiped
+  slab is closed by the same check. This is a behaviour change: code that
+  read a wiped buffer to see zeros gets an error instead. `Len`,
+  `IsDestroyed`, `Capabilities`, `Destroy` and `ArenaSlot.Release` are
+  unaffected.
+
 ### Fixed
 
 - **Windows: a buffer that had been sealed was no longer locked.**

@@ -120,7 +120,7 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // requires it for asynchronous lists when job control is off), and so does a
 // `nohup` child for SIGHUP. Measured before
 // this was handled: such a child wiped, reported the re-raise as done, and
-// kept running with every buffer reading as zeros. The installer therefore
+// kept running with every secret gone. The installer therefore
 // records, once, which of its signals are ignored at the moment it is
 // called — [os/signal.Ignored] reports the inherited state only until Notify
 // overrides it — and treats one of those as impossible to re-raise: the
@@ -131,13 +131,14 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 //
 // Verified behaviour before this was so: a real Ctrl-C wiped every secret and
 // the process kept running, exiting only on a SECOND Ctrl-C. That left it in the
-// one state [WipeAllSecrets] does not support. The wipe deliberately leaves
-// regions MAPPED so a late read returns zeros instead of faulting — a trade
-// justified entirely by "the process is terminating imminently". A process that
-// survives instead keeps every key buffer readable and full of zeros, and reads
-// still SUCCEED, so an application that treats the signal as "begin shutdown"
-// can go on to sign with an all-zero key or derive from zeros, each call
-// reporting success. That is worse than either terminating or never wiping.
+// one state [WipeAllSecrets] is not meant for. The wipe deliberately leaves
+// regions MAPPED so a retained slice does not fault — a trade justified
+// entirely by "the process is terminating imminently". A process that survives
+// instead runs on with every key dead: each borrow returns [ErrWiped], so an
+// application that treats the signal as "begin shutdown" finds every signing,
+// decryption and derivation call failing. That fails closed (it once did not:
+// borrows used to succeed and hand out the zeros), but it is still a process
+// that can no longer do its job and was told to stop.
 //
 // Use [InstallTerminationWipeNoExit] if your own handler owns the exit.
 //
@@ -173,9 +174,9 @@ func InstallTerminationWipe(signals ...os.Signal) (uninstall func()) {
 //
 // Choose it when your own handler performs a graceful shutdown that must not be
 // truncated — flushing logs, draining connections — and will exit on its own.
-// Read the warning above first: after the wipe your secrets are gone but still
-// READABLE as zeros, so a shutdown path that keeps doing cryptography will get
-// silent success on zeroed key material. Exit promptly.
+// Read the warning above first: after the wipe your secrets are gone, and a
+// shutdown path that keeps doing cryptography gets [ErrWiped] from every key
+// operation. Finish what does not need a secret, and exit promptly.
 //
 // It has an effect only on Windows and for a signal the process inherited as
 // ignored (see "The process always terminates" above); everywhere else the
@@ -252,8 +253,8 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				// verified on go1.26, windows/amd64, for both os.Interrupt and
 				// SIGTERM. Discarding that error left the worst of the three
 				// possible outcomes: the process sails past Ctrl-C still running,
-				// with every secret already zeroed (reads return zeros, mutations
-				// return ErrWiped), while this function's documentation says it
+				// with every secret already zeroed (every borrow returns
+				// ErrWiped), while this function's documentation says it
 				// terminates.
 				//
 				// Reported rather than escalated to a forced os.Exit, because

@@ -55,16 +55,11 @@ func TestArena_EmergencyWipeOnReadOnlySlab(t *testing.T) {
 	if err := arena.ReadWrite(); !errors.Is(err, ErrWiped) {
 		t.Fatalf("ReadWrite after the emergency wipe returned %v, want ErrWiped", err)
 	}
-	// The slot reads as zeros (still mapped) ...
-	zeroed := false
-	if err := slot.WithBytes(func(b []byte) {
-		zeroed = bytes.Equal(b, make([]byte, 32))
-	}); err != nil {
-		t.Fatalf("read after the wipe: %v", err)
-	}
-	if !zeroed {
+	// The slot is zeros (still mapped) and a borrow is refused ...
+	if !slotRegionIsZero(t, slot) {
 		t.Error("slot contents survived the emergency wipe")
 	}
+	requireWiped(t, "slot.WithBytes", slot.WithBytes(func([]byte) {}))
 	// ... and can be released: the slab is writable, whatever readOnly says.
 	if err := slot.Release(); err != nil {
 		t.Fatalf("Release after the emergency wipe returned %v, want nil", err)

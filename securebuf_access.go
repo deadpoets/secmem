@@ -55,7 +55,8 @@ import (
 // residue test. That covers what fn leaves behind; a preemption landing while
 // fn is still running is only prevented inside a [Scrub] window.
 //
-// Returns ErrDestroyed if the buffer has been destroyed.
+// Returns ErrDestroyed if the buffer has been destroyed, and [ErrWiped] (which
+// wraps it) if [WipeAllSecrets] emptied it; fn is not called in either case.
 func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytes: nil fn")
@@ -69,6 +70,9 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if s.data == nil {
 		return ErrDestroyed
 	}
+	if s.wiped.Load() {
+		return ErrWiped
+	}
 	if s.sealed {
 		return ErrSealed
 	}
@@ -77,7 +81,8 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 }
 
 // WithBytesErr is like WithBytes but fn may return an error, which is propagated.
-// Returns ErrDestroyed if the buffer has been destroyed; fn is not called in that case.
+// Returns ErrDestroyed if the buffer has been destroyed and [ErrWiped] if
+// [WipeAllSecrets] emptied it; fn is not called in either case.
 //
 // NOT REENTRANT: as with [SecureBuffer.WithBytes], fn must not call another
 // access method on the same buffer (deadlock risk under a concurrent writer);
@@ -96,6 +101,9 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	defer s.mu.rUnlock()
 	if s.data == nil {
 		return ErrDestroyed
+	}
+	if s.wiped.Load() {
+		return ErrWiped
 	}
 	if s.sealed {
 		return ErrSealed
@@ -160,6 +168,9 @@ func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 	if s.data == nil {
 		return 0, ErrDestroyed
 	}
+	if s.wiped.Load() {
+		return 0, ErrWiped
+	}
 	if s.sealed {
 		return 0, ErrSealed
 	}
@@ -217,6 +228,9 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 	if s.data == nil {
 		return 0, ErrDestroyed
 	}
+	if s.wiped.Load() {
+		return 0, ErrWiped
+	}
 	if s.sealed {
 		return 0, ErrSealed
 	}
@@ -270,6 +284,9 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 	if s.data == nil {
 		return false, ErrDestroyed
 	}
+	if s.wiped.Load() {
+		return false, ErrWiped
+	}
 	if s.sealed {
 		return false, ErrSealed
 	}
@@ -297,6 +314,10 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 	if s.data == nil {
 		s.mu.rUnlock()
 		return 0, ErrDestroyed
+	}
+	if s.wiped.Load() {
+		s.mu.rUnlock()
+		return 0, ErrWiped
 	}
 	if s.sealed {
 		s.mu.rUnlock()

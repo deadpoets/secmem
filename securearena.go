@@ -269,8 +269,9 @@ type SecureArena struct {
 	// deliberately left mapped. Shared with janitorRegion — the emergency path
 	// holds no *SecureArena, so this flag is how it reaches one. Acquire then
 	// refuses with ErrWiped: handing out a slot would put a fresh secret in a
-	// slab the emergency wipe already reported as handled. Existing slots stay
-	// readable (they hold zeros), preserving the no-fault guarantee.
+	// slab the emergency wipe already reported as handled. A borrow through a
+	// slot acquired before the wipe is refused the same way; the slab stays
+	// mapped only so a retained slice does not fault.
 	wiped *atomic.Bool
 
 	// cleanup is the AddCleanup handle.  Stopped by Destroy.
@@ -654,7 +655,8 @@ func (a *SecureArena) ReadWrite() error {
 //
 // The slice is valid ONLY for the duration of fn.  Never store or pass it to
 // a goroutine.  Returns [ErrSlotReleased] if the slot has been released.
-// Returns [ErrArenaDestroyed] if the arena has been destroyed.
+// Returns [ErrArenaDestroyed] if the arena has been destroyed, and [ErrWiped]
+// if [WipeAllSecrets] emptied it; fn is not called in any of those cases.
 //
 // While the slab is read-only ([SecureArena.ReadOnly]) the slice is backed by
 // a PROT_READ page: a write through it is not intercepted and faults the
@@ -695,6 +697,13 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 
 	if s.arena.region.inner == nil {
 		return ErrArenaDestroyed
+	}
+	// After an emergency wipe the slab is zeros and the arena is dead: a
+	// borrow would hand out a zero "secret" to read, or accept a fresh one
+	// into a region the wipe already reported as handled. Read under rLock,
+	// the flag cannot be seen mid-wipe.
+	if s.arena.wiped.Load() {
+		return ErrWiped
 	}
 
 	// Liveness check — one atomic load, no further lock, and UNDER the region
@@ -815,8 +824,10 @@ func (s *ArenaSlot) Release() error {
 		// every slot released after the wipe. The flag is set under the
 		// exclusive lock, after the wipe, and read here under rLock, so it
 		// cannot be observed mid-wipe. Only the check is skipped: the slot
-		// wipe below still runs, because a write through this pre-wipe
-		// handle is a live secret until something zeroes it.
+		// wipe below still runs: a borrow through this handle is refused
+		// after the wipe, but a slice retained from an earlier callback
+		// can still write here, and that is a live secret until something
+		// zeroes it.
 		if !s.arena.wiped.Load() {
 			strip := s.arena.region.inner[end : start+s.arena.stride]
 			if !canaryIntact(strip) {

@@ -94,10 +94,11 @@ type SecureBuffer struct {
 
 	// wiped is set by WipeAllSecrets when this buffer's region was wiped in
 	// place and deliberately left mapped. Shared with janitorRegion, which is
-	// how the emergency path reaches a buffer it holds no pointer to. Reads
-	// still work and return the zeros; every mutator refuses with ErrWiped, so
-	// a process that keeps running after an emergency wipe cannot write a fresh
-	// secret into a region the wipe already reported as handled.
+	// how the emergency path reaches a buffer it holds no pointer to. Every
+	// borrow, read and mutator refuses with ErrWiped, so a process that keeps
+	// running after an emergency wipe can neither compute with the zeros as if
+	// they were a key nor write a fresh secret into a region the wipe already
+	// reported as handled.
 	wiped *atomic.Bool
 
 	// backing records which protections this allocation actually received.

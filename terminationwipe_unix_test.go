@@ -50,25 +50,15 @@ func TestInstallTerminationWipe_Cooperative(t *testing.T) {
 	}
 
 	// The installer wipes on its own goroutine; poll for the wipe.
-	deadline := time.Now().Add(3 * time.Second)
-	for {
-		wiped := true
-		if err := buf.WithBytes(func(b []byte) {
-			for _, x := range b {
-				if x != 0 {
-					wiped = false
-				}
-			}
-		}); err != nil {
-			t.Fatalf("access during wipe returned %v", err)
-		}
-		if wiped {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("secret was not wiped by the termination handler")
-		}
-		time.Sleep(5 * time.Millisecond)
+	wiped, err := waitWiped(buf, 3*time.Second)
+	if err != nil {
+		t.Fatalf("access during wipe returned %v", err)
+	}
+	if !wiped {
+		t.Fatal("secret was not wiped by the termination handler")
+	}
+	if !bufRegionIsZero(t, buf) {
+		t.Fatal("buffer reports ErrWiped but its region is not zero")
 	}
 	// Reaching here means the process did NOT terminate: cooperative success.
 }
