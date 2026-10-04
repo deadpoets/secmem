@@ -26,9 +26,11 @@ import (
 //     group, LogValuer, Any. A group whose own name is sensitive is replaced
 //     as a whole; so is everything beneath a [Handler.WithGroup] name that
 //     is. The key is compared case-insensitively, as a whole and as
-//     components split on "_", "-", ".", "/", ":", space, digit runs and
-//     CamelCase boundaries, so "DB_PASSWORD", "db.password", "accessToken"
-//     and "x-api-key" all match; a multi-component entry such as "api_key"
+//     components split on every character that is not a letter or a digit
+//     ("_", "-", ".", "/", ":", space, brackets, any other punctuation), on
+//     digit runs and on CamelCase boundaries, so "DB_PASSWORD",
+//     "db.password", "user[password]", "accessToken" and "x-api-key" all
+//     match; a multi-component entry such as "api_key"
 //     matches the same components across an enclosing group ("api" group,
 //     "key" key). A sensitive LogValuer is not resolved. Extend the set with
 //     [WithSensitiveKeys]; drop the defaults with
@@ -37,7 +39,9 @@ import (
 //   - VALUE-based: the message and every string-shaped value go through the
 //     Sanitizer. A [slog.KindAny] value is rendered to text first, in a
 //     %+v-like form, by a reflection walk that applies the key set to struct
-//     field names and map keys along the way and treats []byte as text; the
+//     field names and map keys along the way and treats bytes as text
+//     ([]byte, a defined byte-slice type with no method of its own, and a
+//     byte array alike); the
 //     sanitized rendering is then emitted as ONE STRING attribute. The
 //     structured shape of an Any value is therefore lost at the sink — a
 //     JSON handler writes a string where it used to write an object or an
@@ -48,10 +52,17 @@ import (
 //     The walk follows the pointers it can Interface() at every depth,
 //     which is more than fmt does (fmt prints a nested pointer as an
 //     address), because a secret two structs down is still a secret. Where
-//     it can call them it honours a value's own rendering methods as fmt's
-//     %v does — [fmt.Formatter], error, [fmt.Stringer] — plus
-//     [encoding.TextMarshaler]; a [slog.LogValuer] is resolved at the
-//     attribute level before the walk. It cannot call methods on a value
+//     it can call them it honours a value's own rendering methods: first
+//     the ones fmt's %v does — [fmt.Formatter], error, [fmt.Stringer] —
+//     then [encoding.TextMarshaler], [slog.LogValuer] (resolved, at any
+//     depth, as slog resolves one at the attribute level),
+//     [encoding/json.Marshaler] (its JSON text, as text) and
+//     [fmt.GoStringer]. A method declared on the pointer is called for a
+//     value held directly too, and one that panics or returns an error
+//     leaves a tag, not the value's fields. Only a struct with none of
+//     these is walked, and then EVERY field is printed, as %+v prints it:
+//     unexported fields and fields tagged `json:"-"` included, because
+//     struct tags are not consulted. It cannot call methods on a value
 //     reached through an UNEXPORTED field, so there it does two things fmt
 //     does too: a pointer is printed as "<ptr>" and not followed, and a
 //     value whose type has any such method (or GoString, LogValue,
@@ -96,7 +107,7 @@ type handlerConfig struct {
 
 // WithSensitiveKeys adds keys to the set whose values [Handler] redacts
 // wholesale. Each entry is matched like the defaults: case-insensitively, as
-// a whole key or as a run of "_"/"-"/"."-separated (or CamelCase) components.
+// a whole key or as a run of punctuation-separated (or CamelCase) components.
 func WithSensitiveKeys(keys ...string) HandlerOption {
 	return func(c *handlerConfig) { c.keys = append(c.keys, keys...) }
 }
@@ -122,7 +133,7 @@ func DefaultSensitiveKeys() []string {
 		"token", "access_token", "refresh_token", "id_token", "session_token", "jwt",
 		"api_key", "apikey", "x_api_key",
 		"authorization", "auth", "bearer",
-		"cookie", "set_cookie", "session",
+		"cookie", "cookies", "set_cookie", "session",
 		"private_key", "privatekey", "signing_key", "secret_access_key",
 		"credential", "credentials",
 	}
@@ -276,10 +287,12 @@ func appendPath(path, comps []string) []string {
 // ── Any rendering ───────────────────────────────────────────────────────────
 
 // renderCap bounds the text produced for one Any value. Sanitize truncates
-// at its own maxLen afterwards; the cap only keeps a huge slice from being
-// rendered in full first. Every write into the builder goes through
-// capWriter, so a single []byte, String() or MarshalText result larger than
-// the cap is cut too, not only the sum of many small ones.
+// at its own maxLen afterwards; the cap only keeps a huge value from being
+// rendered in full first. Every write of caller data goes through capWriter,
+// so a single []byte, String() or MarshalText result larger than the cap is
+// cut too, and every loop over members stops once the cap is passed, so the
+// names of a great many small members are bounded as well. The overshoot is
+// at most one struct field name and a few delimiters.
 const renderCap = 1 << 16
 
 // maxRenderDepth bounds pointer and container nesting, which also breaks
@@ -303,6 +316,47 @@ func (w capWriter) Write(p []byte) (int, error) {
 		w.b.Write(p)
 	}
 	return n, nil
+}
+
+// WriteString is Write for a string, without the conversion.
+func (w capWriter) WriteString(s string) (int, error) {
+	n := len(s)
+	if room := renderCap - w.b.Len(); room > 0 {
+		if len(s) > room {
+			s = s[:room]
+		}
+		w.b.WriteString(s)
+	}
+	return n, nil
+}
+
+// panicTag replaces a value whose own rendering method panicked.
+const panicTag = "[REDACTED:panic]"
+
+// marshalErrorTag replaces a value whose MarshalText or MarshalJSON returned
+// an error.
+const marshalErrorTag = "[REDACTED:marshal_error]"
+
+// callGuarded runs call, which invokes a method of the value rv holds, and
+// recovers a panic from it as fmt and slog's own handlers do: a logging call
+// must not take the program down because a value's method did. It reports
+// whether call returned normally. After a panic it has written the stand-in —
+// "<nil>" for a nil pointer, whose value-receiver method panics on the
+// dereference, and panicTag otherwise — and the value must not be walked
+// instead: its type asked to render itself.
+func callGuarded(b *strings.Builder, rv reflect.Value, call func()) (ok bool) {
+	defer func() {
+		if recover() == nil {
+			return
+		}
+		if rv.Kind() == reflect.Pointer && rv.IsNil() {
+			b.WriteString("<nil>")
+		} else {
+			b.WriteString(panicTag)
+		}
+	}()
+	call()
+	return true
 }
 
 // selfRenderingTypes are the interfaces through which fmt, slog and the
@@ -343,8 +397,8 @@ func selfRendering(t reflect.Type) bool {
 
 // render produces a %+v-like text form of v with the key set applied to
 // struct field names and map keys (as components appended to path), []byte
-// treated as text, and error/Stringer/TextMarshaler honoured where fmt and
-// slog would honour them. The result is meant for the Sanitizer, not for
+// treated as text, and a value's own rendering methods honoured (see
+// renderByMethod). The result is meant for the Sanitizer, not for
 // round-tripping.
 func (h *Handler) render(v any, path []string) string {
 	var b strings.Builder
@@ -366,19 +420,29 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 	}
 	w := capWriter{b}
 	if rv.CanInterface() {
-		switch x := rv.Interface().(type) {
-		case []byte:
-			_, _ = w.Write(x)
+		x := rv.Interface()
+		if raw, ok := x.([]byte); ok {
+			_, _ = w.Write(raw)
 			return
-		case fmt.Formatter, error, fmt.Stringer:
-			// What fmt's %v honours, in fmt's order: Format first, then Error
-			// and String. Through fmt rather than a direct call, because fmt
-			// recovers a panicking method and this would not.
-			_, _ = fmt.Fprint(w, x)
+		}
+		if h.renderByMethod(b, rv, x, path, depth) {
 			return
-		case encoding.TextMarshaler:
-			if text, err := x.MarshalText(); err == nil {
-				_, _ = w.Write(text)
+		}
+		// Nothing in the value's own method set, but the type is still
+		// self-rendering: the method is declared on the pointer. fmt would
+		// print such a value's fields; encoding/json takes its address when
+		// it can. Here the method always wins, through the value's address or
+		// the address of a copy, so a type that redacts itself is not taken
+		// apart for having been held by value.
+		if k := rv.Kind(); k != reflect.Pointer && k != reflect.Interface && selfRendering(rv.Type()) {
+			var p reflect.Value
+			if rv.CanAddr() {
+				p = rv.Addr()
+			} else {
+				p = reflect.New(rv.Type())
+				p.Elem().Set(rv)
+			}
+			if h.renderByMethod(b, p, p.Interface(), path, depth) {
 				return
 			}
 		}
@@ -420,7 +484,7 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 	case reflect.Struct:
 		b.WriteByte('{')
 		t := rv.Type()
-		for i := 0; i < rv.NumField(); i++ {
+		for i := 0; i < rv.NumField() && b.Len() <= renderCap; i++ {
 			if i > 0 {
 				b.WriteByte(' ')
 			}
@@ -432,26 +496,17 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		b.WriteByte('}')
 	case reflect.Map:
 		b.WriteString("map[")
-		keys := rv.MapKeys()
-		names := make([]string, len(keys))
-		for i, k := range keys {
-			names[i] = fmt.Sprint(k)
-		}
-		order := make([]int, len(keys))
-		for i := range order {
-			order[i] = i
-		}
-		sort.SliceStable(order, func(i, j int) bool { return names[order[i]] < names[order[j]] })
-		for n, i := range order {
-			if n > 0 {
-				b.WriteByte(' ')
-			}
-			b.WriteString(names[i])
-			b.WriteByte(':')
-			h.renderField(b, names[i], rv.MapIndex(keys[i]), path, depth)
-		}
+		h.renderMap(b, rv, path, depth)
 		b.WriteByte(']')
 	case reflect.Slice, reflect.Array:
+		if rv.Type().Elem().Kind() == reflect.Uint8 {
+			// Bytes are text whatever the type around them: a defined
+			// byte-slice type, a []byte the walk cannot Interface() and a
+			// byte array all land here, and printed element by element they
+			// would be decimals no value rule can match.
+			_, _ = w.Write(byteView(rv))
+			return
+		}
 		b.WriteByte('[')
 		for i := 0; i < rv.Len(); i++ {
 			if i > 0 {
@@ -468,6 +523,159 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		// Through the capped writer: a string field is the most common
 		// carrier of large text, and the cap must bound it too.
 		_, _ = fmt.Fprint(w, rv)
+	}
+}
+
+// maxSortedMapLen is the largest map rendered in sorted key order. Sorting
+// needs every key formatted first, which for a map with a great many entries
+// is exactly the unbounded work the render cap exists to prevent; a larger
+// map is rendered in iteration order and cut at the cap.
+const maxSortedMapLen = 1024
+
+// renderMap writes the entries of the map rv as "key:value" pairs, stopping
+// once the render cap is reached.
+func (h *Handler) renderMap(b *strings.Builder, rv reflect.Value, path []string, depth int) {
+	entry := func(n int, name string, v reflect.Value) {
+		if n > 0 {
+			b.WriteByte(' ')
+		}
+		_, _ = capWriter{b}.WriteString(name)
+		b.WriteByte(':')
+		h.renderField(b, name, v, path, depth)
+	}
+	if rv.Len() > maxSortedMapLen {
+		iter := rv.MapRange()
+		for n := 0; iter.Next() && b.Len() <= renderCap; n++ {
+			entry(n, mapKeyName(iter.Key()), iter.Value())
+		}
+		return
+	}
+	keys := rv.MapKeys()
+	names := make([]string, len(keys))
+	for i, k := range keys {
+		names[i] = mapKeyName(k)
+	}
+	order := make([]int, len(keys))
+	for i := range order {
+		order[i] = i
+	}
+	sort.SliceStable(order, func(i, j int) bool { return names[order[i]] < names[order[j]] })
+	for n, i := range order {
+		if b.Len() > renderCap {
+			break
+		}
+		entry(n, names[i], rv.MapIndex(keys[i]))
+	}
+}
+
+// mapKeyName formats a map key as fmt would, cut at the render cap: a key is
+// caller data like any value and may be as large.
+func mapKeyName(k reflect.Value) string {
+	var nb strings.Builder
+	_, _ = fmt.Fprint(capWriter{&nb}, k)
+	return nb.String()
+}
+
+// byteView returns the bytes of rv, a slice or array of a uint8 kind, without
+// reading more than the render cap can use. A slice is returned as it is —
+// reflect allows that for an unexported field too — and an array, which may
+// not be addressable, is copied element by element.
+func byteView(rv reflect.Value) []byte {
+	if rv.Kind() == reflect.Slice {
+		return rv.Bytes()
+	}
+	out := make([]byte, min(rv.Len(), renderCap))
+	for i := range out {
+		out[i] = byte(rv.Index(i).Uint()) //nolint:gosec // G115: the element kind is uint8
+	}
+	return out
+}
+
+// renderByMethod renders x, the value rv holds, through the first of its own
+// rendering methods and reports whether it had one. The order is fmt's for
+// %v — Format, then Error, then String — followed by what slog and the
+// encoders honour: MarshalText, LogValue, MarshalJSON, and last GoString. A
+// value that has any of them is never walked, even when the method fails.
+func (h *Handler) renderByMethod(b *strings.Builder, rv reflect.Value, x any, path []string, depth int) bool {
+	w := capWriter{b}
+	switch x := x.(type) {
+	case fmt.Formatter, error, fmt.Stringer:
+		// Through fmt rather than a direct call, because fmt recovers a
+		// panicking method.
+		_, _ = fmt.Fprint(w, x)
+	case encoding.TextMarshaler:
+		var text []byte
+		var err error
+		if callGuarded(b, rv, func() { text, err = x.MarshalText() }) {
+			writeMarshaled(w, text, err)
+		}
+	case slog.LogValuer:
+		// Resolved here as slog resolves one at the attribute level, so the
+		// type's chosen log form stands in for it at any depth.
+		var v slog.Value
+		if callGuarded(b, rv, func() { v = x.LogValue() }) {
+			h.renderLogValue(b, v.Resolve(), path, depth+1)
+		}
+	case json.Marshaler:
+		// The JSON text as it stands, quotes included: the result is one
+		// string for the Sanitizer, not a document.
+		var text []byte
+		var err error
+		if callGuarded(b, rv, func() { text, err = x.MarshalJSON() }) {
+			writeMarshaled(w, text, err)
+		}
+	case fmt.GoStringer:
+		_, _ = fmt.Fprintf(w, "%#v", x)
+	default:
+		return false
+	}
+	return true
+}
+
+// writeMarshaled writes a MarshalText or MarshalJSON result, or the error tag
+// when the method refused.
+func writeMarshaled(w capWriter, text []byte, err error) {
+	if err != nil {
+		w.b.WriteString(marshalErrorTag)
+		return
+	}
+	_, _ = w.Write(text)
+}
+
+// renderLogValue renders a resolved [slog.Value]: an Any value goes back
+// through the walk, a group is rendered member by member in slog's own
+// "[k=v k=v]" form with the key set applied, and every other kind is its
+// String.
+func (h *Handler) renderLogValue(b *strings.Builder, v slog.Value, path []string, depth int) {
+	if depth > maxRenderDepth {
+		b.WriteString("...")
+		return
+	}
+	switch v.Kind() {
+	case slog.KindAny:
+		h.renderValue(b, reflect.ValueOf(v.Any()), path, depth)
+	case slog.KindGroup:
+		b.WriteByte('[')
+		for i, a := range v.Group() {
+			if b.Len() > renderCap {
+				break
+			}
+			if i > 0 {
+				b.WriteByte(' ')
+			}
+			_, _ = capWriter{b}.WriteString(a.Key)
+			b.WriteByte('=')
+			comps := splitKey(a.Key)
+			full := appendPath(path, comps)
+			if h.keys.match(full, len(comps)) {
+				b.WriteString(keyTag)
+				continue
+			}
+			h.renderLogValue(b, a.Value.Resolve(), full, depth+1)
+		}
+		b.WriteByte(']')
+	default:
+		_, _ = fmt.Fprint(capWriter{b}, v)
 	}
 }
 
@@ -534,9 +742,10 @@ func equalComps(a, b []string) bool {
 	return true
 }
 
-// splitKey lower-cases key and splits it into components on "_", "-", ".",
-// "/", ":", whitespace, letter/digit boundaries and CamelCase boundaries
-// ("accessToken" → access, token; "HTTPPassword" → http, password).
+// splitKey lower-cases key and splits it into components on every rune that
+// is not a letter, a digit or a combining mark, on letter/digit boundaries
+// and on CamelCase boundaries ("accessToken" → access, token; "HTTPPassword"
+// → http, password; "user[password]" → user, password).
 func splitKey(key string) []string {
 	if key == "" {
 		return nil
@@ -552,7 +761,7 @@ func splitKey(key string) []string {
 	}
 	for i, r := range runes {
 		switch {
-		case r == '_' || r == '-' || r == '.' || r == '/' || r == ':' || unicode.IsSpace(r):
+		case !unicode.IsLetter(r) && !unicode.IsNumber(r) && !unicode.IsMark(r):
 			flush()
 			continue
 		case i > 0 && len(cur) > 0:

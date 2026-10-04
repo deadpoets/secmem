@@ -39,6 +39,61 @@ mark the stability commitment.
   a `Destroy` as owned**, so a parsed `Signer`, an `Argon2Workspace` /
   `Argon2Pool` and a `Secret` that are never destroyed or handed off are
   reported.
+### Changed
+
+- **`redact`: the Handler honours `MarshalJSON`, `LogValue` and `GoString`
+  inside an `Any` value.** A type whose only self-redaction was one of these
+  was walked field by field, so `"***"` behind a bare JSON handler became
+  `{v:abc123}` behind this one. The method is now called (on the pointer too
+  when it is declared there, and at any depth for a `LogValuer`); a method
+  that fails leaves `[REDACTED:marshal_error]`, never the fields. The doc now
+  says that a struct with no such method has every field printed, unexported
+  and `json:"-"` ones included.
+
+- **`httpauth`: `RoundTrip` no longer modifies the request after the base
+  transport returns.** Deleting the header from the clone raced a transport
+  still writing it (a response that arrives before the request head is out, a
+  cancelled HTTP/2 stream): a data race, and a request head sent without the
+  credential. The response's `Request` field is now the caller's request,
+  which never carried the value; the clone is left to the transport.
+
+### Fixed
+
+- **`redact`: a panicking `MarshalText` no longer panics out of the log
+  call.** A nil pointer to a type with a value-receiver `MarshalText` (and no
+  `String`), or any `MarshalText` that panics, took `logger.Info` down with
+  it. The handler now recovers it as slog's own handlers do and writes
+  `<nil>` or `[REDACTED:panic]`.
+
+- **`redact`: every byte slice and byte array is rendered as text.** A
+  defined byte-slice type, a `[]byte` in an unexported field and a byte array
+  reached the sink as a list of decimals that no value rule could match.
+
+- **`redact`: attribute keys split on any punctuation, and `cookies` is a
+  sensitive key.** `user[password]`, `user(password)` and similar were one
+  glued component and passed the key match, including as `url.Values` map
+  keys. The key list now covers every key name the text rules know.
+
+- **`redact`: `Authorization` inside a printed header map, single-quoted
+  keys and bracketed keys are caught.** `map[Authorization:[Bearer x]]` lost
+  only its scheme and left the credential; `{'password': 'x'}` and
+  `user[password]=x` were not matched at all.
+
+- **`redact`: the render cap bounds many small members.** Map keys and field
+  names were written past the cap, and a large map had every key formatted
+  and sorted before anything was cut.
+
+- **`redact`: the package doc states the entropy rules' single-case and
+  prefixed-hex gap.**
+
+- **`httpauth`: `ForceHTTP1` overrides `Transport.Protocols`.** A base that
+  enabled HTTP/2 through `Protocols` still negotiated h2 after `ForceHTTP1`,
+  because that field is consulted ahead of `ForceAttemptHTTP2` and
+  `TLSNextProto` and `Clone` copies it.
+
+- **`httpauth`: the request body is closed when `RoundTrip` fails before
+  calling the base transport** (cleartext refusal, missing token, token read
+  error), as the `RoundTripper` contract requires.
 
 ## [secmem-crypto/v0.9.0] - 2026-10-03
 

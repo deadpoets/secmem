@@ -20,9 +20,13 @@
 // erases the allocation once it is unreachable; on every other build the
 // window only scrubs the stack frame, and the string is an ordinary heap
 // object. Every scratch slice the value was assembled from is wiped with
-// [secmem.SecureWipe] before the window closes. After the request completes
-// the header is deleted from the request the transport sent, so the only
-// reference to the value is dropped as early as this package can drop it.
+// [secmem.SecureWipe] before the window closes. The value is set on a clone
+// of the request and nowhere else: the caller's request never carries it,
+// and the response's Request field is pointed back at the caller's request,
+// so keeping a response does not keep the credential. The clone is referenced
+// only by the Base transport, which may still be reading it after RoundTrip
+// returns and so must not be modified; the value becomes unreachable when
+// the transport lets go of that request.
 //
 // Out of reach entirely — copies net/http makes that this package can
 // neither wipe nor drop:
@@ -111,8 +115,8 @@ const defaultHeader = "Authorization"
 // [NewBasic] encodes).
 //
 // The caller's request is never modified: RoundTrip clones it, sets the
-// header on the clone, and deletes the header from the clone once the Base
-// transport returns.
+// header on the clone, and returns a response whose Request field is the
+// caller's request, not the clone.
 type Transport struct {
 	// Base performs the request; nil means http.DefaultTransport.
 	Base http.RoundTripper
@@ -204,8 +208,10 @@ func NewBasic(username string, password *secmem.SecureBuffer, base http.RoundTri
 // callers who want the credential kept out of HTTP/2's per-connection HPACK
 // dynamic table (see the package doc). It clears ForceAttemptHTTP2, sets an
 // empty TLSNextProto map (net/http's documented way to disable its bundled
-// http2), and drops "h2" from the TLS config's advertised protocols so the
-// server cannot select it either. base itself is not modified.
+// http2), sets Protocols to HTTP/1 alone (that field overrides the other two
+// when the base set it), and drops "h2" from the TLS config's advertised
+// protocols so the server cannot select it either. base itself is not
+// modified.
 func ForceHTTP1(base *http.Transport) *http.Transport {
 	var t *http.Transport
 	switch {
@@ -220,6 +226,11 @@ func ForceHTTP1(base *http.Transport) *http.Transport {
 	}
 	t.ForceAttemptHTTP2 = false
 	t.TLSNextProto = map[string]func(string, *tls.Conn) http.RoundTripper{}
+	// Protocols, when set, is consulted ahead of both fields above, and Clone
+	// copied the base's: a base that enabled h2 through it would still speak
+	// h2. A fresh value, so the base's is not written through.
+	t.Protocols = new(http.Protocols)
+	t.Protocols.SetHTTP1(true)
 	if t.TLSClientConfig != nil && len(t.TLSClientConfig.NextProtos) > 0 {
 		kept := t.TLSClientConfig.NextProtos[:0:0]
 		for _, p := range t.TLSClientConfig.NextProtos {
@@ -234,20 +245,24 @@ func ForceHTTP1(base *http.Transport) *http.Transport {
 
 // RoundTrip implements [http.RoundTripper]. It clones req, sets the credential
 // header on the clone when the host filter admits it, and forwards the clone
-// to Base. The header is deleted from the clone (which the response's Request
-// field points at) once Base returns, whether or not it succeeded.
+// to Base. The clone is not touched again once Base has it — a RoundTripper
+// may still be reading the request after it returns, until the response body
+// is closed — so instead of deleting the header from it, RoundTrip sets the
+// response's Request field to req, which never carried the credential.
 //
 // A request whose host is excluded by [Transport.Hosts] is forwarded to Base
 // unchanged and the Token is not touched. A request for an admitted host
 // over a scheme other than https fails with [ErrInsecureScheme] unless
 // [Transport.AllowInsecureHTTP] or an "http://" Hosts entry opted in; it is
-// not sent.
+// not sent. The request body is closed on every path, including the ones
+// that fail before Base is called.
 //
 // Errors: [ErrNilRequest]; [ErrInsecureScheme]; [ErrNoToken] for a nil
 // Token; an error wrapping [secmem.ErrDestroyed] or [secmem.ErrSealed] for a
 // Token in that state; [ErrBasicUsername]; otherwise whatever Base returns.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t == nil {
+		closeBody(req)
 		return nil, errors.New("httpauth: RoundTrip on a nil *Transport")
 	}
 	if req == nil {
@@ -257,9 +272,11 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	case forward:
 		return t.base().RoundTrip(req)
 	case refuse:
+		closeBody(req)
 		return nil, ErrInsecureScheme
 	}
 	if t.Token == nil {
+		closeBody(req)
 		return nil, ErrNoToken
 	}
 
@@ -286,6 +303,7 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 		value, err = t.headerValue()
 	}
 	if err != nil {
+		closeBody(req)
 		return nil, err
 	}
 	name := t.header()
@@ -293,14 +311,27 @@ func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 
 	resp, rerr := t.base().RoundTrip(clone)
 
-	// Drop the only reference this package holds to the value. Nothing can
-	// wipe a Go string; the most that can be done is to make it unreachable
-	// as early as possible, so the collector — and runtime/secret on a build
-	// where it is active — can reclaim it. The response's Request field points
-	// at the clone, so without this deletion the credential would stay
-	// reachable for as long as the caller keeps the response.
-	clone.Header.Del(name)
+	// Nothing can wipe a Go string; the most that can be done is to leave no
+	// reference behind, so the collector — and runtime/secret on a build
+	// where it is active — can reclaim it. The response's Request field
+	// points at the clone, which would keep the credential reachable for as
+	// long as the caller keeps the response, so it is pointed at the caller's
+	// request instead. The clone itself is left as it is: net/http may still
+	// be writing it on another goroutine (an early response, a cancelled
+	// HTTP/2 stream), and deleting from its Header would race that read.
+	if resp != nil {
+		resp.Request = req
+	}
 	return resp, rerr
+}
+
+// closeBody closes req's body on a path where the request is never handed to
+// Base. A RoundTripper must close the body on every path, errors included:
+// http.Client does not, and a pipe or file body would stay open.
+func closeBody(req *http.Request) {
+	if req != nil && req.Body != nil {
+		_ = req.Body.Close()
+	}
 }
 
 // decision is what RoundTrip does with a request.

@@ -34,12 +34,20 @@
 //     them on when you know your log stream carries them.
 //
 //   - Covered: the shapes above, in plain, quoted, JSON-escaped, `=>` and
-//     `%3D`-separated forms. NOT covered: a credential whose key and value
-//     are separated across two log attributes (`"k", "password=", "v", "x"`);
+//     `%3D`-separated forms, under a single-quoted or bracketed key
+//     (`user[password]=`), and an Authorization value inside a printed or
+//     JSON-encoded header map (`map[Authorization:[Bearer x]]`). NOT
+//     covered: a credential whose key and value are separated across two
+//     log attributes (`"k", "password=", "v", "x"`);
 //     a secret embedded in prose with no key and no recognizable format; a
 //     low-entropy or short secret (fewer than 40 base64/hex characters) with
-//     no key; a key name outside the built-in list unless you add a rule; a
-//     PEM body whose header was cut off by truncation before the sanitizer
+//     no key; a long keyless token the entropy rules do not recognise,
+//     because an unpadded run must mix upper case, lower case and a digit
+//     and a hex run must stand as a word of its own — so a single-case
+//     token (base32 or bech32, an age "AGE-SECRET-KEY-1…") and hex glued to
+//     a prefix by an underscore ("dop_v1_<64 hex>") pass unless a rule
+//     names their format; a key name outside the built-in list unless you
+//     add a rule; a PEM body whose header was cut off by truncation before the sanitizer
 //     saw it. The [Handler] adds KEY-based redaction for structured log
 //     attributes, which covers the first gap for attributes with a
 //     credential-shaped key but not for a value logged under an innocent one.
@@ -344,9 +352,11 @@ func stripNonPrintable(s string) string {
 // ── Credential field grammar ────────────────────────────────────────────────
 
 // credSep is what may stand between a credential key and its value: an
-// optional closing quote on the key (plain or JSON-escaped), then "=", ":",
-// "=>" or the URL-encoded "%3D"/"%3A", with whitespace on either side.
-const credSep = `(?:\\?")?\s*(?:=>|[=:]|%3[dDaA])\s*` //nolint:gosec // G101: a regex naming credential KEYS, not a credential
+// optional closer on the key — a double quote (plain or JSON-escaped), a
+// single quote, or the "]" of a bracketed form key such as user[password],
+// plain or URL-encoded as "%5D" — then "=", ":", "=>" or the URL-encoded
+// "%3D"/"%3A", with whitespace on either side.
+const credSep = `(?:\\?"|'|\]|%5[dD])?\s*(?:=>|[=:]|%3[dDaA])\s*` //nolint:gosec // G101: a regex naming credential KEYS, not a credential
 
 // credValue is the value part. The alternation is ordered so a quoted literal
 // is consumed whole — a JSON-escaped one (\"...\") first, then a plain
@@ -395,8 +405,13 @@ var (
 	// Tier 1: header and URL forms. The Authorization value is "<scheme>
 	// <credential>" — the old auth rule needed "=" or ":" right after "auth"
 	// and so never saw "Authorization: Bearer ..." or "Basic ..." at all.
+	// A bracketed value is consumed to its closing bracket: that is how fmt
+	// prints an http.Header (map[Authorization:[Bearer x]]) and how JSON
+	// encodes one (["Bearer x"]), and stopping at the first space there
+	// redacted the scheme and left the credential. The scheme may likewise
+	// follow an opening bracket or quote whose closer was cut off.
 	authorizationRe = regexp.MustCompile(`(?i)(?:\b|_)(?:proxy[_-])?authorization` + credSep +
-		`(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'[^']*'|(?:[a-z0-9_-]+\s+)?\S+)`)
+		`(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'[^']*'|\[[^\]]*\]|(?:[\["']*[a-z0-9_-]+\s+)?\S+)`)
 	cookieRe = regexp.MustCompile(`(?i)(?:\b|_)(?:set[_-])?cookies?` + credSep +
 		`(?:\\"(?:[^"\\]|\\[^"])*\\"|"(?:[^"\\]|\\.)*"|'[^']*'|[^\s;]+(?:;\s*[^\s;]+)*)`)
 	// userinfo password: scheme://user:PASSWORD@host. Group 1 (scheme, user
