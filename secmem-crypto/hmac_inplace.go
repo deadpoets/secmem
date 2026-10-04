@@ -166,8 +166,12 @@ type inPlaceHashEntry struct {
 	id   inPlaceHash
 }
 
-// inPlaceHashSeen caches the verdict per dynamic type and size, so the
-// verification below runs once per hash, not once per call. Copy-on-write.
+// inPlaceHashSeen caches the positive verdicts per dynamic type and size, so
+// the verification below runs once per hash, not once per call. Only
+// positive ones: a constructor that fails verification says nothing about
+// the next constructor of the same type, and remembering its failure would
+// take the in-place path away from the real one for the life of the process.
+// Copy-on-write.
 var inPlaceHashSeen atomic.Pointer[[]inPlaceHashEntry]
 
 // inPlaceHashProbe is the fixed, public input a candidate is checked on.
@@ -178,8 +182,15 @@ var inPlaceHashProbe = []byte("secmem-crypto: is this constructor the one-shot i
 // type and output size pick a candidate — within each standard-library
 // digest type the size identifies the variant — and the candidate is only
 // accepted if the constructor's own output, block size and size agree with
-// it on a fixed input, so a look-alike can never be computed as something it
-// is not.
+// it on a fixed input. The probe is hashed as it arrives, without a Reset
+// first, so a constructor that hands out a standard digest with input
+// already absorbed fails here and is not computed as the plain hash.
+//
+// The limit of that: the check runs when a type and size are first seen. A
+// pre-seeded constructor of a type whose plain constructor has already been
+// verified is answered from the cache, and its prefix is ignored. Closing
+// that takes a verification per call, which costs the in-place paths an
+// allocation they are pinned not to make.
 func inPlaceHashOf(probe hash.Hash) inPlaceHash {
 	if probe == nil {
 		return hashNone
@@ -215,15 +226,16 @@ func inPlaceHashOf(probe hash.Hash) inPlaceHash {
 	case typ == sha3Type && size == 64:
 		id = hashSHA3_512
 	}
-	if id != hashNone {
-		probe.Reset()
-		probe.Write(inPlaceHashProbe)
-		var want [maxHashSize]byte
-		id.sum(want[:], inPlaceHashProbe)
-		if probe.BlockSize() != id.block() || !bytes.Equal(probe.Sum(nil), want[:size]) {
-			id = hashNone
-		}
-		probe.Reset()
+	if id == hashNone {
+		return hashNone
+	}
+	probe.Write(inPlaceHashProbe)
+	var want [maxHashSize]byte
+	id.sum(want[:], inPlaceHashProbe)
+	ok := probe.BlockSize() == id.block() && bytes.Equal(probe.Sum(nil), want[:size])
+	probe.Reset()
+	if !ok {
+		return hashNone
 	}
 	for {
 		old := inPlaceHashSeen.Load()
