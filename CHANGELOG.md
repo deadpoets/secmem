@@ -321,6 +321,13 @@ The core floor is unchanged at v0.7.0.
   response returned nil without protecting anything. The failure path now
   seals the buffer again (cipher and page protection) before it returns.
 
+- **An emergency wipe that could not run left the region filed as wiped.**
+  The pass moves a region to the janitor's wiped set, with its canary layout
+  erased, before it wipes. When write access could not be restored and the
+  wipe was skipped, the region stayed there: a later `Destroy` would not
+  report an overflow, and the set documented as "already zero" held a live
+  secret. A skipped region now goes back to the live set as it was.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

@@ -242,27 +242,46 @@ func (j *janitor) takeAnyIf(key uint64, mu *bufferRWLock) (janitorRegion, bool) 
 // The stored entry has its canary zones and seal-cipher flag cleared: the
 // wipe destroys the canary pattern, and re-verifying zeroed slack would
 // report a violation that never happened.
-func (j *janitor) moveToWipedIf(key uint64, mu *bufferRWLock) (janitorRegion, bool) {
+//
+// wasLive reports that the registration came from the live set, which is what
+// a caller whose wipe then does not run has to hand back to returnToLive.
+func (j *janitor) moveToWipedIf(key uint64, mu *bufferRWLock) (region janitorRegion, wasLive, ok bool) {
 	j.mu.Lock()
 	defer j.mu.Unlock()
 	if region, ok := j.regions[key]; ok {
 		if region.mu != mu {
-			return janitorRegion{}, false
+			return janitorRegion{}, false, false
 		}
 		delete(j.regions, key)
 		retained := region
 		retained.canary = canaryLayout{}
 		retained.sealCipher = nil
 		j.wiped[key] = retained
-		return region, true
+		return region, true, true
 	}
 	if region, ok := j.wiped[key]; ok {
 		if region.mu != mu {
-			return janitorRegion{}, false
+			return janitorRegion{}, false, false
 		}
-		return region, true
+		return region, false, true
 	}
-	return janitorRegion{}, false
+	return janitorRegion{}, false, false
+}
+
+// returnToLive undoes moveToWipedIf for a region whose wipe did not run
+// (errWipeSkipped): the registration goes back to the live set as it was,
+// canary layout and seal-cipher flag included. Left in the wiped set it would
+// contradict that set's one invariant — its contents are already zero — and
+// its erased layout would make a later Destroy pass over an overflow it should
+// report. The caller still holds the region's exclusive lock, so nothing can
+// have taken the entry in between.
+func (j *janitor) returnToLive(key uint64, region janitorRegion) {
+	j.mu.Lock()
+	defer j.mu.Unlock()
+	if filed, ok := j.wiped[key]; ok && filed.mu == region.mu {
+		delete(j.wiped, key)
+		j.regions[key] = region
+	}
 }
 
 // takeWiped removes and returns one wiped-but-still-mapped region.
@@ -476,13 +495,16 @@ func (j *janitor) wipeInPlace(key uint64) error {
 	// have completed the whole teardown while we waited, in which case there
 	// is nothing left to wipe. Matched on the lock we are holding, not on the
 	// key alone — see takeAnyIf for why the key is not sufficient identity.
-	region, ok := j.moveToWipedIf(key, peeked.mu)
+	region, wasLive, ok := j.moveToWipedIf(key, peeked.mu)
 	if !ok {
 		return nil
 	}
 	err := wipeAndFree(region, true, false)
-	if !errors.Is(err, errWipeSkipped) {
+	switch {
+	case !errors.Is(err, errWipeSkipped):
 		markWiped(region)
+	case wasLive:
+		j.returnToLive(key, region)
 	}
 	if janitorWipeTestHook != nil {
 		janitorWipeTestHook()
@@ -509,13 +531,16 @@ func (j *janitor) tryWipeInPlace(key uint64) (done bool, err error) {
 	// once even if Destroy or the GC cleanup won the race in between. Matched on
 	// the held lock: the window here is far narrower than wipeInPlace's, because
 	// tryLock does not wait, but it is not zero.
-	region, ok := j.moveToWipedIf(key, peeked.mu)
+	region, wasLive, ok := j.moveToWipedIf(key, peeked.mu)
 	if !ok {
 		return true, nil
 	}
 	err = wipeAndFree(region, true, false)
-	if !errors.Is(err, errWipeSkipped) {
+	switch {
+	case !errors.Is(err, errWipeSkipped):
 		markWiped(region)
+	case wasLive:
+		j.returnToLive(key, region)
 	}
 	if janitorWipeTestHook != nil {
 		janitorWipeTestHook()
