@@ -295,6 +295,11 @@ The core floor is unchanged at v0.7.0.
   the copy was taken from and the one it is still identical under, which is
   the form `forks_test.go` enforces.
 
+- **The package did not compile for `plan9`.** The termination handler named
+  `syscall.Signal`, which Plan 9's `syscall` does not have, so a build there
+  failed instead of reaching the documented `ErrNoSecureMemory` stub. The
+  inherited-ignore record is now per platform.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.

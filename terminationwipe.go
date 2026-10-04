@@ -258,19 +258,11 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 	// completeTermination); without this record the handler concluded "the
 	// disposition owns the exit" about a disposition that discards it.
 	//
-	// Keyed by syscall.Signal, the only kind os/signal acts on (Notify skips
-	// any other implementation of os.Signal, and so does this), so a caller's
-	// own os.Signal type cannot make the record panic. The record is taken
-	// once: a handler another package registers for the same signal AFTER
-	// this one does not change it, so with such a late co-handler the default
-	// installer still exits itself rather than leave the exit to it —
-	// fail-safe, and a reason to install this one first.
-	inheritedIgnore := make(map[syscall.Signal]bool, len(signals))
-	for _, sig := range signals {
-		if s, ok := sig.(syscall.Signal); ok {
-			inheritedIgnore[s] = signal.Ignored(s)
-		}
-	}
+	// The record is taken once: a handler another package registers for the
+	// same signal AFTER this one does not change it, so with such a late
+	// co-handler the default installer still exits itself rather than leave
+	// the exit to it — fail-safe, and a reason to install this one first.
+	inheritedIgnore := recordInheritedIgnores(signals)
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, signals...)
 	done := make(chan struct{})
@@ -319,11 +311,7 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				// on every platform: the kill would succeed and the kernel
 				// would drop it. inheritedIgnore was read before Notify, the
 				// only moment it can be.
-				ignored := false
-				if s, ok := sig.(syscall.Signal); ok {
-					ignored = inheritedIgnore[s]
-				}
-				if !completeTermination(sig, forceExit, ignored, reraise, exit) {
+				if !completeTermination(sig, forceExit, inheritedIgnore.ignored(sig), reraise, exit) {
 					// Re-raised, or exited. Whether the process dies now or a
 					// co-installed handler keeps it alive is not observable from
 					// here, and the re-raised signal is still in flight: a fresh
