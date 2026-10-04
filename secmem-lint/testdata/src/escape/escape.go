@@ -141,3 +141,42 @@ func namedResultOK(buf *secmem.SecureBuffer) {
 		return
 	})
 }
+
+// leaksViaTypeSwitch: the variable a type switch binds is the switched value
+// under another name in every clause.
+func leaksViaTypeSwitch(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		var v any = b
+		switch t := v.(type) {
+		case []byte:
+			sink = t // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		case string, fmt.Stringer:
+			outerAny = t // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		case int:
+			outerInt = t // ok: a number is not the bytes
+		default:
+			outerAny = t // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		}
+		sink = v.([]byte) // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+	})
+}
+
+var (
+	outerAny any
+	outerInt int
+)
+
+// typeSwitchOK: a switch over an untainted value binds nothing tainted, and a
+// binding that stays inside the closure is not an escape.
+func typeSwitchOK(buf *secmem.SecureBuffer, v any) {
+	_ = buf.WithBytes(func(b []byte) {
+		switch t := v.(type) {
+		case []byte:
+			sink = t
+		}
+		switch t := any(b).(type) {
+		case []byte:
+			_ = len(t)
+		}
+	})
+}

@@ -91,6 +91,10 @@ func (s *escapeScan) propagate() {
 				if s.rangeTaint(st) {
 					changed = true
 				}
+			case *ast.TypeSwitchStmt:
+				if s.typeSwitchTaint(st) {
+					changed = true
+				}
 			case *ast.CallExpr:
 				// copy(dst, tainted) makes dst's memory hold the secret.
 				if builtinName(s.c.pass, st) == "copy" && len(st.Args) == 2 &&
@@ -129,6 +133,33 @@ func (s *escapeScan) rangeTaint(st *ast.RangeStmt) bool {
 		if (st.Value == nil || keyCarriesBytes(s.c.pass.TypesInfo.TypeOf(st.Key))) && s.taintTarget(st.Key) {
 			changed = true
 		}
+	}
+	return changed
+}
+
+// typeSwitchTaint taints the variable a type switch over a tainted value
+// binds: in switch t := v.(type), t is v again in every clause. The binding
+// has no object of its own — the type checker declares one implicit variable
+// per clause, typed as that clause's case — so those are what get tainted. A
+// clause whose single case is a plain number or bool cannot hold the bytes
+// and stays clean.
+func (s *escapeScan) typeSwitchTaint(st *ast.TypeSwitchStmt) bool {
+	assign, ok := st.Assign.(*ast.AssignStmt)
+	if !ok || len(assign.Rhs) != 1 {
+		return false // switch v.(type): nothing is bound
+	}
+	assert, ok := unparen(assign.Rhs[0]).(*ast.TypeAssertExpr)
+	if !ok || !s.tainted(assert.X) {
+		return false
+	}
+	changed := false
+	for _, clause := range st.Body.List {
+		obj := s.c.pass.TypesInfo.Implicits[clause]
+		if obj == nil || s.taint[obj] || !resultCarriesBytes(obj.Type()) {
+			continue
+		}
+		s.taint[obj] = true
+		changed = true
 	}
 	return changed
 }
