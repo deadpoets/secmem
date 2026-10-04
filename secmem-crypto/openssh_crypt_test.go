@@ -27,7 +27,7 @@ func TestOpensshCrypt_RefusesEncryptionModes(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			src, dst := make([]byte, 32), make([]byte, 32)
-			err := opensshCrypt(dst, src, nil, []byte(testPassphrase), salt, 1, tc.mode, false)
+			err := opensshCrypt(nil, dst, src, nil, []byte(testPassphrase), salt, 1, tc.mode, false)
 			if errors.Is(err, secmem.ErrNoSecureMemory) {
 				t.Skipf("no secure memory on this host: %v", err)
 			}

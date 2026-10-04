@@ -155,7 +155,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		RegisterScrub: RuntimeSecretActive(),
 
 		FrameScrub:             archFrameScrub,
-		AsyncPreemptSuppressed: asyncPreemptSuppressionSupported,
+		AsyncPreemptSuppressed: asyncPreemptSuppressionInForce(),
 		VectorRegisterClear:    archVectorClear,
 		GPRegisterClear:        archGPClear,
 
@@ -171,7 +171,11 @@ func capsFromAlloc(info allocInfo) Capabilities {
 //
 // Probe is not cached: it reflects the kernel and limits at the moment of the
 // call. If even the probe allocation fails, the report is fully degraded
-// (every protection false) — treat that as this platform providing nothing.
+// (every protection false). That is what an unsupported platform looks like,
+// but it is also what a process that has used up its lock budget gets, with
+// every existing buffer still locked and guarded: Probe cannot tell the two
+// apart, so probe at startup, before the budget is spent, and use
+// [SecureBuffer.Capabilities] for the truth about a buffer you hold.
 func Probe() Capabilities {
 	region, _, info, err := allocSecretMem(1)
 	if err != nil {
@@ -195,7 +199,7 @@ func (c Capabilities) Warnings() []string {
 		w = append(w, "INSECURE: plain heap fallback — no memory protection is in force at all")
 	}
 	if !c.OffHeap && !c.Insecure {
-		w = append(w, "memory is on the Go heap — the GC may copy secrets during collection")
+		w = append(w, "memory is on the Go heap — not locked, not excluded from dumps, and not wiped when the collector frees it")
 	}
 	if !c.Mlocked {
 		w = append(w, "pages are not locked — secrets may be written to the swap device")
@@ -208,7 +212,8 @@ func (c Capabilities) Warnings() []string {
 	if !c.NoDump {
 		w = append(w, "not excluded from core dumps")
 	}
-	if !c.NoFork {
+	if !c.NoFork && c.GOOS != "windows" {
+		// Windows has no fork: there is nothing to inherit and nothing to warn about.
 		w = append(w, "mapping is inherited by forked children (no MADV_DONTFORK)")
 	}
 	if !c.FlushedWipe {
@@ -287,7 +292,7 @@ func (c Capabilities) String() string {
 // The report is fixed at construction and remains valid after Destroy.
 // A nil receiver reports a fully degraded posture.
 func (s *SecureBuffer) Capabilities() Capabilities {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return capsFromAlloc(allocInfo{})
 	}
 	return capsFromAlloc(s.backing)
@@ -299,7 +304,7 @@ func (s *SecureBuffer) Capabilities() Capabilities {
 // The report is fixed at construction and remains valid after Destroy.
 // A nil receiver reports a fully degraded posture.
 func (a *SecureArena) Capabilities() Capabilities {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return capsFromAlloc(allocInfo{})
 	}
 	return capsFromAlloc(a.backing)

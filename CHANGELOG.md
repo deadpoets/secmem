@@ -94,6 +94,273 @@ mark the stability commitment.
 - **`httpauth`: the request body is closed when `RoundTrip` fails before
   calling the base transport** (cleartext refusal, missing token, token read
   error), as the `RoundTripper` contract requires.
+- **CI: `secmem-crypto`'s `//go:build !race` allocation proofs ran on no
+  audited 64-bit lane.** `test-noescape` selected `TestNoHeapEscape` only, so
+  the classification, parser, marshal and `BcryptPBKDFInto` proofs ran only on
+  linux/386. That job now runs the module's whole suite without `-race`, less
+  the residue scans, and gains windows/amd64 legs on both toolchains.
+
+- **CI: the Windows and Darwin source files are linted** (`GOOS=windows` and
+  `GOOS=darwin` golangci-lint passes), and windows/amd64 gets the full
+  `go vet`.
+
+- **Docs: ADOPTION.md no longer says every helper in the boundary table runs
+  in a `Scrub` window.** `NewBuffer`, `NewBufferFromReader`, `ReadFrom` and
+  `WriteTo` clear registers on return and open none. ADOPTION.md and
+  ENVIRONMENTS.md named `ErrNoSecureMemory` for a refused lock; it is the
+  wrapped `mlock`/`VirtualLock` error.
+
+- **Docs: TESTING.md names the `go test` steps that are not skip-audited**,
+  and CONTRIBUTING.md no longer hard-codes a required-check count.
+
+- **`examples/hardened-ssh-agent`: a message that fails to arrive in full is
+  wiped.** It used to be dropped with whatever part of a key had arrived. The
+  example's headline now says keys are never *at rest* on the heap.
+
+- **`examples/hardened-ssh-agent`: `ssh-add -t` lifetimes are enforced on
+  the wall clock.** The deadline carried Go's monotonic reading, which stops
+  during a suspend, so a key outlived its lifetime by the time asleep.
+
+- **`examples/hardened-ssh-agent`: the default socket directory has a random
+  name and is removed on exit.** The pid-named one was left behind and made a
+  restart under the same pid fail.
+
+- **`examples/password-login`: `register` refuses a name that already has a
+  record** instead of replacing its verifier, and the password prompt removes
+  a whole character on backspace, clears on ^U, ends on ^D and refuses other
+  control keys instead of storing them in the password.
+### Changed
+
+- **A borrow on an emergency-wiped buffer or arena returns `ErrWiped`.**
+  After `WipeAllSecrets` the region is left mapped, and until now only the
+  mutating methods refused: `WithBytes`, `WithBytesErr`, `CopyOut`, `ByteAt`,
+  `ConstantTimeEqual` and `WriteTo` kept succeeding and handed out the zeros,
+  as did `ArenaSlot.WithBytes` on a slot acquired before the wipe. A process
+  that survived the wipe (`InstallTerminationWipeNoExit`, a handler of its
+  own, a recovered panic) could therefore run AES-GCM, X25519, ML-KEM or
+  Ed25519 under an all-zero key and be told it worked. All of them now return
+  `ErrWiped`, which wraps `ErrDestroyed`, and the callback is not called. The
+  pre-wipe slot handle that could still write a fresh secret into a wiped
+  slab is closed by the same check. This is a behaviour change: code that
+  read a wiped buffer to see zeros gets an error instead. `Len`,
+  `IsDestroyed`, `Capabilities`, `Destroy` and `ArenaSlot.Release` are
+  unaffected.
+
+- **A copy of a `SecureBuffer` or `SecureArena` value is an alias of the
+  original, and a zero value is a destroyed one.** The types are used through
+  pointers, but nothing stopped `c := *buf`, and vet's copylocks check does
+  not see it. The copy carried its own liveness fields over the shared
+  mapping, so after `buf.Destroy()` it still handed out a slice, now over
+  unmapped memory or over whatever mapping had reused the address; a copied
+  arena kept handing out slots in a slab that was gone. All state now lives
+  behind one pointer, as in `os.File`: a copy or an overwrite (`*a = *b`) is
+  a second handle on the same buffer, state changed through one is seen
+  through all, and `Destroy` on any of them destroys it for all. The
+  finalization fallback follows the shared state, so the region is released
+  when the last handle is gone. A zero-value `SecureBuffer`, `SecureArena` or
+  `ArenaSlot`, which used to dereference a nil lock on every method, now
+  behaves as a destroyed buffer or arena, or a released slot. Method sets and
+  signatures are unchanged.
+
+### Fixed
+
+- **`InstallTerminationWipe` could hang behind one borrowing callback.** The
+  handler called `WipeAllSecrets` synchronously, and that call waits for every
+  borrow. A callback blocked on I/O, or one that called `Len` or `IsSealed` on
+  its own buffer while the wipe was queued, kept the handler from reaching
+  the re-raise: every other secret was zeroed, the process ran on, and later
+  signals were swallowed by the handler's own registration. The handler now
+  waits `TerminationWipeTimeout` (5 s, a new exported constant) and then
+  terminates as it would have, with a warning logged. Everything that was not
+  borrowed is zeroed by then; the secret inside the stuck callback is not,
+  and the installer's documentation says so.
+
+- **Linux: `HardenProcess` set `no_new_privs` on one thread and reported it
+  for the process.** The attribute belongs to a thread and is inherited by
+  what that thread creates. A Go program has several threads before `main`
+  runs and forks a child from whichever one the calling goroutine is on, so
+  `os/exec` could still start a setuid binary from another thread while the
+  returned level said it could not (measured: 9 of 10 threads without it).
+  It is now set on every thread. A binary that links cgo cannot do that; there
+  it is set on the calling thread only and `HardenNoNewPriv` is no longer in
+  the returned level, where it used to be reported regardless.
+
+- **`DisableCoreDumps` documentation: `RLIMIT_CORE=0` does not stop a piped
+  core dump.** The godoc said it stops the entire process from dumping. Linux
+  ignores the limit when `core_pattern` is a pipe, the default with
+  systemd-coredump or apport, and hands the image to that program. The godoc
+  and `ADOPTION.md` now say so and point at `HardenProcess`, whose
+  `PR_SET_DUMPABLE=0` does stop it.
+
+- **`ArenaSlot.Release` on one handle from two goroutines could wipe the
+  slot's next owner.** The liveness check ran before the region lock and the
+  wipe after it, so a Release that waited behind a queued writer resumed
+  after the other Release had finished and the slot had been re-acquired, and
+  zeroed the new secret. Release now retires the handle by compare-and-swap
+  under the lock, before the wipe; the loser does nothing.
+
+- **The package did not compile for `plan9`.** The termination handler named
+  `syscall.Signal`, which Plan 9's `syscall` does not have, so a build there
+  failed instead of reaching the documented `ErrNoSecureMemory` stub. The
+  inherited-ignore record is now per platform.
+
+- **`SecureBuffer.ReadFrom` returned `io.EOF` for a source with nothing in
+  it.** `io.ReaderFrom` does not report EOF as an error, and a source with one
+  byte was already a successful partial fill. It now returns `(0, nil)`, and
+  the count is the number of bytes stored when a concurrent `Truncate` left
+  room for fewer than were read. `NewBufferFromReader` still refuses an empty
+  source with `io.EOF`, now by decision and documented.
+
+- **`SecureArena.IsDestroyed` turned true before the slab was wiped.** It
+  returned the fail-fast flag `Destroy` raises before taking the lock, so it
+  said "destroyed" while `Destroy` was still waiting on a borrow that was
+  reading plaintext. It now reports true once the slab is wiped and unmapped,
+  as `SecureBuffer.IsDestroyed` does. `Acquire` and new borrows are still
+  refused from the moment `Destroy` is called.
+
+- **A failed `Unseal` could leave a buffer flagged sealed over unprotected
+  plaintext.** On a buffer that was read-only when sealed, `Unseal` decrypts
+  and then re-applies the read-only protection; if that last step failed it
+  returned with the sealed flag set and the page read-write, and a `Seal` in
+  response returned nil without protecting anything. The failure path now
+  seals the buffer again (cipher and page protection) before it returns.
+
+- **An emergency wipe that could not run left the region filed as wiped.**
+  The pass moves a region to the janitor's wiped set, with its canary layout
+  erased, before it wipes. When write access could not be restored and the
+  wipe was skipped, the region stayed there: a later `Destroy` would not
+  report an overflow, and the set documented as "already zero" held a live
+  secret. A skipped region now goes back to the live set as it was.
+
+- **Windows: a `kernel32` without the WER exclusion exports panicked every
+  allocation.** The two calls were made without checking that the export
+  resolves, which `LazyProc` answers with a panic. Absence is now what the
+  comment always promised: the allocation is reported as not excluded
+  (`Capabilities().NoDump` false).
+
+- **Windows: `Seal` on an area of 4 GiB or more encrypted only part of it.**
+  `CryptProtectMemory` takes its length as a DWORD and the length was passed
+  unchecked, so the cipher covered the size modulo 2^32 and the buffer was
+  recorded as ciphertext. Such an area is now refused and `Seal` returns the
+  error.
+
+- **Windows: `EnsureMemlockLimit` turned a hard working-set limit soft.** It
+  read the process's quota flags and then wrote both limits back with the
+  soft flags, so a minimum the application or its launcher had made hard grew
+  in size and lost its enforcement. The flags that were read are now written
+  back unchanged.
+
+- **`Capabilities.Warnings` no longer warns about fork inheritance on
+  Windows, which has no fork**, and the Go-heap line names the real exposure
+  (not locked, dumpable, not wiped on free) instead of a collector that
+  copies secrets, which Go's does not. `Probe`'s documentation now says that
+  a failed probe allocation and an unsupported platform produce the same
+  report.
+
+- **Linux: a Scrub window that could not block the preemption signals was
+  reported as suppressing them, and ran unpinned.** `AsyncPreemptSuppressed`
+  was a build-time constant and the window dropped its thread pin on the
+  failure path. A failed mask call (a seccomp filter on `rt_sigprocmask`) now
+  keeps the pin, which the register clear depends on, and
+  `Capabilities().AsyncPreemptSuppressed` reports false from then on. The
+  signal-set helper also takes its word width from the type instead of
+  assuming 64 bits, which was wrong on 386 and arm for a signal above 32.
+
+- **`Scrub` and `ScrubErr` swallowed `panic(nil)` under
+  `GODEBUG=panicnil=1`.** With that setting the panic recovers as nil, which
+  the window read as "fn returned": `Scrub` returned normally and `ScrubErr`
+  returned a nil error for a function that never finished. Both builds of the
+  window now track whether fn returned and re-raise when it did not.
+
+- **Windows: an unknown page-protection value was applied as read-write.**
+  The internal protection mapping sent everything other than "none" and
+  "read" to `PAGE_READWRITE` and returned success. It now refuses a value it
+  does not know.
+### Added
+
+- **`secmem-crypto`: `ErrLowOrderPoint`**, wrapped by `X25519Key.SharedSecret`
+  for a low-order peer key.
+
+### Changed
+
+- **`secmem-crypto`: `BufferOptions` forwards core options to every buffer
+  the module allocates, and every allocating function takes `...Option`.**
+  Until now a platform that needs `secmem.WithInsecureFallback` could only
+  get `ErrNoSecureMemory` from this module. `BufferOptions(opts
+  ...secmem.Option)` reaches every `SecureBuffer` a call allocates, and a key
+  keeps the options it was built with for the buffers its methods return
+  later. Eleven functions gained a trailing `...Option`:
+  `GenerateEd25519Signer`, `NewEd25519Signer`, `GenerateX25519Key`,
+  `NewX25519Key`, `NewArgon2Workspace`, `NewArgon2Pool`, `Encapsulate`,
+  `GenerateDicewarePassphrase`, `BcryptPBKDFInto`, `HMACSHA256Into` and
+  `HKDFSHA256Into`. That is source-compatible for callers and a changed func
+  type for anyone storing them as values. `X25519Key` is no longer comparable
+  with `==`. Without the option the module is secure-memory-only, as before.
+
+- **`secmem-crypto`: one RSA size rule on every route.** The modulus
+  (16384-bit), prime (8192-bit) and public-exponent bounds applied only to
+  OpenSSH files; a PKCS#1, PKCS#8 or encrypted PKCS#8 file with megabyte
+  integers bought minutes of validation per parse. The lengths are now read
+  from the DER in place inside `NewRSASigner`. `NewRSASigner` on such DER, a
+  key with more than five primes, and `GenerateRSASigner` over 16384 bits are
+  refused.
+
+- **`secmem-crypto`: the package overview is `doc.go`**; file headers are no
+  longer published as package documentation.
+
+### Fixed
+
+- **`secmem-crypto`: `Argon2Workspace` no longer falls back to the heap for
+  long inputs.** An H0 input over 4096 bytes (password + salt + Secret +
+  Data) was assembled in a Go heap buffer holding the password and Secret,
+  wiped afterwards but pageable and dumpable meanwhile, which is the exposure
+  the type exists to remove. H0 is now hashed a block at a time through the
+  forked BLAKE2b compression function with its state in the workspace, so no
+  input is assembled and none has a length limit. Output is unchanged. The
+  workspace is 3,904 bytes smaller.
+
+- **`secmem-crypto`: `RSASigner` built from PKCS#8 DER no longer copies the
+  whole private key to the heap per signature.** `x509.ParsePKCS8PrivateKey`
+  copies the wrapped RSAPrivateKey into a fresh slice that nothing wipes,
+  twice at construction and once per `Sign`. The signer now parses that
+  element where it lies in its buffer.
+
+- **`secmem-crypto`: the reflective wipes account for every field.** The AES,
+  AES-GCM, ML-KEM and RSA wipes zeroed the secret fields they knew by name
+  and ignored the rest, so a toolchain that renamed the GHASH table or moved
+  the FIPS-form RSA key would have left it unwiped with no error. Each now
+  refuses a layout with a field it does not know, before the key is expanded.
+
+- **`secmem-crypto`: `NewRSASigner` refuses a PKCS#8 key of another type
+  without parsing it.** It used to ask `crypto/x509` what the structure held,
+  putting that key on the heap to be refused; an ML-DSA key on go1.27 was
+  dropped unwiped.
+
+- **`secmem-crypto`: `MLKEM768Key.Decapsulate` documented correctly.** Only a
+  wrong-length ciphertext errors; a tampered one yields a different key (FIPS
+  203 implicit rejection), so key confirmation is the protocol's job.
+
+- **`secmem-crypto`: `WithAESGCM` waits for a Seal or Open in flight on
+  another goroutine before wiping the schedule**, instead of letting it
+  finish under zeroed round keys, and on a destroyed key returns an error
+  wrapping `secmem.ErrDestroyed` rather than a key-size error.
+
+- **`secmem-crypto`: the in-place HMAC panics on an undersized scratch
+  region** rather than returning the MAC of a truncated message (an internal
+  invariant; no caller was wrong), and `HMACInto`/`HKDFInto` no longer take a
+  pre-seeded hash constructor for the plain hash on first sight.
+
+- **`secmem-crypto`: `X25519Key.PublicKey` and `SharedSecret` return
+  `ErrBadScalarLength`** instead of panicking when the buffer was truncated
+  through a retained reference.
+
+- **`secmem-crypto`: parser errors bound the object identifiers they
+  repeat** (16 arcs or 64 characters, else described by size), and
+  `ParsePrivateKey` no longer calls a bare-DER public key or certificate
+  "passphrase-protected"; it returns `ErrUnsupportedKey`.
+
+- **`secmem-crypto`: `MarshalOpenSSHPrivateKey` PEM-encodes inside a Scrub
+  window**; without a passphrase that pass reads the seed in clear.
 
 ## [secmem-crypto/v0.9.0] - 2026-10-03
 

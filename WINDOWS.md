@@ -77,9 +77,13 @@ these are the operational differences a Windows deployment has to plan for.
   above covers Windows 11 Pro client; a Windows 10 client run would close the
   remaining edition gap.
 - **windows/arm64** — build and test-binary compile only (the `cross-compile`
-  job); nothing has executed there. The arm64 wipe and frame-scrub assembly
-  carry no OS constraint, so the same routines that run on linux/arm64 are
-  what a windows/arm64 build gets, but that is an inference, not a run.
+  job); nothing has executed there. A windows/arm64 build gets the same
+  arm64 wipe and frame-scrub assembly that runs on linux/arm64, and one
+  instruction in the wipe is OS-dependent: the cache flush (`DC CIVAC`) is
+  usable from user mode only where the OS enables it (`SCTLR_EL1.UCI`), and
+  traps otherwise. Whether Windows on ARM enables it has not been
+  determined here, so the first `Destroy` on that platform is unverified, not
+  merely unmeasured.
 
 ## Go runtime fault-recovery bug (golang/go#81238)
 

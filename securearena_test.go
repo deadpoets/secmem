@@ -490,8 +490,11 @@ func TestArena_ConcurrentAcquireRelease(t *testing.T) {
 	})
 }
 
-// TestArena_DestroyRacesRelease verifies that Destroy and concurrent Release
-// do not deadlock or panic (Destroy drains in-flight rLocks before munmap).
+// TestArena_DestroyRacesRelease verifies that Destroy and a concurrent Release
+// do not deadlock or fault. A borrow holds the slab while Destroy queues on
+// it; a Release issued then queues behind Destroy (the lock prefers the
+// waiting writer), so it resumes only after the slab is unmapped and must
+// find that out under the lock rather than wipe a slot that is gone.
 func TestArena_DestroyRacesRelease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, err := NewArena(32, 4)
@@ -500,6 +503,10 @@ func TestArena_DestroyRacesRelease(t *testing.T) {
 		}
 
 		slot, err := a.Acquire()
+		if err != nil {
+			t.Fatalf("Acquire: %v", err)
+		}
+		released, err := a.Acquire()
 		if err != nil {
 			t.Fatalf("Acquire: %v", err)
 		}
@@ -524,13 +531,23 @@ func TestArena_DestroyRacesRelease(t *testing.T) {
 
 		synctest.Wait() // Destroy goroutine is now blocked on mu.lock (durably).
 
-		// Let the callback goroutine exit — Destroy will then proceed.
+		// Release the other slot now: it has passed its lock-free liveness
+		// check and parks behind the queued Destroy.
+		releaseDone := make(chan error, 1)
+		go func() { releaseDone <- released.Release() }()
+		synctest.Wait()
+
+		// Let the callback goroutine exit — Destroy will then proceed, and the
+		// Release after it.
 		close(leave)
 		synctest.Wait()
 
 		<-destroyDone
 		if !a.IsDestroyed() {
 			t.Error("IsDestroyed = false after Destroy")
+		}
+		if err := <-releaseDone; err != nil {
+			t.Errorf("Release that lost the race to Destroy = %v, want nil", err)
 		}
 	})
 }

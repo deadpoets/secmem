@@ -135,7 +135,7 @@ func TestGenerateDicewarePassphrase_PinsPreviousImplementation(t *testing.T) {
 	}{
 		{1, "one"}, {2, "two"}, {6, "six words"}, {10, "ten"}, {24, "twenty-four"},
 	} {
-		buf, err := generateDiceware(tc.n, stringWordList(list), shakeDraw(tc.seed))
+		buf, err := generateDiceware(nil, tc.n, stringWordList(list), shakeDraw(tc.seed))
 		if err != nil {
 			t.Skipf("n=%d: generateDiceware: %v", tc.n, err)
 		}
@@ -148,7 +148,7 @@ func TestGenerateDicewarePassphrase_PinsPreviousImplementation(t *testing.T) {
 	}
 
 	// Pinned literal: SHAKE128("pin") through rand.Int over 7776, six draws.
-	buf, err := generateDiceware(6, stringWordList(list), shakeDraw("pin"))
+	buf, err := generateDiceware(nil, 6, stringWordList(list), shakeDraw("pin"))
 	if err != nil {
 		t.Skipf("generateDiceware: %v", err)
 	}
@@ -167,7 +167,7 @@ func TestGenerateDicewarePassphrase_PinsPreviousImplementation(t *testing.T) {
 // left in the buffer.
 func TestGenerateDicewarePassphrase_TrimsToExactLength(t *testing.T) {
 	t.Parallel()
-	buf, err := generateDiceware(5, stringWordList(effWords()), shakeDraw("trim"))
+	buf, err := generateDiceware(nil, 5, stringWordList(effWords()), shakeDraw("trim"))
 	if err != nil {
 		t.Skipf("generateDiceware: %v", err)
 	}
@@ -189,11 +189,11 @@ func TestGenerateDicewarePassphrase_TrimsToExactLength(t *testing.T) {
 func TestGenerateDicewarePassphrase_DrawFailureLeavesNoBuffer(t *testing.T) {
 	t.Parallel()
 	failing := func(int64) (int64, error) { return 0, io.ErrUnexpectedEOF }
-	if buf, err := generateDiceware(3, stringWordList(effWords()), failing); err == nil || buf != nil {
+	if buf, err := generateDiceware(nil, 3, stringWordList(effWords()), failing); err == nil || buf != nil {
 		t.Fatalf("generateDiceware with a failing draw = (%v, %v), want (nil, error)", buf, err)
 	}
 	outOfRange := func(bound int64) (int64, error) { return bound, nil }
-	if buf, err := generateDiceware(3, stringWordList(effWords()), outOfRange); err == nil || buf != nil {
+	if buf, err := generateDiceware(nil, 3, stringWordList(effWords()), outOfRange); err == nil || buf != nil {
 		t.Fatalf("generateDiceware with an out-of-range draw = (%v, %v), want (nil, error)", buf, err)
 	}
 }

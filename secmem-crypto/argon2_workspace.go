@@ -11,12 +11,15 @@
 // [Argon2Pool] holds several for concurrent callers with a fixed ceiling on
 // locked memory.
 //
-// Neither falls back to the heap. A host whose lock budget cannot hold the
-// workspace fails at construction, before the first login, with the
+// Neither falls back to the heap, for the workspace or for any input: the
+// password, salt, Secret and Data are hashed into H0 block by block inside
+// the locked region whatever their length. A host whose lock budget cannot
+// hold the workspace fails at construction, before the first login, with the
 // platform's error; raise the budget with [secmem.EnsureMemlockLimit] at
 // startup, as for any other large SecureBuffer. A caller that wants the
 // heap behaviour has [Argon2Into], and is told by that function's doc what
 // it does not get.
+
 package secmemcrypto
 
 import (
@@ -49,14 +52,15 @@ type Argon2Workspace struct {
 // profile (memory in KiB, threads lanes; the same rounding as
 // [Argon2Params]). It fails, rather than degrading to the heap, when the
 // process cannot lock that much memory: the error wraps the platform's.
-func NewArgon2Workspace(memory uint32, threads uint8) (*Argon2Workspace, error) {
+// opts may carry [BufferOptions] for the workspace's buffer.
+func NewArgon2Workspace(memory uint32, threads uint8, opts ...Option) (*Argon2Workspace, error) {
 	if threads < 1 {
 		return nil, fmt.Errorf("secmemcrypto: argon2 workspace: threads (parallelism) must be >= 1, got %d", threads)
 	}
 	if uint64(memory)*1024 > math.MaxInt-1<<20 {
 		return nil, fmt.Errorf("secmemcrypto: argon2 workspace: memory %d KiB exceeds the address space", memory)
 	}
-	buf, err := secmem.NewEmptyBuffer(argon2.WorkspaceSize(memory, threads))
+	buf, err := resolveOptions(opts).buf.newEmptyBuffer(argon2.WorkspaceSize(memory, threads))
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: argon2 workspace: %w", err)
 	}
@@ -137,14 +141,15 @@ type Argon2Pool struct {
 
 // NewArgon2Pool allocates size locked workspaces for the given cost
 // profile. On any failure the workspaces already allocated are destroyed
-// and the error is returned.
-func NewArgon2Pool(size int, memory uint32, threads uint8) (*Argon2Pool, error) {
+// and the error is returned. opts are passed to [NewArgon2Workspace] for
+// each one.
+func NewArgon2Pool(size int, memory uint32, threads uint8, opts ...Option) (*Argon2Pool, error) {
 	if size < 1 {
 		return nil, fmt.Errorf("secmemcrypto: argon2 pool: size must be >= 1, got %d", size)
 	}
 	p := &Argon2Pool{free: make(chan *Argon2Workspace, size)}
 	for i := 0; i < size; i++ {
-		ws, err := NewArgon2Workspace(memory, threads)
+		ws, err := NewArgon2Workspace(memory, threads, opts...)
 		if err != nil {
 			_ = p.Destroy()
 			return nil, fmt.Errorf("secmemcrypto: argon2 pool: workspace %d of %d: %w", i+1, size, err)

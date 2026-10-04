@@ -78,6 +78,8 @@ package secmem
 import (
 	"fmt"
 	"runtime"
+	"sync/atomic"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -95,15 +97,24 @@ var preemptSignals = []unix.Signal{unix.SIGURG, unix.SIGPROF} //nolint:gocheckno
 // sigaddset sets sig's bit in a Sigset_t. x/sys/unix exposes the type and
 // PthreadSigmask but no sigaddset, so this does the one line of bit arithmetic
 // the C macro does: signals are numbered from 1, and the set is a flat bitmap of
-// 64-bit words.
+// machine words — 64-bit on amd64 and arm64, 32-bit on 386 and arm, so the
+// width is taken from the type.
 func sigaddset(set *unix.Sigset_t, sig unix.Signal) error {
+	const wordBits = int(unsafe.Sizeof(set.Val[0])) * 8
 	n := int(sig) - 1
-	if n < 0 || n/64 >= len(set.Val) {
+	if n < 0 || n/wordBits >= len(set.Val) {
 		return unix.EINVAL
 	}
-	set.Val[n/64] |= 1 << (uint(n) % 64)
+	set.Val[n/wordBits] |= 1 << (uint(n) % uint(wordBits))
 	return nil
 }
+
+// failSigmaskForTest makes suppressAsyncPreempt behave as if the mask call had
+// been refused, which no real environment does to order (a seccomp profile
+// that returns an errno for rt_sigprocmask is the case). A flag rather than a
+// replaceable function: calling the mask through a func value makes both of
+// its pointer arguments escape, and the window must not allocate.
+var failSigmaskForTest atomic.Bool
 
 // preemptWindow carries the state needed to undo suppressAsyncPreempt.
 //
@@ -134,20 +145,36 @@ type preemptWindow struct {
 	tid int
 
 	// active records that the mask was actually changed, so restore on a failed
-	// or never-suppressed window is a no-op rather than an unbalanced
-	// UnlockOSThread.
+	// or never-suppressed window does not write a mask it never read.
 	active bool
+
+	// locked records that the goroutine is pinned and restore has an
+	// UnlockOSThread to make. It is set even when the mask could not be
+	// changed: the pin is what the register clear at the end of the window
+	// depends on, with or without the suppression.
+	locked bool
 }
+
+// asyncPreemptSuppressFailed is set the first time a window could not block
+// the preemption signals. Capabilities reports the suppression as not in force
+// from then on: the failure is a property of the environment (a filter on
+// rt_sigprocmask), not of one call, and a posture report that kept saying
+// "suppressed" would be describing windows that are not.
+var asyncPreemptSuppressFailed atomic.Bool
 
 // suppressAsyncPreempt pins the goroutine to its thread and blocks the
 // register-dumping signals, recording in w what restore must undo. The caller
 // MUST defer w.restore() — leaking a blocked SIGURG would stop this thread
 // being preemptible for the rest of its life.
 //
-// On any failure it undoes whatever it managed to change and reports false; the
-// caller then runs the window unhardened rather than not at all.
+// On a failure to block the signals it reports false and records the fact for
+// Capabilities; the caller then runs the window without the suppression rather
+// than not at all. The pin is kept either way, as on the platforms that have
+// no suppression: the register clear that ends the window must run on the
+// thread fn ran on.
 func suppressAsyncPreempt(w *preemptWindow) bool {
 	runtime.LockOSThread()
+	w.locked = true
 	// After the pin, not before: an unpinned goroutine could move between
 	// asking and locking, and the record would name a thread it never masked.
 	w.tid = unix.Gettid()
@@ -155,12 +182,16 @@ func suppressAsyncPreempt(w *preemptWindow) bool {
 	var block unix.Sigset_t
 	for _, sig := range preemptSignals {
 		if err := sigaddset(&block, sig); err != nil {
-			runtime.UnlockOSThread()
+			asyncPreemptSuppressFailed.Store(true)
 			return false
 		}
 	}
+	if failSigmaskForTest.Load() {
+		asyncPreemptSuppressFailed.Store(true)
+		return false
+	}
 	if err := unix.PthreadSigmask(unix.SIG_BLOCK, &block, &w.prev); err != nil {
-		runtime.UnlockOSThread()
+		asyncPreemptSuppressFailed.Store(true)
 		return false
 	}
 
@@ -176,7 +207,13 @@ func suppressAsyncPreempt(w *preemptWindow) bool {
 // thread is already leaked by then (see the file header); what restore can
 // still do is refuse to make it worse and refuse to be silent about it.
 func (w *preemptWindow) restore() {
+	if !w.locked {
+		return
+	}
+	w.locked = false
 	if !w.active {
+		// Pinned but never masked: there is only the pin to undo.
+		runtime.UnlockOSThread()
 		return
 	}
 	w.active = false
@@ -194,7 +231,9 @@ func (w *preemptWindow) restore() {
 	runtime.UnlockOSThread()
 }
 
-// asyncPreemptSuppressionSupported reports that this platform can suppress the
-// register-dumping preemption signal. Reported through Capabilities so the
+// asyncPreemptSuppressionInForce is what Capabilities reports: the platform
+// can suppress the signal and no window has yet failed to. Reported so the
 // posture is inspectable rather than assumed.
-const asyncPreemptSuppressionSupported = true
+func asyncPreemptSuppressionInForce() bool {
+	return !asyncPreemptSuppressFailed.Load()
+}

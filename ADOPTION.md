@@ -117,10 +117,22 @@ Two shapes to look for on the map:
   later exported again should never round-trip through a `[]byte`; the
   ingress and egress helpers both work in place, and the buffer is the only
   copy in between.
-- **A helper that is not in a window.** Everything in the table that touches
-  plaintext runs inside `Scrub` or `ScrubErr` already. If you write a crossing
-  of your own, the window is yours to open, and the constraints in the
-  `Scrub` doc apply: no goroutines, no writes to globals or caches
+- **A helper that is not in a window.** The `secmem-crypto` rows (the key
+  file parsers, the `*Into` KDFs and the Argon2 workspace, the OpenSSH
+  marshallers) and `httpauth`'s header build run inside `Scrub` or `ScrubErr`
+  already. The core's copy helpers do not: `NewBuffer`,
+  `NewBufferFromReader`, `SecureBuffer.ReadFrom` and `WriteTo` clear the
+  registers when they return and open no window, so a preemption that lands
+  during the copy can still save secret-bearing registers to the goroutine
+  stack, and `ReadFrom` and `WriteTo` (and so `NewBufferFromReader`) stage
+  the bytes in a heap slice that is wiped before they return. Where that
+  matters, wrap the call in a window of your own when the source or sink
+  cannot stall (a regular file, not a pipe or a socket); blocking I/O inside
+  a window pins the thread and holds the preemption signal blocked for as
+  long as it takes, so for a network peer record the residual instead. If
+  you write a crossing of your own, the window is likewise yours to open,
+  and the constraints in the `Scrub` doc apply: no goroutines, no writes to
+  globals or caches
   ([pitfall 10](PITFALLS.md#10-writing-to-globals-or-caches-inside-a-scrub-window)).
 
 ## 4. Size the locked-memory budget
@@ -192,8 +204,9 @@ Then set it:
 - Call `EnsureMemlockLimit(budget)` once, before the first allocation. It
   returns the value achieved together with a non-nil error when the request
   could not be met; treat that error as a deployment error, not a warning,
-  because the alternative is a `ErrNoSecureMemory` or `mlock` failure from
-  whichever allocation first crosses the line.
+  because the alternative is a wrapped `mlock` or `VirtualLock` error from
+  whichever allocation first crosses the line. (`ErrNoSecureMemory` is a
+  different condition: a platform with no lockable memory at all.)
 - On Linux, raising the soft limit up to the hard limit needs no privilege.
   Raising the hard limit needs `CAP_SYS_RESOURCE`, or the deployment sets it:
   `LimitMEMLOCK=` in a systemd unit, `--ulimit memlock=` for a container. A
@@ -213,7 +226,11 @@ non-root and containers.
 Before the first secret exists:
 
 1. `HardenProcess` and `DisableCoreDumps`, so the process is non-dumpable
-   before there is anything to dump.
+   before there is anything to dump. Call both: on a Linux host whose
+   `core_pattern` pipes dumps to a program (systemd-coredump, apport) the
+   kernel ignores the `RLIMIT_CORE=0` that `DisableCoreDumps` sets, and only
+   `HardenProcess` stops the dump. Check the level `HardenProcess` returns
+   rather than assuming it: a cgo binary does not get `HardenNoNewPriv`.
 2. `EnsureMemlockLimit` with the budget from section 4.
 3. `Probe`, and log its `Warnings` (they contain no secrets). Decide in
    advance which capabilities your deployment requires and refuse to start

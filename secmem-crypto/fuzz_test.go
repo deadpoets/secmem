@@ -19,6 +19,7 @@ func FuzzSignEd25519Direct_MatchesStdlib(f *testing.F) {
 	f.Add([]byte("9d61b19deffd5a60ba844af492ec2cc4"), []byte(""))
 	f.Add([]byte("4ccd089b28ff96da9db6c346ec114e0f"), []byte{0x72})
 	f.Add(bytes.Repeat([]byte{0x00}, 32), bytes.Repeat([]byte{0xff}, 1024))
+	f.Add(bytes.Repeat([]byte{0x01}, 32), bytes.Repeat([]byte{0xa5}, ed25519NonceStackBytes+1)) // the heap branch of the nonce pre-image
 	f.Fuzz(func(t *testing.T, seed, msg []byte) {
 		if len(seed) != ed25519.SeedSize {
 			if _, err := signEd25519Direct(seed, msg); err == nil {

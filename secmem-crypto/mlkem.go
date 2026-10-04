@@ -1,5 +1,6 @@
 // mlkem.go provides MLKEM768Key, a post-quantum ML-KEM-768 (FIPS 203)
 // decapsulation key whose seed lives in a SecureBuffer.
+
 package secmemcrypto
 
 import (
@@ -69,7 +70,8 @@ import (
 // nothing behind and is never refused.
 type MLKEM768Key struct {
 	seedBuf *secmem.SecureBuffer
-	ek      []byte // public encapsulation key, captured at construction
+	ek      []byte        // public encapsulation key, captured at construction
+	buf     bufferOptions // for the buffer each Decapsulate allocates
 }
 
 // GenerateMLKEM768Key generates a fresh 64-byte ML-KEM-768 seed directly
@@ -84,10 +86,11 @@ type MLKEM768Key struct {
 // [ErrHeapTransients] unless opts include [AllowHeapTransients]; see the
 // type comment.
 func GenerateMLKEM768Key(opts ...Option) (*MLKEM768Key, error) {
-	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: generate ML-KEM seed"); err != nil {
+	o := resolveOptions(opts)
+	if err := o.checkHeapTransients("secmemcrypto: generate ML-KEM seed"); err != nil {
 		return nil, err
 	}
-	buf, err := secmem.NewEmptyBuffer(mlkem.SeedSize)
+	buf, err := o.buf.newEmptyBuffer(mlkem.SeedSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate seed buffer: %w", err)
 	}
@@ -98,7 +101,7 @@ func GenerateMLKEM768Key(opts ...Option) (*MLKEM768Key, error) {
 		_ = buf.Destroy()
 		return nil, fmt.Errorf("secmemcrypto: generate seed: %w", err)
 	}
-	k, err := newMLKEM768Key(buf)
+	k, err := newMLKEM768Key(buf, o.buf)
 	if err != nil {
 		_ = buf.Destroy()
 		return nil, err
@@ -117,13 +120,14 @@ func GenerateMLKEM768Key(opts ...Option) (*MLKEM768Key, error) {
 // [ErrHeapTransients] unless opts include [AllowHeapTransients]; see the
 // type comment.
 func NewMLKEM768Key(seedBuf *secmem.SecureBuffer, opts ...Option) (*MLKEM768Key, error) {
-	if err := resolveOptions(opts).checkHeapTransients("secmemcrypto: new ML-KEM key"); err != nil {
+	o := resolveOptions(opts)
+	if err := o.checkHeapTransients("secmemcrypto: new ML-KEM key"); err != nil {
 		return nil, err
 	}
-	return newMLKEM768Key(seedBuf)
+	return newMLKEM768Key(seedBuf, o.buf)
 }
 
-func newMLKEM768Key(seedBuf *secmem.SecureBuffer) (*MLKEM768Key, error) {
+func newMLKEM768Key(seedBuf *secmem.SecureBuffer, b bufferOptions) (*MLKEM768Key, error) {
 	if seedBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -148,7 +152,7 @@ func newMLKEM768Key(seedBuf *secmem.SecureBuffer) (*MLKEM768Key, error) {
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: new ML-KEM key: %w", err)
 	}
-	return &MLKEM768Key{seedBuf: seedBuf, ek: ek}, nil
+	return &MLKEM768Key{seedBuf: seedBuf, ek: ek, buf: b}, nil
 }
 
 // EncapsulationKeyBytes returns a copy of the 1184-byte public ML-KEM-768
@@ -168,8 +172,18 @@ func (k *MLKEM768Key) EncapsulationKeyBytes() ([]byte, error) {
 
 // Decapsulate recovers the shared key from a ciphertext produced against
 // this key's encapsulation key, returning it in a new SecureBuffer (the
-// caller owns and must Destroy it). It errors if the ciphertext is invalid,
-// or if this key is destroyed or sealed. The expansion and decapsulation
+// caller owns and must Destroy it). It errors if the ciphertext has the
+// wrong length, or if this key is destroyed or sealed.
+//
+// A nil error is not evidence that the ciphertext was made for this key. A
+// ciphertext of the right length that was corrupted, forged, or encapsulated
+// to another key decapsulates without error to a different, pseudorandom
+// shared key: FIPS 203's implicit rejection, which exists so that the
+// failure cannot be observed. Whether both sides hold the same key is for
+// the protocol to confirm — a MAC or an AEAD under the derived key fails on
+// the first message — not for this error.
+//
+// The expansion and decapsulation
 // run inside [secmem.ScrubErr], and the expanded key is wiped before
 // return; an error wrapping the wipe's failure means the expansion could
 // not be located and is still live on the heap.
@@ -180,7 +194,7 @@ func (k *MLKEM768Key) Decapsulate(ciphertext []byte) (*secmem.SecureBuffer, erro
 	if k.seedBuf.IsSealed() {
 		return nil, fmt.Errorf("secmemcrypto: decapsulate: %w", secmem.ErrSealed)
 	}
-	out, err := secmem.NewEmptyBuffer(mlkem.SharedKeySize)
+	out, err := k.buf.newEmptyBuffer(mlkem.SharedKeySize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate shared key buffer: %w", err)
 	}
@@ -226,13 +240,14 @@ func (k *MLKEM768Key) Decapsulate(ciphertext []byte) (*secmem.SecureBuffer, erro
 // test finds none of m, the shared key or the randomness outside locked
 // memory on either kind of build, so Encapsulate is not refused on a legacy
 // build. It does not require (and has no access to) a decapsulation key,
-// which is why it is a free function rather than a method.
-func Encapsulate(encapsulationKey []byte) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
+// which is why it is a free function rather than a method — and why it takes
+// opts itself: they may carry [BufferOptions] for the shared secret's buffer.
+func Encapsulate(encapsulationKey []byte, opts ...Option) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
 	ek, err := mlkem.NewEncapsulationKey768(encapsulationKey)
 	if err != nil {
 		return nil, nil, fmt.Errorf("secmemcrypto: encapsulate: %w", err)
 	}
-	return encapsulateInto(func() ([]byte, []byte, error) {
+	return encapsulateInto(resolveOptions(opts).buf, func() ([]byte, []byte, error) {
 		shared, ct := ek.Encapsulate()
 		return shared, ct, nil
 	})
@@ -247,8 +262,8 @@ func Encapsulate(encapsulationKey []byte) (ciphertext []byte, sharedSecret *secm
 // the shared key recoverable. The residue test drives this function with
 // crypto/mlkem/mlkemtest's derandomized encapsulation, which reaches the same
 // kemEncaps, so the scan knows m.
-func encapsulateInto(kem func() (shared, ct []byte, err error)) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
-	out, err := secmem.NewEmptyBuffer(mlkem.SharedKeySize)
+func encapsulateInto(b bufferOptions, kem func() (shared, ct []byte, err error)) (ciphertext []byte, sharedSecret *secmem.SecureBuffer, err error) {
+	out, err := b.newEmptyBuffer(mlkem.SharedKeySize)
 	if err != nil {
 		return nil, nil, fmt.Errorf("secmemcrypto: allocate shared key buffer: %w", err)
 	}

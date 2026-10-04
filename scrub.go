@@ -21,7 +21,7 @@ var ErrRuntimeSecretInactive = errors.New(
 //     [ErrRuntimeSecretInactive] when the runtimesecret experiment was not
 //     compiled in. Production entrypoints MUST treat this as fatal: a binary
 //     shipping without the erasure layer on a platform that supports it is a
-//     misbuild (build with `GOEXPERIMENT=runtimesecret`, as the Taskfile does).
+//     misbuild (build with `GOEXPERIMENT=runtimesecret`).
 //   - On unsupported platforms (Windows, Darwin, non-amd64/arm64) the legacy
 //     best-effort scrub layer is the expected posture, so it returns nil.
 //

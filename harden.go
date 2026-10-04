@@ -15,7 +15,10 @@ const (
 	// HardenNoDump indicates PR_SET_DUMPABLE=0 was set — core dumps disabled.
 	HardenNoDump HardenLevel = 1 << iota
 
-	// HardenNoNewPriv indicates PR_SET_NO_NEW_PRIVS=1 was set — no privilege escalation.
+	// HardenNoNewPriv indicates PR_SET_NO_NEW_PRIVS=1 was set on every thread
+	// of the process — no privilege escalation through a child it starts. It
+	// is not reported by a binary that links cgo, where only the calling
+	// thread can be reached; see [HardenProcess].
 	HardenNoNewPriv
 
 	// HardenSeccomp indicates a seccomp BPF filter was loaded (reserved; not yet implemented).
@@ -40,7 +43,13 @@ const (
 // acquisition. Applied per platform:
 //
 //   - Linux: PR_SET_DUMPABLE=0 (no core dumps, no ptrace attach by
-//     non-privileged peers) and PR_SET_NO_NEW_PRIVS=1.
+//     non-privileged peers) and PR_SET_NO_NEW_PRIVS=1. no_new_privs is a
+//     per-thread attribute, so it is set on every thread of the process. A
+//     binary that links cgo cannot do that (the Go runtime does not own
+//     threads C code started): there it is set on the calling thread only,
+//     which covers the threads and children that thread later creates but
+//     not a child started from another thread, and [HardenNoNewPriv] is NOT
+//     in the returned level. Check the level rather than assuming it.
 //   - Windows: strict handle checks and Arbitrary Code Guard via
 //     SetProcessMitigationPolicy. Both are IRREVERSIBLE for the process
 //     lifetime — that is their value. ACG is incompatible with anything that
@@ -58,9 +67,18 @@ func HardenProcess(_ context.Context) (HardenLevel, error) {
 //
 // It is the blunt backstop to the surgical per-mapping protections
 // (MADV_DONTDUMP, memfd_secret): those cover only secmem's own mappings and
-// can silently not apply; RLIMIT_CORE=0 stops the entire process from
-// dumping. Setting the hard limit is deliberate and IRREVERSIBLE without
-// privilege — a compromised process cannot quietly re-enable dumps.
+// can silently not apply; RLIMIT_CORE=0 stops the kernel from writing a core
+// FILE for the process. Setting the hard limit is deliberate and IRREVERSIBLE
+// without privilege — a compromised process cannot quietly re-enable dumps.
+//
+// It does not stop a dump that is piped to a program. When
+// /proc/sys/kernel/core_pattern begins with '|' — the default wherever
+// systemd-coredump or apport is installed, which is most desktop and server
+// distributions — Linux ignores RLIMIT_CORE and streams the process image to
+// that handler (core(5)); whether it is stored is then the handler's
+// decision. systemd-coredump declines when the limit is 0, but that is its
+// policy, not the kernel's. Only clearing the dumpable flag stops a piped
+// dump, and [HardenProcess] does that: call both.
 //
 // Never called implicitly: changing a process rlimit is the application's
 // decision, not the library's. On Windows there is no core-dump rlimit and

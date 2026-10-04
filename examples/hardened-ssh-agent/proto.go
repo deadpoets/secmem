@@ -11,6 +11,12 @@
 //	that outlives the message is the one written directly into a
 //	SecureBuffer.
 //
+// The message buffer itself is an ordinary heap slice, and for an add it
+// holds the key from the moment the bytes arrive until that wipe: through
+// parsing, and through any wait for the keyring lock behind another
+// connection's Argon2 derivation. The keys are never AT REST on the heap;
+// in transit they are in this one buffer.
+//
 // This is why the file does NOT use ssh.Unmarshal: unmarshalling into a
 // struct with string fields would scatter untracked copies of the private
 // key across the Go heap, defeating the wipe.
@@ -21,6 +27,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
+
+	"github.com/deadpoets/secmem"
 )
 
 // Agent protocol message numbers (draft-miller-ssh-agent §5.1).
@@ -69,7 +77,9 @@ var (
 // OWNERSHIP: the returned slice may contain private key material (for
 // ADD_IDENTITY it always does). The caller MUST secmem.SecureWipe it when
 // done — the connection loop in main.go does this unconditionally for
-// every message, so parsers below never need to.
+// every message, so parsers below never need to. A message that fails to
+// arrive in full is never returned, so it is wiped here: a client that
+// stalls or disconnects mid-add has already delivered part of a key.
 func readMessage(r io.Reader) ([]byte, error) {
 	var lenBuf [4]byte
 	if _, err := io.ReadFull(r, lenBuf[:]); err != nil {
@@ -84,6 +94,7 @@ func readMessage(r io.Reader) ([]byte, error) {
 	}
 	msg := make([]byte, n)
 	if _, err := io.ReadFull(r, msg); err != nil {
+		secmem.SecureWipe(msg)
 		return nil, fmt.Errorf("agent: reading %d-byte message: %w", n, err)
 	}
 	return msg, nil

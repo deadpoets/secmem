@@ -1,11 +1,12 @@
 # hardened-ssh-agent
 
-A working SSH agent, about a thousand lines, whose private keys **never
-exist on the Go heap** — and are unreadable by a stray read inside this
+A working SSH agent, about a thousand lines, whose private keys are **never
+at rest on the Go heap** — and are unreadable by a stray read inside this
 process, or by a passive reader of its memory where the platform allows,
-except during the microseconds of an actual signature. That holds for every
-identity it accepts by default; ECDSA is the one place it needs a build
-flag or an explicit opt-in, set out below. The limits are in the
+except during the microseconds of an actual signature. The wire message an
+`ssh-add` arrives in is one heap buffer, wiped after dispatch. That holds
+for every identity it accepts by default; ECDSA is the one place it needs a
+build flag or an explicit opt-in, set out below. The limits are in the
 threat-model section.
 
 It speaks the standard agent protocol over `SSH_AUTH_SOCK`. Real `ssh`,
@@ -13,8 +14,8 @@ It speaks the standard agent protocol over `SSH_AUTH_SOCK`. Real `ssh`,
 
 ```console
 $ go run . &
-SSH_AUTH_SOCK=/run/user/1000/secmem-agent-4242/agent.sock; export SSH_AUTH_SOCK;
-$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent-4242/agent.sock
+SSH_AUTH_SOCK=/run/user/1000/secmem-agent-2893461072/agent.sock; export SSH_AUTH_SOCK;
+$ export SSH_AUTH_SOCK=/run/user/1000/secmem-agent-2893461072/agent.sock
 $ ssh-add ~/.ssh/id_ed25519
 Identity added: /home/you/.ssh/id_ed25519 (you@laptop)
 $ ssh-add -T ~/.ssh/id_ed25519.pub      # OpenSSH's own sign-and-verify test
@@ -69,7 +70,11 @@ storage *is* [secmem](../../README.md).
 
 An `ssh-add` message arrives carrying a private key. `proto.go` parses it
 with subslice-only readers — no copies — so a single `secmem.SecureWipe` of
-the message buffer at the end of the request destroys every transient.
+the message buffer at the end of the request destroys every transient (a
+message that never arrives in full is wiped where the read fails). That
+buffer is ordinary heap memory: an add's key is in it from arrival until
+the wipe, which includes any wait for the keyring lock behind another
+connection's Argon2 derivation.
 Before that wipe, the seed/scalar has been copied into a `SecureBuffer`
 (off-heap, mlocked, guard-paged, canaried, dump-excluded), a
 `secmem-crypto` signer wraps it, and the buffer is **sealed**: `PROT_NONE`,
@@ -104,7 +109,9 @@ accept loop serves at most 64 connections at once and gives each request
 - **Lifetime enforcement**: a `-t`-constrained key is *destroyed* — its
   SecureBuffer wiped and unmapped, asserted via `IsDestroyed()` — at the
   deadline, and signing with it then fails. Verified end-to-end against
-  real `ssh-add -t`.
+  real `ssh-add -t`. The deadline is a wall-clock one: with the clock
+  stood in for one that slept eight hours through a one-hour lifetime, the
+  first request after resume destroys the key instead of signing.
 - **Fail-closed constraints**: a `-c` (confirm) add is refused rather than
   stored without the protection; the spec requires failing an add whose
   constraints the agent can't honor, and we do.
@@ -189,8 +196,19 @@ refused a derivation time later, and a legitimate `UNLOCK` queues behind
 whatever `UNLOCK`s arrived before it, at most 64 of them. `keyring.go`'s
 `Unlock` comment gives the reasoning and the alternative it rejected.
 
+**A `-t` lifetime across a suspend** is enforced on the wall clock, but
+not at the deadline itself. The timer that destroys an expired key runs on
+Go's monotonic clock, which does not advance while the machine is asleep,
+so a key whose deadline passed during a suspend is still in memory (sealed)
+when the machine wakes, and stays there until the next list request, or
+sign request on an unlocked agent, sweeps it or the late timer fires — up
+to the time spent asleep. It cannot sign in that interval: every `Sign`
+checks the deadline first. And a
+wall clock can be set: whoever can move the system clock back extends a
+lifetime, and a step forward ends one early.
+
 ECDSA identities accepted through `-allow-heap-transients` fall outside the
-"never on the heap" claim: each signature leaves unwiped copies of the
+"never at rest on the heap" claim: each signature leaves unwiped copies of the
 scalar on the heap, one of them cached until the collector evicts it. See
 the "ECDSA identities" section above and `secmem-crypto`'s README.
 

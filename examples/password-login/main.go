@@ -36,6 +36,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"unicode/utf8"
 
 	"golang.org/x/term"
 
@@ -60,6 +61,11 @@ const (
 // (see login), a level this program never enables — the reason is for a
 // developer with the source, not for the person typing the password.
 var errLoginFailed = errors.New("login failed")
+
+// errUserExists is register's refusal of a name that already has a record.
+// Unlike a login, a registration cannot hide whether the name is taken:
+// accepting it would mean replacing the account.
+var errUserExists = errors.New("user already exists")
 
 // dummySalt and dummyStored stand in for the record of a user who does not
 // exist, so that login runs the same Argon2id derivation against them that it
@@ -146,8 +152,22 @@ func register(user string, password *secmem.SecureBuffer) error {
 	if err != nil {
 		return err
 	}
+	// O_EXCL: the record is created, never replaced. Writing over an
+	// existing one would let whoever can register set a new password on
+	// someone else's account.
 	//nolint:gosec // G703: user is validated to a bare name (no path separators) in run().
-	if err := os.WriteFile(dbPath(user), []byte(record), 0o600); err != nil {
+	f, err := os.OpenFile(dbPath(user), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+	if errors.Is(err, fs.ErrExist) {
+		return fmt.Errorf("%w: %s", errUserExists, user)
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := f.WriteString(record); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
 		return err
 	}
 	fmt.Println("registered", user)
@@ -236,6 +256,13 @@ func loadRecord(user string) (salt, stored []byte, known bool, err error) {
 // plaintext outlives the program's care by however long the GC takes. Reading
 // straight into a SecureBuffer keeps it in memory this program can erase, which
 // is the whole claim the example is making.
+//
+// Raw mode also means the terminal edits nothing, so the keys a person uses
+// to fix a typo are handled here: backspace removes the last character (all
+// of its bytes, when it is not ASCII), ^U clears the line and ^D ends it.
+// Any other control byte — ^W, a tab, the escape sequence of an arrow key —
+// is refused: stored, it would be a password the user did not type and
+// could not type again.
 func readPassword(f *os.File) (*secmem.SecureBuffer, error) {
 	fd := int(f.Fd())
 	if term.IsTerminal(fd) {
@@ -276,11 +303,24 @@ readLoop:
 		case c == 0x03: // ^C, which raw mode delivers to us instead of the kernel
 			_ = buf.Destroy()
 			return nil, errors.New("interrupted")
+		case c == 0x04: // ^D: end of input, as a terminal's line mode treats it
+			break readLoop
 		case c == 0x7f || c == 0x08: // backspace
-			if n > 0 {
-				n--
-				_ = buf.SetByteAt(n, 0)
+			if n, err = eraseLast(buf, n); err != nil {
+				_ = buf.Destroy()
+				return nil, err
 			}
+		case c == 0x15: // ^U: start over
+			for n > 0 {
+				n--
+				if err := buf.SetByteAt(n, 0); err != nil {
+					_ = buf.Destroy()
+					return nil, err
+				}
+			}
+		case c < 0x20:
+			_ = buf.Destroy()
+			return nil, errors.New("unsupported key in the password (backspace, ^U and ^D are the editing keys)")
 		case n == maxPasswordLen:
 			_ = buf.Destroy()
 			return nil, fmt.Errorf("password longer than %d bytes", maxPasswordLen)
@@ -297,6 +337,33 @@ readLoop:
 		return nil, err
 	}
 	return buf, nil
+}
+
+// eraseLast removes the last character of the n bytes typed so far, zeroing
+// what it removes, and returns the new length. A character is one byte or,
+// in UTF-8, a lead byte and its continuation bytes; removing only the last
+// byte of "é" would leave half a character in the password. Continuation
+// bytes with no lead byte before them (input that is not UTF-8) are removed
+// on their own, and the ASCII byte before them is left alone.
+func eraseLast(buf *secmem.SecureBuffer, n int) (int, error) {
+	for removed := 0; n > 0 && removed < utf8.UTFMax; removed++ {
+		c, err := buf.ByteAt(n - 1)
+		if err != nil {
+			return n, err
+		}
+		continuation := c&0xC0 == 0x80
+		if removed > 0 && c < 0x80 {
+			break // the ASCII character before a run of stray continuation bytes
+		}
+		n--
+		if err := buf.SetByteAt(n, 0); err != nil {
+			return n, err
+		}
+		if !continuation {
+			break // an ASCII byte or a lead byte: the character is gone
+		}
+	}
+	return n, nil
 }
 
 func dbPath(user string) string {

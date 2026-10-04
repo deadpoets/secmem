@@ -9,7 +9,7 @@ package secmem
 // another buffer's ordinal; it is not an address and encodes nothing about
 // memory layout or contents. A nil or never-registered buffer returns 0.
 func (b *SecureBuffer) LockOrder() uint64 {
-	if b == nil {
+	if b == nil || b.bufferState == nil {
 		return 0
 	}
 	return b.janitorKey

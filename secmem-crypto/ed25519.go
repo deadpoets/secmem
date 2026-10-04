@@ -1,41 +1,6 @@
-// Package secmemcrypto adapts secmem's hardened memory primitives to the
-// standard library's crypto interfaces. Key material is held in a
-// [secmem.SecureBuffer] between operations; during an operation it is
-// either kept there and on the stack of a Scrub window (Ed25519 signing,
-// X25519, HKDF and HMAC over SHA-2 or SHA-3, the parsers, the KDFs and
-// AEAD helpers that write in place) or copied through the Go heap by a
-// standard-library primitive that has no in-place API, with every copy this
-// module can reach wiped before return and every copy it cannot named in the
-// type's documentation (RSA, ECDSA, ML-KEM). The module README classifies
-// every entry point.
-//
-// Signers: [Ed25519Signer] (RFC 8032, signs in place), [ECDSASigner] and
-// [RSASigner] (custody at rest; each Sign re-materialises the key through
-// the standard library and wipes what it can reach — see their docs).
-// Because the copies it cannot reach are never erased on a build without
-// GOEXPERIMENT=runtimesecret, the ECDSA and RSA constructors and the
-// parsers refuse those keys there with [ErrHeapTransients] unless the caller
-// passes [AllowHeapTransients]. Ed25519 is never refused.
-// [AsSSH] adapts any of them to an ssh.Signer without ever offering SHA-1
-// ssh-rsa, and [Ed25519Signer.MarshalOpenSSHPrivateKey] exports into a
-// buffer.
-//
-// Derivation into a buffer: [HKDFInto] and [HMACInto] (in place over SHA-2
-// and SHA-3; any other hash is gated like RSA and ECDSA), and Argon2 on an
-// in-tree fork of golang.org/x/crypto/argon2 that wipes its working state
-// ([Argon2Into], [Argon2Workspace], [Argon2Pool]).
-//
-// AEAD: [OpenInto] and [SealFrom] keep the plaintext in locked memory, and
-// [WithAESGCM] lends AES-GCM whose key schedule is wiped when the callback
-// returns. Key agreement: [X25519Key]; ML-KEM-768 via [MLKEM768Key], refused
-// on a legacy build like RSA and ECDSA because each decapsulation leaves that
-// ciphertext's shared key on the heap, and [Encapsulate], which is not.
-// Passphrases:
-// [GenerateDicewarePassphrase].
-//
-// Every type states in its own documentation what it does not cover — the
-// heap transients the standard library makes that no wipe here can reach.
-// The module README and THREAT-MODEL.md in the repository root collect them.
+// ed25519.go provides Ed25519Signer, a crypto.Signer whose seed lives in a
+// SecureBuffer and which signs in place (ed25519direct.go).
+
 package secmemcrypto
 
 import (
@@ -64,13 +29,23 @@ import (
 type Ed25519Signer struct {
 	seedBuf *secmem.SecureBuffer
 	pubKey  ed25519.PublicKey
+	buf     bufferOptions // for the buffers the Marshal forms allocate
 }
 
 // NewEd25519Signer wraps an existing 32-byte Ed25519 seed already held in a
 // SecureBuffer. On success, the Ed25519Signer owns seedBuf — call [Ed25519Signer.Destroy]
 // to release it, not seedBuf.Destroy directly. On failure, ownership is not
 // transferred; the caller is still responsible for seedBuf.
-func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
+//
+// The constructor allocates nothing, but the signer keeps opts'
+// [BufferOptions] for the buffers its Marshal methods allocate.
+func NewEd25519Signer(seedBuf *secmem.SecureBuffer, opts ...Option) (*Ed25519Signer, error) {
+	return newEd25519Signer(seedBuf, resolveOptions(opts))
+}
+
+// newEd25519Signer is NewEd25519Signer with its options already resolved,
+// shared with the generator and the parsers.
+func newEd25519Signer(seedBuf *secmem.SecureBuffer, o options) (*Ed25519Signer, error) {
 	if seedBuf == nil {
 		return nil, errors.New("secmemcrypto: nil SecureBuffer")
 	}
@@ -93,7 +68,7 @@ func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
 		return nil, fmt.Errorf("secmemcrypto: derive public key: %w", err)
 	}
 
-	return &Ed25519Signer{seedBuf: seedBuf, pubKey: pub}, nil
+	return &Ed25519Signer{seedBuf: seedBuf, pubKey: pub, buf: o.buf}, nil
 }
 
 // GenerateEd25519Signer generates a fresh Ed25519 seed directly into a new
@@ -103,9 +78,11 @@ func NewEd25519Signer(seedBuf *secmem.SecureBuffer) (*Ed25519Signer, error) {
 // that replaces rand.Reader with a buffering reader routes seed bytes
 // through that reader's own memory, outside this library's control.
 //
-// To persist the generated key, use [Ed25519Signer.WithSeed].
-func GenerateEd25519Signer() (*Ed25519Signer, error) {
-	seedBuf, err := secmem.NewEmptyBuffer(ed25519.SeedSize)
+// To persist the generated key, use [Ed25519Signer.WithSeed]. opts may carry
+// [BufferOptions] for the seed's buffer.
+func GenerateEd25519Signer(opts ...Option) (*Ed25519Signer, error) {
+	o := resolveOptions(opts)
+	seedBuf, err := o.buf.newEmptyBuffer(ed25519.SeedSize)
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: allocate seed buffer: %w", err)
 	}
@@ -118,7 +95,7 @@ func GenerateEd25519Signer() (*Ed25519Signer, error) {
 		return nil, fmt.Errorf("secmemcrypto: generate seed: %w", err)
 	}
 
-	signer, err := NewEd25519Signer(seedBuf)
+	signer, err := newEd25519Signer(seedBuf, o)
 	if err != nil {
 		_ = seedBuf.Destroy()
 		return nil, err

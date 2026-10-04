@@ -27,16 +27,20 @@
 // Allocates 32768 bytes of local frame and zeros it, matching the amd64 frame
 // size exactly so the two platforms reserve and burn the same band.
 //
-// Two jobs, both load-bearing, and the order they happen in is the whole point
-// (see the "why the wipe runs twice" note in scrub_legacy.go):
+// Two jobs, both load-bearing, and the order they happen in is the whole point.
+// scrub_legacy.go ("Why the wipe runs twice", "Panics and Goexit") is the
+// account of record, including what this does NOT reach; in short:
 //
 //   1. Called on ENTRY, the large frame forces any stack growth to happen
-//      BEFORE fn writes a secret. A goroutine starts on 8 KiB, so a 32 KiB
-//      frame triggers morestack; getting that copy out of the way early means
-//      the abandoned segment holds nothing sensitive.
-//   2. Called on EXIT (deferred), it zeroes the band fn's call tree used. Step
-//      1 guarantees no growth happened in between, so this runs on the SAME
-//      stack the residue is on rather than on a fresh copy.
+//      BEFORE fn writes a secret. A goroutine starts on a small stack, so a
+//      32 KiB frame triggers morestack. That copy leaves the caller's stack
+//      as it was on entry behind on the abandoned segment, which this cannot
+//      reach.
+//   2. Called on EXIT, directly and after fn's frames are dead (not from a
+//      deferred call, which would run below them on a panic), it zeroes the
+//      band fn's call tree used. Step 1 guarantees no growth happened in
+//      between, so this runs on the SAME stack the residue is on rather than
+//      on a fresh copy.
 //
 // NOT NOSPLIT, deliberately: the stack-growth check at entry is the mechanism
 // for job 1, and marking this NOSPLIT would both defeat that and blow the

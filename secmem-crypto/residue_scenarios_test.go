@@ -683,7 +683,7 @@ var residueScenarios = []residueScenario{
 				return nil, nil, err
 			}
 			op := func() error {
-				_, ss, err := encapsulateInto(func() (shared, ct []byte, err error) {
+				_, ss, err := encapsulateInto(nil, func() (shared, ct []byte, err error) {
 					err = buf.WithBytesErr(func(m []byte) error {
 						var e error
 						shared, ct, e = mlkemtest.Encapsulate768(ek, m)

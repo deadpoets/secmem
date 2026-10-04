@@ -9,11 +9,14 @@ import (
 // destroyed. It is the canonical sentinel for the destroyed/wiped state.
 var ErrDestroyed = errors.New("secmem: secure buffer has been destroyed")
 
-// ErrWiped is returned by every mutating method after [WipeAllSecrets] has
-// emergency-wiped the object. The secret is gone and the object is dead: it is
-// deliberately NOT unmapped (a late read returns zeros rather than faulting),
-// but it must not be reused, because anything written afterwards would be a new
-// live secret that the emergency wipe already reported as handled.
+// ErrWiped is returned by every borrow, read and mutation after
+// [WipeAllSecrets] has emergency-wiped the object. The secret is gone and the
+// object is dead. The region is deliberately NOT unmapped, so a slice a caller
+// wrongly kept from an earlier callback does not fault, but nothing new is
+// handed out: a borrow would give the caller zeros to use as a key, and a write
+// would be a new live secret that the emergency wipe already reported as
+// handled. Length and state queries (Len, IsDestroyed, Capabilities) and
+// teardown (Destroy, [ArenaSlot.Release]) still work.
 //
 // It wraps [ErrDestroyed], so existing errors.Is(err, ErrDestroyed) checks keep
 // working; test for ErrWiped only when you need to tell "the process

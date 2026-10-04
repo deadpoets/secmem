@@ -2,10 +2,13 @@ package argon2
 
 import (
 	"bytes"
+	"encoding/binary"
 	"encoding/hex"
+	"runtime"
 	"testing"
 
 	upstream "golang.org/x/crypto/argon2"
+	"golang.org/x/crypto/blake2b"
 )
 
 // RFC 9106 §5 test vectors. All three use t=3, m=32 KiB, p=4, tag length
@@ -106,19 +109,112 @@ func TestEmptyInputs(t *testing.T) {
 	}
 }
 
-// TestLongInputsSpill pins the path where the H0 input does not fit the
-// workspace reserve and is hashed from a per-call heap buffer: the output
-// must still match upstream.
-func TestLongInputsSpill(t *testing.T) {
-	password := bytes.Repeat([]byte("p"), initInputReserve+100)
+// TestLongInputs pins that the length of the H0 input is not a special
+// case: passwords that end the input one byte short of, exactly on and one
+// byte past a BLAKE2b block boundary, and ones far longer than any block,
+// still match upstream.
+func TestLongInputs(t *testing.T) {
 	salt := []byte("0123456789abcdef")
-	ws := NewWorkspace(8, 1)
-	defer ws.Wipe()
-	got := make([]byte, 32)
-	Derive(got, ModeID, password, salt, nil, nil, 1, ws)
-	if want := upstream.IDKey(password, salt, 1, 8, 1, 32); !bytes.Equal(got, want) {
-		t.Fatalf("fork %x, upstream %x", got, want)
+	// The H0 input is 40 bytes of parameters and length prefixes, then the
+	// password and the 16-byte salt.
+	const fixed = 40 + 16
+	for _, total := range []int{fixed, 127, 128, 129, 255, 256, 257, 4095, 4096, 4097, 4196, 8192, 1<<16 + 3} {
+		password := bytes.Repeat([]byte("p"), total-fixed)
+		ws := NewWorkspace(8, 1)
+		got := make([]byte, 32)
+		Derive(got, ModeID, password, salt, nil, nil, 1, ws)
+		ws.Wipe()
+		if want := upstream.IDKey(password, salt, 1, 8, 1, 32); !bytes.Equal(got, want) {
+			t.Errorf("H0 input of %d bytes: fork %x, upstream %x", total, got, want)
+		}
 	}
+}
+
+// h0Reference is H0 as RFC 9106 defines it, computed the plain way: the
+// whole input assembled and hashed with x/crypto's BLAKE2b-512.
+func h0Reference(password, salt, secret, data []byte, time, memory uint32, threads uint8, keyLen uint32, mode Mode) [blake2b.Size]byte {
+	var in []byte
+	for _, v := range []uint32{uint32(threads), keyLen, memory, time, Version, uint32(mode)} {
+		in = binary.LittleEndian.AppendUint32(in, v)
+	}
+	for _, part := range [][]byte{password, salt, secret, data} {
+		in = binary.LittleEndian.AppendUint32(in, uint32(len(part)))
+		in = append(in, part...)
+	}
+	return blake2b.Sum512(in)
+}
+
+// TestH0MatchesBLAKE2b covers what the upstream differential cannot: the
+// secret key and associated data, which x/crypto's API does not take. Derive
+// leaves H0 in the workspace until Wipe, so it is compared directly with
+// BLAKE2b-512 of the assembled input, for part lengths that put every
+// boundary between parts on either side of a block boundary.
+func TestH0MatchesBLAKE2b(t *testing.T) {
+	fill := func(n int, b byte) []byte { return bytes.Repeat([]byte{b}, n) }
+	for _, c := range []struct{ pw, salt, secret, data int }{
+		{0, 0, 0, 0},
+		{32, 16, 8, 12},
+		{88, 0, 0, 0},     // exactly one block
+		{87, 0, 0, 1},     // one byte into the second
+		{84, 4, 0, 0},     // a length prefix ends the block
+		{85, 3, 0, 0},     // a length prefix straddles it
+		{216, 0, 0, 0},    // exactly two blocks
+		{100, 16, 128, 0}, // a part exactly one block long
+		{1, 1, 1, 8192},
+		{5000, 16, 32, 5000},
+		{0, 16, 4096, 0},
+	} {
+		password, salt := fill(c.pw, 0x01), fill(c.salt, 0x02)
+		secret, data := fill(c.secret, 0x03), fill(c.data, 0x04)
+		for _, mode := range []Mode{ModeD, ModeI, ModeID} {
+			ws := NewWorkspace(8, 1)
+			Derive(make([]byte, 32), mode, password, salt, secret, data, 1, ws)
+			want := h0Reference(password, salt, secret, data, 1, 8, 1, 32, mode)
+			if !bytes.Equal(ws.h0[:blake2b.Size], want[:]) {
+				t.Errorf("mode %d %+v: H0 %x, BLAKE2b-512 of the input %x", mode, c, ws.h0[:blake2b.Size], want)
+			}
+			ws.Wipe()
+		}
+	}
+}
+
+// TestLongInputsStayInWorkspace pins that no input, however long, is copied
+// to the heap on its way into H0: a derivation over a megabyte of associated
+// data must allocate nowhere near the size of that data. (What every
+// derivation allocates is the worker goroutines' bookkeeping; their stacks are
+// not heap and are not counted.)
+//
+// TotalAlloc is process-wide, so the delta also counts whatever the runtime
+// and other goroutines allocate meanwhile: a fixed slack of a few KiB over
+// the short derivation failed in CI on exactly that noise (5368 bytes against
+// 272). The bound is therefore a fraction of the input, taken as the least of
+// several runs. A copy of the input costs at least its length, four times the
+// bound, on every run; noise is neither that large nor that regular.
+func TestLongInputsStayInWorkspace(t *testing.T) {
+	password := []byte("correct horse battery staple")
+	salt := []byte("0123456789abcdef")
+	secret := []byte("pepper")
+	ws := NewWorkspace(8, 1)
+	out := make([]byte, 32)
+	allocated := func(data []byte) uint64 {
+		var before, after runtime.MemStats
+		runtime.ReadMemStats(&before)
+		Derive(out, ModeID, password, salt, secret, data, 1, ws)
+		runtime.ReadMemStats(&after)
+		ws.Wipe()
+		return after.TotalAlloc - before.TotalAlloc
+	}
+	long := bytes.Repeat([]byte{0x04}, 1<<20)
+	allocated(nil) // warm up: the first goroutine start allocates more than later ones
+	short := allocated([]byte("x"))
+	least := allocated(long)
+	for range 4 {
+		least = min(least, allocated(long))
+	}
+	if bound := uint64(len(long) / 4); least > bound {
+		t.Fatalf("a derivation over %d bytes of associated data allocated at least %d bytes of heap on every run (bound %d; %d for a short one): the input was copied out of the workspace", len(long), least, bound, short)
+	}
+	t.Logf("heap allocated: %d bytes for a short input, least %d over five runs for %d bytes of input", short, least, len(long))
 }
 
 // TestWorkspaceReuse pins that a wiped Workspace derives correctly again.

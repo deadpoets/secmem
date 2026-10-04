@@ -13,11 +13,12 @@ import (
 // os.Process.Signal on Windows implements only os.Kill and rejects os.Interrupt
 // and SIGTERM, and the console event that triggered the handler has already been
 // consumed — so there is nothing to re-deliver. Before this, the failure was
-// swallowed and the process ran on with every secret wiped: reads still succeed
-// and return zeros, so an application that treats the signal as "begin shutdown"
-// could sign with an all-zero key and be told it worked. That is the one state
-// WipeAllSecrets does not support, since its leave-mapped design is justified
-// entirely by imminent termination.
+// swallowed and the process ran on with every secret wiped. At the time reads
+// still succeeded and returned zeros, so an application that treated the signal
+// as "begin shutdown" could sign with an all-zero key and be told it worked
+// (borrows now return ErrWiped). That is the one state WipeAllSecrets is not
+// meant for, since its leave-mapped design is justified entirely by imminent
+// termination.
 //
 // The hooks are injected because a test that really re-raised would kill the
 // test binary and one that really exited would take the suite with it. Live

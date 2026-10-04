@@ -17,11 +17,13 @@ secmem is BDFL-maintained. **Contributed PRs require an approving review from
 [@deadpoets](https://github.com/deadpoets)** — enforced by `CODEOWNERS` plus
 branch protection, not by convention.
 
-Nothing reaches `main` except through a PR that passes every required check —
-currently 20 of them, covering linux/macOS/Windows, arm64, 386,
-`GOEXPERIMENT=runtimesecret`, the no-heap-escape gates, cross-compilation, API
-compatibility and secret scanning — on a branch that also requires signed
-commits and linear history.
+Nothing reaches `main` except through a PR that passes every required check,
+on a branch that also requires signed commits and linear history. The required
+set covers linux/macOS/Windows, arm64, 386, `GOEXPERIMENT=runtimesecret`, the
+no-heap-escape gates, the key residue scans, cross-compilation, the examples,
+the API-compatibility report and secret scanning. The list itself lives in the
+repository's branch protection settings and is not repeated here, where a
+count went stale; not every job in `ci.yml` is on it.
 
 This is a single-maintainer project, and GitHub does not permit self-approval,
 so the maintainer's own PRs are gated by that matrix rather than by a second

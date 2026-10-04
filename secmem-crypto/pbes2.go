@@ -21,6 +21,7 @@
 // SHA-1 that openssl pkcs8 wrote by default before 1.1.0 — and PBES2 over
 // DES, 3DES or RC2. The remedy for all of those is one openssl command,
 // which the error names.
+
 package secmemcrypto
 
 import (
@@ -225,7 +226,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	case oidIsRetiredPBE(oid):
 		return f, fmt.Errorf("%w: %w", ErrUnsupportedKey, errRetiredPBE)
 	default:
-		return f, fmt.Errorf("%w: PKCS#8 encryption algorithm %v", ErrUnsupportedKey, oid)
+		return f, fmt.Errorf("%w: PKCS#8 encryption algorithm %s", ErrUnsupportedKey, oidForError(oid))
 	}
 	var params, kdf, scheme cryptobyte.String
 	if !alg.ReadASN1(&params, cbasn1.SEQUENCE) || !alg.Empty() ||
@@ -250,7 +251,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	case oid.Equal(oidDESEDE3CBC), oid.Equal(oidRC2CBC), oid.Equal(oidDESCBC):
 		return f, fmt.Errorf("%w: %w", ErrUnsupportedKey, errRetiredPBES2Cipher)
 	default:
-		return f, fmt.Errorf("%w: PBES2 scheme %v", ErrUnsupportedKey, oid)
+		return f, fmt.Errorf("%w: PBES2 scheme %s", ErrUnsupportedKey, oidForError(oid))
 	}
 	var iv cryptobyte.String
 	if !scheme.ReadASN1(&iv, cbasn1.OCTET_STRING) || !scheme.Empty() || len(iv) != opensshAESBlock {
@@ -266,7 +267,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	case oid.Equal(oidScrypt):
 		f.scrypt = true
 	default:
-		return f, fmt.Errorf("%w: PBES2 KDF %v", ErrUnsupportedKey, oid)
+		return f, fmt.Errorf("%w: PBES2 KDF %s", ErrUnsupportedKey, oidForError(oid))
 	}
 	var kdfParams cryptobyte.String
 	if !kdf.ReadASN1(&kdfParams, cbasn1.SEQUENCE) || !kdf.Empty() {
@@ -343,7 +344,7 @@ func readPBKDF2Params(f *pbes2File, kdfParams cryptobyte.String) error {
 		}
 		f.prf = prfByOID(oid)
 		if f.prf == hashNone {
-			return fmt.Errorf("%w: PBKDF2 PRF %v", ErrUnsupportedKey, oid)
+			return fmt.Errorf("%w: PBKDF2 PRF %s", ErrUnsupportedKey, oidForError(oid))
 		}
 	}
 	if !kdfParams.Empty() {
@@ -506,12 +507,12 @@ func oidIsRetiredPBE(oid asn1.ObjectIdentifier) bool {
 // is this function's failure. As in opensshCrypt, what the hashes' and
 // AES's assembly leave in the vector registers is the caller's Scrub
 // window's to clear.
-func pbes2Decrypt(dst []byte, f pbes2File, passphrase []byte) error {
+func pbes2Decrypt(b bufferOptions, dst []byte, f pbes2File, passphrase []byte) error {
 	kdfRegion := pbkdf2RegionSize(f.prf, len(f.salt))
 	if f.scrypt {
 		kdfRegion = scryptRegionSize(len(f.salt), f.n, f.r, f.p)
 	}
-	return withScratch(kdfRegion+f.keyLen+cipherScratch, func(mem []byte) (err error) {
+	return withScratch(b, kdfRegion+f.keyLen+cipherScratch, func(mem []byte) (err error) {
 		// The KDF's region leads: scrypt views it as 32-bit words, and the
 		// start of the mapping is what is known to be aligned. Its capacity
 		// stops where the key starts, so a KDF that slices past the region
@@ -584,12 +585,12 @@ func parsePKCS8Encrypted(blob *secmem.SecureBuffer, passphrase []byte, o options
 		if err != nil {
 			return err
 		}
-		plain, err = secmem.NewEmptyBuffer(len(f.ct))
+		plain, err = o.buf.newEmptyBuffer(len(f.ct))
 		if err != nil {
 			return fmt.Errorf("allocate key buffer: %w", err)
 		}
 		return plain.WithBytesErr(func(p []byte) error {
-			if err := pbes2Decrypt(p, f, passphrase); err != nil {
+			if err := pbes2Decrypt(o.buf, p, f, passphrase); err != nil {
 				// Not a verdict on the file: the parameters were checked
 				// above, so this is the workspace failing to lock or the
 				// AES schedule wipe failing closed, which the caller must

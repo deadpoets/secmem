@@ -7,6 +7,7 @@
 // container is now written in place by openssh_wire.go, so the only heap
 // objects a marshal creates hold public data or ciphertext — and, for the
 // encrypted form, the AES key schedule, which aeswipe.go clears.
+
 package secmemcrypto
 
 import (
@@ -183,7 +184,7 @@ func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds
 	total := len(opensshMagic) + sshStrLen(len(cipherName)) + sshStrLen(len(kdfName)) +
 		sshStrLen(kdfOptsLen) + 4 + sshStrLen(pubBlobLen) + sshStrLen(privPadded)
 
-	cont, err := secmem.NewEmptyBuffer(total)
+	cont, err := s.buf.newEmptyBuffer(total)
 	if err != nil {
 		return nil, fmt.Errorf("allocate container buffer: %w", err)
 	}
@@ -221,22 +222,27 @@ func (s *Ed25519Signer) marshalOpenSSH(comment string, passphrase []byte, rounds
 				return nil
 			}
 			block := c[start : start+privPadded]
-			return opensshCrypt(block, block, nil, passphrase, kdfOpts[4:4+opensshSaltLen], rounds, cipherAES256CTR, false)
+			return opensshCrypt(s.buf, block, block, nil, passphrase, kdfOpts[4:4+opensshSaltLen], rounds, cipherAES256CTR, false)
 		})
 	})
 	if err != nil {
 		return nil, err
 	}
 
-	out, err := secmem.NewEmptyBuffer(pemLen(opensshPEMType, total))
+	out, err := s.buf.newEmptyBuffer(pemLen(opensshPEMType, total))
 	if err != nil {
 		return nil, fmt.Errorf("allocate openssh private key buffer: %w", err)
 	}
-	if err := borrowOrdered(cont, out, func(c, o []byte) error {
-		if n := pemEncode(o, opensshPEMType, c); n != len(o) {
-			return errors.New("internal: PEM layout mismatch")
-		}
-		return nil
+	// In a window of its own: without a passphrase the container still holds
+	// the seed in clear, and the base64 pass moves it through registers and
+	// the encoder's frames like any other read of it.
+	if err := secmem.ScrubErr(func() error {
+		return borrowOrdered(cont, out, func(c, o []byte) error {
+			if n := pemEncode(o, opensshPEMType, c); n != len(o) {
+				return errors.New("internal: PEM layout mismatch")
+			}
+			return nil
+		})
 	}); err != nil {
 		_ = out.Destroy()
 		return nil, err
@@ -270,8 +276,8 @@ const (
 // inside a [secmem.ScrubErr] window, which clears the vector file on the
 // way out, on the thread that ran it (vecclear_amd64_test.go proves the
 // clear reaches this function's residue).
-func opensshCrypt(dst, src, tag, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
-	return withScratch(scratchSize, func(mem []byte) (err error) {
+func opensshCrypt(b bufferOptions, dst, src, tag, passphrase, salt []byte, rounds int, mode opensshCipher, decrypt bool) error {
+	return withScratch(b, scratchSize, func(mem []byte) (err error) {
 		ws := bcryptpbkdf.Bind(mem[:bcryptpbkdf.Size])
 		keyLen := mode.keyLen()
 		if keyLen == 0 {

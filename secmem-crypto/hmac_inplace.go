@@ -166,8 +166,12 @@ type inPlaceHashEntry struct {
 	id   inPlaceHash
 }
 
-// inPlaceHashSeen caches the verdict per dynamic type and size, so the
-// verification below runs once per hash, not once per call. Copy-on-write.
+// inPlaceHashSeen caches the positive verdicts per dynamic type and size, so
+// the verification below runs once per hash, not once per call. Only
+// positive ones: a constructor that fails verification says nothing about
+// the next constructor of the same type, and remembering its failure would
+// take the in-place path away from the real one for the life of the process.
+// Copy-on-write.
 var inPlaceHashSeen atomic.Pointer[[]inPlaceHashEntry]
 
 // inPlaceHashProbe is the fixed, public input a candidate is checked on.
@@ -178,8 +182,15 @@ var inPlaceHashProbe = []byte("secmem-crypto: is this constructor the one-shot i
 // type and output size pick a candidate — within each standard-library
 // digest type the size identifies the variant — and the candidate is only
 // accepted if the constructor's own output, block size and size agree with
-// it on a fixed input, so a look-alike can never be computed as something it
-// is not.
+// it on a fixed input. The probe is hashed as it arrives, without a Reset
+// first, so a constructor that hands out a standard digest with input
+// already absorbed fails here and is not computed as the plain hash.
+//
+// The limit of that: the check runs when a type and size are first seen. A
+// pre-seeded constructor of a type whose plain constructor has already been
+// verified is answered from the cache, and its prefix is ignored. Closing
+// that takes a verification per call, which costs the in-place paths an
+// allocation they are pinned not to make.
 func inPlaceHashOf(probe hash.Hash) inPlaceHash {
 	if probe == nil {
 		return hashNone
@@ -215,15 +226,16 @@ func inPlaceHashOf(probe hash.Hash) inPlaceHash {
 	case typ == sha3Type && size == 64:
 		id = hashSHA3_512
 	}
-	if id != hashNone {
-		probe.Reset()
-		probe.Write(inPlaceHashProbe)
-		var want [maxHashSize]byte
-		id.sum(want[:], inPlaceHashProbe)
-		if probe.BlockSize() != id.block() || !bytes.Equal(probe.Sum(nil), want[:size]) {
-			id = hashNone
-		}
-		probe.Reset()
+	if id == hashNone {
+		return hashNone
+	}
+	probe.Write(inPlaceHashProbe)
+	var want [maxHashSize]byte
+	id.sum(want[:], inPlaceHashProbe)
+	ok := probe.BlockSize() == id.block() && bytes.Equal(probe.Sum(nil), want[:size])
+	probe.Reset()
+	if !ok {
+		return hashNone
 	}
 	for {
 		old := inPlaceHashSeen.Load()
@@ -238,15 +250,31 @@ func inPlaceHashOf(probe hash.Hash) inPlaceHash {
 	}
 }
 
+// hmacScratchSize is the scratch hmacInPlace needs for a message of msgLen
+// bytes: the padded key, then the larger of the message (the inner hash's
+// input) and one digest (the outer hash's).
+func hmacScratchSize(h inPlaceHash, msgLen int) int {
+	return h.block() + max(msgLen, h.size())
+}
+
 // hmacInPlace computes HMAC-h(key, parts...) into dst[:h.size()], using
-// scratch for pad || message. scratch must hold h.block() plus the larger of
-// the message's length and h.size(). A key longer than the block is hashed
+// scratch for pad || message. scratch must hold hmacScratchSize bytes for
+// the parts' total length; a shorter one panics, before anything is written,
+// because copying what fits would return the MAC of a truncated message — a
+// wrong key that looks like a right one. A key longer than the block is hashed
 // first, as RFC 2104 requires. dst may alias a part: every part is copied
 // into scratch before dst is written. Everything secret this writes — the
 // padded key, the message copy, the inner digest — is in scratch or a local,
 // and is wiped before return.
 func hmacInPlace(h inPlaceHash, dst, scratch, key []byte, parts ...[]byte) {
 	size, block := h.size(), h.block()
+	total := 0
+	for _, p := range parts {
+		total += len(p)
+	}
+	if len(scratch) < hmacScratchSize(h, total) {
+		panic("secmemcrypto: internal: HMAC scratch region smaller than the message")
+	}
 	var hashedKey [maxHashSize]byte
 	if len(key) > block {
 		h.sum(hashedKey[:], key)
@@ -285,14 +313,14 @@ func hmacInPlace(h inPlaceHash, dst, scratch, key []byte, parts ...[]byte) {
 // Nothing secret is ever captured by a closure: a captured array would be
 // moved to the heap, which is the whole thing this file exists to avoid. The
 // locked path's closure holds only slice headers.
-func hmacIntoInPlace(h inPlaceHash, dst, secret, info []byte) error {
-	n := h.block() + max(len(info), h.size())
+func hmacIntoInPlace(b bufferOptions, h inPlaceHash, dst, secret, info []byte) error {
+	n := hmacScratchSize(h, len(info))
 	if n <= hmacStackRegion {
 		var region [hmacStackRegion]byte
 		hmacInPlace(h, dst, region[:n], secret, info)
 		return nil
 	}
-	buf, err := secmem.NewEmptyBuffer(n)
+	buf, err := b.newEmptyBuffer(n)
 	if err != nil {
 		return err
 	}
@@ -308,14 +336,14 @@ func hmacIntoInPlace(h inPlaceHash, dst, secret, info []byte) error {
 // HMAC scratch, and is a stack array when it fits, a locked buffer otherwise;
 // callers run it inside a Scrub window. As in hmacIntoInPlace, no closure
 // captures anything but slice headers.
-func hkdfInPlace(h inPlaceHash, dst, secret, salt, info []byte) error {
+func hkdfInPlace(b bufferOptions, h inPlaceHash, dst, secret, salt, info []byte) error {
 	n := 2*maxHashSize + h.block() + max(len(secret), h.size()+len(info)+1)
 	if n <= hmacStackRegion {
 		var region [hmacStackRegion]byte
 		hkdfCompute(h, dst, region[:n], secret, salt, info)
 		return nil
 	}
-	buf, err := secmem.NewEmptyBuffer(n)
+	buf, err := b.newEmptyBuffer(n)
 	if err != nil {
 		return err
 	}

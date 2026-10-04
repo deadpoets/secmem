@@ -229,3 +229,28 @@ func TestCapabilities_String(t *testing.T) {
 		t.Errorf("String() = %q must flag the insecure fallback", s)
 	}
 }
+
+// TestWarnings_SayNothingUntrue pins two lines that described something that
+// cannot happen. Windows has no fork, so "inherited by forked children" was a
+// warning about every Windows buffer that no deployment could act on; and the
+// Go collector does not move heap objects, so the heap line named a hazard
+// that does not exist in place of the ones that do.
+func TestWarnings_SayNothingUntrue(t *testing.T) {
+	for _, w := range (Capabilities{GOOS: "windows", GOARCH: "amd64", OffHeap: true, Mlocked: true}).Warnings() {
+		if strings.Contains(w, "fork") {
+			t.Errorf("Windows report warns about fork inheritance: %q", w)
+		}
+	}
+	forkWarned := false
+	for _, w := range (Capabilities{GOOS: "linux", GOARCH: "amd64", OffHeap: true, Mlocked: true}).Warnings() {
+		forkWarned = forkWarned || strings.Contains(w, "fork")
+	}
+	if !forkWarned {
+		t.Error("a Linux report without MADV_DONTFORK no longer warns about fork inheritance")
+	}
+	for _, w := range (Capabilities{GOOS: "plan9", GOARCH: "amd64"}).Warnings() {
+		if strings.Contains(w, "GC may copy") {
+			t.Errorf("heap warning claims the collector copies secrets: %q", w)
+		}
+	}
+}

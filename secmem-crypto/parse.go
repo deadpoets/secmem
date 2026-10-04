@@ -9,6 +9,7 @@
 // signer will own. The only key type that still touches the heap is an
 // OpenSSH-format RSA key, whose CRT exponents have to be computed; see
 // pkcs1DER in parse_openssh.go for exactly what and why.
+
 package secmemcrypto
 
 import (
@@ -120,13 +121,17 @@ var (
 // and PKCS#8 v2 optionally), it is checked against the one derived from the
 // private half and a mismatch is an error. Passphrase-protected keys return
 // an error wrapping [ErrEncryptedKey] (see [ParsePrivateKeyWithPassphrase]);
-// other kinds, [ErrUnsupportedKey]. Errors never carry key bytes. The one
-// thing from the file they repeat is a label it names — a PEM block type or
-// an OpenSSH algorithm, cipher or KDF name — and it is quoted whole only when
-// it is at most 32 bytes of printable ASCII; a longer printable label is
-// quoted to 32 bytes with its length noted, and one with any other byte is
-// described by its length alone, so a hostile file cannot put kilobytes, or
-// control characters, into a log line through the error.
+// other kinds, [ErrUnsupportedKey]. Errors never carry key bytes. What they
+// repeat from the file is the name of something it asked for, and both kinds
+// of name are bounded. A label — a PEM block type or an OpenSSH algorithm,
+// cipher or KDF name — is quoted whole only when it is at most 32 bytes of
+// printable ASCII; a longer printable label is quoted to 32 bytes with its
+// length noted, and one with any other byte is described by its length
+// alone. An ASN.1 object identifier — an algorithm, curve, KDF or cipher
+// this package does not support — is printed in dotted form up to 16 arcs
+// and 64 characters, and described by its size beyond that. So a hostile
+// file cannot put kilobytes, or control characters, into a log line through
+// the error.
 //
 // An RSA or EC key is refused with an error wrapping [ErrHeapTransients] on
 // a build without GOEXPERIMENT=runtimesecret, unless opts include
@@ -202,13 +207,13 @@ var (
 func parsePrivateKey(data []byte, o options) (Signer, error) {
 	switch {
 	case bytes.HasPrefix(data, opensshMagic):
-		blob, err := copyToBuffer(data)
+		blob, err := copyToBuffer(data, o.buf)
 		if err != nil {
 			return nil, err
 		}
 		return parseOpenSSH(blob, o)
 	case looksLikeDER(data):
-		blob, err := copyToBuffer(data)
+		blob, err := copyToBuffer(data, o.buf)
 		if err != nil {
 			return nil, err
 		}
@@ -218,7 +223,7 @@ func parsePrivateKey(data []byte, o options) (Signer, error) {
 		if err != nil {
 			return nil, err
 		}
-		blob, err := decodePEMBody(body)
+		blob, err := decodePEMBody(body, o.buf)
 		if err != nil {
 			return nil, err
 		}
@@ -283,6 +288,30 @@ func labelForError(label []byte) string {
 		return strconv.Quote(string(label))
 	}
 	return fmt.Sprintf("%s... (%d bytes)", strconv.Quote(string(label[:maxQuotedLabel])), len(label))
+}
+
+// maxOIDArcs and maxOIDText bound what oidForError will print. Every
+// identifier this package could be asked about is far inside both (the
+// longest in use here has ten arcs and nineteen characters).
+const (
+	maxOIDArcs = 16
+	maxOIDText = 64
+)
+
+// oidForError renders an object identifier read from a key file for an
+// error message. It is labelForError's counterpart for the other piece of
+// file-chosen text an error names: an identifier is digits and dots, so
+// there is no escaping to do, but it has no length limit of its own — a file
+// can carry one with a hundred thousand arcs — so one past the bounds above
+// is described by its size instead of printed. Every site that names an
+// identifier from the input goes through here.
+func oidForError(oid asn1.ObjectIdentifier) string {
+	if len(oid) <= maxOIDArcs {
+		if s := oid.String(); len(s) <= maxOIDText {
+			return s
+		}
+	}
+	return fmt.Sprintf("<object identifier of %d arcs>", len(oid))
 }
 
 // pemBlock finds the first PEM block in data and returns its type and its
@@ -372,13 +401,13 @@ func nextLine(b []byte) ([]byte, bool) {
 // The standard decoder skips line breaks, so the body is passed as it sits
 // in the file. On any failure the buffer is destroyed (which wipes whatever
 // partial output the decoder produced).
-func decodePEMBody(body []byte) (*secmem.SecureBuffer, error) {
+func decodePEMBody(body []byte, b bufferOptions) (*secmem.SecureBuffer, error) {
 	body = bytes.TrimSpace(body)
 	n := base64.StdEncoding.DecodedLen(len(body))
 	if n == 0 {
 		return nil, fmt.Errorf("%w: empty PEM body", errMalformed)
 	}
-	blob, err := secmem.NewEmptyBuffer(n)
+	blob, err := b.newEmptyBuffer(n)
 	if err != nil {
 		return nil, fmt.Errorf("allocate key buffer: %w", err)
 	}
@@ -408,8 +437,8 @@ func decodePEMBody(body []byte) (*secmem.SecureBuffer, error) {
 
 // copyToBuffer copies raw key bytes into a new SecureBuffer. The source is
 // the caller's and is left alone (see ParsePrivateKey).
-func copyToBuffer(data []byte) (*secmem.SecureBuffer, error) {
-	blob, err := secmem.NewEmptyBuffer(len(data))
+func copyToBuffer(data []byte, b bufferOptions) (*secmem.SecureBuffer, error) {
+	blob, err := b.newEmptyBuffer(len(data))
 	if err != nil {
 		return nil, fmt.Errorf("allocate key buffer: %w", err)
 	}
@@ -433,9 +462,16 @@ func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 			return errMalformed
 		}
 		if seq.PeekASN1Tag(cbasn1.SEQUENCE) {
-			// An AlgorithmIdentifier where every unencrypted structure
-			// has its version: EncryptedPrivateKeyInfo, named as the PEM
-			// form of the same file is.
+			// A SEQUENCE where every unencrypted structure has its
+			// version. If the whole thing has EncryptedPrivateKeyInfo's
+			// shape it is named as the PEM form of the same file is;
+			// otherwise it is not a private key at all — a public key
+			// and a certificate both start this way — and saying
+			// "passphrase-protected" would send the caller looking for a
+			// passphrase.
+			if !isEncryptedPrivateKeyInfo(der) {
+				return fmt.Errorf("%w: DER structure is not a private key", ErrUnsupportedKey)
+			}
 			return encryptedPKCS8Error(der)
 		}
 		var version int64
@@ -465,8 +501,21 @@ func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	}
 }
 
+// isEncryptedPrivateKeyInfo reports whether der has the shape of RFC 5958's
+// EncryptedPrivateKeyInfo: an AlgorithmIdentifier (a SEQUENCE that opens
+// with an OBJECT IDENTIFIER), then an OCTET STRING, and nothing after it.
+// Which algorithm it names is encryptedPKCS8Error's question.
+func isEncryptedPrivateKeyInfo(der []byte) bool {
+	in := cryptobyte.String(der)
+	var seq, alg, oid, data cryptobyte.String
+	return in.ReadASN1(&seq, cbasn1.SEQUENCE) && seq.ReadASN1(&alg, cbasn1.SEQUENCE) &&
+		alg.ReadASN1(&oid, cbasn1.OBJECT_IDENTIFIER) && seq.ReadASN1(&data, cbasn1.OCTET_STRING) && seq.Empty()
+}
+
 // rsaFromDER hands a PKCS#1 or PKCS#8 RSA DER buffer to NewRSASigner, which
-// takes ownership; the DER is the durable form an RSASigner keeps.
+// takes ownership; the DER is the durable form an RSASigner keeps. Every
+// container's RSA route ends here, so the constructor's size rule
+// (rsabounds.go) is the same for all of them.
 func rsaFromDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 	s, err := newRSASigner(blob, o)
 	if err != nil {
@@ -542,7 +591,7 @@ func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 			}
 			curve := curveFromOID(curveOID)
 			if curve == nil {
-				return fmt.Errorf("%w: EC curve %v", ErrUnsupportedKey, curveOID)
+				return fmt.Errorf("%w: EC curve %s", ErrUnsupportedKey, oidForError(curveOID))
 			}
 			var err error
 			s, err = ecdsaFromSEC1(priv, curve, pub, o)
@@ -554,12 +603,12 @@ func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 				return errMalformed
 			}
 			var err error
-			s, err = ed25519FromSeed(seed, pub)
+			s, err = ed25519FromSeed(seed, pub, o)
 			return err
 		case oid.Equal(oidX25519):
 			return fmt.Errorf("%w: X25519 is an agreement key, not a signer (use NewX25519Key)", ErrUnsupportedKey)
 		default:
-			return fmt.Errorf("%w: PKCS#8 algorithm %v", ErrUnsupportedKey, oid)
+			return fmt.Errorf("%w: PKCS#8 algorithm %s", ErrUnsupportedKey, oidForError(oid))
 		}
 	})
 	if err != nil {
@@ -617,7 +666,7 @@ func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte, o options)
 		}
 		named := curveFromOID(curveOID)
 		if named == nil {
-			return nil, fmt.Errorf("%w: EC curve %v", ErrUnsupportedKey, curveOID)
+			return nil, fmt.Errorf("%w: EC curve %s", ErrUnsupportedKey, oidForError(curveOID))
 		}
 		if curve != nil && curve != named {
 			return nil, fmt.Errorf("%w: curve in PKCS#8 header disagrees with SEC 1 parameters", errMalformed)
@@ -666,7 +715,7 @@ func ecdsaFromScalar(d []byte, curve elliptic.Curve, pub []byte, o options) (*EC
 	if len(d) == 0 || len(d) > size {
 		return nil, fmt.Errorf("%w: scalar out of range", errMalformed)
 	}
-	out, err := secmem.NewEmptyBuffer(size)
+	out, err := o.buf.newEmptyBuffer(size)
 	if err != nil {
 		return nil, fmt.Errorf("allocate scalar buffer: %w", err)
 	}
@@ -712,11 +761,11 @@ func ecdsaPubMatches(s *ECDSASigner, pub []byte) bool {
 
 // ed25519FromSeed copies a 32-byte seed into a fresh buffer and builds the
 // signer, checking the file's public key (if any) against the derived one.
-func ed25519FromSeed(seed, pub []byte) (*Ed25519Signer, error) {
+func ed25519FromSeed(seed, pub []byte, o options) (*Ed25519Signer, error) {
 	if len(seed) != 32 {
 		return nil, fmt.Errorf("%w: got %d, want 32", ErrBadSeedLength, len(seed))
 	}
-	out, err := secmem.NewEmptyBuffer(len(seed))
+	out, err := o.buf.newEmptyBuffer(len(seed))
 	if err != nil {
 		return nil, fmt.Errorf("allocate seed buffer: %w", err)
 	}
@@ -724,7 +773,7 @@ func ed25519FromSeed(seed, pub []byte) (*Ed25519Signer, error) {
 		_ = out.Destroy()
 		return nil, err
 	}
-	s, err := NewEd25519Signer(out)
+	s, err := newEd25519Signer(out, o)
 	if err != nil {
 		_ = out.Destroy()
 		return nil, err

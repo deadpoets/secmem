@@ -15,7 +15,40 @@ import (
 	"os/signal"
 	"sync"
 	"syscall"
+	"time"
 )
+
+// TerminationWipeTimeout is how long the handler installed by
+// [InstallTerminationWipe] waits for [WipeAllSecrets] before it goes on to
+// terminate the process anyway. WipeAllSecrets waits for every borrowing
+// callback to return, and one that never does would otherwise hold the handler
+// forever, with the signal's default disposition suppressed the whole time.
+const TerminationWipeTimeout = 5 * time.Second
+
+// terminationWipeTimeout is the bound the handler uses; a variable so a test
+// does not have to wait out the real one.
+var terminationWipeTimeout = TerminationWipeTimeout
+
+// wipeAllSecretsBounded runs [WipeAllSecrets] and waits for it for at most
+// timeout. It reports whether the wipe finished. When it did not, the wipe is
+// still running: everything that was not borrowed is already zeroed (the first
+// pass does not wait), and each borrowed region is wiped the moment its
+// callback returns, if the process lives that long.
+func wipeAllSecretsBounded(timeout time.Duration) (completed bool) {
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = WipeAllSecrets()
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
+}
 
 // errInheritedIgnored stands in for the re-raise's result when the signal
 // was already ignored at install time. The kill(2) itself would succeed —
@@ -120,7 +153,7 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // requires it for asynchronous lists when job control is off), and so does a
 // `nohup` child for SIGHUP. Measured before
 // this was handled: such a child wiped, reported the re-raise as done, and
-// kept running with every buffer reading as zeros. The installer therefore
+// kept running with every secret gone. The installer therefore
 // records, once, which of its signals are ignored at the moment it is
 // called — [os/signal.Ignored] reports the inherited state only until Notify
 // overrides it — and treats one of those as impossible to re-raise: the
@@ -131,15 +164,29 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 //
 // Verified behaviour before this was so: a real Ctrl-C wiped every secret and
 // the process kept running, exiting only on a SECOND Ctrl-C. That left it in the
-// one state [WipeAllSecrets] does not support. The wipe deliberately leaves
-// regions MAPPED so a late read returns zeros instead of faulting — a trade
-// justified entirely by "the process is terminating imminently". A process that
-// survives instead keeps every key buffer readable and full of zeros, and reads
-// still SUCCEED, so an application that treats the signal as "begin shutdown"
-// can go on to sign with an all-zero key or derive from zeros, each call
-// reporting success. That is worse than either terminating or never wiping.
+// one state [WipeAllSecrets] is not meant for. The wipe deliberately leaves
+// regions MAPPED so a retained slice does not fault — a trade justified
+// entirely by "the process is terminating imminently". A process that survives
+// instead runs on with every key dead: each borrow returns [ErrWiped], so an
+// application that treats the signal as "begin shutdown" finds every signing,
+// decryption and derivation call failing. That fails closed (it once did not:
+// borrows used to succeed and hand out the zeros), but it is still a process
+// that can no longer do its job and was told to stop.
 //
 // Use [InstallTerminationWipeNoExit] if your own handler owns the exit.
+//
+// # The wipe is bounded
+//
+// [WipeAllSecrets] waits for every borrowing callback to return, so a callback
+// that is blocked (on I/O, on a lock, or on a nested call into its own buffer)
+// would hold the handler in the wipe indefinitely: the process would not
+// terminate, and with this handler still registered no later signal would
+// terminate it either. The handler therefore waits [TerminationWipeTimeout]
+// and then proceeds exactly as if the wipe had finished, with a warning
+// logged. By then every secret that was not borrowed is already zeroed. The
+// one inside the stuck callback is not, and the process is about to end with
+// it in memory: a secret that a running callback is reading cannot be zeroed
+// underneath it. Keep borrowing callbacks short.
 //
 // # After the signal
 //
@@ -173,9 +220,9 @@ func InstallTerminationWipe(signals ...os.Signal) (uninstall func()) {
 //
 // Choose it when your own handler performs a graceful shutdown that must not be
 // truncated — flushing logs, draining connections — and will exit on its own.
-// Read the warning above first: after the wipe your secrets are gone but still
-// READABLE as zeros, so a shutdown path that keeps doing cryptography will get
-// silent success on zeroed key material. Exit promptly.
+// Read the warning above first: after the wipe your secrets are gone, and a
+// shutdown path that keeps doing cryptography gets [ErrWiped] from every key
+// operation. Finish what does not need a secret, and exit promptly.
 //
 // It has an effect only on Windows and for a signal the process inherited as
 // ignored (see "The process always terminates" above); everywhere else the
@@ -211,19 +258,11 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 	// completeTermination); without this record the handler concluded "the
 	// disposition owns the exit" about a disposition that discards it.
 	//
-	// Keyed by syscall.Signal, the only kind os/signal acts on (Notify skips
-	// any other implementation of os.Signal, and so does this), so a caller's
-	// own os.Signal type cannot make the record panic. The record is taken
-	// once: a handler another package registers for the same signal AFTER
-	// this one does not change it, so with such a late co-handler the default
-	// installer still exits itself rather than leave the exit to it —
-	// fail-safe, and a reason to install this one first.
-	inheritedIgnore := make(map[syscall.Signal]bool, len(signals))
-	for _, sig := range signals {
-		if s, ok := sig.(syscall.Signal); ok {
-			inheritedIgnore[s] = signal.Ignored(s)
-		}
-	}
+	// The record is taken once: a handler another package registers for the
+	// same signal AFTER this one does not change it, so with such a late
+	// co-handler the default installer still exits itself rather than leave
+	// the exit to it — fail-safe, and a reason to install this one first.
+	inheritedIgnore := recordInheritedIgnores(signals)
 	ch := make(chan os.Signal, 1)
 	signal.Notify(ch, signals...)
 	done := make(chan struct{})
@@ -235,7 +274,11 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				if !ok {
 					return
 				}
-				_ = WipeAllSecrets()
+				if !wipeAllSecretsBounded(terminationWipeTimeout) {
+					slog.Warn("secmem: a borrowing callback did not return in time; every other secret is wiped, the borrowed one is not, and termination proceeds",
+						slog.String("signal", sig.String()),
+						slog.Duration("waited", terminationWipeTimeout))
+				}
 				// Deregister only our own channel — never the process-global
 				// signal.Reset/Ignore. If we were the last handler the default
 				// disposition is restored so the re-raise below terminates the
@@ -252,8 +295,8 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				// verified on go1.26, windows/amd64, for both os.Interrupt and
 				// SIGTERM. Discarding that error left the worst of the three
 				// possible outcomes: the process sails past Ctrl-C still running,
-				// with every secret already zeroed (reads return zeros, mutations
-				// return ErrWiped), while this function's documentation says it
+				// with every secret already zeroed (every borrow returns
+				// ErrWiped), while this function's documentation says it
 				// terminates.
 				//
 				// Reported rather than escalated to a forced os.Exit, because
@@ -268,11 +311,7 @@ func installTerminationWipeHooks(forceExit bool, reraise func(os.Signal) error, 
 				// on every platform: the kill would succeed and the kernel
 				// would drop it. inheritedIgnore was read before Notify, the
 				// only moment it can be.
-				ignored := false
-				if s, ok := sig.(syscall.Signal); ok {
-					ignored = inheritedIgnore[s]
-				}
-				if !completeTermination(sig, forceExit, ignored, reraise, exit) {
+				if !completeTermination(sig, forceExit, inheritedIgnore.ignored(sig), reraise, exit) {
 					// Re-raised, or exited. Whether the process dies now or a
 					// co-installed handler keeps it alive is not observable from
 					// here, and the re-raised signal is still in flight: a fresh

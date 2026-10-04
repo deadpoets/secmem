@@ -9,6 +9,7 @@
 // subtraction per bit of x) and that is fine: it runs once per parsed key,
 // and a 2048-bit d against a 1024-bit p-1 is about forty thousand limb
 // operations.
+
 package secmemcrypto
 
 import (

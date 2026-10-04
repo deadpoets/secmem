@@ -63,6 +63,12 @@ func werExcludeFromDumps(inner []byte) bool {
 	if len(inner) == 0 || uint64(len(inner)) > uint64(math.MaxUint32) {
 		return false
 	}
+	// A LazyProc panics when called for an export it cannot resolve. A
+	// kernel32 without this one (Wine, a trimmed image) is an allocation
+	// that is not excluded, which is what the return value is for.
+	if procWerRegisterExcludedMemoryBlock.Find() != nil {
+		return false
+	}
 	//nolint:gosec // G103: registering the secret area's address with WER; OS memory, audited.
 	hr, _, _ := procWerRegisterExcludedMemoryBlock.Call(
 		uintptr(unsafe.Pointer(&inner[0])),
@@ -74,7 +80,7 @@ func werExcludeFromDumps(inner []byte) bool {
 // werUnexclude removes the exclusion before the region is freed, releasing
 // the registration slot (WER caps them per process). Best-effort.
 func werUnexclude(inner []byte) {
-	if len(inner) == 0 {
+	if len(inner) == 0 || procWerUnregisterExcludedMemoryBlock.Find() != nil {
 		return
 	}
 	//nolint:gosec // G103: unregistering the secret area's address from WER; OS memory, audited.
@@ -184,8 +190,12 @@ func mprotectSecretMem(region secRegion, prot int) error {
 		protect = windows.PAGE_NOACCESS
 	case 1: // PROT_READ
 		protect = windows.PAGE_READONLY
-	default: // PROT_READ|PROT_WRITE
+	case 3: // PROT_READ|PROT_WRITE
 		protect = windows.PAGE_READWRITE
+	default:
+		// Refused rather than mapped to something: the only safe guess is
+		// no guess, and the permissive one this used to make failed open.
+		return fmt.Errorf("mprotectSecretMem: unsupported protection %d", prot)
 	}
 
 	var oldProtect uint32

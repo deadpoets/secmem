@@ -54,12 +54,6 @@ type laneScratch struct {
 	addresses, in, tmp block
 }
 
-// initInputReserve is the room a Workspace keeps for the H0 input (params ‖
-// len‖password ‖ len‖salt ‖ len‖K ‖ len‖X). Inputs that do not fit are
-// hashed from a heap buffer allocated for the call and wiped after it; a
-// 4 KiB reserve holds any realistic password plus pepper without that.
-const initInputReserve = 4096
-
 // Workspace holds every byte of working state one derivation touches, as
 // views into one contiguous region the caller supplies ([Bind]) or that
 // [NewWorkspace] allocates on the heap. Its zero value is not usable. A
@@ -74,17 +68,22 @@ type Workspace struct {
 
 	mem []byte // the whole region; Wipe zeroes it in one pass
 
-	// Views into mem, in this order:
-	b         []block             // the memory-cost matrix
-	lanes     []laneScratch       // one per lane
-	h0        *[h0Length]byte     // H0 plus the two 4-byte counters initBlocks appends
-	block0    *[1024]byte         // H' output for the first two blocks, then extractKey's fold
-	hashIn    *[4 + 1024]byte     // H' input: 4-byte length prefix + up to one block
-	hashState *[blake2b.Size]byte // H' chaining value for outputs over 64 bytes
-	initInput []byte              // initInputReserve bytes for the H0 input
+	// Views into mem, in this order (h0Chain is the one view of 64-bit
+	// words outside the matrix and the lanes, so it sits directly after
+	// them, where the offset is still a multiple of 8):
+	b         []block                  // the memory-cost matrix
+	lanes     []laneScratch            // one per lane
+	h0Chain   *[8]uint64               // BLAKE2b chaining value while H0 is being computed
+	h0        *[h0Length]byte          // H0 plus the two 4-byte counters initBlocks appends
+	block0    *[1024]byte              // H' output for the first two blocks, then extractKey's fold
+	hashIn    *[4 + 1024]byte          // H' input: 4-byte length prefix + up to one block
+	hashState *[blake2b.Size]byte      // H' chaining value for outputs over 64 bytes
+	h0Block   *[blake2b.BlockSize]byte // the one block of the H0 input being assembled
 }
 
-const fixedScratch = h0Length + 1024 + (4 + 1024) + blake2b.Size + initInputReserve
+const h0ChainSize = 8 * 8
+
+const fixedScratch = h0ChainSize + h0Length + 1024 + (4 + 1024) + blake2b.Size + blake2b.BlockSize
 
 // WorkspaceSize is the number of bytes [Bind] needs for the given cost
 // parameters: the adjusted matrix, the per-lane scratch and the fixed
@@ -120,6 +119,9 @@ func Bind(mem []byte, memory uint32, threads uint8) *Workspace {
 	//nolint:gosec // G103: as above.
 	ws.lanes = unsafe.Slice((*laneScratch)(unsafe.Pointer(&mem[off])), threads)
 	off += int(threads) * int(unsafe.Sizeof(laneScratch{}))
+	//nolint:gosec // G103: as above; off is a multiple of 1024 here, so the words are aligned.
+	ws.h0Chain = (*[8]uint64)(unsafe.Pointer(&mem[off]))
+	off += h0ChainSize
 	ws.h0 = (*[h0Length]byte)(mem[off : off+h0Length])
 	off += h0Length
 	ws.block0 = (*[1024]byte)(mem[off : off+1024])
@@ -128,7 +130,7 @@ func Bind(mem []byte, memory uint32, threads uint8) *Workspace {
 	off += 4 + 1024
 	ws.hashState = (*[blake2b.Size]byte)(mem[off : off+blake2b.Size])
 	off += blake2b.Size
-	ws.initInput = mem[off : off+initInputReserve : off+initInputReserve]
+	ws.h0Block = (*[blake2b.BlockSize]byte)(mem[off : off+blake2b.BlockSize])
 	return ws
 }
 
@@ -157,7 +159,7 @@ func NewWorkspace(memory uint32, threads uint8) *Workspace {
 }
 
 // Wipe zeroes the whole region — the matrix, the lane scratch, H0, the H'
-// buffers and the H0 input — in one pass of secmem's non-elidable,
+// buffers and the H0 hashing state — in one pass of secmem's non-elidable,
 // cache-flushing wipe, so the Workspace is ready for another derivation.
 func (ws *Workspace) Wipe() {
 	secmem.SecureWipe(ws.mem)
@@ -166,7 +168,9 @@ func (ws *Workspace) Wipe() {
 // Derive computes an Argon2 tag of len(out) bytes into out, using the
 // Workspace's memory and parallelism and the given number of passes.
 // secret (K) and data (X) are the RFC 9106 optional inputs; nil means
-// absent, which is what upstream's Key/IDKey always pass.
+// absent, which is what upstream's Key/IDKey always pass. None of the four
+// inputs has a length limit below the format's own (a uint32 length prefix):
+// they are hashed into H0 one block at a time and never assembled.
 //
 // Preconditions, all checked here and all panics (the exported wrapper in
 // secmemcrypto turns them into errors first): time ≥ 1, len(out) ≥ 1, a
@@ -190,14 +194,9 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	//nolint:gosec // G115: len(out) is bounded by the caller to uint32 range.
 	keyLen := uint32(len(out))
 
-	// secmem: the H0 input normally lives in the workspace's reserve; an
-	// input that does not fit gets a heap buffer, allocated here, before
-	// the Scrub window, so that on a runtime/secret build it is not
-	// registered for GC-time erasure (initHash wipes it explicitly).
-	in := ws.h0Input(24 + 4*4 + len(password) + len(salt) + len(secret) + len(data))
-
 	// secmem: the parent's two phases run under secmem.Scrub so that the
-	// stack temporaries of BLAKE2b (checkSum's block copy, the returned
+	// stack temporaries of BLAKE2b (the compression function's message
+	// words and working variables, checkSum's block copy, the returned
 	// digest values) and of this package's own helpers are erased on the
 	// way out, and the vector registers — which BLAKE2b's AVX2 code and the
 	// memmove of the password leave dirty — are cleared by the window
@@ -206,7 +205,7 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	// way out. scrubclear_amd64_test.go proves that reaches what these
 	// phases leave.
 	secmem.Scrub(func() {
-		ws.initHash(in, password, salt, secret, data, time, keyLen, mode)
+		ws.initHash(password, salt, secret, data, time, keyLen, mode)
 		ws.initBlocks()
 	})
 
@@ -217,40 +216,78 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 	})
 }
 
-// h0Input returns a buffer of n bytes for the H0 input: the workspace's
-// reserve when it fits, otherwise a heap buffer for this call.
-func (ws *Workspace) h0Input(n int) []byte {
-	if n <= cap(ws.initInput) {
-		return ws.initInput[:n]
+// initHash computes H0 into ws.h0[:64]: BLAKE2b-512 of params ‖
+// len‖password ‖ len‖salt ‖ len‖K ‖ len‖X.
+//
+// secmem: upstream streams the input into a heap blake2b.New512 digest,
+// whose block buffer keeps the password. Here the input is streamed too —
+// it is never assembled, so no input is too long for the workspace and none
+// is copied anywhere else — but through the forked compression function,
+// with the only two pieces of state that outlive a block in the workspace:
+// the chaining value (ws.h0Chain) and the block being filled (ws.h0Block).
+// Both are wiped here, as soon as H0 exists. The byte counter is a length,
+// not a secret, and stays on the stack.
+func (ws *Workspace) initHash(password, salt, key, data []byte, time, keyLen uint32, mode Mode) {
+	h := ws.h0Chain
+	*h = iv
+	h[0] ^= blake2b.Size | (1 << 16) | (1 << 24) // digest length 64, no key, fanout 1, depth 1
+	var c [2]uint64
+
+	var params [24]byte
+	binary.LittleEndian.PutUint32(params[0:4], ws.threads)
+	binary.LittleEndian.PutUint32(params[4:8], keyLen)
+	binary.LittleEndian.PutUint32(params[8:12], ws.requested) // pre-adjustment, as upstream hashes it
+	binary.LittleEndian.PutUint32(params[12:16], time)
+	binary.LittleEndian.PutUint32(params[16:20], uint32(Version))
+	binary.LittleEndian.PutUint32(params[20:24], uint32(mode))
+	fill := ws.h0Absorb(&c, 0, params[:])
+
+	var prefix [4]byte
+	for _, part := range [4][]byte{password, salt, key, data} {
+		//nolint:gosec // G115: upstream stores these lengths as uint32 too.
+		binary.LittleEndian.PutUint32(prefix[:], uint32(len(part)))
+		fill = ws.h0Absorb(&c, fill, prefix[:])
+		fill = ws.h0Absorb(&c, fill, part)
 	}
-	return make([]byte, n)
+
+	// The last block, zero-padded, with the counter at the true input
+	// length and the finalisation flag set: checkSum's ending. The input is
+	// never empty (the parameters alone are 40 bytes), so there is always a
+	// last block to finalise.
+	block := ws.h0Block
+	clear(block[fill:])
+	//nolint:gosec // G115: fill is at most one block.
+	remaining := uint64(blake2b.BlockSize - fill)
+	if c[0] < remaining {
+		c[1]--
+	}
+	c[0] -= remaining
+	hashBlocksGeneric(h, &c, 0xFFFFFFFFFFFFFFFF, block[:])
+
+	for i, v := range h {
+		binary.LittleEndian.PutUint64(ws.h0[8*i:], v)
+	}
+	secmem.SecureWipe(block[:])
+	//nolint:gosec // G103: the byte view of the chaining value, to wipe it.
+	secmem.SecureWipe(unsafe.Slice((*byte)(unsafe.Pointer(h)), h0ChainSize))
 }
 
-// initHash computes H0 into ws.h0[:64] from the input assembled in `in`
-// (len(in) must be exactly the encoded size). secmem: the input is
-// assembled in caller-owned memory and hashed with the stack-only
-// blake2b.Sum512, rather than streamed into a heap blake2b.New512 digest
-// whose block buffer would keep the password, and is wiped here.
-func (ws *Workspace) initHash(in, password, salt, key, data []byte, time, keyLen uint32, mode Mode) {
-
-	binary.LittleEndian.PutUint32(in[0:4], ws.threads)
-	binary.LittleEndian.PutUint32(in[4:8], keyLen)
-	binary.LittleEndian.PutUint32(in[8:12], ws.requested) // pre-adjustment, as upstream hashes it
-	binary.LittleEndian.PutUint32(in[12:16], time)
-	binary.LittleEndian.PutUint32(in[16:20], uint32(Version))
-	binary.LittleEndian.PutUint32(in[20:24], uint32(mode))
-	off := 24
-	for _, part := range [][]byte{password, salt, key, data} {
-		//nolint:gosec // G115: upstream stores these lengths as uint32 too.
-		binary.LittleEndian.PutUint32(in[off:off+4], uint32(len(part)))
-		off += 4
-		off += copy(in[off:], part)
+// h0Absorb feeds p into the H0 hash. fill is the number of bytes already in
+// ws.h0Block and the new count is returned. A full block is compressed only
+// when more input arrives, because BLAKE2b treats the last block of the
+// message differently and only initHash knows which one that is.
+func (ws *Workspace) h0Absorb(c *[2]uint64, fill int, p []byte) int {
+	block := ws.h0Block
+	for len(p) > 0 {
+		if fill == len(block) {
+			hashBlocksGeneric(ws.h0Chain, c, 0, block[:])
+			fill = 0
+		}
+		n := copy(block[fill:], p)
+		fill += n
+		p = p[n:]
 	}
-
-	sum := blake2b.Sum512(in)
-	copy(ws.h0[:blake2b.Size], sum[:])
-	secmem.SecureWipe(sum[:])
-	secmem.SecureWipe(in)
+	return fill
 }
 
 // initBlocks fills the first two blocks of every lane from H0.

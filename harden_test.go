@@ -3,63 +3,14 @@
 package secmem
 
 import (
-	"context"
 	"os"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
-func TestHardenProcess_DisablesDumpable(t *testing.T) {
-	t.Parallel()
-
-	_, err := HardenProcess(context.Background())
-	if err != nil {
-		t.Fatalf("HardenProcess: %v", err)
-	}
-
-	dumpable, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
-	if err != nil {
-		t.Fatalf("PR_GET_DUMPABLE: %v", err)
-	}
-	if dumpable != 0 {
-		t.Errorf("PR_GET_DUMPABLE = %d, want 0 (disabled)", dumpable)
-	}
-}
-
-func TestHardenProcess_SetsNoNewPrivs(t *testing.T) {
-	t.Parallel()
-
-	_, err := HardenProcess(context.Background())
-	if err != nil {
-		t.Fatalf("HardenProcess: %v", err)
-	}
-
-	nnp, err := unix.PrctlRetInt(unix.PR_GET_NO_NEW_PRIVS, 0, 0, 0, 0)
-	if err != nil {
-		t.Fatalf("PR_GET_NO_NEW_PRIVS: %v", err)
-	}
-	if nnp != 1 {
-		t.Errorf("PR_GET_NO_NEW_PRIVS = %d, want 1 (enabled)", nnp)
-	}
-}
-
-func TestHardenProcess_ReturnsExpectedLevel(t *testing.T) {
-	t.Parallel()
-
-	level, err := HardenProcess(context.Background())
-	if err != nil {
-		t.Fatalf("HardenProcess: %v", err)
-	}
-
-	// On Linux we expect at least NoDump + NoNewPriv.
-	if level&HardenNoDump == 0 {
-		t.Error("HardenNoDump bit not set")
-	}
-	if level&HardenNoNewPriv == 0 {
-		t.Error("HardenNoNewPriv bit not set")
-	}
-}
+// HardenProcess itself is tested in a re-executed child
+// (harden_threads_linux_test.go, harden_isolated_test.go): it is irreversible,
+// and a test process left non-dumpable loses access to its own /proc/self/mem,
+// which the isolation proofs read on a second -count pass.
 
 func TestAllocMemfdSecret_OrFallback(t *testing.T) {
 	t.Parallel()

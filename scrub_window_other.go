@@ -61,8 +61,8 @@ func (w *preemptWindow) restore() {
 	runtime.UnlockOSThread()
 }
 
-// asyncPreemptSuppressionSupported reports that this platform cannot suppress
-// the register-dumping preemption signal. The window still pins its thread
-// (see suppressAsyncPreempt); that is a prerequisite of the vector clear, not a
-// suppression, and is not what this constant reports.
-const asyncPreemptSuppressionSupported = false
+// asyncPreemptSuppressionInForce is what Capabilities reports: this platform
+// cannot suppress the register-dumping preemption signal. The window still
+// pins its thread (see suppressAsyncPreempt); that is a prerequisite of the
+// vector clear, not a suppression, and is not what this reports.
+func asyncPreemptSuppressionInForce() bool { return false }

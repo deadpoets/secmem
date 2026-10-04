@@ -23,15 +23,24 @@ that is said outright rather than dressed up.
 - **Executed on 32-bit x86** (`GOARCH=386`), not merely compiled — the wipe
   helpers manipulate `big.Word` limbs whose width differs on 386. Runs without
   `-race` (the detector needs 64-bit).
-- **The no-heap-escape gates run where the deployed code runs.** The
-  `testing.AllocsPerRun` gates are `//go:build !race`, so the race jobs skip
-  them; dedicated `test-noescape` jobs run them on linux/amd64 and
-  linux/arm64 (where `OpenInto`'s GCM path is assembly), and the 386 job runs
-  them on the generic path.
-- **No test skips silently.** Every test step runs `go test -json` through
-  `internal/skipaudit`, which prints each skipped test with the reason its
-  `t.Skip` gave and fails the job on any skip that is not on that lane's
-  allowlist (`.github/skip-allowlist/<lane>.txt`, one reason per entry). A
+- **The allocation proofs run where the deployed code runs.** The
+  `testing.AllocsPerRun` gates and the memory-profile proofs (the
+  classification, parser, marshal and `BcryptPBKDFInto` tests) are
+  `//go:build !race`, so the race jobs do not compile them. The
+  `test-noescape` jobs run them on linux/amd64 and windows/amd64 (both
+  toolchains) and on linux/arm64: the core's gates by name, and
+  `secmem-crypto`'s by running its whole suite without `-race`, less the
+  residue scans, so a new `!race` file needs no pattern widened. The 386 job
+  runs them on the generic path. macOS runs none of them: every `secmem-crypto`
+  step there is `-race`.
+- **No proof skips silently.** Every step that runs a proof runs
+  `go test -json` through `internal/skipaudit`, which prints each skipped
+  test with the reason its `t.Skip` gave and fails the job on any skip that
+  is not on that lane's allowlist (`.github/skip-allowlist/<lane>.txt`, one
+  reason per entry). Four `go test` steps are plain and not audited, on
+  purpose, and the header of `ci.yml` gives the reason for each: both steps
+  of `released-deps`, `secmem-lint`'s analyzer tests, and the examples'
+  race tests. A
   skip is a proof that stopped running; whether that is the environment or
   the claim is decided in a reviewed diff to the allowlist, not in a log
   nobody reads. The Windows list was measured; the Linux and macOS lists were
@@ -114,6 +123,9 @@ that is said outright rather than dressed up.
 | Constructors fail closed, never panic | Bad/overflow inputs on every constructor; `RLIMIT_MEMLOCK=0` with `CAP_IPC_LOCK` dropped; unsupported-platform stub | `negative_test.go`, `negative_mlock_linux_test.go`, `mlock_stub_test.go` |
 | Constructors wipe the caller's input on failure, not only on success | An allocation that is forced to fail must leave the input slice zeroed | `securebuf_test.go` (`TestNewBuffer_WipesInputOnFailure`), `secret_test.go` (`TestNewSecret_CopiesAndWipesInput`) |
 | A reversed `ConstantTimeEqual` cannot deadlock | The two read locks are shown to be taken in `LockOrder` order regardless of argument order, under a forced interleaving | `secret_test.go` (`TestSecret_ConstantTimeEqual_AcquiresInKeyOrder`), `securebuf_lockorder_test.go` |
+| A copied `SecureBuffer` or `SecureArena` value is an alias, and a zero value is a destroyed one | A dereferenced copy sees the original's Truncate, Seal and Destroy, and the other way round; `*a = *b` re-points `a`; a slot acquired through a copied arena is refused once the original is destroyed; no callback runs after any of them. Every method of a zero-value `SecureBuffer`, `SecureArena` and `ArenaSlot` returns its destroyed/released result without panicking. Shown to fail against per-copy state: the stale copy ran its callback over an unmapped region | `copy_alias_test.go` |
+| After `WipeAllSecrets` a borrow is refused, not handed zeros | Every borrowing and reading method of a wiped buffer, and a slot handle that predates the wipe, return `ErrWiped` without calling back; the region is read directly to show it is zero and still mapped | `registry_emergency_test.go` (`TestWipeAllSecrets_MarksOwnerDead`, `TestWipeAllSecrets_PreWipeSlotHandleIsRefused`) |
+| The termination handler is not held by a stuck borrow | With one callback parked, a real signal still reaches the re-raise inside the bound, the unborrowed buffer is already wiped, and the abandoned wipe takes the borrowed one when its callback returns. Shown to fail against the synchronous wipe | `terminationwipe_bound_unix_test.go`, `terminationwipe_bound_test.go` |
 | The emergency wipe never zeroes a buffer whose lock it does not hold | A registration re-handed the same base address after a destroy-during-wait is refused rather than wiped | `registry_emergency_test.go` (`TestWipeInPlace_RefusesAliasedRegistration`) |
 | The termination wipe ends the process, and stays armed when it does not | Where the signal cannot be re-raised the exit status equals the un-intercepted one (`STATUS_CONTROL_C_EXIT` on Windows, checked against a real console Ctrl-C); a handler that leaves the process running re-arms for the next signal; a child re-executed through `sh -c 'trap "" INT; exec …'` — so that it INHERITS SIGINT as ignored, the disposition every `cmd &` in a script gives its child — reports the inherited ignore, is signalled once the handler is installed, and must exit with that same status rather than survive with its secrets zeroed | `terminationwipe_exit_test.go`, `terminationwipe_rearm_*_test.go`, `terminationwipe_ignored_unix_test.go` |
 | Borrow/copy/compare paths do not allocate (no heap escape) | `testing.AllocsPerRun` gate asserts 0 allocs on `WithBytes`/`ByteAt`/`CopyOut`/`CopyIn`/`ConstantTimeEqual`/… | `alloc_test.go` |
@@ -162,7 +174,7 @@ that is said outright rather than dressed up.
 | `OpenInto` lands plaintext in the buffer with no heap intermediate | `testing.AllocsPerRun` gate asserts 0 allocs | `alloc_test.go` |
 | `WithAESGCM` is AES-GCM, and wipes every copy of the schedule | For AES-128/192/256 the lent AEAD's output is byte-identical to `crypto/cipher`'s in both directions and a tampered ciphertext is refused; it satisfies `OpenInto`'s in-place check. Tripwire: on this toolchain the GCM layout resolves to the Block copy's two round-key arrays and, on amd64 and arm64, the GHASH table; through a nil-in-production probe the test holds the objects the call built, sees the round keys non-zero inside the callback, and after the callback returns, returns an error, or panics sees every region — and the `aes.Block`'s own arrays — zero and the GCM object no longer computing AES-GCM under the key. A kept AEAD panics with `ErrAEADOutOfScope` on `Seal` and `Open`; bad sizes never reach the callback; an unexpected layout is an error, never a partial wipe. Shown to fail with the GCM wipe removed and with the scope guard removed; the residue test finds the key, both schedules and the GHASH table hundreds of times with the wipes removed, and nothing with them | `aesgcm_test.go`; `residue_scenarios_test.go` (`WithAESGCM+SealFrom+OpenInto`) |
 | `OpenInto` fails loud when the AEAD did not write in place | An AEAD stub that returns a fresh slice makes the call error, with the stray heap plaintext wiped, instead of reporting success over an unwritten buffer | `aead_openinto_test.go` (`TestOpenInto_RejectsAEADThatDoesNotWriteInPlace`) |
-| The reflection-based ECDH scalar wipe cannot silently no-op | A tripwire fails the suite if the standard library renames the field the wipe resolves, and an unresolvable field is reported as an error rather than ignored | `rsa_wipe_tripwire_test.go` |
+| A PKCS#8 key of another type handed to `NewRSASigner` is refused without being parsed | The algorithm identifier is read in place; the test wraps the parsed-key wipe hook, which only a materialized key can reach, and bounds the refusal's allocations | `secmem-crypto/rsa_test.go` (`TestNewRSASigner_RejectsNonRSAWithoutParsing`) |
 | Diceware word selection is not a secret-dependent memory access | Every draw is shown to read every wordlist entry regardless of the index chosen, and the result matches a direct index for every entry | `passphrase_ct_test.go` |
 | Sign wipes the exported limbs of the transient key it materializes | The wipe var is wrapped to alias the live transient's `big.Int` limbs during `Sign`; they are asserted zero afterward, and a `fired` guard fails if the deferred wipe is ever dropped. The stdlib FIPS-form copy and modular-arithmetic scratch are unreachable — see the note below | `livewipe_test.go`, `wipehelpers_block3_test.go` |
 | Every borrow path is safe when sealed/destroyed/nil | Each type's borrow methods return `ErrSealed`/`ErrDestroyed` and recover after `Unseal` | `sealed_block2_test.go`, `sealed_block3_test.go` |
