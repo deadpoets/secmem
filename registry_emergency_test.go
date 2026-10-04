@@ -260,7 +260,7 @@ func TestTryLock_FailsWhileHeld(t *testing.T) {
 // inside the blocking wipe pass. That pass must not remove a region from the
 // registry before it holds the region's lock: a Destroy already queued on that
 // same lock would reach janitor.release with the key in NEITHER map, report
-// success, and never unmap — and the retainWiped landing afterwards would
+// success, and never unmap — and the move to the wiped set landing afterwards would
 // strand the mapping in the wiped set, which nothing collects. The result is a
 // permanently leaked (and still mlock'd) mapping, from the very API pair
 // WipeAllSecrets documents as safe to use concurrently.

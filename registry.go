@@ -552,7 +552,7 @@ func (j *janitor) tryWipeInPlace(key uint64) (done bool, err error) {
 // owners are still usable, so anything written to one since the last wipe is a
 // live secret; skipping them would let a second WipeAllSecrets report success
 // over plaintext it never touched. Re-wiping a region that really is still
-// zeroed costs one memclr and reports nothing (retainWiped cleared its canary
+// zeroed costs one memclr and reports nothing (moveToWipedIf cleared its canary
 // zones, so there is no stale pattern to fail against).
 func (j *janitor) wipeAllInPlace() error {
 	j.mu.Lock()

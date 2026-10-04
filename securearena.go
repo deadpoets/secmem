@@ -841,7 +841,7 @@ func (s *ArenaSlot) Release() error {
 		end := start + s.arena.slotSize
 		// After an emergency wipe the strip holds zeros, not the pattern:
 		// WipeAllSecrets zeroed the whole slab, strips included, and the
-		// janitor cleared its own layout for the same reason (retainWiped).
+		// janitor cleared its own layout for the same reason (moveToWipedIf).
 		// Verifying here would report an overflow that never happened on
 		// every slot released after the wipe. The flag is set under the
 		// exclusive lock, after the wipe, and read here under rLock, so it

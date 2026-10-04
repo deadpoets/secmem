@@ -12,7 +12,7 @@ import (
 //
 // WipeAllSecrets zeroes the whole slab in place — canary strips included — and
 // leaves it mapped. The janitor clears its own canary layout for exactly that
-// reason (retainWiped), but Release re-verified the slot's strip itself and so
+// reason (moveToWipedIf), but Release re-verified the slot's strip itself and so
 // saw zeros where the pattern should be: it reported ErrCanaryViolation, a
 // documented memory-safety bug report, for an overflow that never happened,
 // on every slot released after the wipe. Release is teardown, not reuse: it

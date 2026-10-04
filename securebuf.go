@@ -276,9 +276,9 @@ func (s *SecureBuffer) fillInitial(raw []byte) error {
 // through emergencyJanitor's raw-mapping registry.
 //
 // On a refused registration (identity collision — see nextJanitorKey) the
-// region, which already holds the caller's secret, is wiped and released
-// here and the error returned: a buffer no wipe path can reach must not
-// exist.
+// region is wiped and released here and the error returned: a buffer no wipe
+// path can reach must not exist. It holds no secret yet — the constructors
+// copy after registering, see fillInitial — so the wipe is belt and braces.
 func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureBuffer, error) {
 	st := &bufferState{
 		data:       data,
@@ -445,7 +445,7 @@ func (s *SecureBuffer) MappedLen() int {
 
 // ReadOnly sets the buffer's memory protection to read-only.
 // This prevents accidental overwrites once a secret is fully loaded.
-// Call [ReadWrite] before [Destroy] to restore write access.
+// [Destroy] needs no [ReadWrite] first: it restores write access itself.
 //
 // The exclusive lock is held to drain all in-flight Write/SetByteAt calls
 // before the mprotect, preventing a SIGSEGV from a concurrent write hitting a
@@ -487,8 +487,8 @@ func (s *SecureBuffer) ReadOnly() error {
 	return nil
 }
 
-// ReadWrite restores read-write access to the buffer.
-// Must be called before [Destroy] if [ReadOnly] was previously applied.
+// ReadWrite restores read-write access to the buffer. It is not needed before
+// [Destroy], which makes the region writable for its own wipe.
 //
 // The exclusive lock is held to drain all in-flight access before the
 // mprotect.
