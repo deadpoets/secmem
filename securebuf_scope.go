@@ -50,19 +50,21 @@ func Scope(size int, fn func(*SecureBuffer) error) (retErr error) {
 //
 // Example:
 //
+//	var match bool
 //	err := secmem.ScopeWith(
 //	    func() (*secmem.SecureBuffer, error) {
-//	        return secmem.NewSyscallSafeBuffer(rawKey)
+//	        return secmem.NewSyscallSafeBuffer(rawToken)
 //	    },
-//	    func(buf *secmem.SecureBuffer) error {
-//	        return buf.WithBytesErr(func(key []byte) error {
-//	            block, err := aes.NewCipher(key)
-//	            if err != nil { return err }
-//	            block.Encrypt(dst, src)
-//	            return nil
-//	        })
+//	    func(buf *secmem.SecureBuffer) (err error) {
+//	        match, err = buf.ConstantTimeEqual(presented)
+//	        return err
 //	    },
 //	)
+//
+// Keep what fn does with the secret in place, as above. Building a cipher
+// from borrowed bytes (aes.NewCipher(key) inside WithBytesErr) copies the
+// expanded key onto the heap, where nothing wipes it; PITFALLS.md lists that
+// pattern as one to avoid, and secmem-crypto's WithAESGCM is the alternative.
 func ScopeWith(ctor func() (*SecureBuffer, error), fn func(*SecureBuffer) error) (retErr error) {
 	if ctor == nil {
 		return errors.New("secmem.ScopeWith: nil ctor")

@@ -657,7 +657,7 @@ func (a *SecureArena) ReadOnly() error {
 // slot acquired before the wipe can be released without it.
 //
 // The exclusive lock is held to drain all in-flight callbacks before the
-// mprotect (arena SB-3 equivalent fix).
+// mprotect.
 func (a *SecureArena) ReadWrite() error {
 	if a == nil {
 		return errors.New("secmem.SecureArena.ReadWrite: nil receiver")
@@ -774,7 +774,7 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 // After Release, all subsequent WithBytes/WithBytesErr calls return
 // [ErrSlotReleased].  Calling Release again is a no-op (idempotent).
 //
-// The wipe happens BEFORE the slot is marked free (SA-1 fix): this ensures
+// The wipe happens BEFORE the slot is marked free: this ensures
 // the next Acquire cannot read stale secret data from this slot.
 //
 // Release also verifies the slot's trailing canary strip. If code overflowed
