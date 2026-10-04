@@ -305,6 +305,31 @@ func (w capWriter) Write(p []byte) (int, error) {
 	return n, nil
 }
 
+// panicTag replaces a value whose own rendering method panicked.
+const panicTag = "[REDACTED:panic]"
+
+// callGuarded runs call, which invokes a method of the value rv holds, and
+// recovers a panic from it as fmt and slog's own handlers do: a logging call
+// must not take the program down because a value's method did. It reports
+// whether call returned normally. After a panic it has written the stand-in —
+// "<nil>" for a nil pointer, whose value-receiver method panics on the
+// dereference, and panicTag otherwise — and the value must not be walked
+// instead: its type asked to render itself.
+func callGuarded(b *strings.Builder, rv reflect.Value, call func()) (ok bool) {
+	defer func() {
+		if recover() == nil {
+			return
+		}
+		if rv.Kind() == reflect.Pointer && rv.IsNil() {
+			b.WriteString("<nil>")
+		} else {
+			b.WriteString(panicTag)
+		}
+	}()
+	call()
+	return true
+}
+
 // selfRenderingTypes are the interfaces through which fmt, slog and the
 // encoders let a value control its own textual form. A value implementing
 // one has said how it wants to appear — for a secret-holding type, that is
@@ -377,7 +402,12 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 			_, _ = fmt.Fprint(w, x)
 			return
 		case encoding.TextMarshaler:
-			if text, err := x.MarshalText(); err == nil {
+			var text []byte
+			var err error
+			if !callGuarded(b, rv, func() { text, err = x.MarshalText() }) {
+				return
+			}
+			if err == nil {
 				_, _ = w.Write(text)
 				return
 			}
