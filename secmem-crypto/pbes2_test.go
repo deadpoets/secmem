@@ -841,11 +841,14 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ScryptLockRefusal(t *testing.T) {
 
 // TestParsePrivateKeyWithPassphrase_PKCS8HeapGate: an RSA or EC key in a
 // PBES2 file hits the same heap-transients gate the constructors apply,
-// with the same message as the plain parser on the same kind of key. It
-// cannot fire before the KDF here — the algorithm identifier is inside the
-// ciphertext — so the derivation runs; what the gate guarantees is that
-// the refusal comes before any signer is built, and the test asserts the
-// error is the gate's and not the post-decryption one bit.
+// under the same sentinel as the plain parser on the same kind of key but
+// with one fixed message: the constructor's own error is not passed through,
+// because nothing produced from the decrypted plaintext may shape an error
+// (see parsePKCS8Encrypted). It cannot fire before the KDF here — the
+// algorithm identifier is inside the ciphertext — so the derivation runs;
+// what the gate guarantees is that the refusal comes before any signer is
+// built, and the test asserts the error is the gate's and not the
+// post-decryption one bit.
 func TestParsePrivateKeyWithPassphrase_PKCS8HeapGate(t *testing.T) {
 	for name, plainKey := range map[string]string{"rsa-2048-aes256-cbc-sha256": "rsa2048", "ecdsa-p256-aes256-cbc-sha256": "p256"} {
 		t.Run(name, func(t *testing.T) {
@@ -860,8 +863,11 @@ func TestParsePrivateKeyWithPassphrase_PKCS8HeapGate(t *testing.T) {
 						t.Fatalf("%s: the gate's refusal was folded into the post-decryption error", form)
 					}
 					_, perr := ParsePrivateKey(encodings(t, testKeyNamed(t, plainKey))[1].data)
-					if !errors.Is(perr, ErrHeapTransients) || perr.Error() != err.Error() {
-						t.Fatalf("%s: entry points disagree:\n  plain:      %v\n  passphrase: %v", form, perr, err)
+					if !errors.Is(perr, ErrHeapTransients) {
+						t.Fatalf("%s: plain parser: %v, want ErrHeapTransients", form, perr)
+					}
+					if want := "secmemcrypto: parse private key: " + errPBES2HeapTransients.Error(); err.Error() != want {
+						t.Fatalf("%s: the refusal is not the fixed text:\n  got:  %v\n  want: %s", form, err, want)
 					}
 				}
 				s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
@@ -1231,5 +1237,97 @@ func TestReadASN1Count(t *testing.T) {
 	var s cryptobyte.String = []byte{0x04, 0x01, 0x01} // an OCTET STRING, not an INTEGER
 	if _, _, ok := readASN1Count(&s); ok {
 		t.Error("a non-INTEGER was read as a count")
+	}
+}
+
+// respliceP8 re-encodes an EncryptedPrivateKeyInfo with a different IV and
+// ciphertext, leaving the algorithm parameters otherwise as they were.
+func respliceP8(t *testing.T, raw []byte, f pbes2File, iv, ct []byte) []byte {
+	t.Helper()
+	in := cryptobyte.String(raw)
+	var seq, alg cryptobyte.String
+	if !in.ReadASN1(&seq, cbasn1.SEQUENCE) || !seq.ReadASN1Element(&alg, cbasn1.SEQUENCE) {
+		t.Fatal("fixture is not an EncryptedPrivateKeyInfo")
+	}
+	patched := bytes.Clone(alg)
+	at := bytes.Index(patched, f.iv)
+	if at < 0 {
+		t.Fatal("IV not found in the algorithm identifier")
+	}
+	copy(patched[at:], iv)
+	var b cryptobyte.Builder
+	b.AddASN1(cbasn1.SEQUENCE, func(b *cryptobyte.Builder) {
+		b.AddBytes(patched)
+		b.AddASN1OctetString(ct)
+	})
+	return b.BytesOrPanic()
+}
+
+// TestParsePrivateKeyWithPassphrase_PKCS8ErrorIndependentOfPlaintext pins
+// that no error returned after decryption is built from the plaintext.
+// AES-CBC is unauthenticated: the IV edits plaintext block 0 bit for bit, and
+// blocks can be re-ordered, so whoever can modify the file chooses what the
+// parser reads as the algorithm OID — including an OID whose arcs are the key
+// bytes of the following blocks. Every such file, opened with the CORRECT
+// passphrase, must fail with one of at most two fixed strings: the wrong-
+// passphrase text, or the fixed unsupported-key text.
+func TestParsePrivateKeyWithPassphrase_PKCS8ErrorIndependentOfPlaintext(t *testing.T) {
+	_, raw, _ := pkcs8Fixture(t, "ed25519-iter1")
+	f, err := readPBES2(raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(f.ct) != 64 || len(f.iv) != 16 {
+		t.Fatalf("fixture shape changed: iv %d, ct %d", len(f.iv), len(f.ct))
+	}
+	_, wrongErr := ParsePrivateKeyWithPassphrase(raw, []byte("not it"))
+	if !errors.Is(wrongErr, x509.IncorrectPasswordError) {
+		t.Fatalf("wrong passphrase: %v", wrongErr)
+	}
+	fixed := "secmemcrypto: parse private key: " + errPBES2Unsupported.Error()
+	seen := map[string]bool{wrongErr.Error(): true}
+	note := func(what string, file []byte) {
+		s, err := ParsePrivateKeyWithPassphrase(file, []byte(testPassphrase))
+		if err == nil {
+			s.Destroy()
+			return
+		}
+		if got := err.Error(); got != wrongErr.Error() && got != fixed {
+			t.Errorf("%s: error is neither of the two fixed strings, so it was formatted from the plaintext: %v", what, err)
+		}
+		seen[err.Error()] = true
+	}
+
+	// Every bit position of the IV, one byte at a time: plaintext block 0 is
+	// the PrivateKeyInfo header, so this walks the version, the OID and the
+	// lengths.
+	for i := range f.iv {
+		iv := bytes.Clone(f.iv)
+		iv[i] ^= 0x01
+		note("IV flip", respliceP8(t, raw, f, iv, f.ct))
+	}
+
+	// The splice: block 0 rewritten (through the IV) to declare a 39-byte
+	// OID, and a forged block (through the ciphertext block before a replayed
+	// C0) to close the structure, so the OID's arcs are the 32 seed bytes.
+	xor := func(a, b, c []byte) []byte {
+		out := make([]byte, 16)
+		for i := range out {
+			out[i] = a[i] ^ b[i] ^ c[i]
+		}
+		return out
+	}
+	p0 := []byte{0x30, 0x2e, 0x02, 0x01, 0x00, 0x30, 0x05, 0x06, 0x03, 0x2b, 0x65, 0x70, 0x04, 0x22, 0x04, 0x20}
+	t0 := []byte{0x30, 0x5e, 0x02, 0x01, 0x00, 0x30, 0x39, 0x06, 0x27, 0x2b, 0x01, 0x01, 0x01, 0x01, 0x01, 0x01}
+	t3 := append([]byte{0x04, 0x1e}, make([]byte, 14)...)
+	c := [][]byte{f.ct[0:16], f.ct[16:32], f.ct[32:48], f.ct[48:64]}
+	ct := bytes.Join([][]byte{c[0], c[1], c[2], xor(f.iv, p0, t3), c[0], c[2], c[3]}, nil)
+	note("splice", respliceP8(t, raw, f, xor(f.iv, p0, t0), ct))
+
+	if len(seen) > 2 {
+		for s := range seen {
+			t.Log(s)
+		}
+		t.Errorf("%d distinct post-decryption errors, want at most 2 fixed strings", len(seen))
 	}
 }
