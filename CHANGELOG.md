@@ -346,6 +346,13 @@ The core floor is unchanged at v0.7.0.
   in size and lost its enforcement. The flags that were read are now written
   back unchanged.
 
+- **`Capabilities.Warnings` no longer warns about fork inheritance on
+  Windows, which has no fork**, and the Go-heap line names the real exposure
+  (not locked, dumpable, not wiped on free) instead of a collector that
+  copies secrets, which Go's does not. `Probe`'s documentation now says that
+  a failed probe allocation and an unsupported platform produce the same
+  report.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.
