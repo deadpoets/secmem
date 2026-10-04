@@ -23,10 +23,10 @@ package secmem
 // (non-inlined) stack frame. Goroutines start on a small stack (2 KiB on
 // Linux and macOS, 8 KiB on Windows; adaptive since Go 1.19), so on a
 // shallow call that allocation triggers a stack copy (morestack): a single
-// deferred wipe would then run on the RELOCATED stack, zeroing the fresh copy
+// wipe after fn would then run on the RELOCATED stack, zeroing the fresh copy
 // while fn's real residue sits on the old segment the runtime just freed —
 // untouched. Calling the wipe once on entry forces any growth to happen BEFORE
-// fn writes a secret and pre-cleans the band; the deferred call is then
+// fn writes a secret and pre-cleans the band; the second call is then
 // guaranteed to run in place.
 //
 // The entry wipe orders that growth, it does not make it free. morestack copies

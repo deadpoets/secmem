@@ -146,12 +146,24 @@ at moments your code does not choose:
 
 ### What Scrub does about it
 
-On entry it calls a 32 KiB assembly frame wipe, and defers a second call to the
-same routine. The entry call is not redundant: it forces any stack growth to
-happen *before* `fn` writes a secret, so the deferred wipe is guaranteed to run
-on the stack the residue is actually on rather than on a fresh copy of it.
-Reported as `Capabilities.FrameScrub` — real assembly on amd64 and arm64, a
-no-op stub elsewhere.
+On entry it calls a 32 KiB assembly frame wipe, and calls the same routine
+again once `fn` is finished. The entry call is not redundant: it forces any
+stack growth to happen *before* `fn` writes a secret, so the second wipe is
+guaranteed to run on the stack the residue is actually on rather than on a
+fresh copy of it. The second call is made directly, not deferred: `fn` runs
+through a helper that recovers a panic and returns, so that by the time the
+wipe runs `fn`'s frames are dead stack on the panic path too (a deferred wipe
+runs from the panic machinery's own frame, below the frames it is meant to
+erase), and the panic is then re-raised. Reported as
+`Capabilities.FrameScrub` — real assembly on amd64 and arm64, a no-op stub
+elsewhere.
+
+Two limits of that, both stated in the `Scrub` godoc. The growth forced on
+entry copies the caller's whole stack and abandons the old segment with the
+caller's frames still on it, unwiped: whatever the *caller* held in locals
+before the window is not reached. And `runtime.Goexit` inside `fn` leaves the
+window without returning to it; a deferred backstop clears the registers and
+wipes then, from below `fn`'s frames, so it is weaker than the normal exit.
 
 On Linux the window additionally blocks SIGURG and SIGPROF for its duration,
 under `runtime.LockOSThread` (a signal mask is a per-thread property, and an
@@ -186,11 +198,11 @@ Bounded by design, and tunable in principle:
 
 - **A call tree deeper than the 32 KiB band** — the tail below it survives.
 - **A stack relocation triggered *inside* `fn`**, if `fn` exceeds the reserved
-  headroom; the deferred wipe then cleans the new stack, not the abandoned one.
+  headroom; the exit wipe then cleans the new stack, not the abandoned one.
 
 Constraints of the Go runtime, not defects in this library:
 
-- **A GC stack-shrink between `fn`'s return and the deferred wipe.**
+- **A GC stack-shrink between `fn`'s return and the exit wipe.**
   `shrinkstack` is asynchronous, runtime-owned, and unreachable from Go; if it
   frees `fn`'s segment first, the wipe runs on the copy. Only the
   `runtime/secret` path (`Capabilities.RegisterScrub`, i.e.
