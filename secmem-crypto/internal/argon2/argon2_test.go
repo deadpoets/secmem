@@ -180,9 +180,16 @@ func TestH0MatchesBLAKE2b(t *testing.T) {
 
 // TestLongInputsStayInWorkspace pins that no input, however long, is copied
 // to the heap on its way into H0: a derivation over a megabyte of associated
-// data must allocate no more than one over a few bytes does. (What both
-// allocate is the worker goroutines' bookkeeping; their stacks are not heap
-// and are not counted.)
+// data must allocate nowhere near the size of that data. (What every
+// derivation allocates is the worker goroutines' bookkeeping; their stacks are
+// not heap and are not counted.)
+//
+// TotalAlloc is process-wide, so the delta also counts whatever the runtime
+// and other goroutines allocate meanwhile: a fixed slack of a few KiB over
+// the short derivation failed in CI on exactly that noise (5368 bytes against
+// 272). The bound is therefore a fraction of the input, taken as the least of
+// several runs. A copy of the input costs at least its length, four times the
+// bound, on every run; noise is neither that large nor that regular.
 func TestLongInputsStayInWorkspace(t *testing.T) {
 	password := []byte("correct horse battery staple")
 	salt := []byte("0123456789abcdef")
@@ -200,9 +207,14 @@ func TestLongInputsStayInWorkspace(t *testing.T) {
 	long := bytes.Repeat([]byte{0x04}, 1<<20)
 	allocated(nil) // warm up: the first goroutine start allocates more than later ones
 	short := allocated([]byte("x"))
-	if got := allocated(long); got > short+4096 {
-		t.Fatalf("a derivation over %d bytes of associated data allocated %d bytes of heap, against %d for a short one: the input was copied out of the workspace", len(long), got, short)
+	least := allocated(long)
+	for range 4 {
+		least = min(least, allocated(long))
 	}
+	if bound := uint64(len(long) / 4); least > bound {
+		t.Fatalf("a derivation over %d bytes of associated data allocated at least %d bytes of heap on every run (bound %d; %d for a short one): the input was copied out of the workspace", len(long), least, bound, short)
+	}
+	t.Logf("heap allocated: %d bytes for a short input, least %d over five runs for %d bytes of input", short, least, len(long))
 }
 
 // TestWorkspaceReuse pins that a wiped Workspace derives correctly again.
