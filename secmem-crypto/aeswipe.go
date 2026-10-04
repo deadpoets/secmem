@@ -34,6 +34,11 @@ import (
 // refuse to proceed rather than leave a key schedule on the heap.
 var aesRoundKeyFields = [...]string{"enc", "dec"}
 
+// aesBlockFields is every field of the expanded Block: the two schedules and
+// the round count, which is public. A Block with any other field is not one
+// this wipe can vouch for, and is refused (see unaccountedField).
+var aesBlockFields = [...]string{"rounds", "enc", "dec"}
+
 // aesLayout is the resolved position of each round-key array inside one
 // concrete Block type, or the reason it could not be resolved.
 type aesLayout struct {
@@ -52,16 +57,26 @@ func aesLayoutFor(b cipher.Block) *aesLayout {
 	if l := aesLayoutCache.Load(); l != nil && l.typ == t {
 		return l
 	}
+	l := resolveAESLayout(t)
+	aesLayoutCache.Store(l)
+	return l
+}
+
+// resolveAESLayout is aesLayoutFor without the cache: the layout of one
+// concrete Block type, or the reason it has none.
+func resolveAESLayout(t reflect.Type) *aesLayout {
 	l := &aesLayout{typ: t}
 	for i, field := range aesRoundKeyFields {
 		off, size, err := aesFieldLayout(t, field)
 		if err != nil {
 			l.err = err
-			break
+			return l
 		}
 		l.off[i], l.size[i] = off, size
 	}
-	aesLayoutCache.Store(l)
+	if name := unaccountedField(t.Elem(), aesBlockFields[:]...); name != "" {
+		l.err = fmt.Errorf("secmemcrypto: wipe aes block: %v has a field %q this package does not know to be public on %s; the round keys were NOT wiped", t, name, runtime.Version())
+	}
 	return l
 }
 

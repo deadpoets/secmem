@@ -53,9 +53,14 @@ var ErrAEADOutOfScope = errors.New("secmemcrypto: AEAD used after its WithAESGCM
 // this wipes; that is the operation, and no stdlib AES avoids it.
 //
 // The wipe reaches the objects through unexported fields, resolved by
-// reflection and pinned to the toolchain by a tripwire test. If the layout
-// is not the one expected, WithAESGCM returns an error before the key is
-// expanded, so a toolchain change can never leave a schedule behind silently.
+// reflection and pinned to the toolchain by a tripwire test. Every field of
+// both objects has to be one this package knows — a schedule or table it
+// wipes, or a size it knows to be public — or WithAESGCM returns an error
+// before the key is expanded: a toolchain that renames a field, or adds one,
+// is refused rather than half-wiped. What no such check can see is an
+// existing field that starts to hold something else; for the toolchains CI
+// runs, the tripwire test's own oracle (the wiped object no longer computes
+// AES-GCM under the key) covers that.
 func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error {
 	if key == nil {
 		return errors.New("secmemcrypto: with aes-gcm: nil key buffer")
@@ -169,12 +174,20 @@ func aesGCMLayoutReady() (*aesGCMLayout, error) {
 	return l, nil
 }
 
+// aesGCMPublicFields are the fields of *GCM that hold no key material; with
+// "cipher" and "productTable" they are all of them, on every architecture
+// this package's wipe supports. (s390x's GCM carries a hashKey instead, and
+// is refused — as its unexpanded Block already is.)
+var aesGCMPublicFields = [...]string{"nonceSize", "tagSize"}
+
 // resolveAESGCMLayout finds, inside *GCM, the round-key arrays of the
 // embedded copy of the Block ("cipher", then "enc" and "dec") and, where
 // present, the GHASH table ("productTable", a byte array). It fails — never
 // returns a partial layout — when the type is not a pointer to a struct, a
-// round-key array is missing or not [N]uint32, or productTable exists but is
-// not a byte array.
+// round-key array is missing or not [N]uint32, productTable exists but is
+// not a byte array, or either struct has a field that is neither one of
+// those nor known to be public (see unaccountedField): a renamed table is
+// such a field.
 func resolveAESGCMLayout(t reflect.Type) (*aesGCMLayout, error) {
 	fail := func(format string, args ...any) (*aesGCMLayout, error) {
 		return nil, fmt.Errorf("secmemcrypto: with aes-gcm: "+format+" on %s; refusing to expand a key whose schedule could not be wiped", append(args, runtime.Version())...)
@@ -200,6 +213,12 @@ func resolveAESGCMLayout(t reflect.Type) (*aesGCMLayout, error) {
 			return fail("%v.productTable is %s, want a byte array", t, pf.Type)
 		}
 		l.regions = append(l.regions, aesGCMRegion{"productTable", promotedFieldOffset(st, pf), int(pf.Type.Size())})
+	}
+	if name := unaccountedField(st, append([]string{"cipher", "productTable"}, aesGCMPublicFields[:]...)...); name != "" {
+		return fail("%v has a field %q this package does not know to be public", t, name)
+	}
+	if name := unaccountedField(cf.Type, aesBlockFields[:]...); name != "" {
+		return fail("%v.cipher has a field %q this package does not know to be public", t, name)
 	}
 	return l, nil
 }
