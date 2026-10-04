@@ -56,7 +56,8 @@
 //
 // The block-processing core (blamka, indexAlpha, phi, the segment schedule)
 // is unchanged; blamka_amd64.s is byte-identical to upstream and
-// upstream_identity_test.go checks that, and the verbatim functions,
+// upstream_identity_test.go checks that, the verbatim functions, and the
+// BLAKE2b copies (which differ from upstream only by a package qualifier),
 // against the x/crypto the module resolves. Output is byte-for-byte
 // identical to upstream for the same inputs — argon2_test.go checks that
 // directly against golang.org/x/crypto/argon2 as well as against the RFC

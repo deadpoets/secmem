@@ -90,3 +90,53 @@ func TestUpstreamIdentity_VerbatimFunctions(t *testing.T) {
 		}
 	}
 }
+
+// varText is funcText for a top-level `var name = …` declaration that ends
+// with a closing brace in column 0, trailing line comments dropped.
+func varText(t *testing.T, src []byte, name string) string {
+	t.Helper()
+	re := regexp.MustCompile(`(?ms)^var ` + regexp.QuoteMeta(name) + ` = .*?^}$`)
+	m := re.Find(src)
+	if m == nil {
+		t.Fatalf("variable %s not found", name)
+	}
+	return regexp.MustCompile(`(?m)\s*//.*$`).ReplaceAllString(string(m), "")
+}
+
+// TestUpstreamIdentity_BLAKE2b covers the other package this fork copies
+// from. The copies cannot be text-identical — outside package blake2b the
+// constants need its qualifier, and checkSum calls the portable compression
+// function by its own name rather than through the dispatching hashBlocks —
+// so they are compared with exactly those two differences undone, and
+// nothing else. H0 and every H' length without a one-shot go through this
+// code; a bump that changes it upstream fails here, at the bump.
+func TestUpstreamIdentity_BLAKE2b(t *testing.T) {
+	up := filepath.Join(filepath.Dir(upstreamArgon2Dir(t)), "blake2b")
+	ours, err := os.ReadFile("blake2b_generic.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	read := func(name string) []byte {
+		b, err := os.ReadFile(filepath.Join(up, name))
+		if err != nil {
+			t.Fatal(err)
+		}
+		return b
+	}
+	generic, main := read("blake2b_generic.go"), read("blake2b.go")
+	unqualify := func(s string) string { return strings.ReplaceAll(s, "blake2b.", "") }
+
+	if a, b := unqualify(funcText(t, ours, "hashBlocksGeneric")), funcText(t, generic, "hashBlocksGeneric"); a != b {
+		t.Error("hashBlocksGeneric differs from the resolved x/crypto copy by more than the blake2b qualifier")
+	}
+	a := strings.ReplaceAll(unqualify(funcText(t, ours, "checkSum")), "hashBlocksGeneric(", "hashBlocks(")
+	if b := funcText(t, main, "checkSum"); a != b {
+		t.Error("checkSum differs from the resolved x/crypto copy by more than the qualifier and the compression function's name")
+	}
+	if a, b := varText(t, ours, "precomputed"), varText(t, generic, "precomputed"); a != b {
+		t.Error("precomputed differs from the resolved x/crypto copy")
+	}
+	if a, b := varText(t, ours, "iv"), varText(t, main, "iv"); a != b {
+		t.Error("iv differs from the resolved x/crypto copy")
+	}
+}
