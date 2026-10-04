@@ -72,7 +72,8 @@ type record struct {
 
 	// expiresAt is when the identity self-destructs; zero means never.
 	// Enforcement is destruction: at the deadline the SecureBuffer is
-	// wiped and unmapped, not merely hidden from List.
+	// wiped and unmapped, not merely hidden from List. It is a wall-clock
+	// time with no monotonic reading (see Add).
 	expiresAt time.Time
 }
 
@@ -104,6 +105,11 @@ type Keyring struct {
 	// accepts; the operator turns it on with -allow-heap-transients.
 	allowHeapTransients bool
 }
+
+// timeNow is the clock identity lifetimes are measured on. A variable
+// rather than a call to time.Now only so the tests can stand in a clock that
+// has been through a suspend; nothing outside the tests assigns to it.
+var timeNow = time.Now
 
 // lockCheckLen is the Argon2id output size for the lock derivation.
 const lockCheckLen = 32
@@ -142,12 +148,18 @@ func (k *Keyring) Add(req *addIdentityRequest) error {
 	}
 	if req.lifetimeSecs > 0 {
 		d := time.Duration(req.lifetimeSecs) * time.Second
-		rec.expiresAt = time.Now().Add(d)
+		// Round(0) strips the monotonic reading, so the deadline is
+		// compared on the wall clock. The monotonic clock stops while the
+		// machine is suspended; a deadline kept on it would give a laptop
+		// that slept through "-t 3600" the rest of its hour after resume.
+		rec.expiresAt = timeNow().Add(d).Round(0)
 		// One-shot timer per constrained add; the sweep it triggers also
 		// reaps any other identity past its deadline. Sign and List
 		// additionally sweep lazily, closing the race at the boundary —
 		// a signature can never be produced by an expired key even if
-		// the timer goroutine is delayed.
+		// the timer goroutine is delayed. The timer itself does run on the
+		// monotonic clock, so after a suspend it fires late by the time
+		// asleep: until then the lazy sweep is what destroys the key.
 		time.AfterFunc(d, k.expire)
 	}
 
@@ -296,7 +308,7 @@ func (k *Keyring) expireLocked() {
 	if k.destroyed {
 		return
 	}
-	now := time.Now()
+	now := timeNow().Round(0) // wall clock, like the deadlines; see Add
 	kept := k.keys[:0]
 	for _, r := range k.keys {
 		if !r.expiresAt.IsZero() && !now.Before(r.expiresAt) {

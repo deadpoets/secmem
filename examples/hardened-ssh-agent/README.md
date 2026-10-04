@@ -109,7 +109,9 @@ accept loop serves at most 64 connections at once and gives each request
 - **Lifetime enforcement**: a `-t`-constrained key is *destroyed* — its
   SecureBuffer wiped and unmapped, asserted via `IsDestroyed()` — at the
   deadline, and signing with it then fails. Verified end-to-end against
-  real `ssh-add -t`.
+  real `ssh-add -t`. The deadline is a wall-clock one: with the clock
+  stood in for one that slept eight hours through a one-hour lifetime, the
+  first request after resume destroys the key instead of signing.
 - **Fail-closed constraints**: a `-c` (confirm) add is refused rather than
   stored without the protection; the spec requires failing an add whose
   constraints the agent can't honor, and we do.
@@ -193,6 +195,17 @@ while a derivation runs, every other keyring call waits behind it — a
 refused a derivation time later, and a legitimate `UNLOCK` queues behind
 whatever `UNLOCK`s arrived before it, at most 64 of them. `keyring.go`'s
 `Unlock` comment gives the reasoning and the alternative it rejected.
+
+**A `-t` lifetime across a suspend** is enforced on the wall clock, but
+not at the deadline itself. The timer that destroys an expired key runs on
+Go's monotonic clock, which does not advance while the machine is asleep,
+so a key whose deadline passed during a suspend is still in memory (sealed)
+when the machine wakes, and stays there until the next list request, or
+sign request on an unlocked agent, sweeps it or the late timer fires — up
+to the time spent asleep. It cannot sign in that interval: every `Sign`
+checks the deadline first. And a
+wall clock can be set: whoever can move the system clock back extends a
+lifetime, and a step forward ends one early.
 
 ECDSA identities accepted through `-allow-heap-transients` fall outside the
 "never at rest on the heap" claim: each signature leaves unwiped copies of the
