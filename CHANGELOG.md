@@ -13,6 +13,21 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **Destroy-time quarantine (Linux, Windows).** `Destroy` used to unmap a
+  region, and the next allocation was usually given the same addresses, so a
+  slice wrongly retained from a callback became a view of a different live
+  buffer. A destroyed region is now wiped and then kept as a no-access
+  reservation with nothing behind it: such a slice faults, and nothing can be
+  allocated there. A held region costs address space only, no memory and no
+  lock budget. The quarantine is a FIFO bounded by `SetQuarantineLimits`
+  (default 4096 regions / 4 GiB of address space, 64 regions / 16 MiB on
+  32-bit; zero turns it off), so the protection covers the most recently
+  destroyed regions and lapses on eviction. Reported as
+  `Capabilities().DestroyQuarantine`; not implemented on macOS, where the
+  replacement mapping has not been run.
+
 ### Changed
 
 - **Every module's `go.mod` carries `toolchain go1.27.3`**, the release CI

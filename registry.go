@@ -401,7 +401,10 @@ func wipeAndFree(region janitorRegion, lockHeld, unmap bool) error {
 	// the advice was taken (it is refused on kernels older than 5.18) — so a
 	// refusal here changes nothing worth reporting.
 	_ = madviseBeforeFree(region.region)
-	return errors.Join(canaryErr, freeSecretMem(region.region))
+	// Retire rather than free: where the quarantine is in force the range
+	// stays reserved and inaccessible for a while, so a slice retained past
+	// this point faults instead of aliasing the next allocation.
+	return errors.Join(canaryErr, retireSecretMem(region.region))
 }
 
 // markWiped tells the owning SecureBuffer/SecureArena that its secret is gone,

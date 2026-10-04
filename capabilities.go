@@ -132,6 +132,16 @@ type Capabilities struct {
 	// flipped while sealed is handed back as the secret. False by default,
 	// for [Probe], and for a [SecureArena], which has no Seal.
 	UnauthenticatedSeal bool
+
+	// DestroyQuarantine reports that a destroyed region is kept for a while
+	// as a no-access reservation instead of being unmapped at once, so a
+	// slice wrongly retained past Destroy faults rather than aliasing the
+	// next allocation. Implemented on Linux and Windows; bounded by
+	// [SetQuarantineLimits], and false when those limits are zero: unlike
+	// the allocation facts above, it reflects the limits at the time of the
+	// call. Like GuardPages it is a memory-safety bug-catcher, not a secrecy
+	// mechanism.
+	DestroyQuarantine bool
 }
 
 // allocInfo records which protections one specific allocation actually
@@ -175,6 +185,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		Insecure:   info.insecure,
 
 		UnauthenticatedSeal: info.unauthenticatedSeal,
+		DestroyQuarantine:   info.guardPages && quarantineInForce(),
 	}
 }
 
@@ -254,6 +265,9 @@ func (c Capabilities) Warnings() []string {
 	if c.UnauthenticatedSeal {
 		w = append(w, "seal is not authenticated (WithUnauthenticatedSeal) — a bit flipped while sealed is handed back as the secret")
 	}
+	if !c.DestroyQuarantine {
+		w = append(w, "no destroy quarantine — a slice retained past Destroy can alias the next allocation")
+	}
 	return w
 }
 
@@ -281,6 +295,7 @@ func (c Capabilities) String() string {
 	flag("vector-clear", c.VectorRegisterClear)
 	flag("gp-clear", c.GPRegisterClear)
 	flag("guard-pages", c.GuardPages)
+	flag("destroy-quarantine", c.DestroyQuarantine)
 
 	var b strings.Builder
 	b.WriteString(c.GOOS)

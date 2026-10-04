@@ -45,8 +45,11 @@ import (
 // is a safety net only — it runs non-deterministically at GC time.
 //
 // WARNING: Never retain a reference from [SecureBuffer.WithBytes]
-// beyond the buffer's lifetime.  After Destroy,
-// the backing memory is unmapped; any retained slice becomes a dangling pointer.
+// beyond the buffer's lifetime.  After Destroy, any retained slice is a
+// dangling pointer. On Linux and Windows the destroyed range is kept for a
+// while as a no-access reservation, so using such a slice faults; once the
+// range leaves that quarantine (see [SetQuarantineLimits]), and everywhere
+// else, it can point into whatever was allocated there next.
 //
 // # Copies are aliases
 //
@@ -361,9 +364,12 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo, cfg confi
 //  2. Mprotect(RW) — ensure the page is writable before wiping.
 //  3. secureWipeSlice — zero + CLFLUSH/CLFLUSHOPT + SFENCE/LFENCE.
 //  4. Madvise(DONTNEED_LOCKED) — release physical frames immediately.
-//  5. freeSecretMem — unmap the reservation: Munmap (Linux munlocks first;
-//     Darwin deliberately does not, see mlock_darwin.go) / VirtualUnlock +
-//     VirtualFree.
+//  5. Retire the reservation. On Linux and Windows it becomes a no-access
+//     reservation with no memory behind it and joins the destroy-time
+//     quarantine (quarantine.go), to be unmapped when it is evicted;
+//     elsewhere, or with the quarantine off, it is unmapped now: Munmap
+//     (Linux munlocks first; Darwin deliberately does not, see
+//     mlock_darwin.go) / VirtualUnlock + VirtualFree.
 //  6. Nil out data and zero region — makes Destroy idempotent.
 //  7. runtime.KeepAlive(s) — ensures the GC does not run the cleanup
 //     concurrently between Stop() and the wipe.
