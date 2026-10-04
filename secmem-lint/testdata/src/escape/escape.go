@@ -180,3 +180,35 @@ func typeSwitchOK(buf *secmem.SecureBuffer, v any) {
 		}
 	})
 }
+
+// leaksViaRangeAssignment: a range clause written with = assigns each element
+// to an existing variable, which may be anywhere.
+func leaksViaRangeAssignment(buf *secmem.SecureBuffer, ch chan []byte) {
+	_ = buf.WithBytes(func(b []byte) {
+		for _, sink = range [][]byte{b} { // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		}
+		for _, outer.b = range [][]byte{b} { // want `secmem-lint: borrowed secret bytes assigned to a struct field`
+		}
+		for _, outerSlab[0] = range [][]byte{b} { // want `secmem-lint: borrowed secret bytes assigned to a map or slice element`
+		}
+		for sink = range ch { // ok: not the borrowed bytes
+		}
+	})
+}
+
+var outerIdx int
+
+// rangeAssignmentOK: the index of a range over the bytes is a number, and an
+// element assigned to a variable declared inside the closure stays inside.
+func rangeAssignmentOK(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		for outerIdx = range b {
+		}
+		for outerIdx, _ = range [][]byte{b} {
+		}
+		var in []byte
+		for _, in = range [][]byte{b} {
+		}
+		_ = in
+	})
+}

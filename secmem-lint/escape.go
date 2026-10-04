@@ -107,34 +107,48 @@ func (s *escapeScan) propagate() {
 	}
 }
 
-// rangeTaint taints the variables a range statement over a tainted value
-// declares. Over a slice, array or string the VALUE is the element (the key is
-// an index and stays clean, as is the sole variable of a range over a slice).
+// rangeTaint taints the local variables a range statement over a tainted
+// value writes.
+func (s *escapeScan) rangeTaint(st *ast.RangeStmt) bool {
+	changed := false
+	for _, target := range s.rangeTargets(st) {
+		if s.taintTarget(target) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// rangeTargets returns the Key / Value expressions of a range statement that
+// receive a tainted value, or nil when the operand is not tainted. Over a
+// slice, array or string the VALUE is the element (the key is an index and
+// stays clean, as is the sole variable of a range over a slice).
 // Over a channel or an iterator function the elements come through the FIRST
 // variable — for c := range seq — so that one is tainted whenever it is the
 // only one, and a second variable is tainted as an element too. The first of
 // two variables of an iterator is tainted only when its type is a byte or can
 // otherwise hold bytes (the c of a Seq2[byte, int], the k of a Seq2[[]byte, V]),
 // so an index-like int key stays clean.
-func (s *escapeScan) rangeTaint(st *ast.RangeStmt) bool {
+func (s *escapeScan) rangeTargets(st *ast.RangeStmt) []ast.Expr {
 	if !s.tainted(st.X) {
-		return false
+		return nil
 	}
-	changed := st.Value != nil && s.taintTarget(st.Value)
+	var targets []ast.Expr
+	if st.Value != nil {
+		targets = append(targets, st.Value)
+	}
 	if st.Key == nil {
-		return changed
+		return targets
 	}
 	switch types.Unalias(s.c.pass.TypesInfo.TypeOf(st.X)).Underlying().(type) {
 	case *types.Chan:
-		if s.taintTarget(st.Key) {
-			changed = true
-		}
+		targets = append(targets, st.Key)
 	case *types.Signature:
-		if (st.Value == nil || keyCarriesBytes(s.c.pass.TypesInfo.TypeOf(st.Key))) && s.taintTarget(st.Key) {
-			changed = true
+		if st.Value == nil || keyCarriesBytes(s.c.pass.TypesInfo.TypeOf(st.Key)) {
+			targets = append(targets, st.Key)
 		}
 	}
-	return changed
+	return targets
 }
 
 // typeSwitchTaint taints the variable a type switch over a tainted value
@@ -614,9 +628,17 @@ func (s *escapeScan) reportEscapes() {
 			if node.Tok != token.DEFINE {
 				forPairs(node.Lhs, node.Rhs, func(l, r ast.Expr) {
 					if s.tainted(r) {
-						s.checkAssign(node, l)
+						s.checkAssign(node.Pos(), l)
 					}
 				})
+			}
+		case *ast.RangeStmt:
+			// for _, outer = range x assigns each element to a variable that
+			// already exists; with := the variables are the loop's own.
+			if node.Tok == token.ASSIGN {
+				for _, target := range s.rangeTargets(node) {
+					s.checkAssign(node.Pos(), target)
+				}
 			}
 		case *ast.SendStmt:
 			if s.tainted(node.Value) {
@@ -705,7 +727,7 @@ func (s *escapeScan) taintedReceiver(call *ast.CallExpr) bool {
 // to a named result of the closure, which is the return value; writing into a
 // field, element or pointee escapes unless that storage is provably inside
 // (see innerStorage).
-func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
+func (s *escapeScan) checkAssign(pos token.Pos, target ast.Expr) {
 	var where string
 	switch t := unparen(target).(type) {
 	case *ast.Ident:
@@ -744,7 +766,7 @@ func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
 	default:
 		return
 	}
-	s.c.report(stmt.Pos(), "borrowed secret bytes assigned to "+where+"; they can outlive the closure")
+	s.c.report(pos, "borrowed secret bytes assigned to "+where+"; they can outlive the closure")
 }
 
 func isUintptr(t types.Type) bool {
