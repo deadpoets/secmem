@@ -684,12 +684,29 @@ func (s *SecureBuffer) Unseal() error {
 	// mutator then refuses with ErrReadOnly instead of faulting. On failure the
 	// buffer stays sealed (fail closed) rather than exposing a writable region.
 	if s.readOnly {
-		if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
+		if err := unsealRestoreReadOnly(s.region); err != nil {
+			// The region is read-write plaintext at this point, which is not
+			// what sealed means, and Seal would return nil without touching
+			// it. Seal it again: encrypt where the seal cipher applies, then
+			// protect. Both best-effort — the error returned is the restore's
+			// — but the cipher flag follows what actually happened, so a
+			// later Unseal decrypts exactly when there is ciphertext.
+			if applied, eerr := sealEncrypt(s.region); eerr == nil && applied {
+				s.sealCipher.Store(true)
+			}
+			_ = sealProtect(s.region)
 			return fmt.Errorf("secmem.SecureBuffer.Unseal: restoring read-only: %w", err)
 		}
 	}
 	s.sealed = false
 	return nil
+}
+
+// unsealRestoreReadOnly is Unseal's PROT_READ step for a buffer that was
+// read-only when sealed. A package var for the reason sealProtect is one: so a
+// test can make it fail and drive the path that has to seal again.
+var unsealRestoreReadOnly = func(region secRegion) error {
+	return mprotectSecretMem(region, 1 /*PROT_READ*/)
 }
 
 // IsSealed reports whether the buffer is currently in the sealed (PROT_NONE) state.

@@ -314,6 +314,13 @@ The core floor is unchanged at v0.7.0.
   as `SecureBuffer.IsDestroyed` does. `Acquire` and new borrows are still
   refused from the moment `Destroy` is called.
 
+- **A failed `Unseal` could leave a buffer flagged sealed over unprotected
+  plaintext.** On a buffer that was read-only when sealed, `Unseal` decrypts
+  and then re-applies the read-only protection; if that last step failed it
+  returned with the sealed flag set and the page read-write, and a `Seal` in
+  response returned nil without protecting anything. The failure path now
+  seals the buffer again (cipher and page protection) before it returns.
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.
