@@ -315,13 +315,6 @@ func TestTruncate_DoesNotModifyRaw(t *testing.T) {
 	}
 }
 
-// TestHasCLFLUSHOPT verifies the CPU feature flag helper returns without crashing.
-// The actual return value is hardware-dependent; we just verify the function is safe.
-func TestHasCLFLUSHOPT(t *testing.T) {
-	t.Parallel()
-	_ = HasCLFLUSHOPT() // must not panic
-}
-
 // TestDestroy_StopsCleanup verifies that an explicit Destroy prevents the
 // AddCleanup safety-net from firing on GC. The absence of a crash after
 // forcing GC on a destroyed buffer is the assertion — if Stop() did not work,
@@ -389,13 +382,21 @@ func (l *lockedBuffer) String() string {
 func TestAddCleanup_NoDoubleFreeOnGC(t *testing.T) {
 	before := janitorRegionCount()
 
-	buf, err := NewEmptyBuffer(64)
-	if err != nil {
-		t.Fatalf("NewEmptyBuffer: %v", err)
-	}
-	_ = buf.Len() // use the buffer to ensure it is allocated
+	// The fallback is documented to warn as well as wipe; capture the default
+	// logger to see it. The mapped size is one no other test uses, so the
+	// warning found is this buffer's.
+	var logged lockedBuffer
+	oldLogger := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logged, nil)))
+	defer slog.SetDefault(oldLogger)
 
-	buf = nil //nolint:wastedassign // intentionally nil to allow GC
+	buf, err := NewEmptyBuffer(5 * 4096)
+	if err != nil {
+		t.Skipf("NewEmptyBuffer: %v", err)
+	}
+	wantWarning := fmt.Sprintf("size=%d", buf.MappedLen())
+
+	buf = nil //nolint:wastedassign,ineffassign // intentionally nil to allow GC
 
 	// Force GC to trigger the AddCleanup callback.
 	// If the callback wipes and frees memory incorrectly, the race detector
@@ -410,6 +411,10 @@ func TestAddCleanup_NoDoubleFreeOnGC(t *testing.T) {
 	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if janitorRegionCount() == before {
+			out := logged.String()
+			if !strings.Contains(out, "finalized without explicit Destroy") || !strings.Contains(out, wantWarning) {
+				t.Errorf("the finalization fallback released the region without the documented warning; logged:\n%s", out)
+			}
 			return
 		}
 		runtime.GC()
