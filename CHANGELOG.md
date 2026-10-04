@@ -328,6 +328,12 @@ The core floor is unchanged at v0.7.0.
   report an overflow, and the set documented as "already zero" held a live
   secret. A skipped region now goes back to the live set as it was.
 
+- **Windows: a `kernel32` without the WER exclusion exports panicked every
+  allocation.** The two calls were made without checking that the export
+  resolves, which `LazyProc` answers with a panic. Absence is now what the
+  comment always promised: the allocation is reported as not excluded
+  (`Capabilities().NoDump` false).
+
 ## [0.7.0] - 2026-10-02
 
 Fixes from the adversarial review, and CI on both supported Go releases.
