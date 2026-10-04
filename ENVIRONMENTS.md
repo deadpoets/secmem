@@ -10,9 +10,11 @@ equivalent of the memlock budget (the process working-set minimum) is
 covered in [WINDOWS.md](WINDOWS.md).
 
 The one invariant across every environment: **secmem never silently degrades.**
-If it cannot obtain locked, off-heap memory it returns `ErrNoSecureMemory`
-rather than placing a secret on unprotected pages — unless you explicitly opt in
-with `WithInsecureFallback()`.
+If it cannot obtain locked, off-heap memory the constructor returns an error
+rather than placing a secret on unprotected pages: the wrapped `mlock` error
+where the kernel refuses the lock, which no option overrides, and
+`ErrNoSecureMemory` on a platform with no lockable memory at all, unless you
+explicitly opt in with `WithInsecureFallback()`.
 
 ## Check your own environment
 
@@ -42,7 +44,7 @@ privilege contexts:
 |---|---|---|
 | **root** (or any `CAP_IPC_LOCK` holder) | allocation **succeeds** | `CAP_IPC_LOCK` bypasses `RLIMIT_MEMLOCK` entirely, so `mlock` (and `memfd_secret`) always succeed. |
 | **non-root**, allocation within `RLIMIT_MEMLOCK` | allocation **succeeds** | small secrets fit the default per-user memlock budget. |
-| **non-root**, allocation exceeds `RLIMIT_MEMLOCK` (e.g. `ulimit -l 0`) | **fails closed** (`ErrNoSecureMemory`) | the pages cannot be locked, so secmem refuses rather than leave the secret swappable. |
+| **non-root**, allocation exceeds `RLIMIT_MEMLOCK` (e.g. `ulimit -l 0`) | **fails closed** (the wrapped `mlock` error: `ENOMEM` over a non-zero limit, `EPERM` at a zero one) | the pages cannot be locked, so secmem refuses rather than leave the secret swappable. |
 
 The takeaway that matters for deployment: the fail-closed path is only reachable
 by an **unprivileged process with a memlock budget smaller than the secret**.
