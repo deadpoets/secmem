@@ -1,3 +1,5 @@
+//lint:file-ignore U1000 the stand-in structs below are read by reflection only; their fields exist to be enumerated, not used.
+
 package secmemcrypto
 
 import (
