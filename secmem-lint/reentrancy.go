@@ -6,42 +6,154 @@ import (
 	"go/types"
 )
 
-// reentrantUnsafe is the set of secmem access methods that take the buffer's
-// lock. Calling any of them on the SAME buffer from inside its own borrowing
-// closure violates the documented non-reentrancy contract and deadlocks.
-var reentrantUnsafe = map[string]bool{ //nolint:gochecknoglobals // immutable lookup table.
-	"WithBytes": true, "WithBytesErr": true,
-	"WithScalar": true, "WithSeed": true, "WithDER": true,
-	"CopyOut": true, "CopyIn": true, "ConstantTimeEqual": true,
-	"ExposeString": true, "ByteAt": true, "WriteTo": true, "ReadFrom": true,
-	"Truncate": true, "Seal": true, "Unseal": true,
-	"ReadOnly": true, "ReadWrite": true, "Destroy": true,
+// lockUse says what an exported method does with the lock its receiver's
+// borrowing accessor holds for the whole callback.
+type lockUse int
 
-	// SetByteAt takes the EXCLUSIVE lock, so calling it inside a borrow is an
-	// unconditional self-deadlock — the most certain member of this set, and it
-	// was missing while its read counterpart ByteAt was listed.
-	"SetByteAt": true,
+const (
+	// takesLock: the method acquires that lock again. Calling it on the SAME
+	// receiver from inside its own borrowing closure violates the documented
+	// non-reentrancy contract and deadlocks.
+	takesLock lockUse = iota + 1
+	// lockFree: the method reads only state fixed at construction, or an
+	// atomic, and is safe inside the borrow.
+	lockFree
+)
 
-	// The rLock inspectors. A nested read acquire looks harmless, but this
-	// package's lock is writer-preferring: rLock waits while any writer is
-	// queued, so a second read taken from inside a borrow deadlocks as soon as
-	// a writer arrives between the two — a Destroy or an emergency wipe is
-	// enough. That makes them load-bearing rather than merely untidy.
-	"Len": true, "MappedLen": true, "IsSealed": true, "IsDestroyed": true,
+// methodLocks classifies every exported method of every secmem and
+// secmem-crypto type that has a borrowing accessor, keyed by
+// "import/path.Type" and then by method name. The key is the type because a
+// name means different things on different types: Destroy on a key and on a
+// buffer both take the lock, but ConstantTimeEqual, Sign or PublicKey are
+// each one type's method, and Public is lock-free where PublicKey is not.
+//
+// Both classes are listed, so that a method missing from the table is a
+// method nobody has looked at: the table test fails for any exported method
+// of these types in the sibling sources that has no entry here.
+var methodLocks = map[string]map[string]lockUse{ //nolint:gochecknoglobals // immutable lookup table.
+	secmemPkg + ".SecureBuffer": {
+		"WithBytes": takesLock, "WithBytesErr": takesLock,
+		"CopyOut": takesLock, "CopyIn": takesLock, "ConstantTimeEqual": takesLock,
+		"ExposeString": takesLock, "ByteAt": takesLock, "WriteTo": takesLock, "ReadFrom": takesLock,
+		"Truncate": takesLock, "Seal": takesLock, "Unseal": takesLock,
+		"ReadOnly": takesLock, "ReadWrite": takesLock, "Destroy": takesLock,
 
-	// ArenaSlot.Release re-takes the arena's read lock that the slot's own
-	// borrow already holds — the same writer-preferring hazard as Len.
-	"Release": true,
+		// SetByteAt takes the EXCLUSIVE lock, so calling it inside a borrow
+		// is an unconditional self-deadlock — the most certain member of
+		// this set.
+		"SetByteAt": takesLock,
+
+		// The rLock inspectors. A nested read acquire looks harmless, but
+		// the lock is writer-preferring: rLock waits while any writer is
+		// queued, so a second read taken from inside a borrow deadlocks as
+		// soon as a writer arrives between the two — a Destroy or an
+		// emergency wipe is enough. That makes them load-bearing rather than
+		// merely untidy.
+		"Len": takesLock, "MappedLen": takesLock, "IsSealed": takesLock, "IsDestroyed": takesLock,
+
+		// The backing report and the registration ordinal are fixed at
+		// construction; the redaction methods read no fields at all.
+		"Capabilities": lockFree, "LockOrder": lockFree,
+		"String": lockFree, "GoString": lockFree, "Format": lockFree, "LogValue": lockFree,
+	},
+	secmemPkg + ".ArenaSlot": {
+		"WithBytes": takesLock, "WithBytesErr": takesLock,
+		// Release re-takes the arena's read lock that the slot's own borrow
+		// already holds — the same writer-preferring hazard as Len.
+		"Release": takesLock,
+
+		// Index is a field of the handle and IsLive one atomic load.
+		"Index": lockFree, "IsLive": lockFree,
+		"String": lockFree, "GoString": lockFree, "Format": lockFree, "LogValue": lockFree,
+	},
+	secmemPkg + ".Secret": {
+		// A Secret forwards to its buffer. ConstantTimeEqual borrows it even
+		// when both operands are the same Secret.
+		"WithBytes": takesLock, "ConstantTimeEqual": takesLock, "WriteTo": takesLock, "Destroy": takesLock,
+
+		"String": lockFree, "GoString": lockFree, "LogValue": lockFree,
+		"MarshalText": lockFree, "MarshalJSON": lockFree,
+	},
+
+	// The secmem-crypto keys keep their private half in one SecureBuffer and
+	// every operation that needs it borrows that buffer: the accessor
+	// itself, signing, key agreement, decapsulation, marshalling. Destroy
+	// takes the same lock exclusively. What reads only the public half
+	// captured at construction is lock-free.
+	cryptoPkg + ".Ed25519Signer": {
+		"WithSeed": takesLock, "Destroy": takesLock,
+		"Sign": takesLock, "SignMessage": takesLock,
+		"MarshalOpenSSHPrivateKey":                     takesLock,
+		"MarshalOpenSSHPrivateKeyWithPassphrase":       takesLock,
+		"MarshalOpenSSHPrivateKeyWithPassphraseParams": takesLock,
+
+		"Public": lockFree, "Equal": lockFree,
+	},
+	cryptoPkg + ".ECDSASigner": {
+		"WithScalar": takesLock, "Destroy": takesLock, "Sign": takesLock,
+
+		"Public": lockFree, "Equal": lockFree,
+	},
+	cryptoPkg + ".RSASigner": {
+		"WithDER": takesLock, "Destroy": takesLock, "Sign": takesLock,
+
+		"Public": lockFree, "Equal": lockFree,
+	},
+	cryptoPkg + ".X25519Key": {
+		// PublicKey is recomputed from the scalar on every call, unlike the
+		// signers' cached Public. ConstantTimeEqual borrows both keys, and
+		// on the same key still takes the read lock to inspect it.
+		"WithScalar": takesLock, "Destroy": takesLock, "ConstantTimeEqual": takesLock,
+		"PublicKey": takesLock, "SharedSecret": takesLock,
+	},
+	cryptoPkg + ".MLKEM768Key": {
+		"WithSeed": takesLock, "Destroy": takesLock, "Decapsulate": takesLock,
+
+		"EncapsulationKeyBytes": lockFree,
+	},
 }
 
-// arenaExclusive are the SecureArena methods that take the arena's EXCLUSIVE
-// lock (securearena.go: mu.lock). A slot borrow holds that lock's read side
-// for the whole callback, so calling one of these on the slot's arena from
-// inside the borrow is a certain self-deadlock. Acquire and LiveCount take
-// only the allocation mutex, which is never held across a callback, and are
-// safe.
-var arenaExclusive = map[string]bool{ //nolint:gochecknoglobals // immutable lookup table.
-	"Destroy": true, "ReadOnly": true, "ReadWrite": true,
+// lockTakingNames is every method name methodLocks marks takesLock on some
+// type. It decides a call through an INTERFACE, where the type behind it is
+// not known: a buffer or key held as an interface value is still the same
+// one, and its method names are all there is to go on.
+var lockTakingNames = func() map[string]bool { //nolint:gochecknoglobals // immutable, derived from methodLocks.
+	names := make(map[string]bool)
+	for _, methods := range methodLocks {
+		for name, use := range methods {
+			if use == takesLock {
+				names[name] = true
+			}
+		}
+	}
+	return names
+}()
+
+// takesReceiverLock reports whether m, called on the receiver a borrowing
+// closure belongs to, acquires the lock that borrow holds.
+func takesReceiverLock(m *types.Func) bool {
+	recv := m.Signature().Recv()
+	if recv == nil {
+		return false
+	}
+	if types.IsInterface(recv.Type()) {
+		return lockTakingNames[m.Name()]
+	}
+	return methodLocks[namedTypeKey(recv.Type())][m.Name()] == takesLock
+}
+
+// arenaLocks classifies the exported methods of SecureArena by what they do
+// with the arena lock a slot borrow holds for reading during the whole
+// callback. takesLock here means the EXCLUSIVE side (securearena.go:
+// mu.lock): calling one of those on the slot's arena from inside the borrow
+// is a certain self-deadlock. Acquire and LiveCount take only the allocation
+// mutex, which is never held across a callback, and the rest read fields
+// fixed at construction or an atomic.
+var arenaLocks = map[string]lockUse{ //nolint:gochecknoglobals // immutable lookup table.
+	"Destroy": takesLock, "ReadOnly": takesLock, "ReadWrite": takesLock,
+	"Acquire": lockFree, "LiveCount": lockFree,
+	"IsDestroyed": lockFree, "Cap": lockFree, "SlotSize": lockFree, "Capabilities": lockFree,
+	"String": lockFree, "GoString": lockFree, "Format": lockFree, "LogValue": lockFree,
 }
 
 // checkReentrancy flags an access method called on the SAME buffer inside its
@@ -68,8 +180,11 @@ func (c *checker) checkReentrancy(acc accessor) {
 	}
 	arena, arenaKnown := c.slotArena(acc)
 	kind := "buffer"
-	if slot {
+	switch {
+	case slot:
 		kind = "slot"
+	case acc.method.Pkg() != nil && acc.method.Pkg().Path() == cryptoPkg:
+		kind = "key"
 	}
 
 	var stack []ast.Node
@@ -91,7 +206,7 @@ func (c *checker) checkReentrancy(acc accessor) {
 			return true
 		}
 		name := mc.method.Name()
-		if reentrantUnsafe[name] {
+		if takesReceiverLock(mc.method) {
 			if inner, ok := c.receiverKeyOf(mc); ok && sameReceiver(acc.recv, inner) {
 				c.report(call.Pos(), fmt.Sprintf(
 					"%s called on the same %s inside its own borrowing closure; secmem access methods are not reentrant and will deadlock",
@@ -99,7 +214,7 @@ func (c *checker) checkReentrancy(acc accessor) {
 				return true
 			}
 		}
-		if slot && arenaExclusive[name] && namedTypeKey(c.pass.TypesInfo.TypeOf(mc.recv)) == secmemPkg+".SecureArena" {
+		if slot && arenaLocks[name] == takesLock && namedTypeKey(c.pass.TypesInfo.TypeOf(mc.recv)) == secmemPkg+".SecureArena" {
 			inner, ok := c.receiverKeyOf(mc)
 			switch {
 			case arenaKnown && ok && sameReceiver(arena, inner):

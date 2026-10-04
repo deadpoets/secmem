@@ -367,6 +367,13 @@ func (c *checker) methodSelector(fun ast.Expr) (*ast.SelectorExpr, bool) {
 	return nil, false
 }
 
+// borrowMethods names, per package, the methods that lend their receiver's
+// bytes to a closure for the duration of the call.
+var borrowMethods = map[string]map[string]bool{ //nolint:gochecknoglobals // immutable lookup table.
+	secmemPkg: {"WithBytes": true, "WithBytesErr": true},
+	cryptoPkg: {"WithScalar": true, "WithSeed": true, "WithDER": true},
+}
+
 // isBorrowMethod reports whether m is a borrowing accessor: one of the known
 // methods on a secmem / secmem-crypto type, or — the interface heuristic — a
 // method of the same name and shape (one func parameter taking a []byte)
@@ -376,15 +383,10 @@ func isBorrowMethod(m *types.Func) bool {
 	if m.Pkg() == nil {
 		return false
 	}
-	switch m.Pkg().Path() {
-	case secmemPkg:
-		return m.Name() == "WithBytes" || m.Name() == "WithBytesErr"
-	case cryptoPkg:
-		return m.Name() == "WithScalar" || m.Name() == "WithSeed" || m.Name() == "WithDER"
+	if names, ok := borrowMethods[m.Pkg().Path()]; ok {
+		return names[m.Name()]
 	}
-	switch m.Name() {
-	case "WithBytes", "WithBytesErr", "WithScalar", "WithSeed", "WithDER":
-	default:
+	if !borrowMethods[secmemPkg][m.Name()] && !borrowMethods[cryptoPkg][m.Name()] {
 		return false
 	}
 	sig, ok := m.Type().(*types.Signature)

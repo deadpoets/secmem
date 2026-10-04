@@ -1,6 +1,9 @@
 package strict
 
-import "github.com/deadpoets/secmem"
+import (
+	"github.com/deadpoets/secmem"
+	secmemcrypto "github.com/deadpoets/secmem/secmem-crypto"
+)
 
 // --- N1: secret-named identifiers held in a plain string ---
 
@@ -119,4 +122,41 @@ func leakG[T ~[]byte](b T) { _ = len(b) }
 func genericInstantiatedResolved(buf *secmem.SecureBuffer) {
 	defer buf.Destroy()
 	_ = buf.WithBytes(leakG[[]byte]) // ok: resolved to leakG's declaration, not "cannot be checked"
+}
+
+// --- L1 across everything the libraries hand out with a Destroy ---
+
+// leaksEveryOwnedShape: ownership is "declared in secmem or secmem-crypto and
+// has a Destroy", whatever the result's shape — a pointer to a key, the
+// Signer interface a parser returns, a locked workspace, a Secret value.
+func leaksEveryOwnedShape(data []byte) {
+	key, _ := secmemcrypto.GenerateX25519Key() // want `secmem-lint: key is never Destroyed or handed off`
+	_, _ = key.PublicKey()
+
+	signer, _ := secmemcrypto.ParsePrivateKey(data) // want `secmem-lint: signer is never Destroyed or handed off`
+	_ = signer.Public()
+
+	ws, _ := secmemcrypto.NewArgon2Workspace(64*1024, 4) // want `secmem-lint: ws is never Destroyed or handed off`
+	_ = ws.Size()
+
+	sec, _ := secmem.NewSecret(data) // want `secmem-lint: sec is never Destroyed or handed off`
+	_ = sec.WithBytes(func(b []byte) {})
+}
+
+func everyOwnedShapeOK(data []byte) secmem.Secret {
+	signer, _ := secmemcrypto.ParsePrivateKey(data)
+	defer signer.Destroy()
+
+	ws, _ := secmemcrypto.NewArgon2Workspace(64*1024, 4)
+	defer ws.Destroy()
+
+	sec, _ := secmem.NewSecret(data) // ok: ownership returned to the caller
+	return sec
+}
+
+// slotIsNotOwned: a slot is released, not destroyed, and the arena owns its
+// memory; L1 does not ask for a Destroy it does not have.
+func slotIsNotOwned(arena *secmem.SecureArena) {
+	slot, _ := arena.Acquire()
+	_ = slot.WithBytes(func(b []byte) {})
 }

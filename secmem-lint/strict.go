@@ -45,14 +45,6 @@ var secretNameRE = regexp.MustCompile( //nolint:gochecknoglobals // immutable.
 		`tls_?key|ssh_?key|pgp_?key|gpg_?key` +
 		`)$`)
 
-// ownedTypes are the secmem / secmem-crypto types whose values own a locked
-// allocation and must be Destroyed by their owner.
-var ownedTypes = map[string]bool{ //nolint:gochecknoglobals // immutable.
-	"SecureBuffer": true, "SecureArena": true,
-	"Ed25519Signer": true, "ECDSASigner": true, "RSASigner": true,
-	"X25519Key": true, "MLKEM768Key": true,
-}
-
 // ---------------------------------------------------------------------------
 // N1: a secret-named identifier held in a plain string.
 // ---------------------------------------------------------------------------
@@ -165,19 +157,38 @@ func checkMissingDestroy(pass *analysis.Pass, insp *inspector.Inspector, sup *su
 	})
 }
 
-// isOwnedResource reports whether t is a pointer to a secmem / secmem-crypto
-// owned type (one with a Destroy the owner is responsible for).
+// isOwnedResource reports whether t is a secmem / secmem-crypto type whose
+// value owns a locked allocation the holder must release: a type declared in
+// one of the two packages that has a Destroy() error method. The method
+// decides rather than a list of names, so the shape does not matter — a
+// pointer to a buffer or key, the Signer interface the parsers return, a
+// Secret value — and a type added to either library is owned from the start.
+// An ArenaSlot has no Destroy (it is released back to its arena) and is not
+// owned.
 func isOwnedResource(t types.Type) bool {
-	ptr, ok := t.(*types.Pointer)
-	if !ok {
-		return false
+	t = types.Unalias(t)
+	elem := t
+	if ptr, ok := t.(*types.Pointer); ok {
+		elem = types.Unalias(ptr.Elem())
 	}
-	named, ok := ptr.Elem().(*types.Named)
+	named, ok := elem.(*types.Named)
 	if !ok || named.Obj() == nil || named.Obj().Pkg() == nil {
 		return false
 	}
-	pkg := named.Obj().Pkg().Path()
-	return (pkg == secmemPkg || pkg == cryptoPkg) && ownedTypes[named.Obj().Name()]
+	if pkg := named.Obj().Pkg().Path(); pkg != secmemPkg && pkg != cryptoPkg {
+		return false
+	}
+	obj, _, _ := types.LookupFieldOrMethod(t, true, nil, "Destroy")
+	destroy, ok := obj.(*types.Func)
+	if !ok {
+		return false
+	}
+	sig := destroy.Signature()
+	return sig.Params().Len() == 0 && sig.Results().Len() == 1 && isErrorType(sig.Results().At(0).Type())
+}
+
+func isErrorType(t types.Type) bool {
+	return types.Identical(t, types.Universe.Lookup("error").Type())
 }
 
 // isLibraryCall reports whether call resolves to a function declared in secmem or

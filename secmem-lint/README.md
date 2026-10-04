@@ -89,8 +89,11 @@ array, string, map) and the received value of a `range` over a tainted channel,
 the variables of a `range` over a tainted iterator function — the sole variable
 of `for v := range seq`; of `for k, v := range seq2`, `v` always and `k` only
 when its type is a `byte` or can otherwise hold bytes, so an integer index key
-stays clean — a method call on a tainted value, or a func literal that captures
-one. Lengths, comparisons and the address as a `uintptr` are not tainted.
+stays clean — the variable a type switch binds over a tainted value
+(`switch t := v.(type)`: `t` is `v` again in every clause, except one whose
+case is a plain number or bool), a method call on a tainted value, or a func
+literal that captures one. Lengths, comparisons and the address as a `uintptr`
+are not tainted.
 
 ## Checks
 
@@ -100,9 +103,9 @@ Default (always on):
 |---|---|
 | E1 | `string(tainted)` — a heap string is immutable and can never be wiped, wherever it goes |
 | E2 | `append(dst, tainted...)` or `append(dst, tainted)` where `dst` is memory outside the closure; `copy(dst, tainted)` likewise |
-| E3 | a tainted value assigned to a variable declared outside the closure, to a struct field, map or slice element, or pointer target whose storage is outside the closure (see the aggregate rule below); sent on a channel; returned from the closure (`return &myErr{b}`); or handed to a goroutine (`go f(b)`, `go func() { ... b ... }()`); `panic(tainted)` |
+| E3 | a tainted value assigned to a variable declared outside the closure, to a struct field, map or slice element, or pointer target whose storage is outside the closure (see the aggregate rule below) — by an assignment or by a `range` clause written with `=` (`for _, outer = range [][]byte{b}`); sent on a channel; returned from the closure, as a return operand (`return &myErr{b}`) or by being stored in one of the closure's **named results** (`err = &myErr{b}; return`, also from a deferred literal — reported at the store, and not cleared by a later overwrite); or handed to a goroutine (`go f(b)`, `go func() { ... b ... }()`); `panic(tainted)` |
 | E4 | a tainted value in **any** argument position of a known sink — or as the **receiver** of a sink method — see the table in [`sinks.go`](sinks.go): `fmt`'s print / format / append functions, `log`, `log/slog` (package functions including `slog.With`, `slog.Any` / `String` / `Group`, and `*Logger` methods including `With`), `testing.T` / `B` / `F` / `TB` log methods, `encoding/json` / `xml` / `gob` decoders, `json.Marshal` and the `Encoder.Encode` methods of all three, `encoding/hex` / `base64` / `base32` / `pem` encoders, the `bytes` / `slices` helpers that return a **heap copy** (`Clone`, `Concat`, `Join`, `Repeat`, `bytes.ToUpper` / `ToLower` / `ToTitle` / `Title` / `Map` / `Replace` / `ReplaceAll` / `ToValidUTF8` / `Runes`), `math/big.Int.SetBytes` / `SetString`, `os.WriteFile`, `Write` / `WriteString` on `*bytes.Buffer`, `*strings.Builder`, `*bufio.Writer` and `*os.File`, the retaining stores `sync.Map.Store` / `LoadOrStore` / `Swap` / `CompareAndSwap` and `Store` / `Swap` / `CompareAndSwap` on `atomic.Value` / `atomic.Pointer`, and the stdlib / `x/crypto` ciphers, key parsers and KDFs that copy the key into heap state (`aes.NewCipher`, `chacha20poly1305.New`, `hmac.New`, `ed25519.NewKeyFromSeed`, `ed25519.PrivateKey.Sign` / `Seed`, `x509.Parse*PrivateKey`, `ecdh.Curve.NewPrivateKey`, `hkdf` / `pbkdf2` / `scrypt` / `argon2` / `bcrypt`, …). A sink's result is not tainted again: one leak, one finding |
-| R1 | a lock-taking secmem method called on the **same** buffer inside its own closure, synchronously. The borrowing and mutating methods take the buffer lock and are not reentrant; the read-only inspectors (`Len`, `MappedLen`, `IsSealed`, `IsDestroyed`) deadlock too once a writer is queued, because the lock is writer-preferring. The receiver is matched by identity through field chains, embedded-field promotions (`e.Len()` and `e.SecureBuffer.Len()` name the same buffer), local aliases bound once (`b2 := buf`) and method values bound once (`l := buf.Len`) |
+| R1 | a lock-taking secmem or secmem-crypto method called on the **same** buffer or key inside its own closure, synchronously. The borrowing and mutating methods take the buffer lock and are not reentrant; the read-only inspectors (`Len`, `MappedLen`, `IsSealed`, `IsDestroyed`) deadlock too once a writer is queued, because the lock is writer-preferring. A secmem-crypto key borrows its own buffer for every operation that needs the private half, so inside `WithSeed` / `WithScalar` / `WithDER` the same key's `Sign`, `SignMessage`, `SharedSecret`, `PublicKey` (X25519 recomputes it), `ConstantTimeEqual`, `Decapsulate`, `MarshalOpenSSHPrivateKey*` and `Destroy` are flagged; `Public`, `Equal` and `EncapsulationKeyBytes` read the public half captured at construction and are not. Methods are classified per type in [`reentrancy.go`](reentrancy.go) (a test fails for an exported method of these types that is not classified); through an interface value the method name decides. The receiver is matched by identity through field chains, embedded-field promotions (`e.Len()` and `e.SecureBuffer.Len()` name the same buffer), local aliases bound once (`b2 := buf`) and method values bound once (`l := buf.Len`) |
 | R2 | inside an `ArenaSlot` borrow: `Release` on the same slot, and `Destroy` / `ReadOnly` / `ReadWrite` on the slot's arena (they take the arena's exclusive lock, which the borrow holds for reading — a certain deadlock). The arena is known when the slot came from `slot, err := arena.Acquire()` in the same function; otherwise default mode is silent and `-strict` reports the call as unresolvable. `Acquire` and `LiveCount` take only the allocation mutex and are fine |
 
 What is deliberately **not** flagged, because it is the recommended idiom:
@@ -132,7 +135,7 @@ Strict (`-strict`, opt-in — heuristic and higher-noise):
 
 | # | Flags |
 |---|---|
-| L1 | a locally constructed `SecureBuffer` / signer / key — `x, err := secmem.NewBuffer(…)` or `var x, err = secmem.NewBuffer(…)` — that is never `Destroy`ed and never handed off (returned or passed on) — add a `defer x.Destroy()` |
+| L1 | a locally constructed secmem / secmem-crypto value that has a `Destroy` — a `SecureBuffer`, `SecureArena` or `Secret`, a key or signer, the `Signer` a parser returns, an Argon2 workspace or pool — bound by `x, err := secmem.NewBuffer(…)` or `var x, err = secmem.NewBuffer(…)`, that is never `Destroy`ed and never handed off (returned or passed on) — add a `defer x.Destroy()` |
 | N1 | a secret-named identifier (`password`, `token`, `apiKey`, …) held in a plain `string` rather than a `*secmem.SecureBuffer` |
 | — | a borrowing closure the analyzer cannot resolve, a closure passed through a variable that is only sometimes a borrowing method value (both above), and an arena method inside a slot borrow whose arena it cannot identify |
 

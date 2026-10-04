@@ -1,6 +1,11 @@
 package reentrancy
 
-import "github.com/deadpoets/secmem"
+import (
+	"crypto"
+
+	"github.com/deadpoets/secmem"
+	secmemcrypto "github.com/deadpoets/secmem/secmem-crypto"
+)
 
 func sameBufferMethod(buf *secmem.SecureBuffer) {
 	_ = buf.WithBytes(func(b []byte) {
@@ -223,5 +228,85 @@ func embeddedDifferentFieldOK(t twoBuffers) {
 	})
 	_ = t.other.WithBytes(func(b []byte) {
 		_ = t.Len()
+	})
+}
+
+// --- secmem-crypto keys ---
+
+// A key's operations borrow the buffer its accessor already holds: signing,
+// key agreement, decapsulation and marshalling each take the read lock again,
+// which deadlocks once a writer is queued, and Destroy takes it exclusively.
+func signerInsideOwnBorrow(s *secmemcrypto.Ed25519Signer, msg []byte) {
+	_ = s.WithSeed(func(seed []byte) error {
+		_, _ = s.Sign(nil, msg, crypto.Hash(0))                           // want `secmem-lint: Sign called on the same key inside its own borrowing closure`
+		_, _ = s.SignMessage(nil, msg, crypto.Hash(0))                    // want `secmem-lint: SignMessage called on the same key`
+		_, _ = s.MarshalOpenSSHPrivateKey("c")                            // want `secmem-lint: MarshalOpenSSHPrivateKey called on the same key`
+		_, _ = s.MarshalOpenSSHPrivateKeyWithPassphrase("c", []byte("p")) // want `secmem-lint: MarshalOpenSSHPrivateKeyWithPassphrase called on the same key`
+		_ = s.WithSeed(func([]byte) error { return nil })                 // want `secmem-lint: WithSeed called on the same key`
+		_ = s.Destroy()                                                   // want `secmem-lint: Destroy called on the same key`
+		_ = s.Public()                                                    // ok: the cached public key, no lock
+		_ = s.Equal(nil)                                                  // ok
+		return nil
+	})
+}
+
+func otherKeysInsideOwnBorrow(e *secmemcrypto.ECDSASigner, r *secmemcrypto.RSASigner, x *secmemcrypto.X25519Key, m *secmemcrypto.MLKEM768Key, d []byte) {
+	_ = e.WithScalar(func([]byte) error {
+		_, _ = e.Sign(nil, d, crypto.SHA256) // want `secmem-lint: Sign called on the same key`
+		_ = e.Public()                       // ok
+		return nil
+	})
+	_ = r.WithDER(func([]byte) error {
+		_, _ = r.Sign(nil, d, crypto.SHA256) // want `secmem-lint: Sign called on the same key`
+		_ = r.Public()                       // ok
+		return nil
+	})
+	_ = x.WithScalar(func([]byte) error {
+		_, _ = x.PublicKey()              // want `secmem-lint: PublicKey called on the same key`
+		_, _ = x.SharedSecret([32]byte{}) // want `secmem-lint: SharedSecret called on the same key`
+		_ = x.ConstantTimeEqual(x)        // want `secmem-lint: ConstantTimeEqual called on the same key`
+		return nil
+	})
+	_ = m.WithSeed(func([]byte) error {
+		_, _ = m.Decapsulate(d)          // want `secmem-lint: Decapsulate called on the same key`
+		_, _ = m.EncapsulationKeyBytes() // ok: captured at construction
+		return nil
+	})
+}
+
+// keyBehindInterface: the same signer reached through an interface is still
+// the same key, so the method's name decides.
+func keyBehindInterface(s *secmemcrypto.Ed25519Signer, msg []byte) {
+	var sg secmemcrypto.Signer = s
+	_ = s.WithSeed(func([]byte) error {
+		_, _ = sg.Sign(nil, msg, crypto.Hash(0)) // want `secmem-lint: Sign called on the same key`
+		_ = sg.Public()                          // ok
+		return nil
+	})
+}
+
+// differentKeyOK: signing with another key inside a borrow is not reentrant.
+func differentKeyOK(s, other *secmemcrypto.Ed25519Signer, x *secmemcrypto.X25519Key, msg []byte) {
+	_ = s.WithSeed(func([]byte) error {
+		_, _ = other.Sign(nil, msg, crypto.Hash(0))
+		_, _ = x.PublicKey()
+		return nil
+	})
+}
+
+// lockFreeMethodsOK: the methods that read no locked state are fine inside a
+// borrow of the same receiver. Destroy on a Secret is not one of them.
+func lockFreeMethodsOK(buf *secmem.SecureBuffer, slot *secmem.ArenaSlot, sec secmem.Secret) {
+	_ = buf.WithBytes(func([]byte) {
+		_ = buf.LockOrder()
+		_ = buf.String()
+	})
+	_ = slot.WithBytes(func([]byte) {
+		_ = slot.Index()
+		_ = slot.IsLive()
+	})
+	_ = sec.WithBytes(func([]byte) {
+		_ = sec.String()
+		_ = sec.Destroy() // want `secmem-lint: Destroy called on the same buffer`
 	})
 }

@@ -99,3 +99,116 @@ func shadowedNameInGoroutineOK(buf *secmem.SecureBuffer, other [][]byte) {
 		}()
 	})
 }
+
+type keyErr struct{ raw []byte }
+
+func (e *keyErr) Error() string { return "bad key" }
+
+// leaksViaNamedResult: a named result of the closure is what the closure
+// returns, so storing the bytes in it is the return, whether the bare return
+// follows or a deferred literal does the store on the way out.
+func leaksViaNamedResult(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytesErr(func(b []byte) (err error) {
+		err = &keyErr{raw: b} // want `secmem-lint: borrowed secret bytes assigned to a named result of the closure`
+		return
+	})
+	_ = buf.WithBytesErr(func(b []byte) (err error) {
+		defer func() {
+			err = &keyErr{raw: b} // want `secmem-lint: borrowed secret bytes assigned to a named result of the closure`
+		}()
+		return nil
+	})
+	_ = buf.WithBytesErr(namedResultDecl)
+}
+
+func namedResultDecl(b []byte) (err error) {
+	err = &keyErr{raw: b[:1]} // want `secmem-lint: borrowed secret bytes assigned to a named result of the closure`
+	return
+}
+
+// namedResultOK: a named result that never holds the bytes is clean, and a
+// nested literal's own named result is a local of the closure.
+func namedResultOK(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytesErr(func(b []byte) (err error) {
+		if len(b) == 0 {
+			err = &keyErr{}
+		}
+		head := func() (h []byte) {
+			h = b[:1]
+			return
+		}
+		_ = head
+		return
+	})
+}
+
+// leaksViaTypeSwitch: the variable a type switch binds is the switched value
+// under another name in every clause.
+func leaksViaTypeSwitch(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		var v any = b
+		switch t := v.(type) {
+		case []byte:
+			sink = t // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		case string, fmt.Stringer:
+			outerAny = t // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		case int:
+			outerInt = t // ok: a number is not the bytes
+		default:
+			outerAny = t // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		}
+		sink = v.([]byte) // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+	})
+}
+
+var (
+	outerAny any
+	outerInt int
+)
+
+// typeSwitchOK: a switch over an untainted value binds nothing tainted, and a
+// binding that stays inside the closure is not an escape.
+func typeSwitchOK(buf *secmem.SecureBuffer, v any) {
+	_ = buf.WithBytes(func(b []byte) {
+		switch t := v.(type) {
+		case []byte:
+			sink = t
+		}
+		switch t := any(b).(type) {
+		case []byte:
+			_ = len(t)
+		}
+	})
+}
+
+// leaksViaRangeAssignment: a range clause written with = assigns each element
+// to an existing variable, which may be anywhere.
+func leaksViaRangeAssignment(buf *secmem.SecureBuffer, ch chan []byte) {
+	_ = buf.WithBytes(func(b []byte) {
+		for _, sink = range [][]byte{b} { // want `secmem-lint: borrowed secret bytes assigned to a variable outside the closure`
+		}
+		for _, outer.b = range [][]byte{b} { // want `secmem-lint: borrowed secret bytes assigned to a struct field`
+		}
+		for _, outerSlab[0] = range [][]byte{b} { // want `secmem-lint: borrowed secret bytes assigned to a map or slice element`
+		}
+		for sink = range ch { // ok: not the borrowed bytes
+		}
+	})
+}
+
+var outerIdx int
+
+// rangeAssignmentOK: the index of a range over the bytes is a number, and an
+// element assigned to a variable declared inside the closure stays inside.
+func rangeAssignmentOK(buf *secmem.SecureBuffer) {
+	_ = buf.WithBytes(func(b []byte) {
+		for outerIdx = range b {
+		}
+		for outerIdx, _ = range [][]byte{b} {
+		}
+		var in []byte
+		for _, in = range [][]byte{b} {
+		}
+		_ = in
+	})
+}

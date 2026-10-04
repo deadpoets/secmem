@@ -13,6 +13,33 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Fixed
+
+- **`secmem-lint`: E3 reports borrowed bytes stored in a named result of the
+  borrowing closure** (`err = &keyErr{raw: b}; return`), including a store
+  made by a deferred literal. Only explicit return operands were checked.
+
+- **`secmem-lint`: a borrowed value is followed through a type-switch
+  binding** (`switch t := v.(type)`), so an escape of `t` is reported like
+  one of `v`.
+
+- **`secmem-lint`: E3 reports a `range` clause written with `=`** that
+  assigns borrowed bytes to an outer variable, field or element
+  (`for _, outer = range [][]byte{b} {}`).
+
+- **`secmem-lint`: R1 covers secmem-crypto keys.** `Sign`, `SignMessage`,
+  `SharedSecret`, `PublicKey`, `ConstantTimeEqual`, `Decapsulate` and
+  `MarshalOpenSSHPrivateKey*` called on the same key inside its own
+  `WithSeed` / `WithScalar` / `WithDER` are reported, as are
+  `Secret.ConstantTimeEqual` / `WriteTo` / `Destroy` inside
+  `Secret.WithBytes`. The method table is keyed by type, and a test fails for
+  any exported method of a borrowing type that is not classified.
+
+- **`secmem-lint -strict`: L1 treats every secmem / secmem-crypto type with
+  a `Destroy` as owned**, so a parsed `Signer`, an `Argon2Workspace` /
+  `Argon2Pool` and a `Secret` that are never destroyed or handed off are
+  reported.
+
 ## [secmem-crypto/v0.9.0] - 2026-10-03
 
 The passphrase ingress is complete: PKCS#8 files protected with scrypt open,

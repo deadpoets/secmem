@@ -28,6 +28,9 @@ type escapeScan struct {
 	acc     accessor
 	taint   map[types.Object]bool
 	aliases map[types.Object]bool // memo for aliasOfBorrowed
+	// results are the closure's own named results. They are declared inside
+	// the closure but hold what it returns, so they count as outside storage.
+	results map[types.Object]bool
 }
 
 func (c *checker) checkCallbackEscapes(acc accessor) {
@@ -39,9 +42,26 @@ func (c *checker) checkCallbackEscapes(acc accessor) {
 		acc:     acc,
 		taint:   make(map[types.Object]bool),
 		aliases: make(map[types.Object]bool),
+		results: c.namedResults(closureType(acc.node)),
 	}
 	s.propagate()
 	s.reportEscapes()
+}
+
+// namedResults returns the objects of a function type's named results.
+func (c *checker) namedResults(ft *ast.FuncType) map[types.Object]bool {
+	objs := make(map[types.Object]bool)
+	if ft == nil || ft.Results == nil {
+		return objs
+	}
+	for _, field := range ft.Results.List {
+		for _, name := range field.Names {
+			if obj := c.pass.TypesInfo.ObjectOf(name); obj != nil && name.Name != "_" {
+				objs[obj] = true
+			}
+		}
+	}
+	return objs
 }
 
 // --- phase 1: taint propagation ---
@@ -71,6 +91,10 @@ func (s *escapeScan) propagate() {
 				if s.rangeTaint(st) {
 					changed = true
 				}
+			case *ast.TypeSwitchStmt:
+				if s.typeSwitchTaint(st) {
+					changed = true
+				}
 			case *ast.CallExpr:
 				// copy(dst, tainted) makes dst's memory hold the secret.
 				if builtinName(s.c.pass, st) == "copy" && len(st.Args) == 2 &&
@@ -83,32 +107,73 @@ func (s *escapeScan) propagate() {
 	}
 }
 
-// rangeTaint taints the variables a range statement over a tainted value
-// declares. Over a slice, array or string the VALUE is the element (the key is
-// an index and stays clean, as is the sole variable of a range over a slice).
+// rangeTaint taints the local variables a range statement over a tainted
+// value writes.
+func (s *escapeScan) rangeTaint(st *ast.RangeStmt) bool {
+	changed := false
+	for _, target := range s.rangeTargets(st) {
+		if s.taintTarget(target) {
+			changed = true
+		}
+	}
+	return changed
+}
+
+// rangeTargets returns the Key / Value expressions of a range statement that
+// receive a tainted value, or nil when the operand is not tainted. Over a
+// slice, array or string the VALUE is the element (the key is an index and
+// stays clean, as is the sole variable of a range over a slice).
 // Over a channel or an iterator function the elements come through the FIRST
 // variable — for c := range seq — so that one is tainted whenever it is the
 // only one, and a second variable is tainted as an element too. The first of
 // two variables of an iterator is tainted only when its type is a byte or can
 // otherwise hold bytes (the c of a Seq2[byte, int], the k of a Seq2[[]byte, V]),
 // so an index-like int key stays clean.
-func (s *escapeScan) rangeTaint(st *ast.RangeStmt) bool {
+func (s *escapeScan) rangeTargets(st *ast.RangeStmt) []ast.Expr {
 	if !s.tainted(st.X) {
-		return false
+		return nil
 	}
-	changed := st.Value != nil && s.taintTarget(st.Value)
+	var targets []ast.Expr
+	if st.Value != nil {
+		targets = append(targets, st.Value)
+	}
 	if st.Key == nil {
-		return changed
+		return targets
 	}
 	switch types.Unalias(s.c.pass.TypesInfo.TypeOf(st.X)).Underlying().(type) {
 	case *types.Chan:
-		if s.taintTarget(st.Key) {
-			changed = true
-		}
+		targets = append(targets, st.Key)
 	case *types.Signature:
-		if (st.Value == nil || keyCarriesBytes(s.c.pass.TypesInfo.TypeOf(st.Key))) && s.taintTarget(st.Key) {
-			changed = true
+		if st.Value == nil || keyCarriesBytes(s.c.pass.TypesInfo.TypeOf(st.Key)) {
+			targets = append(targets, st.Key)
 		}
+	}
+	return targets
+}
+
+// typeSwitchTaint taints the variable a type switch over a tainted value
+// binds: in switch t := v.(type), t is v again in every clause. The binding
+// has no object of its own — the type checker declares one implicit variable
+// per clause, typed as that clause's case — so those are what get tainted. A
+// clause whose single case is a plain number or bool cannot hold the bytes
+// and stays clean.
+func (s *escapeScan) typeSwitchTaint(st *ast.TypeSwitchStmt) bool {
+	assign, ok := st.Assign.(*ast.AssignStmt)
+	if !ok || len(assign.Rhs) != 1 {
+		return false // switch v.(type): nothing is bound
+	}
+	assert, ok := unparen(assign.Rhs[0]).(*ast.TypeAssertExpr)
+	if !ok || !s.tainted(assert.X) {
+		return false
+	}
+	changed := false
+	for _, clause := range st.Body.List {
+		obj := s.c.pass.TypesInfo.Implicits[clause]
+		if obj == nil || s.taint[obj] || !resultCarriesBytes(obj.Type()) {
+			continue
+		}
+		s.taint[obj] = true
+		changed = true
 	}
 	return changed
 }
@@ -136,15 +201,16 @@ func forPairs(lhs, rhs []ast.Expr, fn func(l, r ast.Expr)) {
 }
 
 // taintTarget marks the local a write lands in as tainted. Writes to the
-// borrowed slice itself and to anything outside the closure are not taint
-// (the latter is an escape, reported in phase 2). Returns true on a change.
+// borrowed slice itself and to anything outside the closure — a named result
+// of the closure included — are not taint (the latter is an escape, reported
+// in phase 2). Returns true on a change.
 func (s *escapeScan) taintTarget(target ast.Expr) bool {
 	root := rootIdent(target)
 	if root == nil {
 		return false
 	}
 	obj := s.c.pass.TypesInfo.ObjectOf(root)
-	if obj == nil || s.acc.params[obj] || s.taint[obj] || !withinNode(obj.Pos(), s.acc.node) {
+	if obj == nil || s.acc.params[obj] || s.taint[obj] || !s.isLocal(obj) {
 		return false
 	}
 	s.taint[obj] = true
@@ -296,9 +362,12 @@ func resultCarriesBytes(t types.Type) bool {
 
 // --- inside / outside ---
 
-// isLocal reports whether obj is declared inside the closure.
+// isLocal reports whether obj is declared inside the closure and dies with
+// it. The closure's named results are declared inside but are handed to the
+// caller on return — bare, or after a deferred literal has written them — so
+// they are not local.
 func (s *escapeScan) isLocal(obj types.Object) bool {
-	return obj != nil && withinNode(obj.Pos(), s.acc.node)
+	return obj != nil && withinNode(obj.Pos(), s.acc.node) && !s.results[obj]
 }
 
 // inner reports whether a write THROUGH the value of expr — copy or append
@@ -559,9 +628,17 @@ func (s *escapeScan) reportEscapes() {
 			if node.Tok != token.DEFINE {
 				forPairs(node.Lhs, node.Rhs, func(l, r ast.Expr) {
 					if s.tainted(r) {
-						s.checkAssign(node, l)
+						s.checkAssign(node.Pos(), l)
 					}
 				})
+			}
+		case *ast.RangeStmt:
+			// for _, outer = range x assigns each element to a variable that
+			// already exists; with := the variables are the loop's own.
+			if node.Tok == token.ASSIGN {
+				for _, target := range s.rangeTargets(node) {
+					s.checkAssign(node.Pos(), target)
+				}
 			}
 		case *ast.SendStmt:
 			if s.tainted(node.Value) {
@@ -646,10 +723,11 @@ func (s *escapeScan) taintedReceiver(call *ast.CallExpr) bool {
 }
 
 // checkAssign reports an assignment of a tainted value to a target that can
-// outlive the closure. Assigning to a local VARIABLE never escapes; writing
-// into a field, element or pointee escapes unless that storage is provably
-// inside (see innerStorage).
-func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
+// outlive the closure. Assigning to a local VARIABLE never escapes — except
+// to a named result of the closure, which is the return value; writing into a
+// field, element or pointee escapes unless that storage is provably inside
+// (see innerStorage).
+func (s *escapeScan) checkAssign(pos token.Pos, target ast.Expr) {
 	var where string
 	switch t := unparen(target).(type) {
 	case *ast.Ident:
@@ -664,6 +742,9 @@ func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
 			return
 		}
 		where = "a variable outside the closure"
+		if s.results[obj] {
+			where = "a named result of the closure"
+		}
 	case *ast.StarExpr:
 		if s.inner(t.X) {
 			return
@@ -685,7 +766,7 @@ func (s *escapeScan) checkAssign(stmt *ast.AssignStmt, target ast.Expr) {
 	default:
 		return
 	}
-	s.c.report(stmt.Pos(), "borrowed secret bytes assigned to "+where+"; they can outlive the closure")
+	s.c.report(pos, "borrowed secret bytes assigned to "+where+"; they can outlive the closure")
 }
 
 func isUintptr(t types.Type) bool {
