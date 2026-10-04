@@ -462,9 +462,16 @@ func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 			return errMalformed
 		}
 		if seq.PeekASN1Tag(cbasn1.SEQUENCE) {
-			// An AlgorithmIdentifier where every unencrypted structure
-			// has its version: EncryptedPrivateKeyInfo, named as the PEM
-			// form of the same file is.
+			// A SEQUENCE where every unencrypted structure has its
+			// version. If the whole thing has EncryptedPrivateKeyInfo's
+			// shape it is named as the PEM form of the same file is;
+			// otherwise it is not a private key at all — a public key
+			// and a certificate both start this way — and saying
+			// "passphrase-protected" would send the caller looking for a
+			// passphrase.
+			if !isEncryptedPrivateKeyInfo(der) {
+				return fmt.Errorf("%w: DER structure is not a private key", ErrUnsupportedKey)
+			}
 			return encryptedPKCS8Error(der)
 		}
 		var version int64
@@ -492,6 +499,17 @@ func parseDER(blob *secmem.SecureBuffer, o options) (Signer, error) {
 		_ = blob.Destroy()
 		return nil, fmt.Errorf("%w: unrecognised DER structure", errMalformed)
 	}
+}
+
+// isEncryptedPrivateKeyInfo reports whether der has the shape of RFC 5958's
+// EncryptedPrivateKeyInfo: an AlgorithmIdentifier (a SEQUENCE that opens
+// with an OBJECT IDENTIFIER), then an OCTET STRING, and nothing after it.
+// Which algorithm it names is encryptedPKCS8Error's question.
+func isEncryptedPrivateKeyInfo(der []byte) bool {
+	in := cryptobyte.String(der)
+	var seq, alg, oid, data cryptobyte.String
+	return in.ReadASN1(&seq, cbasn1.SEQUENCE) && seq.ReadASN1(&alg, cbasn1.SEQUENCE) &&
+		alg.ReadASN1(&oid, cbasn1.OBJECT_IDENTIFIER) && seq.ReadASN1(&data, cbasn1.OCTET_STRING) && seq.Empty()
 }
 
 // rsaFromDER hands a PKCS#1 or PKCS#8 RSA DER buffer to NewRSASigner, which

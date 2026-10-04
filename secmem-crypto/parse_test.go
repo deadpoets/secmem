@@ -476,3 +476,50 @@ func TestParsePrivateKey_ErrorsBoundOIDs(t *testing.T) {
 		t.Errorf("EncryptedPrivateKeyInfo with a %d-arc algorithm OID: the error is %d bytes long", len(huge), n)
 	}
 }
+
+// TestParsePrivateKey_BareDERThatIsNotAKey: bare DER whose first element is
+// a SEQUENCE is an EncryptedPrivateKeyInfo only if it has that shape — an
+// AlgorithmIdentifier and an OCTET STRING. A public key or a certificate
+// handed in by mistake starts the same way, and calling it
+// "passphrase-protected" sends the caller to ask for a passphrase that does
+// not exist.
+func TestParsePrivateKey_BareDERThatIsNotAKey(t *testing.T) {
+	pub, priv, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatal(err)
+	}
+	spki, err := x509.MarshalPKIXPublicKey(pub)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// A certificate-shaped structure: SEQUENCE { SEQUENCE { [0] … }, … }.
+	var b cryptobyte.Builder
+	b.AddASN1(cbasn1.SEQUENCE, func(b *cryptobyte.Builder) {
+		b.AddASN1(cbasn1.SEQUENCE, func(b *cryptobyte.Builder) {
+			b.AddASN1(cbasn1.Tag(0).ContextSpecific().Constructed(), func(b *cryptobyte.Builder) { b.AddASN1Int64(2) })
+		})
+		b.AddASN1(cbasn1.SEQUENCE, func(b *cryptobyte.Builder) { b.AddASN1ObjectIdentifier(oidEd25519) })
+		b.AddASN1BitString([]byte{1, 2, 3})
+	})
+	for name, der := range map[string][]byte{"SubjectPublicKeyInfo": spki, "certificate-shaped": b.BytesOrPanic()} {
+		_, err := ParsePrivateKey(der)
+		if err == nil {
+			t.Fatalf("%s parsed as a private key", name)
+		}
+		if errors.Is(err, ErrEncryptedKey) {
+			t.Errorf("%s was reported as a passphrase-protected private key: %v", name, err)
+		}
+		if !errors.Is(err, ErrUnsupportedKey) {
+			t.Errorf("%s: %v, want ErrUnsupportedKey", name, err)
+		}
+	}
+
+	// Control: a real EncryptedPrivateKeyInfo in bare DER is still named.
+	p8, err := x509.MarshalPKCS8PrivateKey(priv)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := ParsePrivateKey(encryptPKCS8(t, p8, pbes2Spec{})); !errors.Is(err, ErrEncryptedKey) {
+		t.Errorf("an EncryptedPrivateKeyInfo in bare DER: %v, want ErrEncryptedKey", err)
+	}
+}
