@@ -276,6 +276,102 @@ mark the stability commitment.
   The internal protection mapping sent everything other than "none" and
   "read" to `PAGE_READWRITE` and returned success. It now refuses a value it
   does not know.
+### Added
+
+- **`secmem-crypto`: `ErrLowOrderPoint`**, wrapped by `X25519Key.SharedSecret`
+  for a low-order peer key.
+
+### Changed
+
+- **`secmem-crypto`: `BufferOptions` forwards core options to every buffer
+  the module allocates, and every allocating function takes `...Option`.**
+  Until now a platform that needs `secmem.WithInsecureFallback` could only
+  get `ErrNoSecureMemory` from this module. `BufferOptions(opts
+  ...secmem.Option)` reaches every `SecureBuffer` a call allocates, and a key
+  keeps the options it was built with for the buffers its methods return
+  later. Eleven functions gained a trailing `...Option`:
+  `GenerateEd25519Signer`, `NewEd25519Signer`, `GenerateX25519Key`,
+  `NewX25519Key`, `NewArgon2Workspace`, `NewArgon2Pool`, `Encapsulate`,
+  `GenerateDicewarePassphrase`, `BcryptPBKDFInto`, `HMACSHA256Into` and
+  `HKDFSHA256Into`. That is source-compatible for callers and a changed func
+  type for anyone storing them as values. `X25519Key` is no longer comparable
+  with `==`. Without the option the module is secure-memory-only, as before.
+
+- **`secmem-crypto`: one RSA size rule on every route.** The modulus
+  (16384-bit), prime (8192-bit) and public-exponent bounds applied only to
+  OpenSSH files; a PKCS#1, PKCS#8 or encrypted PKCS#8 file with megabyte
+  integers bought minutes of validation per parse. The lengths are now read
+  from the DER in place inside `NewRSASigner`. `NewRSASigner` on such DER, a
+  key with more than five primes, and `GenerateRSASigner` over 16384 bits are
+  refused.
+
+- **`secmem-crypto`: the package overview is `doc.go`**; file headers are no
+  longer published as package documentation.
+
+### Fixed
+
+- **`secmem-crypto`: an error from a PBES2 file could be built from its
+  decrypted plaintext.** After decryption, `ParsePrivateKeyWithPassphrase`
+  passed the plain PKCS#8 parser's "unsupported algorithm" error through, and
+  that error names the OID it read. AES-CBC is unauthenticated, so a modified
+  file opened with the correct passphrase could make that OID span the key
+  bytes and have them printed in the error. The two post-decryption refusals
+  that are not the wrong-passphrase error (`ErrUnsupportedKey`,
+  `ErrHeapTransients`) are now fixed strings; `errors.Is` is unchanged, the
+  message text is not. The test that pinned the one-bit promise swept only
+  ciphertext bytes; the new one sweeps the IV and a block splice.
+
+- **`secmem-crypto`: `Argon2Workspace` no longer falls back to the heap for
+  long inputs.** An H0 input over 4096 bytes (password + salt + Secret +
+  Data) was assembled in a Go heap buffer holding the password and Secret,
+  wiped afterwards but pageable and dumpable meanwhile, which is the exposure
+  the type exists to remove. H0 is now hashed a block at a time through the
+  forked BLAKE2b compression function with its state in the workspace, so no
+  input is assembled and none has a length limit. Output is unchanged. The
+  workspace is 3,904 bytes smaller.
+
+- **`secmem-crypto`: `RSASigner` built from PKCS#8 DER no longer copies the
+  whole private key to the heap per signature.** `x509.ParsePKCS8PrivateKey`
+  copies the wrapped RSAPrivateKey into a fresh slice that nothing wipes,
+  twice at construction and once per `Sign`. The signer now parses that
+  element where it lies in its buffer.
+
+- **`secmem-crypto`: the reflective wipes account for every field.** The AES,
+  AES-GCM, ML-KEM and RSA wipes zeroed the secret fields they knew by name
+  and ignored the rest, so a toolchain that renamed the GHASH table or moved
+  the FIPS-form RSA key would have left it unwiped with no error. Each now
+  refuses a layout with a field it does not know, before the key is expanded.
+
+- **`secmem-crypto`: `NewRSASigner` refuses a PKCS#8 key of another type
+  without parsing it.** It used to ask `crypto/x509` what the structure held,
+  putting that key on the heap to be refused; an ML-DSA key on go1.27 was
+  dropped unwiped.
+
+- **`secmem-crypto`: `MLKEM768Key.Decapsulate` documented correctly.** Only a
+  wrong-length ciphertext errors; a tampered one yields a different key (FIPS
+  203 implicit rejection), so key confirmation is the protocol's job.
+
+- **`secmem-crypto`: `WithAESGCM` waits for a Seal or Open in flight on
+  another goroutine before wiping the schedule**, instead of letting it
+  finish under zeroed round keys, and on a destroyed key returns an error
+  wrapping `secmem.ErrDestroyed` rather than a key-size error.
+
+- **`secmem-crypto`: the in-place HMAC panics on an undersized scratch
+  region** rather than returning the MAC of a truncated message (an internal
+  invariant; no caller was wrong), and `HMACInto`/`HKDFInto` no longer take a
+  pre-seeded hash constructor for the plain hash on first sight.
+
+- **`secmem-crypto`: `X25519Key.PublicKey` and `SharedSecret` return
+  `ErrBadScalarLength`** instead of panicking when the buffer was truncated
+  through a retained reference.
+
+- **`secmem-crypto`: parser errors bound the object identifiers they
+  repeat** (16 arcs or 64 characters, else described by size), and
+  `ParsePrivateKey` no longer calls a bare-DER public key or certificate
+  "passphrase-protected"; it returns `ErrUnsupportedKey`.
+
+- **`secmem-crypto`: `MarshalOpenSSHPrivateKey` PEM-encodes inside a Scrub
+  window**; without a passphrase that pass reads the seed in clear.
 
 ## [secmem-crypto/v0.9.0] - 2026-10-03
 
