@@ -63,7 +63,7 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytes: nil fn")
 	}
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
 	}
 	defer clearRegisters() // registered first, so it runs last, after the unlock
@@ -95,7 +95,7 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytesErr: nil fn")
 	}
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -161,7 +161,7 @@ func (s *SecureBuffer) ExposeString() (string, error) {
 // itself an off-heap region, no heap copy occurs. If dst is heap-allocated,
 // the caller is responsible for wiping it.
 func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -190,7 +190,7 @@ func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 // serializing all concurrent writes and preventing races with
 // ReadOnly/ReadWrite page-protection changes.
 func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -221,7 +221,7 @@ func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 // returns an error instead, honoring the library's "no panics in library
 // code" policy.
 func (s *SecureBuffer) ByteAt(i int) (byte, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // one secret byte still moves through a register; see WithBytes
@@ -248,7 +248,7 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 // The exclusive lock is held to prevent races with ReadOnly/ReadWrite and
 // concurrent Write calls.
 func (s *SecureBuffer) SetByteAt(i int, v byte) error {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
 	}
 	defer clearRegisters() // see ByteAt
@@ -277,7 +277,7 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 // against other. Returns (false, nil) when lengths differ.
 // Returns (false, ErrDestroyed) if the buffer has been destroyed.
 func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return false, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -308,7 +308,7 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 // NOTE: For network or pipe targets, wrap w with a write deadline before
 // calling WriteTo to bound the lifetime of the in-flight copy.
 func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes
@@ -345,7 +345,7 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 // (including the emergency-wipe path). The temporary slice is wiped via
 // secureWipeSlice after the copy regardless of outcome.
 func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
 	}
 	defer clearRegisters() // see WithBytes

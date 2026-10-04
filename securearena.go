@@ -172,14 +172,24 @@ type slotMeta struct {
 //
 // Destroy is idempotent and goroutine-safe.  After Destroy, all subsequent
 // Acquire calls return [ErrArenaDestroyed].
+//
+// # Copies are aliases
+//
+// As with [SecureBuffer], a copy of a SecureArena value is a second handle on
+// the same slab, slot bookkeeping and state, not a second arena: a slot
+// acquired through one handle is live in all of them, and Destroy on any of
+// them destroys the arena for all. The zero value is a destroyed arena.
 type SecureArena struct {
-	// arenaRedactor is embedded (not a value receiver on SecureArena itself —
-	// alloc below is a value sync.Mutex that go vet's copylocks would flag on
-	// any value-receiver method declared directly on SecureArena) so its
-	// String/GoString/Format/LogValue methods promote into both SecureArena's
-	// and *SecureArena's method sets. See redact.go.
-	arenaRedactor
+	// Every field lives behind this one pointer, for the reason given on
+	// SecureBuffer: two copies of the struct must not be able to disagree
+	// about whether the slab is still mapped. Nil only in the zero value.
+	*arenaState
+}
 
+// arenaState is a SecureArena's state: one per slab, shared by every copy of
+// the SecureArena and by every [ArenaSlot] acquired from it, and the object
+// the AddCleanup fallback is attached to.
+type arenaState struct {
 	// mu: rLock is held by all WithBytes/WithBytesErr callbacks; exclusive lock
 	// is held only by Destroy.  Uses bufferRWLock (not sync.RWMutex) so all
 	// blocking states are durably blocked under testing/synctest.
@@ -288,8 +298,13 @@ type SecureArena struct {
 //
 // A slot should be owned by a single goroutine at a time; concurrent access
 // to the same slot from multiple goroutines is not internally synchronized.
+//
+// The zero value is a released slot.
 type ArenaSlot struct {
-	arena *SecureArena
+	// arena is the state of the arena the slot came from, not the SecureArena
+	// handle it was acquired through: the slot stays valid, and keeps the slab
+	// reachable, whatever happens to that handle. Nil only in the zero value.
+	arena *arenaState
 	// idx is int32 for the same reason slotMeta.next is: it is an index into
 	// slots, whose length NewArena caps at math.MaxInt32, and keeping one width
 	// across the whole free list means there is no narrowing conversion in the
@@ -408,7 +423,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	}
 	slots[count-1].next = -1
 
-	a := &SecureArena{
+	a := &SecureArena{arenaState: &arenaState{
 		mu:       newBufferRWLock(),
 		wiped:    new(atomic.Bool),
 		region:   region,
@@ -418,7 +433,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 		stride:   stride,
 		count:    count,
 		backing:  info,
-	}
+	}}
 
 	// Register the slab with emergency janitor using raw metadata only.
 	// Arenas have no Seal, hence no seal-cipher state. A refused registration
@@ -434,11 +449,12 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 	a.janitorKey = key
 
 	// Safety-net cleanup: wipe and free the slab if Destroy was forgotten.
-	// Only the slab size is captured (not a reference to a) so that the
-	// cleanup closure cannot keep a alive and prevent it from becoming
-	// unreachable.
+	// Attached to the state, which every copy of the arena and every slot
+	// shares, so the slab is released when the last of them is gone. Only the
+	// slab size is captured (not a reference to the state) so that the cleanup
+	// closure cannot keep it alive and prevent it from becoming unreachable.
 	slabBytes := len(region.inner)
-	a.cleanup = runtime.AddCleanup(a, func(key uint64) {
+	a.cleanup = runtime.AddCleanup(a.arenaState, func(key uint64) {
 		slog.Warn("secmem: SecureArena finalized without explicit Destroy()",
 			slog.Int("slab_bytes", slabBytes),
 			slog.String("advice", "call Destroy() explicitly for deterministic wipe"),
@@ -475,7 +491,7 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 // "the secret is gone" while the first call is still mid-wipe. This matches
 // SecureBuffer.Destroy, which takes its exclusive lock before testing state.
 func (a *SecureArena) Destroy() error {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return nil
 	}
 
@@ -499,7 +515,7 @@ func (a *SecureArena) Destroy() error {
 	err := emergencyJanitor.release(a.janitorKey, true)
 	a.region = secRegion{}
 
-	runtime.KeepAlive(a)
+	runtime.KeepAlive(a.arenaState)
 
 	if err != nil {
 		return fmt.Errorf("secmem.SecureArena.Destroy: %w", err)
@@ -509,7 +525,7 @@ func (a *SecureArena) Destroy() error {
 
 // IsDestroyed reports whether the arena has been destroyed.
 func (a *SecureArena) IsDestroyed() bool {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return true
 	}
 	return a.destroyed.Load()
@@ -524,7 +540,7 @@ func (a *SecureArena) IsDestroyed() bool {
 // Returns [ErrArenaFull] if all slots are occupied.
 // Returns [ErrArenaDestroyed] if the arena has been destroyed.
 func (a *SecureArena) Acquire() (*ArenaSlot, error) {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return nil, ErrArenaDestroyed
 	}
 
@@ -551,12 +567,12 @@ func (a *SecureArena) Acquire() (*ArenaSlot, error) {
 	// ownership. See slotMeta.generation for the parity contract.
 	gen := a.slots[i].generation.Add(1)
 	a.live++
-	return &ArenaSlot{arena: a, idx: i, generation: gen}, nil
+	return &ArenaSlot{arena: a.arenaState, idx: i, generation: gen}, nil
 }
 
 // LiveCount returns the number of currently acquired (live) slots.
 func (a *SecureArena) LiveCount() int {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return 0
 	}
 	a.alloc.Lock()
@@ -566,7 +582,7 @@ func (a *SecureArena) LiveCount() int {
 
 // Cap returns the total slot capacity of the arena.
 func (a *SecureArena) Cap() int {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return 0
 	}
 	return a.count
@@ -574,7 +590,7 @@ func (a *SecureArena) Cap() int {
 
 // SlotSize returns the usable bytes per slot.
 func (a *SecureArena) SlotSize() int {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return 0
 	}
 	return a.slotSize
@@ -605,6 +621,9 @@ func (a *SecureArena) ReadOnly() error {
 	if a == nil {
 		return errors.New("secmem.SecureArena.ReadOnly: nil receiver")
 	}
+	if a.arenaState == nil {
+		return fmt.Errorf("secmem.SecureArena.ReadOnly: %w", ErrArenaDestroyed)
+	}
 	a.mu.lock()
 	defer a.mu.unlock()
 	if a.region.inner == nil {
@@ -631,6 +650,9 @@ func (a *SecureArena) ReadOnly() error {
 func (a *SecureArena) ReadWrite() error {
 	if a == nil {
 		return errors.New("secmem.SecureArena.ReadWrite: nil receiver")
+	}
+	if a.arenaState == nil {
+		return fmt.Errorf("secmem.SecureArena.ReadWrite: %w", ErrArenaDestroyed)
 	}
 	a.mu.lock()
 	defer a.mu.unlock()
@@ -679,7 +701,7 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 	if fn == nil {
 		return errors.New("secmem.ArenaSlot.WithBytesErr: nil fn")
 	}
-	if s == nil {
+	if s == nil || s.arena == nil {
 		return ErrSlotReleased
 	}
 	defer clearRegisters() // see SecureBuffer.WithBytes
@@ -761,7 +783,7 @@ func (s *ArenaSlot) WithBytesErr(fn func([]byte) error) error {
 // fault on. The slot stays in use; call [SecureArena.ReadWrite] first, or let
 // [SecureArena.Destroy] wipe it (it makes the slab writable internally).
 func (s *ArenaSlot) Release() error {
-	if s == nil {
+	if s == nil || s.arena == nil {
 		return nil
 	}
 
@@ -863,7 +885,7 @@ func (s *ArenaSlot) Release() error {
 
 // Index returns the slot's zero-based index within the arena.
 func (s *ArenaSlot) Index() int {
-	if s == nil {
+	if s == nil || s.arena == nil {
 		return -1
 	}
 	return int(s.idx)
@@ -880,7 +902,7 @@ func (s *ArenaSlot) Index() int {
 // the correct answer one atomic load: released flips it even, recycling makes
 // it a different odd, and either way it no longer equals the handle's.
 func (s *ArenaSlot) IsLive() bool {
-	if s == nil {
+	if s == nil || s.arena == nil {
 		return false
 	}
 	return s.arena.slots[s.idx].generation.Load() == s.generation

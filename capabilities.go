@@ -287,7 +287,7 @@ func (c Capabilities) String() string {
 // The report is fixed at construction and remains valid after Destroy.
 // A nil receiver reports a fully degraded posture.
 func (s *SecureBuffer) Capabilities() Capabilities {
-	if s == nil {
+	if s == nil || s.bufferState == nil {
 		return capsFromAlloc(allocInfo{})
 	}
 	return capsFromAlloc(s.backing)
@@ -299,7 +299,7 @@ func (s *SecureBuffer) Capabilities() Capabilities {
 // The report is fixed at construction and remains valid after Destroy.
 // A nil receiver reports a fully degraded posture.
 func (a *SecureArena) Capabilities() Capabilities {
-	if a == nil {
+	if a == nil || a.arenaState == nil {
 		return capsFromAlloc(allocInfo{})
 	}
 	return capsFromAlloc(a.backing)

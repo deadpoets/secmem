@@ -226,6 +226,22 @@ The core floor is unchanged at v0.7.0.
   `IsDestroyed`, `Capabilities`, `Destroy` and `ArenaSlot.Release` are
   unaffected.
 
+- **A copy of a `SecureBuffer` or `SecureArena` value is an alias of the
+  original, and a zero value is a destroyed one.** The types are used through
+  pointers, but nothing stopped `c := *buf`, and vet's copylocks check does
+  not see it. The copy carried its own liveness fields over the shared
+  mapping, so after `buf.Destroy()` it still handed out a slice, now over
+  unmapped memory or over whatever mapping had reused the address; a copied
+  arena kept handing out slots in a slab that was gone. All state now lives
+  behind one pointer, as in `os.File`: a copy or an overwrite (`*a = *b`) is
+  a second handle on the same buffer, state changed through one is seen
+  through all, and `Destroy` on any of them destroys it for all. The
+  finalization fallback follows the shared state, so the region is released
+  when the last handle is gone. A zero-value `SecureBuffer`, `SecureArena` or
+  `ArenaSlot`, which used to dereference a nil lock on every method, now
+  behaves as a destroyed buffer or arena, or a released slot. Method sets and
+  signatures are unchanged.
+
 ### Fixed
 
 - **Windows: a buffer that had been sealed was no longer locked.**
