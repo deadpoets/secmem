@@ -4,6 +4,7 @@ package secmem
 
 import (
 	"bytes"
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -12,6 +13,8 @@ import (
 	"runtime"
 	"syscall"
 	"testing"
+
+	"golang.org/x/sys/unix"
 )
 
 // no_new_privs is an attribute of a thread, inherited by the threads and
@@ -56,7 +59,9 @@ func threadsWithoutNoNewPrivs() (missing []string, total int, err error) {
 }
 
 // TestHardenProcess_NoNewPrivsOnEveryThread runs HardenProcess in a child
-// that has first been made to hold several OS threads, then checks each one.
+// that has first been made to hold several OS threads, then checks each one,
+// along with the level it returns and the dumpable flag. A child, because the
+// call is irreversible: see harden_test.go.
 func TestHardenProcess_NoNewPrivsOnEveryThread(t *testing.T) {
 	if os.Getenv(hardenThreadsChildEnv) == "" {
 		cmd := exec.Command(os.Args[0], "-test.run=^TestHardenProcess_NoNewPrivsOnEveryThread$", "-test.v")
@@ -87,9 +92,15 @@ func TestHardenProcess_NoNewPrivsOnEveryThread(t *testing.T) {
 		<-started
 	}
 
-	level, err := hardenProcess()
+	level, err := HardenProcess(context.Background())
 	if err != nil {
-		t.Fatalf("hardenProcess: %v", err)
+		t.Fatalf("HardenProcess: %v", err)
+	}
+	if level&HardenNoDump == 0 {
+		t.Error("HardenNoDump not reported")
+	}
+	if d, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0); err != nil || d != 0 {
+		t.Errorf("PR_GET_DUMPABLE = %d, %v; want 0 (not dumpable)", d, err)
 	}
 	missing, total, err := threadsWithoutNoNewPrivs()
 	if err != nil {

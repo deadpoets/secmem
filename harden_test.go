@@ -3,72 +3,14 @@
 package secmem
 
 import (
-	"context"
 	"os"
 	"testing"
-
-	"golang.org/x/sys/unix"
 )
 
-func TestHardenProcess_DisablesDumpable(t *testing.T) {
-	t.Parallel()
-
-	_, err := HardenProcess(context.Background())
-	if err != nil {
-		t.Fatalf("HardenProcess: %v", err)
-	}
-
-	dumpable, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0)
-	if err != nil {
-		t.Fatalf("PR_GET_DUMPABLE: %v", err)
-	}
-	if dumpable != 0 {
-		t.Errorf("PR_GET_DUMPABLE = %d, want 0 (disabled)", dumpable)
-	}
-}
-
-// TestHardenProcess_SetsNoNewPrivs checks the attribute where the level claims
-// it: on every thread. Asking PR_GET_NO_NEW_PRIVS answers for one thread only,
-// and not necessarily the one HardenProcess ran on.
-func TestHardenProcess_SetsNoNewPrivs(t *testing.T) {
-	t.Parallel()
-
-	level, err := HardenProcess(context.Background())
-	if err != nil {
-		t.Fatalf("HardenProcess: %v", err)
-	}
-	if level&HardenNoNewPriv == 0 {
-		if allThreadsSyscallAvailable() {
-			t.Fatal("HardenNoNewPriv not reported although every thread can be reached")
-		}
-		return // a cgo binary: per-thread only, and correctly not claimed
-	}
-	missing, total, err := threadsWithoutNoNewPrivs()
-	if err != nil {
-		t.Fatalf("reading /proc/self/task: %v", err)
-	}
-	if len(missing) > 0 {
-		t.Errorf("HardenNoNewPriv reported, but %d of %d threads do not have no_new_privs: %v", len(missing), total, missing)
-	}
-}
-
-func TestHardenProcess_ReturnsExpectedLevel(t *testing.T) {
-	t.Parallel()
-
-	level, err := HardenProcess(context.Background())
-	if err != nil {
-		t.Fatalf("HardenProcess: %v", err)
-	}
-
-	// On Linux we expect NoDump always, and NoNewPriv exactly when the
-	// attribute could be set on every thread (not in a cgo binary).
-	if level&HardenNoDump == 0 {
-		t.Error("HardenNoDump bit not set")
-	}
-	if got, want := level&HardenNoNewPriv != 0, allThreadsSyscallAvailable(); got != want {
-		t.Errorf("HardenNoNewPriv reported = %v, want %v (all-threads syscall available = %v)", got, want, want)
-	}
-}
+// HardenProcess itself is tested in a re-executed child
+// (harden_threads_linux_test.go, harden_isolated_test.go): it is irreversible,
+// and a test process left non-dumpable loses access to its own /proc/self/mem,
+// which the isolation proofs read on a second -count pass.
 
 func TestAllocMemfdSecret_OrFallback(t *testing.T) {
 	t.Parallel()
