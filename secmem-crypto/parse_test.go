@@ -11,6 +11,7 @@ import (
 	"crypto/rsa"
 	"crypto/sha256"
 	"crypto/x509"
+	"encoding/asn1"
 	"encoding/base64"
 	"encoding/pem"
 	"errors"
@@ -18,6 +19,8 @@ import (
 	"sync"
 	"testing"
 
+	"golang.org/x/crypto/cryptobyte"
+	cbasn1 "golang.org/x/crypto/cryptobyte/asn1"
 	"golang.org/x/crypto/ssh"
 
 	"github.com/deadpoets/secmem"
@@ -428,5 +431,48 @@ func TestParsePrivateKey_ErrorsCarryNoKeyBytes(t *testing.T) {
 		if strings.Contains(msg, string(corrupt[i:i+8])) {
 			t.Fatalf("error text contains key bytes: %q", msg)
 		}
+	}
+}
+
+// TestParsePrivateKey_ErrorsBoundOIDs: an object identifier is file-chosen
+// text like a label, and an error repeats it under the same kind of bound.
+// A real one is named in full; one with thousands of arcs is described by
+// its size, on both entry points.
+func TestParsePrivateKey_ErrorsBoundOIDs(t *testing.T) {
+	huge := asn1.ObjectIdentifier{1, 3}
+	for range 50000 {
+		huge = append(huge, 9)
+	}
+	pkcs8With := func(oid asn1.ObjectIdentifier) []byte {
+		var b cryptobyte.Builder
+		b.AddASN1(cbasn1.SEQUENCE, func(b *cryptobyte.Builder) {
+			b.AddASN1Int64(0)
+			b.AddASN1(cbasn1.SEQUENCE, func(b *cryptobyte.Builder) { b.AddASN1ObjectIdentifier(oid) })
+			b.AddASN1OctetString([]byte{4, 1, 0})
+		})
+		return b.BytesOrPanic()
+	}
+	const bound = 256
+
+	_, err := ParsePrivateKey(pkcs8With(huge))
+	if !errors.Is(err, ErrUnsupportedKey) {
+		t.Fatalf("PKCS#8 with an unknown algorithm: %v, want ErrUnsupportedKey", err)
+	}
+	if n := len(err.Error()); n > bound {
+		t.Errorf("PKCS#8 with a %d-arc algorithm OID: the error is %d bytes long", len(huge), n)
+	}
+	// A real unknown OID is still named, so the error stays useful.
+	_, err = ParsePrivateKey(pkcs8With(asn1.ObjectIdentifier{1, 3, 101, 113}))
+	if err == nil || !strings.Contains(err.Error(), "1.3.101.113") {
+		t.Errorf("a short unknown OID is no longer named: %v", err)
+	}
+
+	enc := encryptPKCS8(t, pkcs8With(asn1.ObjectIdentifier{1, 3, 101, 112}), pbes2Spec{outer: huge})
+	_, err = ParsePrivateKeyWithPassphrase(enc, []byte(testPassphrase))
+	if err == nil {
+		t.Fatal("an EncryptedPrivateKeyInfo with an unknown algorithm opened")
+	}
+	if n := len(err.Error()); n > bound {
+		t.Errorf("EncryptedPrivateKeyInfo with a %d-arc algorithm OID: the error is %d bytes long", len(huge), n)
 	}
 }

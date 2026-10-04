@@ -121,13 +121,17 @@ var (
 // and PKCS#8 v2 optionally), it is checked against the one derived from the
 // private half and a mismatch is an error. Passphrase-protected keys return
 // an error wrapping [ErrEncryptedKey] (see [ParsePrivateKeyWithPassphrase]);
-// other kinds, [ErrUnsupportedKey]. Errors never carry key bytes. The one
-// thing from the file they repeat is a label it names — a PEM block type or
-// an OpenSSH algorithm, cipher or KDF name — and it is quoted whole only when
-// it is at most 32 bytes of printable ASCII; a longer printable label is
-// quoted to 32 bytes with its length noted, and one with any other byte is
-// described by its length alone, so a hostile file cannot put kilobytes, or
-// control characters, into a log line through the error.
+// other kinds, [ErrUnsupportedKey]. Errors never carry key bytes. What they
+// repeat from the file is the name of something it asked for, and both kinds
+// of name are bounded. A label — a PEM block type or an OpenSSH algorithm,
+// cipher or KDF name — is quoted whole only when it is at most 32 bytes of
+// printable ASCII; a longer printable label is quoted to 32 bytes with its
+// length noted, and one with any other byte is described by its length
+// alone. An ASN.1 object identifier — an algorithm, curve, KDF or cipher
+// this package does not support — is printed in dotted form up to 16 arcs
+// and 64 characters, and described by its size beyond that. So a hostile
+// file cannot put kilobytes, or control characters, into a log line through
+// the error.
 //
 // An RSA or EC key is refused with an error wrapping [ErrHeapTransients] on
 // a build without GOEXPERIMENT=runtimesecret, unless opts include
@@ -284,6 +288,30 @@ func labelForError(label []byte) string {
 		return strconv.Quote(string(label))
 	}
 	return fmt.Sprintf("%s... (%d bytes)", strconv.Quote(string(label[:maxQuotedLabel])), len(label))
+}
+
+// maxOIDArcs and maxOIDText bound what oidForError will print. Every
+// identifier this package could be asked about is far inside both (the
+// longest in use here has ten arcs and nineteen characters).
+const (
+	maxOIDArcs = 16
+	maxOIDText = 64
+)
+
+// oidForError renders an object identifier read from a key file for an
+// error message. It is labelForError's counterpart for the other piece of
+// file-chosen text an error names: an identifier is digits and dots, so
+// there is no escaping to do, but it has no length limit of its own — a file
+// can carry one with a hundred thousand arcs — so one past the bounds above
+// is described by its size instead of printed. Every site that names an
+// identifier from the input goes through here.
+func oidForError(oid asn1.ObjectIdentifier) string {
+	if len(oid) <= maxOIDArcs {
+		if s := oid.String(); len(s) <= maxOIDText {
+			return s
+		}
+	}
+	return fmt.Sprintf("<object identifier of %d arcs>", len(oid))
 }
 
 // pemBlock finds the first PEM block in data and returns its type and its
@@ -545,7 +573,7 @@ func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 			}
 			curve := curveFromOID(curveOID)
 			if curve == nil {
-				return fmt.Errorf("%w: EC curve %v", ErrUnsupportedKey, curveOID)
+				return fmt.Errorf("%w: EC curve %s", ErrUnsupportedKey, oidForError(curveOID))
 			}
 			var err error
 			s, err = ecdsaFromSEC1(priv, curve, pub, o)
@@ -562,7 +590,7 @@ func parsePKCS8(blob *secmem.SecureBuffer, o options) (Signer, error) {
 		case oid.Equal(oidX25519):
 			return fmt.Errorf("%w: X25519 is an agreement key, not a signer (use NewX25519Key)", ErrUnsupportedKey)
 		default:
-			return fmt.Errorf("%w: PKCS#8 algorithm %v", ErrUnsupportedKey, oid)
+			return fmt.Errorf("%w: PKCS#8 algorithm %s", ErrUnsupportedKey, oidForError(oid))
 		}
 	})
 	if err != nil {
@@ -620,7 +648,7 @@ func ecdsaFromSEC1(der []byte, curve elliptic.Curve, outerPub []byte, o options)
 		}
 		named := curveFromOID(curveOID)
 		if named == nil {
-			return nil, fmt.Errorf("%w: EC curve %v", ErrUnsupportedKey, curveOID)
+			return nil, fmt.Errorf("%w: EC curve %s", ErrUnsupportedKey, oidForError(curveOID))
 		}
 		if curve != nil && curve != named {
 			return nil, fmt.Errorf("%w: curve in PKCS#8 header disagrees with SEC 1 parameters", errMalformed)

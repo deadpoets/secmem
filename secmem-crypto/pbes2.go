@@ -226,7 +226,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	case oidIsRetiredPBE(oid):
 		return f, fmt.Errorf("%w: %w", ErrUnsupportedKey, errRetiredPBE)
 	default:
-		return f, fmt.Errorf("%w: PKCS#8 encryption algorithm %v", ErrUnsupportedKey, oid)
+		return f, fmt.Errorf("%w: PKCS#8 encryption algorithm %s", ErrUnsupportedKey, oidForError(oid))
 	}
 	var params, kdf, scheme cryptobyte.String
 	if !alg.ReadASN1(&params, cbasn1.SEQUENCE) || !alg.Empty() ||
@@ -251,7 +251,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	case oid.Equal(oidDESEDE3CBC), oid.Equal(oidRC2CBC), oid.Equal(oidDESCBC):
 		return f, fmt.Errorf("%w: %w", ErrUnsupportedKey, errRetiredPBES2Cipher)
 	default:
-		return f, fmt.Errorf("%w: PBES2 scheme %v", ErrUnsupportedKey, oid)
+		return f, fmt.Errorf("%w: PBES2 scheme %s", ErrUnsupportedKey, oidForError(oid))
 	}
 	var iv cryptobyte.String
 	if !scheme.ReadASN1(&iv, cbasn1.OCTET_STRING) || !scheme.Empty() || len(iv) != opensshAESBlock {
@@ -267,7 +267,7 @@ func readPBES2(der []byte) (pbes2File, error) {
 	case oid.Equal(oidScrypt):
 		f.scrypt = true
 	default:
-		return f, fmt.Errorf("%w: PBES2 KDF %v", ErrUnsupportedKey, oid)
+		return f, fmt.Errorf("%w: PBES2 KDF %s", ErrUnsupportedKey, oidForError(oid))
 	}
 	var kdfParams cryptobyte.String
 	if !kdf.ReadASN1(&kdfParams, cbasn1.SEQUENCE) || !kdf.Empty() {
@@ -344,7 +344,7 @@ func readPBKDF2Params(f *pbes2File, kdfParams cryptobyte.String) error {
 		}
 		f.prf = prfByOID(oid)
 		if f.prf == hashNone {
-			return fmt.Errorf("%w: PBKDF2 PRF %v", ErrUnsupportedKey, oid)
+			return fmt.Errorf("%w: PBKDF2 PRF %s", ErrUnsupportedKey, oidForError(oid))
 		}
 	}
 	if !kdfParams.Empty() {
