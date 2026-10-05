@@ -10,12 +10,21 @@ import (
 	"golang.org/x/sys/windows"
 )
 
+var procQueryWorkingSetEx = windows.NewLazySystemDLL("psapi.dll").NewProc("QueryWorkingSetEx")
+
 // pageLocked asks the kernel whether the page at addr is in the working set
 // and locked there (PSAPI_WORKING_SET_EX_BLOCK: Valid is bit 0, Locked bit 22).
+//
+// The call goes through LazyProc.Call, which is //go:uintptrescapes, so the
+// entry is on the heap when the kernel writes to it. windows.QueryWorkingSetEx
+// takes a plain uintptr: the entry would stay on this goroutine's stack, and
+// a stack move before the system call would leave this code reading zeros,
+// which is "not valid, not locked" with a nil error.
 func pageLocked(t *testing.T, addr uintptr) (valid, locked bool) {
 	t.Helper()
 	e := struct{ addr, attrs uintptr }{addr: addr}
-	if err := windows.QueryWorkingSetEx(windows.CurrentProcess(), uintptr(unsafe.Pointer(&e)), uint32(unsafe.Sizeof(e))); err != nil {
+	r, _, err := procQueryWorkingSetEx.Call(uintptr(windows.CurrentProcess()), uintptr(unsafe.Pointer(&e)), unsafe.Sizeof(e))
+	if r == 0 {
 		t.Fatalf("QueryWorkingSetEx: %v", err)
 	}
 	return e.attrs&1 != 0, e.attrs&(1<<22) != 0
