@@ -368,16 +368,28 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 	class := sc.class
 	if sc.needsPreemptSuppression && !secmem.Probe().AsyncPreemptSuppressed {
 		class = residueControlSpill
-		t.Logf("Scrub does not suppress asynchronous preemption on %s, so this scenario asserts the spill class: the copies are expected", runtime.GOOS)
+		t.Logf("%s: Scrub does not suppress asynchronous preemption on %s, so this scenario asserts the spill class: the copies are expected", sc.name, runtime.GOOS)
 	}
 	secret, aux, pats := sc.material(t)
 	v := startResidueVictim(t, exe, sc, secret, aux)
 	rs := secmem.RuntimeSecretActive()
 
+	// Subtests run in parallel and CI prints their output without the test
+	// name, so every line names its scenario.
+	logf := func(format string, args ...any) {
+		t.Helper()
+		t.Logf(sc.name+": "+format, args...)
+	}
 	none := func(phase string, r residueScan) {
 		t.Helper()
 		if r.unlocked() > 0 {
 			t.Errorf("%s: %s found outside locked memory: %s", sc.name, phase, r)
+			for _, w := range r.where {
+				logf("  %s", w)
+			}
+			if more := r.unlocked() - len(r.where); more > 0 {
+				logf("  and %d more", more)
+			}
 		}
 	}
 	some := func(phase, why string, r residueScan) {
@@ -388,19 +400,19 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 	}
 
 	r := scanResidue(t, v.pid, pats)
-	t.Logf("loaded:      %s", r)
+	logf("loaded:      %s", r)
 	none("the intake", r) // every class: the secret reached the buffer without touching the heap
 
 	v.do('c')
 	r = scanResidue(t, v.pid, pats)
-	t.Logf("constructed: %s", r)
+	logf("constructed: %s", r)
 	if class == residueContained {
 		none("construction", r)
 	}
 
 	v.do('o')
 	r = scanResidue(t, v.pid, pats)
-	t.Logf("used:        %s", r)
+	logf("used:        %s", r)
 	switch class {
 	case residueContained:
 		none("use", r)
@@ -415,7 +427,7 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 		v.do('g')
 		r = scanResidue(t, v.pid, pats)
 		if r.unlocked() == 0 || round == residueSettleRounds || (!rs && round == 2) {
-			t.Logf("after %2d GC: %s", round, r)
+			logf("after %2d GC: %s", round, r)
 			break
 		}
 	}
@@ -438,7 +450,7 @@ func runResidueScenario(t *testing.T, exe string, sc residueScenario) {
 
 	v.do('d')
 	r = scanResidue(t, v.pid, pats)
-	t.Logf("destroyed:   %s", r)
+	logf("destroyed:   %s", r)
 	if r.locked > 0 {
 		t.Errorf("%s: after Destroy the secret is still in locked memory: %s", sc.name, r)
 	}
@@ -500,7 +512,14 @@ type residueScan struct {
 	byLabel map[string]int
 	locked  int
 	readMiB int
+	// where describes the first residueWhereMax hits outside locked memory:
+	// the address and what the OS said about the memory it is in. Printed
+	// only when an assertion fails on them, so a failure names pages
+	// instead of a count.
+	where []string
 }
+
+const residueWhereMax = 16
 
 func (r residueScan) unlocked() int {
 	n := 0
@@ -526,7 +545,9 @@ func (r residueScan) String() string {
 // times the victim's heap canary was found outside locked pages. lockedAt
 // reports whether the byte at that offset of the region is locked; a scan
 // whose OS answers per mapping passes a function that ignores the offset.
-func residueCount(img []byte, windows []residueWindow, canary []byte, lockedAt func(off int) bool, res *residueScan) int {
+// describe says where that offset is and what the OS reported about it, for
+// res.where.
+func residueCount(img []byte, windows []residueWindow, canary []byte, lockedAt func(off int) bool, describe func(off int) string, res *residueScan) int {
 	canaryHits := 0
 	for off := 0; ; {
 		i := bytes.Index(img[off:], canary)
@@ -548,6 +569,9 @@ func residueCount(img []byte, windows []residueWindow, canary []byte, lockedAt f
 				res.locked++
 			} else {
 				res.byLabel[w.label]++
+				if len(res.where) < residueWhereMax {
+					res.where = append(res.where, w.label+" at "+describe(off+i))
+				}
 			}
 			off += i + 1
 		}
@@ -562,7 +586,7 @@ func residueCount(img []byte, windows []residueWindow, canary []byte, lockedAt f
 func residueScanned(t *testing.T, res residueScan, canaryHits int) residueScan {
 	t.Helper()
 	if canaryHits == 0 {
-		t.Fatalf("the victim's live heap canary was not found in %d MiB of unlocked memory: the scan is broken, so its silence would prove nothing", res.readMiB)
+		t.Fatalf("%s: the victim's live heap canary was not found in %d MiB of unlocked memory: the scan is broken, so its silence would prove nothing", t.Name(), res.readMiB)
 	}
 	return res
 }

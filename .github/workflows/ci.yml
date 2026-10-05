@@ -330,7 +330,7 @@ jobs:
         with:
           working-directory: secmem-crypto
           allowlist: windows-residue
-          args: "-count=1 -run '^(TestKeyResidue|TestResidueLockedPages_Detected)$'"
+          args: "-count=1 -run '^(TestKeyResidue|TestResidueLockedPages_.*)$'"
 
   # The isolation proofs as ROOT. memfd_secret's claim is that the pages are
   # unreadable through /proc/<pid>/mem and process_vm_readv even by a reader

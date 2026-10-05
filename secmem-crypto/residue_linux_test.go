@@ -138,7 +138,9 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 		}
 		read += int64(got)
 		locked := m.locked
-		canaryHits += residueCount(img, windows, canary, func(int) bool { return locked }, &res)
+		canaryHits += residueCount(img, windows, canary, func(int) bool { return locked }, func(off int) string {
+			return fmt.Sprintf("%#x in mapping %#x-%#x %q (smaps says locked=%v)", m.start+uint64(off), m.start, m.end, m.name, locked)
+		}, &res)
 	}
 	res.readMiB = int(read >> 20)
 	return residueScanned(t, res, canaryHits)
