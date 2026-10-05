@@ -30,7 +30,12 @@ tip=${range##*..}
 fail=0
 say() { printf 'check-commits: %s\n' "$*" >&2; }
 
-commits=$(git rev-list --no-merges "$range") || exit 2
+# Commits origin already has are public: there is nothing left to prevent, and
+# refusing them would block pushing main's own history to a second remote (an
+# advisory fork, a mirror). Only what origin has not seen is checked.
+published="--not --remotes=origin"
+# shellcheck disable=SC2086 # $published is two words on purpose
+commits=$(git rev-list --no-merges "$range" $published) || exit 2
 [ -n "$commits" ] || exit 0
 
 # --- paths -------------------------------------------------------------------
@@ -46,7 +51,7 @@ fi
 # --- secrets -----------------------------------------------------------------
 if command -v gitleaks >/dev/null 2>&1; then
   if ! gitleaks detect --redact --no-banner --log-level=warn \
-      --log-opts="--no-merges $range" >&2; then
+      --log-opts="--no-merges $range $published" >&2; then
     say "gitleaks found something in the range (it scans each commit: fix the commit that introduced it, a follow-up commit does not clear it)"
     fail=1
   fi
