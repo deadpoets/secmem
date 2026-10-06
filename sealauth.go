@@ -210,7 +210,11 @@ func (st *sealPRFState) done() {
 // pads, the digests — is a local wiped before return; the caller runs it in
 // a Scrub window for the frame and register residue.
 func sealComputeTag(tag *[sealTagLen]byte, prekey []byte, id uint64, nonce *[sealNonceLen]byte, data []byte) {
-	root := sha512.Sum512(prekey)
+	// The prekey is 16 KiB of crypto/rand output, not a password: it has no
+	// shortage of entropy to stretch, and a slow hash here would only make
+	// every Seal and Unseal slower. CodeQL classifies the identifier as a
+	// password and asks for a password-hashing KDF; that is the wrong tool.
+	root := sha512.Sum512(prekey) // codeql[go/weak-sensitive-data-hashing]
 	var st sealPRFState
 	st.init(&root)
 	secureWipeSlice(root[:])
