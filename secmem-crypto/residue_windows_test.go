@@ -15,8 +15,12 @@
 package secmemcrypto
 
 import (
+	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"unsafe"
@@ -29,6 +33,7 @@ import (
 var (
 	residueKernel32       = win.NewLazySystemDLL("kernel32.dll")
 	residueProcSuspendThr = residueKernel32.NewProc("SuspendThread")
+	residueProcQueryWSEx  = win.NewLazySystemDLL("psapi.dll").NewProc("QueryWorkingSetEx")
 )
 
 // residueFrozen holds the suspended thread handles of each frozen victim, so
@@ -160,24 +165,40 @@ const (
 )
 
 // residueLockedPages asks the kernel which pages of a region are locked in
-// physical memory. A page that is not valid (not resident) cannot be locked.
-// On failure every page is reported unlocked, which can only overstate the
-// residue found, never hide it.
-func residueLockedPages(proc win.Handle, base uintptr, size, pageSize int) []bool {
+// physical memory, and returns its raw answer for each beside the verdict. A
+// page that is not valid (not resident) cannot be locked. An error means the
+// kernel was not asked or did not answer, which is a broken scan, not a
+// region of unlocked pages: the caller must not count it as either.
+//
+// The entries go to the kernel through LazyProc.Call, which is
+// //go:uintptrescapes: the conversion in its argument list moves them to the
+// heap and keeps them alive across the call. x/sys/windows.QueryWorkingSetEx
+// takes a plain uintptr and promises neither. The entries of a one- or
+// two-page query do not escape and fit the compiler's stack buffer for small
+// variable-sized makes, so with that wrapper they sat on this goroutine's
+// stack, and a stack move between the conversion and the system call sent
+// the kernel's answer to the old stack while this code read zeros (not
+// valid, so "not locked", with a nil error) from the new one. A buffer's
+// page is exactly such a one-page region.
+// TestResidueLockedPages_SurvivesStackMove forces that move.
+func residueLockedPages(proc win.Handle, base uintptr, size, pageSize int) (locked []bool, attrs []uint64, err error) {
 	n := (size + pageSize - 1) / pageSize
 	entries := make([]residueWSEntry, n)
 	for i := range entries {
 		entries[i].addr = base + uintptr(i*pageSize)
 	}
-	locked := make([]bool, n)
-	cb := uint32(uintptr(n) * unsafe.Sizeof(entries[0]))
-	if err := win.QueryWorkingSetEx(proc, uintptr(unsafe.Pointer(&entries[0])), cb); err != nil {
-		return locked
+	cb := uintptr(n) * unsafe.Sizeof(entries[0])
+	r, _, callErr := residueProcQueryWSEx.Call(uintptr(proc), uintptr(unsafe.Pointer(&entries[0])), cb)
+	if r == 0 {
+		return nil, nil, callErr
 	}
+	locked = make([]bool, n)
+	attrs = make([]uint64, n)
 	for i := range entries {
+		attrs[i] = entries[i].attrs
 		locked[i] = entries[i].attrs&residueWSValid != 0 && entries[i].attrs&residueWSLocked != 0
 	}
-	return locked
+	return locked, attrs, nil
 }
 
 // scanResidue freezes the victim, reads every committed readable region of
@@ -242,12 +263,21 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 			continue
 		}
 		read += int64(got)
-		locked := residueLockedPages(proc, mbi.BaseAddress, size, pageSize)
+		locked, attrs, err := residueLockedPages(proc, mbi.BaseAddress, size, pageSize)
+		if err != nil {
+			// Neither an environment to skip nor a finding to count: the
+			// region has been read, and nothing says which of its pages are
+			// locked, so every hit in it would be a guess.
+			t.Fatalf("%s: QueryWorkingSetEx for the victim's region %#x+%#x (protect %#x, type %#x): %v: the scan cannot classify what it read there, so it proves nothing",
+				t.Name(), mbi.BaseAddress, size, mbi.Protect, mbi.Type, err)
+		}
 		canaryHits += residueCount(img, windows, canary, func(off int) bool {
-			if i := off / pageSize; i < len(locked) {
-				return locked[i]
-			}
-			return false
+			return locked[off/pageSize]
+		}, func(off int) string {
+			i := off / pageSize
+			return fmt.Sprintf("%#x in region %#x+%#x (protect %#x, type %#x); the kernel says attrs=%#x valid=%v locked=%v",
+				mbi.BaseAddress+uintptr(off), mbi.BaseAddress, size, mbi.Protect, mbi.Type,
+				attrs[i], attrs[i]&residueWSValid != 0, attrs[i]&residueWSLocked != 0)
 		}, &res)
 	}
 	res.readMiB = int(read >> 20)
@@ -281,13 +311,108 @@ func TestResidueLockedPages_Detected(t *testing.T) {
 
 	proc := win.CurrentProcess()
 	pageSize := os.Getpagesize()
-	if locked := residueLockedPages(proc, bufPage&^uintptr(pageSize-1), pageSize, pageSize); !locked[0] {
-		t.Error("a SecureBuffer's page is not reported locked: the scan cannot tell the buffers from the heap, and would count them as residue")
+	locked, attrs, err := residueLockedPages(proc, bufPage&^uintptr(pageSize-1), pageSize, pageSize)
+	if err != nil {
+		t.Fatalf("QueryWorkingSetEx: %v", err)
 	}
-	if locked := residueLockedPages(proc, heapPage&^uintptr(pageSize-1), pageSize, pageSize); locked[0] {
-		t.Error("an ordinary heap page is reported locked: the scan would hide residue in unprotected memory")
+	if !locked[0] {
+		t.Errorf("a SecureBuffer's page is not reported locked (attrs=%#x): the scan cannot tell the buffers from the heap, and would count them as residue", attrs[0])
+	}
+	locked, attrs, err = residueLockedPages(proc, heapPage&^uintptr(pageSize-1), pageSize, pageSize)
+	if err != nil {
+		t.Fatalf("QueryWorkingSetEx: %v", err)
+	}
+	if locked[0] {
+		t.Errorf("an ordinary heap page is reported locked (attrs=%#x): the scan would hide residue in unprotected memory", attrs[0])
 	}
 	runtime.KeepAlive(heap)
+}
+
+const residueStackMoveEnv = "SECMEMCRYPTO_RESIDUE_STACKMOVE_DEPTH"
+
+// TestResidueLockedPages_SurvivesStackMove is the regression test for the
+// lost answer residueLockedPages' comment describes. Each child process asks
+// about one locked page, as its first QueryWorkingSetEx (the lazy procedure
+// lookup then still has its slow path ahead of it, which is what grows the
+// stack) from a fresh goroutine at a given stack depth. Some depth leaves
+// too little stack for that path, the stack moves under the call, and a query
+// whose entries are on it reports the locked page unlocked: 8 of these 61
+// depths did, on go1.26 and go1.27, before the entries were made to escape.
+// One process per depth, because only a process's first call takes the path.
+func TestResidueLockedPages_SurvivesStackMove(t *testing.T) {
+	if d := os.Getenv(residueStackMoveEnv); d != "" {
+		residueStackMoveChild(d)
+		return
+	}
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	for depth := 0; depth <= 60; depth++ {
+		cmd := exec.Command(exe, "-test.run=^TestResidueLockedPages_SurvivesStackMove$", "-test.count=1")
+		cmd.Env = append(os.Environ(), residueStackMoveEnv+"="+strconv.Itoa(depth))
+		out, err := cmd.CombinedOutput()
+		if err != nil {
+			t.Fatalf("depth %d: %v\n%s", depth, err, out)
+		}
+		switch {
+		case strings.Contains(string(out), "STACKMOVE skip"):
+			t.Skipf("depth %d: %s", depth, out)
+		case strings.Contains(string(out), "STACKMOVE locked=true"):
+		default:
+			t.Errorf("depth %d: a locked page was not reported locked: the kernel's answer was lost\n%s", depth, out)
+		}
+	}
+}
+
+func residueStackMoveChild(depth string) {
+	d, err := strconv.Atoi(depth)
+	if err != nil {
+		fmt.Printf("STACKMOVE error: %v\n", err)
+		return
+	}
+	buf, err := secmem.NewBuffer([]byte("a page of secret bytes for the locked-page control"))
+	if err != nil {
+		fmt.Printf("STACKMOVE skip: NewBuffer: %v\n", err)
+		return
+	}
+	defer func() { _ = buf.Destroy() }()
+	var bufPage uintptr
+	pageSize := os.Getpagesize()
+	if err := buf.WithBytesErr(func(b []byte) error {
+		bufPage = uintptr(unsafe.Pointer(&b[0])) &^ uintptr(pageSize-1) //nolint:secmem-lint // the address is not the secret
+		return nil
+	}); err != nil {
+		fmt.Printf("STACKMOVE error: %v\n", err)
+		return
+	}
+	done := make(chan string)
+	go func() {
+		var res string
+		residueAtDepth(d, func() {
+			locked, attrs, err := residueLockedPages(win.CurrentProcess(), bufPage, pageSize, pageSize)
+			if err != nil {
+				res = fmt.Sprintf("error: %v", err)
+				return
+			}
+			res = fmt.Sprintf("locked=%v attrs=%#x", locked[0], attrs[0])
+		})
+		done <- res
+	}()
+	fmt.Printf("STACKMOVE %s\n", <-done)
+}
+
+// residueAtDepth calls fn with n of its own frames below it on the stack.
+//
+//go:noinline
+func residueAtDepth(n int, fn func()) byte {
+	var pad [96]byte
+	pad[n%96] = byte(n)
+	if n == 0 {
+		fn()
+		return pad[0]
+	}
+	return residueAtDepth(n-1, fn) + pad[n%96]
 }
 
 // residueVictimGODEBUG turns Go's asynchronous preemption off in the victim,
