@@ -219,7 +219,11 @@ func sealComputeTag(tag *[sealTagLen]byte, prekey []byte, id uint64, nonce *[sea
 	st.init(&root)
 	secureWipeSlice(root[:])
 
-	d := sha512.Sum512(data)
+	// Hash-then-MAC: the digest of the secret bytes is the MAC's message, a
+	// stack local keyed and wiped below, never stored or compared on its own.
+	// What it needs is collision resistance, not the cost of a password hash;
+	// CodeQL sees secret bytes going into a fast hash and asks for the latter.
+	d := sha512.Sum512(data) // codeql[go/weak-sensitive-data-hashing]
 	var msg [len(sealLabelMac) + 8 + sealNonceLen + 8 + sha512.Size]byte
 	n := copy(msg[:], sealLabelMac[:])
 	binary.BigEndian.PutUint64(msg[n:], id)
