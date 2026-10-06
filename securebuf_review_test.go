@@ -30,7 +30,7 @@ func TestNewBuffer_RegisteredBeforeFilled_RefusesAfterEmergencyWipe(t *testing.T
 	if err := fillCanary(region.inner[len(data):]); err != nil {
 		t.Fatalf("fillCanary: %v", err)
 	}
-	sb, err := newSecureBuffer(region, data, info)
+	sb, err := newSecureBuffer(region, data, info, config{})
 	if err != nil {
 		t.Fatalf("newSecureBuffer: %v", err)
 	}

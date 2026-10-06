@@ -78,6 +78,13 @@
 //     confidentiality control: it does nothing against a privileged reader of
 //     process memory.
 //
+//   - Authenticated sealing. Seal takes a keyed tag over the bytes it leaves
+//     at rest and Unseal verifies it first, so a bit that changed while the
+//     buffer was dormant — a Rowhammer flip, a DRAM soft error — is refused
+//     with ErrIntegrity instead of being used as the secret. The key derives
+//     from a 16 KiB prekey locked once per process; WithUnauthenticatedSeal
+//     opts a buffer out, visibly. THREAT-MODEL.md has the Rowhammer section.
+//
 //   - Emergency wipe (opt-in). Live buffers are registered so a single
 //     WipeAllSecrets call zeroes every one at once. secmem installs no signal
 //     handler itself: call WipeAllSecrets from your own shutdown or panic

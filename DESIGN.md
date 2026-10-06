@@ -115,6 +115,37 @@ executing in the process (it can call `Unseal` itself) or cold-boot capture
 disclosure bug can reach a plaintext secret from "always" to "the moment of
 use."
 
+### Why Seal authenticates its bytes
+
+`PROT_NONE` stops the process reading or writing a sealed page. It does not
+stop DRAM from changing underneath it: a Rowhammer flip or a soft error lands
+in the physical row regardless of the mapping, and a write that races the
+reseal lands before the protection does. Before this, `Unseal` handed back
+whatever the page held. For a signing key that is the worst shape of fault —
+a signature under a key that differs from the real one in a known bit leaks
+that bit — so `Seal` now takes a keyed tag over the whole inner region as it
+sits at rest and `Unseal` verifies it, in constant time, before it reads or
+decrypts anything. A mismatch is `ErrIntegrity`; the buffer stays sealed, and
+a later `Unseal` verifies again, so the failure is closed rather than
+destructive. `Destroy` verifies too and reports, the way it reports a canary
+violation, and never skips the wipe.
+
+The tag is keyed because an unkeyed digest of a password-sized secret on the
+Go heap would confirm guesses offline. The key is SHA-512 of a 16 KiB
+prekey, locked once per process on the first `Seal`, recomputed on the
+stack inside a `Scrub` window for every tag and never cached — the OpenSSH
+key-shielding shape, chosen so that the same prekey can key an at-rest
+cipher later without a format change. The prekey is read-only for its life
+and is wiped by `WipeAllSecrets` like any other secret; a zeroed prekey
+must never derive a key, so the next `Seal` allocates a fresh one and the
+generation number sealed buffers carry tells a stale tag apart from a
+corrupted one. If the prekey cannot be locked, `Seal` fails; a buffer
+constructed with `WithUnauthenticatedSeal` is the visible, per-buffer way
+to accept page protection alone, and `Capabilities` reports it. The
+construction and its costs are set out in `sealauth.go`; the fault it
+catches is injected deterministically in `sealauth_test.go`, with the
+opt-out as the control that reproduces the old behaviour.
+
 ### Why ReadOnly is a flag *and* a page protection
 
 `ReadOnly` sets the region to `PROT_READ`, so a stray *write* through a
@@ -234,6 +265,8 @@ the code makes that inspectable rather than asking for trust.
   guard pages            overflow into the secret    PROT_NONE brackets
   canary                 intra-mapping overflow      random slack + verify
   Seal (idle)            in-process read primitives  PROT_NONE + CryptProtectMem
+  Seal tag               bit flips while dormant     HMAC-SHA-512, 16 KiB prekey
+                         (Rowhammer, soft error)     verified before Unseal
   ReadOnly               stray writes                PROT_READ + API flag
   wipe                   remanence in RAM            asm zero + cache flush
                          (flush: DRAM, vs DMA/cold

@@ -375,6 +375,32 @@ The core floor is unchanged at v0.7.0.
 
 ### Added
 
+- **`Seal` authenticates the dormant bytes; `Unseal` refuses a changed one
+  with `ErrIntegrity`.** A Rowhammer flip or a DRAM soft error in a sealed
+  page used to come back from `Unseal` as the secret, and a signing key with
+  one known bit changed leaks that bit of the real key per signature. `Seal`
+  now takes an HMAC-SHA-512 tag over the whole region as it sits at rest —
+  on Windows, over the `CryptProtectMemory` ciphertext — under a key derived
+  from a 16 KiB prekey locked once per process on the first `Seal` (the
+  OpenSSH key-shielding shape, chosen to carry an at-rest cipher later), with
+  a fresh nonce per seal and the buffer's identity bound in. `Unseal`
+  verifies in constant time before it reads or decrypts; on a mismatch the
+  buffer stays sealed and a later `Unseal` verifies again, so a restored bit
+  recovers. `Destroy` verifies and reports too, and never skips the wipe.
+  `WipeAllSecrets` zeroes the prekey with everything else; the next `Seal`
+  allocates a fresh one rather than deriving from zeros.
+
+  Costs and the new surface, a minor bump: the prekey is 16 KiB of lock
+  budget per process, and `Seal` and `Unseal` each pay one hash of it and one
+  of the region — about 20 µs for a page on a 2025 desktop. If the prekey
+  cannot be locked, `Seal` fails. **`WithUnauthenticatedSeal`** is the
+  per-buffer opt-out for a process that cannot spare the budget; it is
+  reported by the new **`Capabilities.UnauthenticatedSeal`** and named by
+  `Warnings()`. **`ErrIntegrity`** is the new sentinel. The derivation
+  allocates nothing (pinned by a test) and runs inside a `Scrub` window;
+  THREAT-MODEL.md gains a section on Rowhammer and RAMBleed stating what this
+  detects, what it does not, and what remains a gap.
+
 - **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` opens PKCS#8 files
   protected with scrypt.** `openssl pkcs8 -topk8 -scrypt` files — PBES2 with
   the scrypt KDF of RFC 7914, the one KDF the parser still refused — now

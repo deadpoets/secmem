@@ -14,7 +14,8 @@ import (
 
 // config collects the effects of constructor Options.
 type config struct {
-	insecureFallback bool
+	insecureFallback    bool
+	unauthenticatedSeal bool
 }
 
 // Option configures a constructor ([NewBuffer], [NewEmptyBuffer],
@@ -33,6 +34,23 @@ type Option func(*config)
 // and a one-time slog warning fires on first use.
 func WithInsecureFallback() Option {
 	return func(c *config) { c.insecureFallback = true }
+}
+
+// WithUnauthenticatedSeal makes [SecureBuffer.Seal] on this buffer page
+// protection only (plus the Windows seal cipher): no tag is taken over the
+// dormant bytes and [SecureBuffer.Unseal] verifies nothing, so a bit that
+// changes while the buffer is sealed is handed back as the secret.
+//
+// It exists for one reason: the tag's key is derived from a 16 KiB prekey
+// locked once per process, and a process whose lock budget cannot spare that
+// — RLIMIT_MEMLOCK was 64 KiB on kernels before 5.16 — would otherwise have
+// Seal fail. Raise the budget with [EnsureMemlockLimit] first; take this
+// option only when that is not available. It is a per-buffer, visible
+// choice, reported by [Capabilities.UnauthenticatedSeal] and named by
+// [Capabilities.Warnings]. See THREAT-MODEL.md on Rowhammer for what the tag
+// protects against.
+func WithUnauthenticatedSeal() Option {
+	return func(c *config) { c.unauthenticatedSeal = true }
 }
 
 // applyOptions folds opts into a config. Nil options are ignored (no-panic).

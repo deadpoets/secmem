@@ -125,6 +125,13 @@ type Capabilities struct {
 	// Insecure reports the memory is plain heap — NO protection is in force.
 	// True only on platforms with no lockable off-heap memory.
 	Insecure bool
+
+	// UnauthenticatedSeal reports that this buffer was constructed with
+	// [WithUnauthenticatedSeal]: [SecureBuffer.Seal] takes no keyed tag over
+	// the dormant bytes and [SecureBuffer.Unseal] verifies nothing, so a bit
+	// flipped while sealed is handed back as the secret. False by default,
+	// for [Probe], and for a [SecureArena], which has no Seal.
+	UnauthenticatedSeal bool
 }
 
 // allocInfo records which protections one specific allocation actually
@@ -138,6 +145,11 @@ type allocInfo struct {
 	noFork      bool
 	guardPages  bool
 	insecure    bool
+
+	// unauthenticatedSeal is not an allocation fact but a construction-time
+	// choice (WithUnauthenticatedSeal); it rides here because this is what
+	// Capabilities reads.
+	unauthenticatedSeal bool
 }
 
 // capsFromAlloc composes a Capabilities report from a specific allocation's
@@ -161,6 +173,8 @@ func capsFromAlloc(info allocInfo) Capabilities {
 
 		GuardPages: info.guardPages,
 		Insecure:   info.insecure,
+
+		UnauthenticatedSeal: info.unauthenticatedSeal,
 	}
 }
 
@@ -237,6 +251,9 @@ func (c Capabilities) Warnings() []string {
 	if !c.GuardPages {
 		w = append(w, "no guard pages — buffer overflows are not trapped")
 	}
+	if c.UnauthenticatedSeal {
+		w = append(w, "seal is not authenticated (WithUnauthenticatedSeal) — a bit flipped while sealed is handed back as the secret")
+	}
 	return w
 }
 
@@ -271,6 +288,9 @@ func (c Capabilities) String() string {
 	b.WriteString(c.GOARCH)
 	if c.Insecure {
 		b.WriteString(" INSECURE(heap)")
+	}
+	if c.UnauthenticatedSeal {
+		b.WriteString(" unauthenticated-seal")
 	}
 	if len(have) > 0 {
 		b.WriteString(" [")

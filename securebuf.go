@@ -130,6 +130,18 @@ type bufferState struct {
 	// backing records which protections this allocation actually received.
 	// Immutable after construction; read by Capabilities without the lock.
 	backing allocInfo
+
+	// Seal authentication (sealauth.go). sealAuth is the construction-time
+	// choice: false only with WithUnauthenticatedSeal. sealTagged records
+	// that sealTag/sealNonce/sealGen describe the current sealed bytes; Unseal
+	// and Destroy verify only then, so a Seal that could not take a tag (the
+	// unreachable already-ciphertext branch) is never misreported as a
+	// corruption. All protected by mu.
+	sealAuth   bool
+	sealTagged bool
+	sealGen    uint64
+	sealNonce  [sealNonceLen]byte
+	sealTag    [sealTagLen]byte
 }
 
 // ---------------------------------------------------------------------------
@@ -167,7 +179,8 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	// also means a future error path cannot forget it.
 	defer secureWipeSlice(raw)
 	defer clearRegisters() // the copy below moves the secret through registers; see SecureBuffer.WithBytes
-	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+	cfg := applyOptions(opts)
+	if err := gateInsecure(platformHasSecureMemory, cfg); err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	region, data, info, err := allocSecretMem(len(raw))
@@ -179,7 +192,7 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
 	// Register first, copy second — see fillInitial for why the order matters.
-	sb, err := newSecureBuffer(region, data, info)
+	sb, err := newSecureBuffer(region, data, info, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -195,7 +208,8 @@ func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 	if size <= 0 {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: invalid size %d", size)
 	}
-	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+	cfg := applyOptions(opts)
+	if err := gateInsecure(platformHasSecureMemory, cfg); err != nil {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
 	region, data, info, err := allocSecretMem(size)
@@ -206,7 +220,7 @@ func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 		_ = freeSecretMem(region)
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
-	return newSecureBuffer(region, data, info)
+	return newSecureBuffer(region, data, info, cfg)
 }
 
 // NewSyscallSafeBuffer allocates via MAP_ANON only (no memfd_secret attempt).
@@ -219,7 +233,8 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	}
 	defer secureWipeSlice(raw) // on failure too — see NewBuffer
 	defer clearRegisters()     // see NewBuffer
-	if err := gateInsecure(platformHasSecureMemory, applyOptions(opts)); err != nil {
+	cfg := applyOptions(opts)
+	if err := gateInsecure(platformHasSecureMemory, cfg); err != nil {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	region, data, info, err := allocMapAnon(len(raw))
@@ -231,7 +246,7 @@ func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
 	}
 	// Register first, copy second — see fillInitial.
-	sb, err := newSecureBuffer(region, data, info)
+	sb, err := newSecureBuffer(region, data, info, cfg)
 	if err != nil {
 		return nil, err
 	}
@@ -279,7 +294,8 @@ func (s *SecureBuffer) fillInitial(raw []byte) error {
 // region is wiped and released here and the error returned: a buffer no wipe
 // path can reach must not exist. It holds no secret yet — the constructors
 // copy after registering, see fillInitial — so the wipe is belt and braces.
-func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureBuffer, error) {
+func newSecureBuffer(region secRegion, data []byte, backing allocInfo, cfg config) (*SecureBuffer, error) {
+	backing.unauthenticatedSeal = cfg.unauthenticatedSeal
 	st := &bufferState{
 		data:       data,
 		region:     region,
@@ -287,6 +303,7 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo) (*SecureB
 		backing:    backing,
 		sealCipher: new(atomic.Bool),
 		wiped:      new(atomic.Bool),
+		sealAuth:   !cfg.unauthenticatedSeal,
 	}
 	sb := &SecureBuffer{bufferState: st}
 
@@ -372,14 +389,26 @@ func (s *SecureBuffer) Destroy() error {
 	// if the cleanup has already fired.
 	s.cleanup.Stop()
 
-	// A sealed-encrypted buffer is decrypted before release so the janitor's
-	// canary verification sees the real slack, not ciphertext. On any failure
-	// the flag stays set and wipeAndFree skips the canary check instead —
-	// the wipe and unmap are never skipped.
-	if s.sealCipher.Load() {
+	// A sealed buffer is checked against its tag and, if seal-cipher
+	// ciphertext, decrypted before release so the janitor's canary
+	// verification sees the real slack. Both are reports, not gates: on any
+	// failure the cipher flag stays set and wipeAndFree skips the canary check
+	// instead — the wipe and unmap are never skipped. A buffer the emergency
+	// wipe already handled holds zeros and its tag cannot match; that is
+	// ErrWiped's story, not a corruption, so it is not verified.
+	var integrityErr error
+	verify := s.sealed && s.sealTagged && !s.wiped.Load()
+	if verify || s.sealCipher.Load() {
 		if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err == nil {
-			if derr := sealDecrypt(s.region); derr == nil {
-				s.sealCipher.Store(false)
+			if verify {
+				if verr := s.sealVerify(); errors.Is(verr, ErrIntegrity) {
+					integrityErr = verr
+				}
+			}
+			if s.sealCipher.Load() {
+				if derr := sealDecrypt(s.region); derr == nil {
+					s.sealCipher.Store(false)
+				}
 			}
 		}
 	}
@@ -387,7 +416,7 @@ func (s *SecureBuffer) Destroy() error {
 	// Take exclusive ownership from janitor registry and wipe/free exactly once.
 	// If the entry is already gone (cleanup or emergency-wipe path won), treat as
 	// successfully destroyed and skip touching raw to avoid use-after-free.
-	err := emergencyJanitor.release(s.janitorKey, true)
+	err := errors.Join(integrityErr, emergencyJanitor.release(s.janitorKey, true))
 
 	// Step 5 — nil references.  Makes IsDestroyed() true and Destroy idempotent.
 	s.data = nil
@@ -545,6 +574,16 @@ func (s *SecureBuffer) ReadWrite() error {
 //
 // Seal is idempotent: calling it on an already-sealed buffer is a no-op.
 //
+// Seal also takes a keyed tag over the bytes it leaves at rest, and Unseal
+// verifies it before anything reads them: a bit that changed while the buffer
+// was dormant — a Rowhammer flip, a DRAM soft error — is refused with
+// [ErrIntegrity] rather than handed out as the secret. The key is derived from
+// a 16 KiB prekey locked once per process on the first Seal; if that
+// allocation fails, Seal fails. A buffer constructed with
+// [WithUnauthenticatedSeal] skips the tag. The tag costs one hash of the
+// prekey and one of the region per Seal and per Unseal, tens of microseconds
+// for a page.
+//
 // On Windows the contents are encrypted before the page protection is applied.
 // If the protection then fails and the encryption cannot be rolled back either,
 // Seal returns the error but leaves the buffer sealed anyway: the contents are
@@ -593,6 +632,7 @@ func (s *SecureBuffer) Seal() error {
 	}
 	// Encrypt BEFORE dropping write access. The flag is set immediately so
 	// the janitor's emergency-wipe path never canary-checks ciphertext.
+	s.sealTagged = false
 	applied, err := sealEncrypt(s.region)
 	if err != nil {
 		s.reapplyReadOnly()
@@ -601,26 +641,42 @@ func (s *SecureBuffer) Seal() error {
 	if applied {
 		s.sealCipher.Store(true)
 	}
-	if err := sealProtect(s.region); err != nil {
-		// Roll the cipher back so the buffer stays usable plaintext.
-		if applied {
-			if derr := sealDecrypt(s.region); derr != nil {
-				// The contents are ciphertext with no page protection. Every
-				// accessor gates on sealed, so returning unsealed would hand
-				// the ciphertext out as the secret; sealed is the one state
-				// whose invariants still hold, and Unseal's decrypt path is
-				// the recovery.
-				s.sealed = true
-				s.reapplyReadOnly()
-				return fmt.Errorf("secmem.SecureBuffer.Seal: %w; rolling the cipher back failed too: %w (buffer left sealed, Unseal decrypts it)", err, derr)
-			}
-			s.sealCipher.Store(false)
+	// Tag the bytes as they will sit at rest — after the cipher, before the
+	// protection — so Unseal verifies before it decrypts (sealauth.go).
+	if s.sealAuth {
+		if err := s.sealAuthenticate(); err != nil {
+			return s.rollbackSeal(applied, err)
 		}
-		s.reapplyReadOnly()
-		return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
+	}
+	if err := sealProtect(s.region); err != nil {
+		return s.rollbackSeal(applied, err)
 	}
 	s.sealed = true
 	return nil
+}
+
+// rollbackSeal undoes the seal cipher after a later Seal step failed with
+// cause, so the buffer stays usable plaintext, and returns the error to hand
+// back. Caller holds s.mu with the region writable.
+//
+// If the cipher cannot be rolled back the contents are ciphertext with no
+// page protection. Every accessor gates on sealed, so returning unsealed
+// would hand the ciphertext out as the secret; sealed is the one state whose
+// invariants still hold, and Unseal's decrypt path is the recovery. The tag,
+// when one was taken, still describes these bytes, so that Unseal verifies
+// them like any other sealed state.
+func (s *SecureBuffer) rollbackSeal(applied bool, cause error) error {
+	if applied {
+		if derr := sealDecrypt(s.region); derr != nil {
+			s.sealed = true
+			s.reapplyReadOnly()
+			return fmt.Errorf("secmem.SecureBuffer.Seal: %w; rolling the cipher back failed too: %w (buffer left sealed, Unseal decrypts it)", cause, derr)
+		}
+		s.sealCipher.Store(false)
+	}
+	s.sealTagged = false
+	s.reapplyReadOnly()
+	return fmt.Errorf("secmem.SecureBuffer.Seal: %w", cause)
 }
 
 // sealProtect is Seal's PROT_NONE step. A package var, not an inline call,
@@ -669,6 +725,16 @@ func (s *SecureBuffer) Unseal() error {
 	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 		return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
 	}
+	// Verify before anything reads or transforms the bytes. On a mismatch
+	// the buffer stays sealed — the altered secret is never handed out, see
+	// ErrIntegrity — and a later Unseal verifies again, so a test that flips
+	// a bit and flips it back does recover.
+	if s.sealTagged {
+		if err := s.sealVerify(); err != nil {
+			_ = mprotectSecretMem(s.region, 0 /*PROT_NONE*/)
+			return fmt.Errorf("secmem.SecureBuffer.Unseal: %w", err)
+		}
+	}
 	if s.sealCipher.Load() {
 		if err := sealDecrypt(s.region); err != nil {
 			// Contents are still ciphertext: re-protect and stay sealed so
@@ -694,11 +760,20 @@ func (s *SecureBuffer) Unseal() error {
 			if applied, eerr := sealEncrypt(s.region); eerr == nil && applied {
 				s.sealCipher.Store(true)
 			}
+			// The bytes at rest are new (the cipher does not repeat), so
+			// the old tag no longer describes them: take a fresh one, and if
+			// that fails leave the state honestly untagged rather than let
+			// the next Unseal report a corruption that never happened.
+			s.sealTagged = false
+			if s.sealAuth {
+				_ = s.sealAuthenticate()
+			}
 			_ = sealProtect(s.region)
 			return fmt.Errorf("secmem.SecureBuffer.Unseal: restoring read-only: %w", err)
 		}
 	}
 	s.sealed = false
+	s.sealTagged = false
 	return nil
 }
 
