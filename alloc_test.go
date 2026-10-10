@@ -6,7 +6,10 @@
 
 package secmem
 
-import "testing"
+import (
+	"runtime"
+	"testing"
+)
 
 // TestNoHeapEscape_HotPaths turns the "a secret accessed through the borrow,
 // copy, and compare paths never escapes to the Go heap" claim from a
@@ -92,5 +95,52 @@ func TestNoHeapEscape_Scrub(t *testing.T) {
 			t.Errorf("%s: %.1f allocs/op, want 0 — the scrub window must not allocate "+
 				"(it wraps every hardened crypto operation)", c.name, got)
 		}
+	}
+}
+
+// TestNoHeapEscape_Seal gates the seal cycle. Seal derives the tag key from
+// the prekey on every call; a heap allocation anywhere in that derivation
+// would be a copy of key material the wipe cannot reach. The two closures a
+// Seal and an Unseal each create — the prekey borrow and the Scrub body —
+// capture only pointers into the buffer and must not be moved to the heap
+// either.
+//
+// Measured against a WithUnauthenticatedSeal buffer, which runs the same
+// cycle without the tag: the tag must add nothing. The baseline itself is
+// zero except on Windows, where CryptProtectMemory is reached through
+// LazyProc.Call and its variadic argument slice is one allocation per call
+// (no key material: addresses and lengths).
+func TestNoHeapEscape_Seal(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	cycle := func(t *testing.T, opts ...Option) float64 {
+		t.Helper()
+		buf, err := NewBuffer([]byte("hunter2-hunter2-hunter2-hunter2-"), opts...)
+		if err != nil {
+			t.Fatalf("NewBuffer: %v", err)
+		}
+		defer buf.Destroy()
+		if err := buf.Seal(); err != nil {
+			t.Fatalf("Seal: %v", err) // the prekey is allocated here, once
+		}
+		if err := buf.Unseal(); err != nil {
+			t.Fatalf("Unseal: %v", err)
+		}
+		return testing.AllocsPerRun(100, func() {
+			_ = buf.Seal()
+			_ = buf.Unseal()
+		})
+	}
+	baseline := cycle(t, WithUnauthenticatedSeal())
+	wantBase := 0.0
+	if runtime.GOOS == "windows" {
+		wantBase = 2 // one LazyProc.Call each way
+	}
+	if baseline > wantBase {
+		t.Errorf("unauthenticated Seal+Unseal: %.1f allocs/op, want %.0f", baseline, wantBase)
+	}
+	if got := cycle(t); got > baseline {
+		t.Errorf("Seal+Unseal: %.1f allocs/op against a %.1f baseline — the tag derivation must not put key material on the heap", got, baseline)
 	}
 }

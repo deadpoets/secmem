@@ -61,6 +61,21 @@ var ErrSlotReleased = errors.New("secmem: arena slot has been released")
 var ErrNoSecureMemory = errors.New(
 	"secmem: no lockable off-heap memory on this platform — refusing the unprotected heap (opt in with WithInsecureFallback)")
 
+// ErrIntegrity is returned by [SecureBuffer.Unseal] when the bytes of a sealed
+// buffer are not the bytes [SecureBuffer.Seal] left there: the keyed tag Seal
+// took over the dormant region no longer matches. Something changed memory
+// the process had marked inaccessible — a Rowhammer bit flip, a DRAM soft
+// error, or a write that landed while the buffer was being resealed.
+//
+// The buffer stays sealed and keeps refusing; the secret is not handed out
+// in its altered form, because a signature made under a key with one known
+// bit changed leaks that bit of the real key. [SecureBuffer.Destroy] is the
+// way out, and reports ErrIntegrity too while completing the wipe. A tag that
+// was itself corrupted is indistinguishable from a corrupted secret and is
+// reported the same way: fail closed.
+var ErrIntegrity = errors.New(
+	"secmem: integrity failure — the sealed contents changed while dormant; buffer stays sealed")
+
 // ErrCanaryViolation is returned by Destroy (and ArenaSlot.Release) when the
 // canary slack adjacent to the secret was overwritten: some code in this
 // process wrote past the end of a buffer or slot. The wipe and release

@@ -97,6 +97,7 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Registers cleared when a borrow or copy (`WithBytes`, `CopyIn`, `CopyOut`, …) returns | ✓ asm | ✓ asm on amd64/arm64; ✗ elsewhere | ✓ asm | ✓ asm (amd64/arm64) | ✗ |
 | Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) — heap objects erased at the next garbage collection, not on return | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
+| Sealed bytes authenticated — a bit flipped while dormant (Rowhammer, soft error) is refused by `Unseal` | ✓ HMAC-SHA-512, 16 KiB prekey | ✓ | ✓ | ✓ (over the ciphertext) | ⚠ tag over heap bytes; `Seal` itself is advisory |
 | Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs on every thread (calling thread only with cgo) | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
 
@@ -158,9 +159,11 @@ GPU/NPU sharing the same DRAM — see [`THREAT-MODEL.md`](THREAT-MODEL.md).
 Guard pages and the canary are a **memory-safety bug-catcher, not a
 confidentiality control** — they trap an accidental over/under-flow, and do
 nothing against a privileged reader of process memory (that is
-`memfd_secret`'s job). The Windows sealed-state cipher raises the bar against
-memory dumps of a dormant secret; it is not cold-boot protection. Both are
-detailed in the godoc and the threat model.
+`memfd_secret`'s job). The seal tag is the same kind of thing for the dormant
+window: it detects a changed bit, it does not hide one. The Windows
+sealed-state cipher raises the bar against memory dumps of a dormant secret;
+it is not cold-boot protection. All three are detailed in the godoc and the
+threat model, which has a section on Rowhammer.
 
 ## Modules
 

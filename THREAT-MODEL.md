@@ -114,6 +114,62 @@ are.
   runtime/secret build, and gone only once collections have run. It is not a
   synchronous guarantee; do not cite it as a compliance control.
 
+## Rowhammer and other DRAM-level faults
+
+Rowhammer flips bits in physical memory by hammering adjacent DRAM rows; its
+read-side variant, RAMBleed, infers a neighbouring row's bits from which of
+the attacker's own cells flip. Both act below every mechanism above: `mlock`,
+`memfd_secret`, `PROT_NONE` and guard pages constrain virtual addresses and
+the CPU's view, and say nothing about which physical rows a page's neighbours
+are. Stated per shape:
+
+- **Rowhammer used to escalate privilege** (page-table flips) ends with the
+  attacker in ring 0, which is already out of scope above.
+
+- **Rowhammer as fault injection on a dormant key is detected, not
+  prevented.** `Seal` takes a keyed tag over the bytes it leaves at rest and
+  `Unseal` verifies it before anything reads them; a changed bit is refused
+  with `ErrIntegrity` and the buffer stays sealed. This matters because a
+  flipped key is not merely a broken key: an ECDSA signature made under a
+  key that differs from the real one in a known bit position reveals that
+  bit of the real key, and a flipped RSA-CRT half yields the factorisation.
+  The tag is HMAC-SHA-512 under a key derived from a 16 KiB prekey (next
+  item), with a fresh nonce per `Seal` and the buffer's identity bound in;
+  the construction is in `sealauth.go`. It covers the sealed window only. A
+  flip while the buffer is unsealed — in use, or in a program that never
+  seals — is not detected, and a flip in the prekey makes every sealed buffer
+  unrecoverable, which is the fail-closed outcome rather than a bug. The
+  canary slack is covered by the tag too. A buffer constructed with
+  `WithUnauthenticatedSeal` opts out, for processes whose lock budget cannot
+  spare the prekey; `Capabilities.UnauthenticatedSeal` reports it.
+
+- **RAMBleed reads of a sealed secret are not protected off Windows.** The
+  sealed bytes are plaintext in DRAM behind a `PROT_NONE` mapping, and
+  RAMBleed does not go through the mapping. On Windows the sealed bytes are
+  `CryptProtectMemory` ciphertext, which helps only as far as the kernel's
+  own key, small and in DRAM too, is out of the attacker's reach. The planned
+  mitigation is the one OpenSSH adopted after RAMBleed: encrypt the dormant
+  bytes under a key that is the hash of a large prekey, so that recovering it
+  needs every one of 131072 bits read exactly right through a slow, lossy
+  channel. The prekey and the tag's derivation are already that shape; the
+  cipher under the tag is the next step, and until it lands this row is a
+  gap, not a control. Allocating the prekey once per process and never
+  moving it is deliberate: RAMBleed placed OpenSSH's key by triggering fresh
+  allocations into frames it had prepared, and a page allocated at startup
+  offers no such opening — at the price that an attacker has the process
+  lifetime to read it.
+
+- **The real fixes are below the library.** ECC and DDR5 refresh management
+  for the flips; hardware memory encryption (TME, SEV), which turns a
+  RAMBleed read into ciphertext bits, for the reads. Nothing here replaces
+  either.
+
+- **Nothing here is measured against Rowhammer.** CI shows that a flipped
+  bit in a sealed region is refused and that the derivation leaves no key
+  material on the heap. That the construction resists RAMBleed rests on the
+  OpenSSH precedent and the arithmetic above, not on a hammering experiment;
+  this project will not build one.
+
 ## Stack residue: what `Scrub` reaches, and what it does not
 
 A `SecureBuffer` governs where a secret *lives*. It says nothing about the
@@ -273,7 +329,8 @@ A deliberate omission, stated as one rather than dressed up as a platform limit:
 - **The guard pages and canary are a bug-catcher, not a confidentiality
   control.** They turn an accidental adjacent over/under-flow into a fault or a
   reported violation. They do nothing against an attacker who can already read
-  the mapping.
+  the mapping. The seal tag is in the same class for *writes*: it reports
+  that dormant bytes changed, and nothing about who read them.
 
 - **On windows/amd64 with AMX, a *recovered* fault can corrupt the heap — a Go
   runtime bug, not a secmem one.** The runtime reserves 4 KiB below each
