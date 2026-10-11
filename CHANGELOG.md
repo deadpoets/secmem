@@ -15,6 +15,14 @@ mark the stability commitment.
 
 ### Fixed
 
+- **Windows: a buffer that had been sealed was no longer locked.**
+  `PAGE_NOACCESS` takes a page out of the working set and Windows drops its
+  `VirtualLock` with it; `Unseal` restored the protection but never the lock,
+  so after one `Seal`/`Unseal` the plaintext sat in a pageable page while
+  `Capabilities().Mlocked` still said true. `Unseal` now locks the page again
+  before it decrypts and stays sealed if the lock is refused. A sealed page
+  itself is unlocked ciphertext, which `WINDOWS.md` now says.
+
 - **A refused `memfd_secret` allocation could unmap memory it did not own and
   crash the Go runtime.** The allocator mapped the secretmem file `MAP_FIXED`
   into a guard reservation; when that mmap failed (for example once

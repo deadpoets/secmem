@@ -67,3 +67,8 @@ func freeSecretMem(_ secRegion) error {
 func mprotectSecretMem(_ secRegion, _ int) error {
 	return nil
 }
+
+// relockSecretMem is a no-op here: only Windows drops a page lock when the
+// protection becomes no-access (see mlock_windows.go). mprotect(PROT_NONE)
+// leaves mlock in force.
+func relockSecretMem(_ secRegion) error { return nil }
