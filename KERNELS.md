@@ -1,10 +1,12 @@
 # Linux kernel verification log
 
-secmem's most security-critical code path — `memfd_secret` mapped `MAP_FIXED`
-into a pre-reserved `PROT_NONE` guard range — depends on kernel behavior that
+secmem's most security-critical code path — one `memfd_secret` mapping whose
+edge pages are left `PROT_NONE` as guards — depends on kernel behavior that
 no API stability promise covers beyond the syscall itself. This log records
 every kernel the suite has actually been **executed** on, so the guarantee
-matrix cites evidence, not assumption.
+matrix cites evidence, not assumption. Rows recorded before the fix for
+failed-allocation cleanup verified the earlier construction, which mapped the
+file `MAP_FIXED` into an anonymous `PROT_NONE` reservation.
 
 ## What a row means
 
@@ -16,7 +18,7 @@ security proofs beyond unit tests:
 
 1. **guard-fault** — reading one byte past either edge of the secret area
    hardware-faults ([guard_canary_test.go](guard_canary_test.go))
-2. **memfd-isolation** — after `MAP_FIXED` placement the secret is unreadable
+2. **memfd-isolation** — the secret in the guarded secretmem mapping is unreadable
    via `/proc/self/mem` while a control read of ordinary heap succeeds
    ([memfd_isolation_linux_test.go](memfd_isolation_linux_test.go)); only
    countable where secretmem is live — on fallback kernels it skips loudly
@@ -156,6 +158,12 @@ three: a real `ENOMEM` from `mlock`, no panic, `VmLck` rising by exactly one
 page per buffer (so no silent fallback to unlocked pages), nothing left
 half-locked by the failing allocation, and the entire budget returned to the
 baseline after `Destroy`.
+
+> **Superseded for the memfd_secret tier.** These measurements predate the fix
+> that maps the guard pages as part of the secretmem mapping. The kernel
+> charges that whole mapping, so a one-page memfd_secret buffer now costs three
+> pages and the ceiling there is about `RLIMIT_MEMLOCK / (3 × pagesize)`. The
+> mmap+mlock figures are unchanged.
 
 Kernel-recorded VMA flags were checked against `Capabilities` on all three
 rather than trusting that `madvise` returned 0: `lo` (VM_LOCKED), `dd`

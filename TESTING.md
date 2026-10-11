@@ -253,7 +253,7 @@ stand-in rather than measured directly.
   validation has been performed and none is claimed.
 - **`memfd_secret`'s close-on-exec flag is asserted structurally, not
   observed.** The descriptor exists only between the `memfd_secret` call and
-  the `MAP_FIXED` that maps it, and is closed before the constructor returns,
+  the `mmap` that maps it, and is closed before the constructor returns,
   so no test can inspect the flag from outside; the `EINVAL` fallback that
   sets it with `fcntl` is likewise unexercised on the kernels the suite has
   run on. The flag is passed at creation in `mlock_linux.go`, and that is the

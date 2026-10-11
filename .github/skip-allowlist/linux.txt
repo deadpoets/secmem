@@ -5,8 +5,9 @@
 #
 # Deliberately NOT listed, because ubuntu-latest kernels have memfd_secret
 # live and the parent may ptrace its child under Yama's default scope:
-# TestMemfdIsolation_HoldsAfterMapFixed, TestExternalExtraction_*,
-# TestMadvise_MemfdSecretTierFlagsInForce, TestMadviseBeforeFree_*. If one of
+# TestMemfdIsolation_HoldsOnSecretMapping, TestExternalExtraction_*,
+# TestMadvise_MemfdSecretTierFlagsInForce, TestMadviseBeforeFree_*,
+# TestAllocFailure_UnmapsOnlyOwnedAddressSpace. If one of
 # those skips, the isolation proof has stopped running and the job must say so.
 
 # GitHub's hosted pool mixes CPU generations and does not guarantee AVX-512,

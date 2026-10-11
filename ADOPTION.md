@@ -149,18 +149,25 @@ budget  ≥  Σ over buffers      pageround(len)
          + Σ over workspaces   Argon2Workspace.Size()
          + transients
          + headroom
+         + 2 pages per buffer, arena and workspace   (Linux, memfd_secret live)
 ```
 
 where:
 
 - **`pageround(len)`** is `len` rounded up to a whole page. A `SecureBuffer`
-  locks the pages holding the secret and nothing else: the guard pages on
-  either side are reserved address space with no backing frames and cost no
+  locks the pages holding the secret. On Linux with `memfd_secret` live, add
+  two pages per buffer: the guard pages are part of the secretmem mapping,
+  and the kernel charges the whole mapping. They have no backing frames, but
+  they count against the limit. On every other tier the guards cost no
   budget. The rounding is what dominates for small secrets. A 40-byte token
   costs a full page, 4 KiB on x86-64 and on most arm64 kernels, 16 KiB or
   64 KiB on some; read `os.Getpagesize()` on the target rather than assuming.
-  The ceiling is therefore `limit / pagesize` small buffers: with the 8 MiB
-  systemd default that is 2048 buffers at 4 KiB pages and 128 at 64 KiB.
+  The ceiling is therefore `limit / pagesize` small buffers on mmap+mlock and
+  `limit / (3 × pagesize)` on `memfd_secret`: with the 8 MiB systemd default
+  that is 2048 or about 680 buffers at 4 KiB pages, and 128 or about 42 at
+  64 KiB. Near the ceiling, an allocation that no longer fits the
+  `memfd_secret` charge falls back to mmap+mlock, which `Capabilities`
+  reports.
 - **Arenas** cost `slotSize + 16` locked bytes per slot as one mapping, plus
   16 bytes of ordinary heap per slot for the index. Many same-sized secrets
   belong in an arena: 500 session keys cost 24 KB locked in an arena of

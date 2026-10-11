@@ -7,25 +7,32 @@
 //
 //	[ guard | secret pages | guard ]
 //
-// The guards are reserved address space with no backing frames — they cost
-// no RAM, are not mlocked (no RLIMIT_MEMLOCK charge), and any linear
+// The guards are never faulted in, so they cost no RAM, and any linear
 // over/under-flow that reaches them faults instead of silently reading or
 // writing whatever the kernel happened to place next to the secret.
 //
-// ⚠ SECURITY-CRITICAL ORDERING (do not "simplify"):
-// The memfd_secret path CANNOT create its guards with mprotect — the guards
-// and the secret belong to different kernel objects (anonymous memory vs the
-// secretmem file). The only correct construction is:
+// ⚠ CONSTRUCTION (do not "simplify" back to MAP_FIXED):
 //
-//	1. reserve the ENTIRE range [guard|middle|guard] as one PROT_NONE
-//	   anonymous mapping (nothing else can be placed inside it), then
-//	2. mmap the memfd MAP_FIXED into the middle of that reservation.
-//	   MAP_FIXED over our own reservation is an atomic replace — at no
-//	   instant is the middle an unmapped hole another mmap could claim.
+//   - L3 (anon): one PROT_NONE anonymous mapping of the whole range, then
+//     mprotect the middle RW and mlock it. The guards are not mlocked and
+//     carry no RLIMIT_MEMLOCK charge.
+//   - L4 (memfd_secret): the secretmem file is sized to the WHOLE range and
+//     mapped once, PROT_NONE, at an address the kernel picks; the middle is
+//     then mprotected RW. The guards are secretmem pages that are never
+//     accessible. The kernel charges the whole mapping against
+//     RLIMIT_MEMLOCK, so each L4 buffer costs two extra pages of budget.
 //
-// Destroy unmaps the OUTER range in one munmap call, which the kernel
-// splits across the anon guards and the secretmem middle. Unmapping only
-// the middle would leak the guards; unmapping guards separately would risk
+// L4 used to reserve an anonymous range and mmap the file MAP_FIXED over its
+// middle. That is not atomic on failure: when the MAP_FIXED mmap fails (for
+// example EAGAIN once the memlock budget is spent), the kernel has already
+// removed the middle, so the reservation has a hole another thread can map
+// into. The error path then unmapped the whole reservation, destroying that
+// thread's mapping — in practice the Go runtime's heap metadata, which
+// crashed the GC. With a single mapping there is no hole at any instant and
+// every error path unmaps only memory this call created.
+//
+// Destroy unmaps the OUTER range in one munmap call. Unmapping only the
+// middle would leak the guards; unmapping guards separately would risk
 // leaving the secret mapped on a partial failure.
 
 package secmem
@@ -63,8 +70,7 @@ func guardedSizes(size int) (pageSize, rounded, total int, err error) {
 
 // reserveGuarded mmaps one PROT_NONE reservation of total bytes and returns
 // (outer, inner) where inner is the middle rounded-size window. The middle is
-// still PROT_NONE — the caller makes it usable (mprotect for anon, MAP_FIXED
-// for memfd).
+// still PROT_NONE — the caller makes it usable with mprotect.
 func reserveGuarded(pageSize, rounded, total int) (outer, inner []byte, err error) {
 	outer, err = unix.Mmap(-1, 0, total, unix.PROT_NONE, unix.MAP_ANON|unix.MAP_PRIVATE)
 	if err != nil {
@@ -83,7 +89,7 @@ func reserveGuarded(pageSize, rounded, total int) (outer, inner []byte, err erro
 //   - info: which protections this allocation actually received.
 //
 // Attempts in order:
-//   - L4: memfd_secret MAP_FIXED into a PROT_NONE reservation (Linux 5.14+)
+//   - L4: memfd_secret mapped once over the whole guarded range (Linux 5.14+)
 //   - L3: PROT_NONE reservation, middle mprotect(RW) + mlock + madvise
 func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	pageSize, rounded, total, err := guardedSizes(size)
@@ -126,11 +132,11 @@ func allocMapAnonGuarded(pageSize, rounded, total int) (secRegion, allocInfo, er
 	}
 
 	if err := unix.Mprotect(inner, unix.PROT_READ|unix.PROT_WRITE); err != nil {
-		_ = unix.Munmap(outer)
+		unmapOnError(outer)
 		return secRegion{}, allocInfo{}, fmt.Errorf("mprotect inner RW: %w", err)
 	}
 	if err := unix.Mlock(inner); err != nil {
-		_ = unix.Munmap(outer)
+		unmapOnError(outer)
 		return secRegion{}, allocInfo{}, fmt.Errorf("mlock: %w", err)
 	}
 
@@ -160,8 +166,8 @@ func allocMapAnonGuarded(pageSize, rounded, total int) (secRegion, allocInfo, er
 	}, nil
 }
 
-// allocMemfdSecret attempts the L4 path: a memfd_secret file mapped MAP_FIXED
-// into the middle of a pre-reserved PROT_NONE range. Returns an error
+// allocMemfdSecret attempts the L4 path: one memfd_secret mapping covering the
+// secret and both guards, with the guards left PROT_NONE. Returns an error
 // (ENOSYS, EPERM, lockdown, disabled) if unavailable; the caller falls
 // through to L3. noFork reports whether MADV_DONTFORK took effect on the
 // mapping.
@@ -177,8 +183,8 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 		return secRegion{}, false, errors.New("memfd_secret: requires a 64-bit architecture")
 	}
 	// Close-on-exec, asked for at creation. Without it the descriptor stays
-	// inheritable for the whole window below — ftruncate, the guard
-	// reservation, and the MAP_FIXED — and a fork+exec from any other
+	// inheritable for the whole window below — ftruncate and the mmap — and
+	// a fork+exec from any other
 	// goroutine during it hands the child a live descriptor to the secret
 	// pages. secretmem is readable through that fd, so the strongest tier
 	// would be the one that leaks across exec.
@@ -211,39 +217,29 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 	}
 	intFD := int(fd)
 
-	if err := unix.Ftruncate(intFD, int64(rounded)); err != nil {
+	// The file covers the guards too: the whole [guard|middle|guard] range is
+	// one secretmem mapping. See the file header for why there is no separate
+	// anonymous reservation.
+	if err := unix.Ftruncate(intFD, int64(total)); err != nil {
 		_ = unix.Close(intFD)
 		return secRegion{}, false, fmt.Errorf("ftruncate memfd_secret: %w", err)
 	}
 
-	outer, inner, err := reserveGuarded(pageSize, rounded, total)
-	if err != nil {
-		_ = unix.Close(intFD)
-		return secRegion{}, false, err
-	}
-
-	// MAP_FIXED into the middle of OUR OWN reservation: an atomic replace of
-	// [inner, inner+rounded) with the secretmem mapping. The guards stay anon
-	// PROT_NONE. MAP_FIXED is only safe because we own the target range — it
-	// would clobber arbitrary mappings otherwise.
-	//nolint:gosec // G103: the pre-reserved middle's address is the MAP_FIXED target; audited above.
-	mapped, err := unix.MmapPtr(intFD, 0, unsafe.Pointer(&inner[0]), uintptr(rounded),
-		unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED|unix.MAP_FIXED)
+	// PROT_NONE everywhere first, so the guards are never accessible at any
+	// instant; only the middle is opened below. The kernel picks the address,
+	// so a failure here leaves nothing behind to clean up.
+	outer, err := unix.Mmap(intFD, 0, total, unix.PROT_NONE, unix.MAP_SHARED)
 	// The fd is closed on every path — the mapping (if any) keeps the
 	// secretmem file alive.
 	_ = unix.Close(intFD)
 	if err != nil {
-		_ = unix.Munmap(outer)
-		return secRegion{}, false, fmt.Errorf("mmap memfd_secret MAP_FIXED: %w", err)
+		return secRegion{}, false, fmt.Errorf("mmap memfd_secret: %w", err)
 	}
-	//nolint:gosec // G103: comparing the returned mapping address against our reservation; verification only.
-	if uintptr(mapped) != uintptr(unsafe.Pointer(&inner[0])) {
-		// Cannot happen per MAP_FIXED semantics; checked anyway because a
-		// mapping at the wrong address would put the secret outside the
-		// guards. Unmap everything and refuse.
-		_ = unix.MunmapPtr(mapped, uintptr(rounded))
-		_ = unix.Munmap(outer)
-		return secRegion{}, false, errors.New("mmap memfd_secret MAP_FIXED: kernel returned a different address")
+	inner := outer[pageSize : pageSize+rounded]
+
+	if err := unix.Mprotect(inner, unix.PROT_READ|unix.PROT_WRITE); err != nil {
+		unmapOnError(outer)
+		return secRegion{}, false, fmt.Errorf("mprotect memfd_secret inner RW: %w", err)
 	}
 
 	// Best-effort THP opt-out, as on the anon path. secretmem folios are not
@@ -256,8 +252,9 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 	// making the strongest allocation tier the one with the weakest fork
 	// posture without it. MADV_DONTFORK only sets VM_DONTCOPY on the VMA, so
 	// it applies to a secretmem mapping like any other; the outcome is
-	// reported rather than assumed, as on the anon path.
-	noFork = unix.Madvise(inner, unix.MADV_DONTFORK) == nil
+	// reported rather than assumed, as on the anon path. It covers the guards
+	// as well, since they are part of the same shared mapping.
+	noFork = unix.Madvise(outer, unix.MADV_DONTFORK) == nil
 
 	return secRegion{outer: outer, inner: inner}, noFork, nil
 }
@@ -278,8 +275,7 @@ func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err 
 }
 
 // freeSecretMem unlocks the secret area and unmaps the ENTIRE reservation —
-// guards and middle in one munmap, which the kernel splits across the anon
-// and secretmem mappings. Never unmap the fields separately.
+// guards and middle in one munmap. Never unmap the fields separately.
 func freeSecretMem(region secRegion) error {
 	if region.outer == nil {
 		return nil
@@ -329,4 +325,18 @@ func madviseBeforeFree(region secRegion) error {
 // prot: unix.PROT_READ, unix.PROT_READ|unix.PROT_WRITE, or unix.PROT_NONE (seal).
 func mprotectSecretMem(region secRegion, prot int) error {
 	return unix.Mprotect(region.inner, prot)
+}
+
+// unmapOnErrorTestHook, when non-nil, runs inside unmapOnError just before
+// the munmap, with the range about to be released. Tests use it to check that
+// an error path only ever unmaps address space the allocator still owns.
+var unmapOnErrorTestHook func(target []byte) //nolint:gochecknoglobals // test seam, nil in production.
+
+// unmapOnError releases a mapping on an allocation error path. Every such
+// path goes through here so the test seam sees all of them.
+func unmapOnError(b []byte) {
+	if unmapOnErrorTestHook != nil {
+		unmapOnErrorTestHook(b)
+	}
+	_ = unix.Munmap(b)
 }

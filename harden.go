@@ -91,12 +91,16 @@ func DisableCoreDumps() error {
 // EnsureMemlockLimit raises the locked-memory budget to at least bytes,
 // returning the value actually achieved.
 //
-// Each SecureBuffer locks a page-rounded minimum (typically 4 KiB), so the
-// ceiling is RLIMIT_MEMLOCK/pagesize buffers exactly. Current systemd-based
-// distributions default that limit to 8 MiB — 2048 buffers with 4 KiB pages,
-// measured on both Ubuntu 26.04/amd64 and Armbian/arm64 — while the older raw
-// kernel default of 64 KiB allowed only about a dozen. Do not design against
-// either number: read the runtime limit. A server holding one buffer per live
+// Each SecureBuffer locks its page-rounded size (typically 4 KiB minimum). On
+// Linux, a buffer backed by memfd_secret also locks its two guard pages,
+// because the kernel charges the whole secretmem mapping, so a one-page
+// secret costs three pages there. Current systemd-based distributions default
+// the limit to 8 MiB: 2048 one-page buffers on the mmap+mlock tier, but about
+// 680 where memfd_secret is live. Once less than one memfd_secret buffer's
+// budget is left, an allocation falls back to mmap+mlock, which
+// [SecureBuffer.Capabilities] reports. The older raw kernel default of 64 KiB
+// allows only a handful. Do not design against any of these numbers: read the
+// runtime limit. A server holding one buffer per live
 // secret can hit whichever ceiling applies; call EnsureMemlockLimit once at
 // startup, before the first allocation.
 //

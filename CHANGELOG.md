@@ -15,6 +15,18 @@ mark the stability commitment.
 
 ### Fixed
 
+- **A refused `memfd_secret` allocation could unmap memory it did not own and
+  crash the Go runtime.** The allocator mapped the secretmem file `MAP_FIXED`
+  into a guard reservation; when that mmap failed (for example once
+  `RLIMIT_MEMLOCK` was spent), the kernel had already removed the middle, and
+  the cleanup unmapped the whole reservation, including anything another
+  thread had mapped into the hole. The secret and both guards are now one
+  secretmem mapping, so no hole exists. **Budget change:** the kernel charges
+  the guard pages of that mapping, so each `memfd_secret` buffer costs two
+  more pages of `RLIMIT_MEMLOCK`. With one-page secrets and the 8 MiB systemd
+  default, that is about 680 `memfd_secret` buffers instead of 2048; past
+  that, allocations fall back to mmap+mlock. Other tiers are unchanged.
+
 - **`secmem-lint`: E3 reports borrowed bytes stored in a named result of the
   borrowing closure** (`err = &keyErr{raw: b}; return`), including a store
   made by a deferred literal. Only explicit return operands were checked.

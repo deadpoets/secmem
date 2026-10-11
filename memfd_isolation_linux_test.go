@@ -1,11 +1,11 @@
 //go:build linux
 
-// Proof test for the DESIGN mandate: "the memfd isolation still holds after
-// the MAP_FIXED placement." memfd_secret's whole point is that the kernel
-// removes the pages from its direct map and refuses gup-based access — a
-// privileged reader going through /proc/<pid>/mem gets an error, not the
-// secret. If the MAP_FIXED re-placement into the guard reservation broke
-// that (e.g. by accidentally mapping ordinary anon memory), this test fails.
+// Proof test that memfd isolation holds for the guarded secretmem mapping.
+// memfd_secret's whole point is that the kernel removes the pages from its
+// direct map and refuses gup-based access — a privileged reader going through
+// /proc/<pid>/mem gets an error, not the secret. If the allocator's layout
+// broke that (e.g. by accidentally handing out ordinary anon memory), this
+// test fails.
 
 package secmem
 
@@ -16,11 +16,11 @@ import (
 	"unsafe"
 )
 
-// TestMemfdIsolation_HoldsAfterMapFixed reads the buffer's address range via
+// TestMemfdIsolation_HoldsOnSecretMapping reads the buffer's address range via
 // /proc/self/mem. On a secretmem-backed mapping the read MUST fail; a control
 // read of ordinary heap memory through the same mechanism MUST succeed, so a
 // pass cannot come from /proc being unreadable.
-func TestMemfdIsolation_HoldsAfterMapFixed(t *testing.T) {
+func TestMemfdIsolation_HoldsOnSecretMapping(t *testing.T) {
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
 		t.Fatalf("NewEmptyBuffer: %v", err)
