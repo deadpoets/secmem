@@ -55,8 +55,8 @@ env:
   # it, GO_VERSION_OLDSTABLE to the release it displaces, and go.mod's floor
   # to the latter's minor. The leg's name is a fixed label, not the version,
   # so a patch bump never renames a required check.
-  GO_VERSION: "1.27.1"
-  GO_VERSION_OLDSTABLE: "1.26.8"
+  GO_VERSION: "1.27.2"
+  GO_VERSION_OLDSTABLE: "1.26.9"
 
 jobs:
   # Skip audit. A plain `go test` prints nothing for a t.Skip, so a proof that
