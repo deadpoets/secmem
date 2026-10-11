@@ -359,13 +359,13 @@ and the eleven functions that allocate one gain a variadic `...Option`;
 
 ### Added
 
-- **`secmem-crypto`: requires core v0.8.0.** The floor rises with the release
-  it ships beside; `examples/go.mod` carries the same line.
-
 - **`secmem-crypto`: `ErrLowOrderPoint`**, wrapped by `X25519Key.SharedSecret`
   for a low-order peer key.
 
 ### Changed
+
+- **`secmem-crypto`: requires core v0.8.0.** The floor rises with the release
+  it ships beside; `examples/go.mod` carries the same line.
 
 - **`secmem-crypto`: `BufferOptions` forwards core options to every buffer
   the module allocates, and every allocating function takes `...Option`.**
