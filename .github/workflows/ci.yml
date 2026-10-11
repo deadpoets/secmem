@@ -57,6 +57,12 @@ env:
   # so a patch bump never renames a required check.
   GO_VERSION: "1.27.2"
   GO_VERSION_OLDSTABLE: "1.26.9"
+  # TEMPORARY: staticcheck 2026.2.1 cannot read the export data Go 1.27.2
+  # writes (version 5; dominikh/go-tools#1832, fixed on master, unreleased).
+  # The staticcheck steps alone run on 1.27.1 through GOTOOLCHAIN. When a
+  # staticcheck release with the fix ships, bump its version and delete this
+  # and every reference to it.
+  STATICCHECK_GOTOOLCHAIN: "go1.27.1"
 
 jobs:
   # Skip audit. A plain `go test` prints nothing for a t.Skip, so a proof that
@@ -455,6 +461,8 @@ jobs:
           working-directory: examples
       - name: staticcheck (examples)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
+        env:
+          GOTOOLCHAIN: ${{ env.STATICCHECK_GOTOOLCHAIN }}
         with:
           version: 2026.2.1
           install-go: false
@@ -614,11 +622,15 @@ jobs:
           working-directory: secmem-crypto
       - name: staticcheck (core)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
+        env:
+          GOTOOLCHAIN: ${{ env.STATICCHECK_GOTOOLCHAIN }}
         with:
           version: 2026.2.1
           install-go: false
       - name: staticcheck (secmem-crypto)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
+        env:
+          GOTOOLCHAIN: ${{ env.STATICCHECK_GOTOOLCHAIN }}
         with:
           version: 2026.2.1
           install-go: false
@@ -630,6 +642,8 @@ jobs:
           working-directory: secmem-lint
       - name: staticcheck (secmem-lint)
         uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
+        env:
+          GOTOOLCHAIN: ${{ env.STATICCHECK_GOTOOLCHAIN }}
         with:
           version: 2026.2.1
           install-go: false
