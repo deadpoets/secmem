@@ -33,7 +33,7 @@ permissions:
 env:
   # The newest supported release, in step with ci.yml's GO_VERSION. The canary
   # job below deliberately runs a different one.
-  GO_VERSION: "1.27.1"
+  GO_VERSION: "1.27.2"
 
 jobs:
   forkcheck:
