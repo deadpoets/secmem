@@ -13,6 +13,109 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [0.8.0] - 2026-10-11
+
+Fixes from the October stabilization review, and `Seal` now authenticates
+what it leaves at rest. The Windows half of the review's two security
+findings is here: a buffer that had been sealed was no longer locked after
+`Unseal`, and is again (GHSA-3r5h-2wp7-397v). `Seal` takes a keyed tag over
+the dormant bytes and `Unseal` refuses a changed one with `ErrIntegrity`, so a
+bit flipped while a key was dormant is never handed out. A borrow on an
+emergency-wiped buffer returns `ErrWiped`; a copy of a `SecureBuffer` or
+`SecureArena` is an alias of the original, and the zero values are
+destroyed; the termination handler's wait is bounded by
+`TerminationWipeTimeout`; `ArenaSlot.Release` cannot wipe the slot's next
+owner; `no_new_privs` is set on every thread; a refused `memfd_secret`
+allocation no longer unmaps memory it does not own. Minor: `ErrIntegrity`,
+`WithUnauthenticatedSeal`, `Capabilities.UnauthenticatedSeal` and
+`TerminationWipeTimeout` are added; `golang.org/x/sys` moves to v0.49.0,
+which raises the floor for every consumer; CI runs on go1.27.2 and go1.26.9.
+
+### Added
+
+- **`Seal` authenticates the dormant bytes; `Unseal` refuses a changed one
+  with `ErrIntegrity`.** A Rowhammer flip or a DRAM soft error in a sealed
+  page used to come back from `Unseal` as the secret, and a signing key with
+  one known bit changed leaks that bit of the real key per signature. `Seal`
+  now takes an HMAC-SHA-512 tag over the whole region as it sits at rest —
+  on Windows, over the `CryptProtectMemory` ciphertext — under a key derived
+  from a 16 KiB prekey locked once per process on the first `Seal` (the
+  OpenSSH key-shielding shape, chosen to carry an at-rest cipher later), with
+  a fresh nonce per seal and the buffer's identity bound in. `Unseal`
+  verifies in constant time before it reads or decrypts; on a mismatch the
+  buffer stays sealed and a later `Unseal` verifies again, so a restored bit
+  recovers. `Destroy` verifies and reports too, and never skips the wipe.
+  `WipeAllSecrets` zeroes the prekey with everything else; the next `Seal`
+  allocates a fresh one rather than deriving from zeros.
+
+  Costs and the new surface, a minor bump: the prekey is 16 KiB of lock
+  budget per process, and `Seal` and `Unseal` each pay one hash of it and one
+  of the region — about 20 µs for a page on a 2025 desktop. If the prekey
+  cannot be locked, `Seal` fails. **`WithUnauthenticatedSeal`** is the
+  per-buffer opt-out for a process that cannot spare the budget; it is
+  reported by the new **`Capabilities.UnauthenticatedSeal`** and named by
+  `Warnings()`. **`ErrIntegrity`** is the new sentinel. The derivation
+  allocates nothing (pinned by a test) and runs inside a `Scrub` window;
+  THREAT-MODEL.md gains a section on Rowhammer and RAMBleed stating what this
+  detects, what it does not, and what remains a gap.
+
+### Changed
+
+- **`redact`: the Handler honours `MarshalJSON`, `LogValue` and `GoString`
+  inside an `Any` value.** A type whose only self-redaction was one of these
+  was walked field by field, so `"***"` behind a bare JSON handler became
+  `{v:abc123}` behind this one. The method is now called (on the pointer too
+  when it is declared there, and at any depth for a `LogValuer`); a method
+  that fails leaves `[REDACTED:marshal_error]`, never the fields. The doc now
+  says that a struct with no such method has every field printed, unexported
+  and `json:"-"` ones included.
+
+- **`httpauth`: `RoundTrip` no longer modifies the request after the base
+  transport returns.** Deleting the header from the clone raced a transport
+  still writing it (a response that arrives before the request head is out, a
+  cancelled HTTP/2 stream): a data race, and a request head sent without the
+  credential. The response's `Request` field is now the caller's request,
+  which never carried the value; the clone is left to the transport.
+
+- **A borrow on an emergency-wiped buffer or arena returns `ErrWiped`.**
+  After `WipeAllSecrets` the region is left mapped, and until now only the
+  mutating methods refused: `WithBytes`, `WithBytesErr`, `CopyOut`, `ByteAt`,
+  `ConstantTimeEqual` and `WriteTo` kept succeeding and handed out the zeros,
+  as did `ArenaSlot.WithBytes` on a slot acquired before the wipe. A process
+  that survived the wipe (`InstallTerminationWipeNoExit`, a handler of its
+  own, a recovered panic) could therefore run AES-GCM, X25519, ML-KEM or
+  Ed25519 under an all-zero key and be told it worked. All of them now return
+  `ErrWiped`, which wraps `ErrDestroyed`, and the callback is not called. The
+  pre-wipe slot handle that could still write a fresh secret into a wiped
+  slab is closed by the same check. This is a behaviour change: code that
+  read a wiped buffer to see zeros gets an error instead. `Len`,
+  `IsDestroyed`, `Capabilities`, `Destroy` and `ArenaSlot.Release` are
+  unaffected.
+
+- **A copy of a `SecureBuffer` or `SecureArena` value is an alias of the
+  original, and a zero value is a destroyed one.** The types are used through
+  pointers, but nothing stopped `c := *buf`, and vet's copylocks check does
+  not see it. The copy carried its own liveness fields over the shared
+  mapping, so after `buf.Destroy()` it still handed out a slice, now over
+  unmapped memory or over whatever mapping had reused the address; a copied
+  arena kept handing out slots in a slab that was gone. All state now lives
+  behind one pointer, as in `os.File`: a copy or an overwrite (`*a = *b`) is
+  a second handle on the same buffer, state changed through one is seen
+  through all, and `Destroy` on any of them destroys it for all. The
+  finalization fallback follows the shared state, so the region is released
+  when the last handle is gone. A zero-value `SecureBuffer`, `SecureArena` or
+  `ArenaSlot`, which used to dereference a nil lock on every method, now
+  behaves as a destroyed buffer or arena, or a released slot. Method sets and
+  signatures are unchanged.
+
+- **The local git hooks check what a push would publish.** `install-hooks.sh`
+  now installs a `pre-push` hook that runs `check-commits.sh` over exactly the
+  commits being pushed — blocked paths, gitleaks per commit, attribution
+  trailers, signatures, gofmt — reading the commits rather than the working
+  tree, and skipping commits `origin` already has; `pre-commit` scans the
+  staged diff for secrets and checks gofmt on staged Go files. All remain
+  bypassable with `--no-verify`, deliberately.
+
 ### Fixed
 
 - **`secmem-crypto`: an error from a PBES2 file could be built from its
@@ -45,50 +148,6 @@ mark the stability commitment.
   more pages of `RLIMIT_MEMLOCK`. With one-page secrets and the 8 MiB systemd
   default, that is about 680 `memfd_secret` buffers instead of 2048; past
   that, allocations fall back to mmap+mlock. Other tiers are unchanged.
-
-- **`secmem-lint`: E3 reports borrowed bytes stored in a named result of the
-  borrowing closure** (`err = &keyErr{raw: b}; return`), including a store
-  made by a deferred literal. Only explicit return operands were checked.
-
-- **`secmem-lint`: a borrowed value is followed through a type-switch
-  binding** (`switch t := v.(type)`), so an escape of `t` is reported like
-  one of `v`.
-
-- **`secmem-lint`: E3 reports a `range` clause written with `=`** that
-  assigns borrowed bytes to an outer variable, field or element
-  (`for _, outer = range [][]byte{b} {}`).
-
-- **`secmem-lint`: R1 covers secmem-crypto keys.** `Sign`, `SignMessage`,
-  `SharedSecret`, `PublicKey`, `ConstantTimeEqual`, `Decapsulate` and
-  `MarshalOpenSSHPrivateKey*` called on the same key inside its own
-  `WithSeed` / `WithScalar` / `WithDER` are reported, as are
-  `Secret.ConstantTimeEqual` / `WriteTo` / `Destroy` inside
-  `Secret.WithBytes`. The method table is keyed by type, and a test fails for
-  any exported method of a borrowing type that is not classified.
-
-- **`secmem-lint -strict`: L1 treats every secmem / secmem-crypto type with
-  a `Destroy` as owned**, so a parsed `Signer`, an `Argon2Workspace` /
-  `Argon2Pool` and a `Secret` that are never destroyed or handed off are
-  reported.
-### Changed
-
-- **`redact`: the Handler honours `MarshalJSON`, `LogValue` and `GoString`
-  inside an `Any` value.** A type whose only self-redaction was one of these
-  was walked field by field, so `"***"` behind a bare JSON handler became
-  `{v:abc123}` behind this one. The method is now called (on the pointer too
-  when it is declared there, and at any depth for a `LogValuer`); a method
-  that fails leaves `[REDACTED:marshal_error]`, never the fields. The doc now
-  says that a struct with no such method has every field printed, unexported
-  and `json:"-"` ones included.
-
-- **`httpauth`: `RoundTrip` no longer modifies the request after the base
-  transport returns.** Deleting the header from the clone raced a transport
-  still writing it (a response that arrives before the request head is out, a
-  cancelled HTTP/2 stream): a data race, and a request head sent without the
-  credential. The response's `Request` field is now the caller's request,
-  which never carried the value; the clone is left to the transport.
-
-### Fixed
 
 - **`redact`: a panicking `MarshalText` no longer panics out of the log
   call.** A nil pointer to a type with a value-receiver `MarshalText` (and no
@@ -125,6 +184,7 @@ mark the stability commitment.
 - **`httpauth`: the request body is closed when `RoundTrip` fails before
   calling the base transport** (cleartext refusal, missing token, token read
   error), as the `RoundTripper` contract requires.
+
 - **CI: `secmem-crypto`'s `//go:build !race` allocation proofs ran on no
   audited 64-bit lane.** `test-noescape` selected `TestNoHeapEscape` only, so
   the classification, parser, marshal and `BcryptPBKDFInto` proofs ran only on
@@ -160,40 +220,6 @@ mark the stability commitment.
   record** instead of replacing its verifier, and the password prompt removes
   a whole character on backspace, clears on ^U, ends on ^D and refuses other
   control keys instead of storing them in the password.
-### Changed
-
-- **A borrow on an emergency-wiped buffer or arena returns `ErrWiped`.**
-  After `WipeAllSecrets` the region is left mapped, and until now only the
-  mutating methods refused: `WithBytes`, `WithBytesErr`, `CopyOut`, `ByteAt`,
-  `ConstantTimeEqual` and `WriteTo` kept succeeding and handed out the zeros,
-  as did `ArenaSlot.WithBytes` on a slot acquired before the wipe. A process
-  that survived the wipe (`InstallTerminationWipeNoExit`, a handler of its
-  own, a recovered panic) could therefore run AES-GCM, X25519, ML-KEM or
-  Ed25519 under an all-zero key and be told it worked. All of them now return
-  `ErrWiped`, which wraps `ErrDestroyed`, and the callback is not called. The
-  pre-wipe slot handle that could still write a fresh secret into a wiped
-  slab is closed by the same check. This is a behaviour change: code that
-  read a wiped buffer to see zeros gets an error instead. `Len`,
-  `IsDestroyed`, `Capabilities`, `Destroy` and `ArenaSlot.Release` are
-  unaffected.
-
-- **A copy of a `SecureBuffer` or `SecureArena` value is an alias of the
-  original, and a zero value is a destroyed one.** The types are used through
-  pointers, but nothing stopped `c := *buf`, and vet's copylocks check does
-  not see it. The copy carried its own liveness fields over the shared
-  mapping, so after `buf.Destroy()` it still handed out a slice, now over
-  unmapped memory or over whatever mapping had reused the address; a copied
-  arena kept handing out slots in a slab that was gone. All state now lives
-  behind one pointer, as in `os.File`: a copy or an overwrite (`*a = *b`) is
-  a second handle on the same buffer, state changed through one is seen
-  through all, and `Destroy` on any of them destroys it for all. The
-  finalization fallback follows the shared state, so the region is released
-  when the last handle is gone. A zero-value `SecureBuffer`, `SecureArena` or
-  `ArenaSlot`, which used to dereference a nil lock on every method, now
-  behaves as a destroyed buffer or arena, or a released slot. Method sets and
-  signatures are unchanged.
-
-### Fixed
 
 - **`InstallTerminationWipe` could hang behind one borrowing callback.** The
   handler called `WipeAllSecrets` synchronously, and that call waits for every
@@ -307,6 +333,30 @@ mark the stability commitment.
   The internal protection mapping sent everything other than "none" and
   "read" to `PAGE_READWRITE` and returned success. It now refuses a value it
   does not know.
+
+- **Tests: the Windows residue scan could lose the kernel's answer**, counting a
+  locked page as unlocked, because the `QueryWorkingSetEx` entries were
+  stack-allocated and passed by raw address; the call now goes through
+  `LazyProc.Call`, a failed query fails the scan, and a failing assertion
+  prints each hit's address, region and raw attributes. The three
+  `secmem-crypto` allocation-count tests compare measured floors rather than
+  single `AllocsPerRun` samples against constants, after one failed on
+  runtime noise.
+
+## [secmem-crypto/v0.10.0] - 2026-10-11
+
+Fixes from the October stabilization review. The crypto half of the review's
+two security findings is here: an error returned after decrypting a PBES2
+file could be built from the decrypted plaintext, and a modified file opened
+with the correct passphrase could have its key bytes printed in it; every
+post-decryption refusal is now a fixed string (GHSA-wj7v-8x84-p8pp). The
+Argon2 workspace no longer falls back to the heap for a long input, one RSA
+size rule applies on every ingress route, and the reflective wipes refuse a
+layout with a field they do not know. Minor, with incompatible signatures:
+`BufferOptions` forwards core options to every buffer this module allocates,
+and the eleven functions that allocate one gain a variadic `...Option`;
+`ErrLowOrderPoint` is exported. The module requires core v0.8.0.
+
 ### Added
 
 - **`secmem-crypto`: `ErrLowOrderPoint`**, wrapped by `X25519Key.SharedSecret`
@@ -340,6 +390,17 @@ mark the stability commitment.
   longer published as package documentation.
 
 ### Fixed
+
+- **`secmem-crypto`: an error from a PBES2 file could be built from its
+  decrypted plaintext.** After decryption, `ParsePrivateKeyWithPassphrase`
+  passed the plain PKCS#8 parser's "unsupported algorithm" error through, and
+  that error names the OID it read. AES-CBC is unauthenticated, so a modified
+  file opened with the correct passphrase could make that OID span the key
+  bytes and have them printed in the error. The two post-decryption refusals
+  that are not the wrong-passphrase error (`ErrUnsupportedKey`,
+  `ErrHeapTransients`) are now fixed strings; `errors.Is` is unchanged, the
+  message text is not. The test that pinned the one-bit promise swept only
+  ciphertext bytes; the new one sweeps the IV and a block splice.
 
 - **`secmem-crypto`: `Argon2Workspace` no longer falls back to the heap for
   long inputs.** An H0 input over 4096 bytes (password + salt + Secret +
@@ -393,6 +454,42 @@ mark the stability commitment.
 - **`secmem-crypto`: `MarshalOpenSSHPrivateKey` PEM-encodes inside a Scrub
   window**; without a passphrase that pass reads the seed in clear.
 
+## [secmem-lint/v0.5.0] - 2026-10-11
+
+The analyzer reports three escape shapes it missed — a borrowed value
+stored in a named result, followed through a type-switch binding, or
+assigned outward by a `range` clause — and its reentrancy rule covers the
+secmem-crypto key types. No exported API changed; this is a minor rather
+than a patch because the new findings can fail a downstream CI run that
+passed before. `golang.org/x/tools` moves to v0.51.0.
+
+### Fixed
+
+- **`secmem-lint`: E3 reports borrowed bytes stored in a named result of the
+  borrowing closure** (`err = &keyErr{raw: b}; return`), including a store
+  made by a deferred literal. Only explicit return operands were checked.
+
+- **`secmem-lint`: a borrowed value is followed through a type-switch
+  binding** (`switch t := v.(type)`), so an escape of `t` is reported like
+  one of `v`.
+
+- **`secmem-lint`: E3 reports a `range` clause written with `=`** that
+  assigns borrowed bytes to an outer variable, field or element
+  (`for _, outer = range [][]byte{b} {}`).
+
+- **`secmem-lint`: R1 covers secmem-crypto keys.** `Sign`, `SignMessage`,
+  `SharedSecret`, `PublicKey`, `ConstantTimeEqual`, `Decapsulate` and
+  `MarshalOpenSSHPrivateKey*` called on the same key inside its own
+  `WithSeed` / `WithScalar` / `WithDER` are reported, as are
+  `Secret.ConstantTimeEqual` / `WriteTo` / `Destroy` inside
+  `Secret.WithBytes`. The method table is keyed by type, and a test fails for
+  any exported method of a borrowing type that is not classified.
+
+- **`secmem-lint -strict`: L1 treats every secmem / secmem-crypto type with
+  a `Destroy` as owned**, so a parsed `Signer`, an `Argon2Workspace` /
+  `Argon2Pool` and a `Secret` that are never destroyed or handed off are
+  reported.
+
 ## [secmem-crypto/v0.9.0] - 2026-10-03
 
 The passphrase ingress is complete: PKCS#8 files protected with scrypt open,
@@ -405,32 +502,6 @@ than only documented. Minor: `MaxScryptMemory` and `MaxScryptWork` are added.
 The core floor is unchanged at v0.7.0.
 
 ### Added
-
-- **`Seal` authenticates the dormant bytes; `Unseal` refuses a changed one
-  with `ErrIntegrity`.** A Rowhammer flip or a DRAM soft error in a sealed
-  page used to come back from `Unseal` as the secret, and a signing key with
-  one known bit changed leaks that bit of the real key per signature. `Seal`
-  now takes an HMAC-SHA-512 tag over the whole region as it sits at rest —
-  on Windows, over the `CryptProtectMemory` ciphertext — under a key derived
-  from a 16 KiB prekey locked once per process on the first `Seal` (the
-  OpenSSH key-shielding shape, chosen to carry an at-rest cipher later), with
-  a fresh nonce per seal and the buffer's identity bound in. `Unseal`
-  verifies in constant time before it reads or decrypts; on a mismatch the
-  buffer stays sealed and a later `Unseal` verifies again, so a restored bit
-  recovers. `Destroy` verifies and reports too, and never skips the wipe.
-  `WipeAllSecrets` zeroes the prekey with everything else; the next `Seal`
-  allocates a fresh one rather than deriving from zeros.
-
-  Costs and the new surface, a minor bump: the prekey is 16 KiB of lock
-  budget per process, and `Seal` and `Unseal` each pay one hash of it and one
-  of the region — about 20 µs for a page on a 2025 desktop. If the prekey
-  cannot be locked, `Seal` fails. **`WithUnauthenticatedSeal`** is the
-  per-buffer opt-out for a process that cannot spare the budget; it is
-  reported by the new **`Capabilities.UnauthenticatedSeal`** and named by
-  `Warnings()`. **`ErrIntegrity`** is the new sentinel. The derivation
-  allocates nothing (pinned by a test) and runs inside a `Scrub` window;
-  THREAT-MODEL.md gains a section on Rowhammer and RAMBleed stating what this
-  detects, what it does not, and what remains a gap.
 
 - **`secmem-crypto`: `ParsePrivateKeyWithPassphrase` opens PKCS#8 files
   protected with scrypt.** `openssl pkcs8 -topk8 -scrypt` files — PBES2 with
@@ -2650,6 +2721,9 @@ First tagged release of the core `secmem` module.
   cover all three types, both the pointer and (where a value copy is not
   itself a `go vet` copylocks violation) a dereferenced value.
 
+[0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
+[secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
+[secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0
 [Unreleased]: https://github.com/deadpoets/secmem/compare/v0.7.0...HEAD
 [secmem-crypto/v0.9.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.9.0
 [0.7.0]: https://github.com/deadpoets/secmem/compare/v0.6.0...v0.7.0
