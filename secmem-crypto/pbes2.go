@@ -135,8 +135,8 @@ var (
 	errRetiredPBES2Cipher = fmt.Errorf("%w: PBES2 over DES, 3DES or RC2; re-encrypt it with openssl pkcs8 -topk8 -v2 aes-256-cbc", ErrRetiredAlgorithm)
 )
 
-// errPBES2Decrypt is the one error for everything that goes wrong after the
-// ciphertext is decrypted: a bad PKCS#7 pad, a plaintext that is not a
+// errPBES2Decrypt is the error for everything that goes wrong after the
+// ciphertext is decrypted, bar the two fixed refusals below it: a bad PKCS#7 pad, a plaintext that is not a
 // PrivateKeyInfo, a scalar out of range, an RSA key the standard library
 // finds inconsistent, halves that disagree. AES-CBC carries no
 // authenticator, so a wrong passphrase and a modified file produce the same
@@ -146,6 +146,15 @@ var (
 // a wrong passphrase is the common cause, and the value is what
 // x/crypto/ssh returns for it.
 var errPBES2Decrypt = fmt.Errorf("PKCS#8 encrypted key did not decrypt to a valid key (wrong passphrase or corrupt file): %w", x509.IncorrectPasswordError)
+
+// The two post-decryption refusals that are not errPBES2Decrypt. Fixed text,
+// built once: nothing read from the decrypted plaintext may reach an error
+// (see parsePKCS8Encrypted).
+var (
+	errPBES2Unsupported = fmt.Errorf("%w: the encrypted PKCS#8 file holds a key of a type this package has no signer for", ErrUnsupportedKey)
+
+	errPBES2HeapTransients = fmt.Errorf("%w: the encrypted PKCS#8 file holds an RSA or EC key; pass AllowHeapTransients to open it", ErrHeapTransients)
+)
 
 // encryptedPKCS8Error is ParsePrivateKey's answer for an EncryptedPrivateKeyInfo
 // it will not open: ErrEncryptedKey, carrying ErrRetiredAlgorithm and the
@@ -571,10 +580,20 @@ func pkcs7Unpad(p []byte) (int, bool) {
 // parsePKCS8 and the constructors it calls — still before any signer is
 // built and before the standard library sees a byte of the key, which is
 // what the gate is for. That refusal, and an algorithm this package has no
-// signer for, are reported as themselves: both are reached only through a
-// plaintext that parsed as a complete PrivateKeyInfo, which a wrong
-// passphrase or a damaged file cannot produce, so neither says anything
-// about where damage landed.
+// signer for, keep their identity (errors.Is still matches) but are returned
+// as the two fixed strings below, never as parsePKCS8's own error: that one
+// names the OID it read, and here the OID comes out of the ciphertext.
+// AES-CBC is unauthenticated, so whoever can modify the file rewrites
+// plaintext block 0 through the IV and re-orders the rest, and can make the
+// "OID" span the key bytes that follow — an error formatted from it would
+// print them.
+//
+// What remains is a format oracle of two answers beyond the wrong-passphrase
+// one: "this plaintext parsed as a PrivateKeyInfo of a type with no signer"
+// and "it parsed as an RSA or EC key the gate refused". Both are kept
+// because the second is the only way a caller learns that
+// AllowHeapTransients is what their file needs; neither carries a byte of
+// the plaintext.
 func parsePKCS8Encrypted(blob *secmem.SecureBuffer, passphrase []byte, o options) (Signer, error) {
 	var (
 		plain *secmem.SecureBuffer
@@ -616,8 +635,11 @@ func parsePKCS8Encrypted(blob *secmem.SecureBuffer, passphrase []byte, o options
 	}
 	s, err := parsePKCS8(plain, o) // destroys plain, or keeps it for an RSA signer
 	if err != nil {
-		if errors.Is(err, ErrHeapTransients) || errors.Is(err, ErrUnsupportedKey) {
-			return nil, err
+		switch {
+		case errors.Is(err, ErrHeapTransients):
+			return nil, errPBES2HeapTransients
+		case errors.Is(err, ErrUnsupportedKey):
+			return nil, errPBES2Unsupported
 		}
 		return nil, errPBES2Decrypt
 	}

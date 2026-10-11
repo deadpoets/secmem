@@ -61,7 +61,12 @@ var ErrNotEncrypted = errors.New("secmemcrypto: private key is not passphrase-pr
 // built. Everything else about the file — its structure, every parameter,
 // the cost it names against the caps — is decided before the derivation.
 // AES-CBC authenticates nothing, so after it the answer is the same one bit
-// as below; what stays observable is success, and for an Ed25519 file
+// as below, with two exceptions that are fixed strings and carry nothing
+// read from the file: a plaintext that parses as an RSA or EC key the gate
+// refuses is reported as [ErrHeapTransients], and one that parses as a key
+// type with no signer here as [ErrUnsupportedKey]. Someone who can modify
+// the file and read the error can tell those two shapes from every other
+// failure, and nothing more. What also stays observable is success, and for an Ed25519 file
 // without a public key (openssl writes v1) damage confined to the seed
 // leaves a file that opens as a different key, exactly as it would through
 // openssl.
