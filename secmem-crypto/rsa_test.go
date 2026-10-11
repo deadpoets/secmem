@@ -427,7 +427,19 @@ func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
 			}
 		}
 	}
-	if a1, a8 := testing.AllocsPerRun(20, sign(s1)), testing.AllocsPerRun(20, sign(s8)); a8 != a1 {
+	// The difference being guarded against is small — a PKCS#8 parse
+	// allocates about four times more than a PKCS#1 parse of the same key —
+	// so the comparison stays exact. What makes that safe is comparing
+	// floors: AllocsPerRun counts process-wide and noise only ever adds, so
+	// the least of several samples on each side is the true count.
+	floor := func(f func()) float64 {
+		least := testing.AllocsPerRun(20, f)
+		for range 4 {
+			least = min(least, testing.AllocsPerRun(20, f))
+		}
+		return least
+	}
+	if a1, a8 := floor(sign(s1)), floor(sign(s8)); a8 != a1 {
 		t.Errorf("Sign allocates %.0f times for a PKCS#8 signer and %.0f for a PKCS#1 signer of the same key: the wrapped key is being copied out of the buffer", a8, a1)
 	}
 	construct := func(buf *secmem.SecureBuffer) func() {
@@ -437,7 +449,7 @@ func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
 			}
 		}
 	}
-	if a1, a8 := testing.AllocsPerRun(20, construct(buf1)), testing.AllocsPerRun(20, construct(buf8)); a8 != a1 {
+	if a1, a8 := floor(construct(buf1)), floor(construct(buf8)); a8 != a1 {
 		t.Errorf("NewRSASigner allocates %.0f times for PKCS#8 DER and %.0f for PKCS#1 DER of the same key", a8, a1)
 	}
 }
@@ -487,15 +499,27 @@ func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
 		if err != nil {
 			t.Skipf("no secure memory: %v", err)
 		}
-		allocs := testing.AllocsPerRun(10, func() {
-			if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), c.want) {
-				t.Fatalf("%s: error = %v, want mention of %s", c.name, err, c.want)
-			}
-		})
-		// What a refusal allocates is its error; a parse of any of these
-		// keys allocates several times that.
-		if allocs > 6 {
-			t.Errorf("%s: the refusal allocates %.0f times; the key is being parsed to be refused", c.name, allocs)
+		refuse := func() float64 {
+			return testing.AllocsPerRun(10, func() {
+				if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("%s: error = %v, want mention of %s", c.name, err, c.want)
+				}
+			})
+		}
+		// What a refusal allocates is its error (4 allocations here); a
+		// parse of the same key allocates more (9 for Ed25519, 28 for
+		// ECDSA), and a refusal that parsed first would allocate at least
+		// that plus the error. The bound is that measured parse, not a
+		// constant: AllocsPerRun counts process-wide and a fixed slack of two
+		// failed in CI on runtime noise. The least of three runs is compared,
+		// since the noise only ever adds.
+		parse := testing.AllocsPerRun(10, func() { _, _ = x509.ParsePKCS8PrivateKey(der) })
+		least := refuse()
+		for range 2 {
+			least = min(least, refuse())
+		}
+		if least >= parse {
+			t.Errorf("%s: the refusal allocates %.0f times on every run, a parse of the key %.0f: the key is being parsed to be refused", c.name, least, parse)
 		}
 		buf.Destroy()
 	}

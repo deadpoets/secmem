@@ -110,6 +110,17 @@ which raises the floor for every consumer; CI runs on go1.27.2 and go1.26.9.
 
 ### Fixed
 
+- **`secmem-crypto`: an error from a PBES2 file could be built from its
+  decrypted plaintext.** After decryption, `ParsePrivateKeyWithPassphrase`
+  passed the plain PKCS#8 parser's "unsupported algorithm" error through, and
+  that error names the OID it read. AES-CBC is unauthenticated, so a modified
+  file opened with the correct passphrase could make that OID span the key
+  bytes and have them printed in the error. The two post-decryption refusals
+  that are not the wrong-passphrase error (`ErrUnsupportedKey`,
+  `ErrHeapTransients`) are now fixed strings; `errors.Is` is unchanged, the
+  message text is not. The test that pinned the one-bit promise swept only
+  ciphertext bytes; the new one sweeps the IV and a block splice.
+
 - **Windows: a buffer that had been sealed was no longer locked.**
   `PAGE_NOACCESS` takes a page out of the working set and Windows drops its
   `VirtualLock` with it; `Unseal` restored the protection but never the lock,
