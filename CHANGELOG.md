@@ -108,6 +108,14 @@ which raises the floor for every consumer; CI runs on go1.27.2 and go1.26.9.
   behaves as a destroyed buffer or arena, or a released slot. Method sets and
   signatures are unchanged.
 
+- **The local git hooks check what a push would publish.** `install-hooks.sh`
+  now installs a `pre-push` hook that runs `check-commits.sh` over exactly the
+  commits being pushed — blocked paths, gitleaks per commit, attribution
+  trailers, signatures, gofmt — reading the commits rather than the working
+  tree, and skipping commits `origin` already has; `pre-commit` scans the
+  staged diff for secrets and checks gofmt on staged Go files. All remain
+  bypassable with `--no-verify`, deliberately.
+
 ### Fixed
 
 - **`secmem-crypto`: an error from a PBES2 file could be built from its
@@ -325,6 +333,15 @@ which raises the floor for every consumer; CI runs on go1.27.2 and go1.26.9.
   The internal protection mapping sent everything other than "none" and
   "read" to `PAGE_READWRITE` and returned success. It now refuses a value it
   does not know.
+
+- **Tests: the Windows residue scan could lose the kernel's answer**, counting a
+  locked page as unlocked, because the `QueryWorkingSetEx` entries were
+  stack-allocated and passed by raw address; the call now goes through
+  `LazyProc.Call`, a failed query fails the scan, and a failing assertion
+  prints each hit's address, region and raw attributes. The three
+  `secmem-crypto` allocation-count tests compare measured floors rather than
+  single `AllocsPerRun` samples against constants, after one failed on
+  runtime noise.
 
 ## [secmem-crypto/v0.10.0] - 2026-10-11
 
