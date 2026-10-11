@@ -487,15 +487,27 @@ func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
 		if err != nil {
 			t.Skipf("no secure memory: %v", err)
 		}
-		allocs := testing.AllocsPerRun(10, func() {
-			if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), c.want) {
-				t.Fatalf("%s: error = %v, want mention of %s", c.name, err, c.want)
-			}
-		})
-		// What a refusal allocates is its error; a parse of any of these
-		// keys allocates several times that.
-		if allocs > 6 {
-			t.Errorf("%s: the refusal allocates %.0f times; the key is being parsed to be refused", c.name, allocs)
+		refuse := func() float64 {
+			return testing.AllocsPerRun(10, func() {
+				if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), c.want) {
+					t.Fatalf("%s: error = %v, want mention of %s", c.name, err, c.want)
+				}
+			})
+		}
+		// What a refusal allocates is its error (4 allocations here); a
+		// parse of the same key allocates more (9 for Ed25519, 28 for
+		// ECDSA), and a refusal that parsed first would allocate at least
+		// that plus the error. The bound is that measured parse, not a
+		// constant: AllocsPerRun counts process-wide and a fixed slack of two
+		// failed in CI on runtime noise. The least of three runs is compared,
+		// since the noise only ever adds.
+		parse := testing.AllocsPerRun(10, func() { _, _ = x509.ParsePKCS8PrivateKey(der) })
+		least := refuse()
+		for range 2 {
+			least = min(least, refuse())
+		}
+		if least >= parse {
+			t.Errorf("%s: the refusal allocates %.0f times on every run, a parse of the key %.0f: the key is being parsed to be refused", c.name, least, parse)
 		}
 		buf.Destroy()
 	}
