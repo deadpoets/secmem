@@ -55,8 +55,8 @@ env:
   # it, GO_VERSION_OLDSTABLE to the release it displaces, and go.mod's floor
   # to the latter's minor. The leg's name is a fixed label, not the version,
   # so a patch bump never renames a required check.
-  GO_VERSION: "1.27.1"
-  GO_VERSION_OLDSTABLE: "1.26.8"
+  GO_VERSION: "1.27.2"
+  GO_VERSION_OLDSTABLE: "1.26.9"
 
 jobs:
   # Skip audit. A plain `go test` prints nothing for a t.Skip, so a proof that
@@ -453,13 +453,13 @@ jobs:
         with:
           version: v2.14.0
           working-directory: examples
+      # Built from .github/tools/staticcheck, not the staticcheck action: see
+      # that module's README for why and when to go back.
+      - name: build staticcheck
+        run: go build -C .github/tools/staticcheck -o "$RUNNER_TEMP/staticcheck" honnef.co/go/tools/cmd/staticcheck
       - name: staticcheck (examples)
-        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
-        with:
-          version: 2026.2.1
-          install-go: false
-          working-directory: examples
-          cache-key: examples
+        working-directory: examples
+        run: '"$RUNNER_TEMP/staticcheck" ./...'
 
   cross-compile:
     runs-on: ubuntu-latest
@@ -612,29 +612,25 @@ jobs:
         with:
           version: v2.14.0
           working-directory: secmem-crypto
+      # Built from .github/tools/staticcheck, not the staticcheck action: see
+      # that module's README for why and when to go back. GOWORK is off for
+      # the build only; the tool module is not part of the workspace.
+      - name: build staticcheck
+        env:
+          GOWORK: "off"
+        run: go build -C .github/tools/staticcheck -o "$RUNNER_TEMP/staticcheck" honnef.co/go/tools/cmd/staticcheck
       - name: staticcheck (core)
-        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
-        with:
-          version: 2026.2.1
-          install-go: false
+        run: '"$RUNNER_TEMP/staticcheck" ./...'
       - name: staticcheck (secmem-crypto)
-        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
-        with:
-          version: 2026.2.1
-          install-go: false
-          working-directory: secmem-crypto
-          cache-key: secmem-crypto
+        working-directory: secmem-crypto
+        run: '"$RUNNER_TEMP/staticcheck" ./...'
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           version: v2.14.0
           working-directory: secmem-lint
       - name: staticcheck (secmem-lint)
-        uses: dominikh/staticcheck-action@9716614d4101e79b4340dd97b10e54d68234e431 # v1
-        with:
-          version: 2026.2.1
-          install-go: false
-          working-directory: secmem-lint
-          cache-key: secmem-lint
+        working-directory: secmem-lint
+        run: '"$RUNNER_TEMP/staticcheck" ./...'
 
   vuln:
     runs-on: ubuntu-latest

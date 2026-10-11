@@ -19,8 +19,9 @@ updates:
         patterns:
           - "github/codeql-action*"
 
-  # All four Go modules. Dependabot's gomod ecosystem does not recurse into
-  # nested modules, so each needs its own directory entry. secmem-lint and
+  # All four Go modules, plus the module CI builds staticcheck from.
+  # Dependabot's gomod ecosystem does not recurse into nested modules, so
+  # each needs its own directory entry. secmem-lint and
   # examples were originally omitted as low-risk; that let x/mod lag two
   # releases behind a published advisory (GO-2026-6179/-6180) — tooling-only
   # exposure, but exactly the silent rot the omission was betting against.
@@ -30,5 +31,6 @@ updates:
       - "/secmem-crypto"
       - "/secmem-lint"
       - "/examples"
+      - "/.github/tools/staticcheck"
     schedule:
       interval: "weekly"
