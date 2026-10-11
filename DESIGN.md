@@ -76,10 +76,13 @@ most common way secret memory leaks is not an attack on the secret directly
 but a *buffer overflow in adjacent code* that reads or writes past its
 bounds and wanders into the secret. A `PROT_NONE` guard turns "silently read
 the neighbouring secret" into "immediate, attributable SIGSEGV." The guards
-are never wiped, never locked, never re-protected — touching them at all is a
+are never wiped and never re-protected — touching them at all is a
 bug — so the region code keeps a strict distinction between "the memory you
 protect" (the inner secret pages) and "the memory you unmap" (the whole
-reservation including guards).
+reservation including guards). On the `memfd_secret` tier the guards are part
+of the one secretmem mapping, so the kernel counts them against
+`RLIMIT_MEMLOCK`: two extra pages per buffer. On the mmap+mlock tier they are
+not locked and cost nothing.
 
 ## Why a canary as well as guard pages
 
