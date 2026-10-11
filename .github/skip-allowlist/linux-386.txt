@@ -4,10 +4,11 @@
 # memfd_secret is 64-bit only (mlock_linux.go refuses the syscall number on
 # 32-bit), so every proof that needs the memfd_secret tier skips here and the
 # anon tier is what this lane exercises.
-github.com/deadpoets/secmem TestMemfdIsolation_HoldsAfterMapFixed
+github.com/deadpoets/secmem TestMemfdIsolation_HoldsOnSecretMapping
 github.com/deadpoets/secmem TestExternalExtraction_SecureBufferUnreadable
 github.com/deadpoets/secmem TestMadvise_MemfdSecretTierFlagsInForce
 github.com/deadpoets/secmem TestMadviseBeforeFree_MemfdSecretZapsOnlyPageTables
+github.com/deadpoets/secmem TestAllocFailure_UnmapsOnlyOwnedAddressSpace
 
 # The success path is verified out-of-process in TestHelpersIsolated; this
 # test is the ErrUnsupported pin for platforms without a core-dump rlimit.
