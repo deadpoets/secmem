@@ -10,9 +10,11 @@
 //
 // Three questions per fork, each answerable without judgement:
 //
-//   - Did upstream change the copied paths since fork_point? If not, the
-//     manifest's unchanged_through can be advanced (-update does it). If so,
-//     the diff is the port decision, and a human makes it.
+//   - Did upstream change the copied paths since fork_point, or since the
+//     newest entry in reviewed[] (changes a human read and decided not to
+//     port)? If not, the manifest's unchanged_through can be advanced
+//     (-update does it). If so, the diff is the port decision, and a human
+//     makes it.
 //   - Are the pieces documented as verbatim still identical to upstream's
 //     NEWEST release? Each fork's upstream_identity_test.go asks this of the
 //     version the module resolves, which only moves when something bumps the
@@ -95,19 +97,20 @@ func main() {
 	}
 
 	results := make([]result, 0, len(m.Forks))
+	set := map[string]string{}
 	for i := range m.Forks {
 		f := &m.Forks[i]
 		r := check(f, *offline)
 		if *update && r.Stale != "" {
-			f.UnchangedThrough = r.Stale
+			set[f.ID] = r.Stale
 			r.Findings = append(r.Findings, "manifest updated: unchanged_through = "+r.Stale)
 			r.Stale = ""
 		}
 		results = append(results, r)
 	}
 
-	if *update {
-		if err := forks.Save(forks.Name, m); err != nil {
+	if len(set) > 0 {
+		if err := forks.SetUnchangedThrough(forks.Name, set); err != nil {
 			fmt.Fprintf(os.Stderr, "forkcheck: %v\n", err)
 			os.Exit(2)
 		}
@@ -175,14 +178,28 @@ func checkGomod(f *forks.Fork, offline bool) result {
 	}
 	r.Newest = newest
 
-	oldDir, err := moduleDir(f.Upstream.Module, f.ForkPoint)
+	// The comparison starts from the newest review when there is one: the
+	// changes up to it were read and recorded as not applying, and showing
+	// them again every week would make the report one nobody reads. The
+	// review stays visible as a finding, so it is never silent either.
+	base := f.Base()
+	if c, err := forks.CompareVersions(newest, base); err != nil || c < 0 {
+		r.Status = "unknown"
+		r.Findings = []string{fmt.Sprintf("upstream's newest release %s is not at or after %s, the version the manifest compares from", newest, base)}
+		return r
+	}
+	for _, rv := range f.Reviewed {
+		r.Findings = append(r.Findings, fmt.Sprintf("reviewed through %s, not ported: %s", rv.Through, rv.Reason))
+	}
+
+	oldDir, err := moduleDir(f.Upstream.Module, base)
 	if err != nil {
 		r.Status = "unknown"
 		r.Findings = []string{err.Error()}
 		return r
 	}
 	newDir := oldDir
-	if newest != f.ForkPoint {
+	if newest != base {
 		if newDir, err = moduleDir(f.Upstream.Module, newest); err != nil {
 			r.Status = "unknown"
 			r.Findings = []string{err.Error()}
@@ -200,12 +217,12 @@ func checkGomod(f *forks.Fork, offline bool) result {
 			return r
 		}
 		if d != "" {
-			diffs = append(diffs, "=== "+p+" ("+f.ForkPoint+" -> "+newest+")\n"+d)
+			diffs = append(diffs, "=== "+p+" ("+base+" -> "+newest+")\n"+d)
 		}
 	}
 	if len(diffs) > 0 {
 		r.Status = "drift"
-		r.Findings = append(r.Findings, fmt.Sprintf("upstream changed the copied paths between %s and %s", f.ForkPoint, newest))
+		r.Findings = append(r.Findings, fmt.Sprintf("upstream changed the copied paths between %s and %s", base, newest))
 		r.Diff = strings.Join(diffs, "\n")
 	} else if f.UnchangedThrough != newest {
 		r.Stale = newest
