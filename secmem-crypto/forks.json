@@ -19,6 +19,15 @@
     "release checked to be identical in the copied paths, so the pair together",
     "says 'ported from X, and upstream has not changed through Y'.",
     "",
+    "reviewed[] is how a drift report is answered 'does not apply' without",
+    "lying in either field: each entry names an upstream release whose changes",
+    "to the copied paths were read and deliberately not ported, and why.",
+    "forkcheck then diffs from the newest review instead of fork_point, and",
+    "unchanged_through counts from there, so the three together say 'ported",
+    "from X, upstream's changes through R reviewed and not ported, nothing",
+    "further through Y'. Reviews ascend above fork_point; a port that moves",
+    "fork_point drops the ones it absorbs. Only a gomod fork can have them.",
+    "",
     "A goroot fork records the Go MINOR line, go1.26 and not go1.27.1, and the",
     "check compares it as a prefix of the running toolchain's version. That is",
     "deliberate: the identity test re-verifies against whichever toolchain runs,",
@@ -48,7 +57,10 @@
         "paths": ["argon2", "blake2b"]
       },
       "fork_point": "v0.56.0",
-      "unchanged_through": "v0.57.0",
+      "reviewed": [
+        { "through": "v0.58.0", "reason": "Upstream added a loong64 LSX backend (blamka_loong64, blake2b_loong64, a useLSX flag, !loong64 on the _ref.go build tags); the portable code and blamka_amd64.s are unchanged. On loong64 this fork runs the portable path, same output, and new assembly would need the residue audit blamka_amd64.s had. Issue #149." }
+      ],
+      "unchanged_through": "v0.58.0",
       "claims": ["internal/argon2/doc.go", "NOTICE", "README.md"],
       "identity": [
         { "mode": "bytes", "ours": "internal/argon2/blamka_amd64.s", "theirs": "argon2/blamka_amd64.s" },

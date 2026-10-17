@@ -123,23 +123,34 @@ they are required.
 **When upstream has moved.** The diff in the report is the input to one
 decision, and the decision is yours, not the tool's:
 
-1. If the change is to comments, tests or documentation, nothing needs
-   porting: advance the manifest (`go run ./internal/forkcheck -update`
-   writes `unchanged_through` for you) and say so on the issue.
+1. If the change touches code this module carries but does not affect it —
+   tests, comments, or a new backend for a platform the fork runs portably,
+   say — nothing needs porting, but the record must say why. Add an entry
+   to the fork's `reviewed` list in `forks.json` with the release you read
+   through and a `reason`, set `unchanged_through` to the same release, and
+   say so on the issue. forkcheck then diffs from that review instead of
+   from `fork_point`, and prints the reason on every run, so the next change
+   is the only thing it reports. When the copied paths did not change at
+   all, there is nothing to review: `go run ./internal/forkcheck -update`
+   advances `unchanged_through` by itself.
 2. If it touches the algorithm, port it by hand. The fork's differential
    tests against upstream (`TestMatchesUpstream`,
    `TestBlowfish_MatchesUpstream`) and its RFC vectors are what tell you the
    port is faithful; run them before and after. Then move `fork_point` in
    `forks.json` **and** the prose that states it — the manifest lists those
-   files, and `forks_test.go` fails while any of them disagrees.
+   files, and `forks_test.go` fails while any of them disagrees. Drop any
+   `reviewed` entries at or below the new fork point; the manifest will not
+   load while one is left.
 3. If it is a fix for a vulnerability, treat it as a security fix in this
    module, not as housekeeping: [SECURITY.md](SECURITY.md) applies, and the
    release that carries it says so.
 
 **Never** resolve a drift report by moving `fork_point` without porting the
-change. The pair of fields means "taken from X, and upstream has not changed
-through Y"; editing Y to silence a job turns the one record of what this
-module actually contains into a lie.
+change, or by advancing `unchanged_through` past a change without a
+`reviewed` entry for it. The fields mean "taken from X, upstream's changes
+through R read and not ported, and nothing further through Y"; editing them
+to silence a job turns the one record of what this module actually contains
+into a lie.
 
 **What none of this covers.** `govulncheck` reads a module's dependency
 graph, and a fork is not in one: an advisory against x/crypto's `argon2`
