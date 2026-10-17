@@ -67,7 +67,7 @@
         "paths": ["ssh/internal/bcrypt_pbkdf", "blowfish"]
       },
       "fork_point": "v0.56.0",
-      "unchanged_through": "v0.57.0",
+      "unchanged_through": "v0.58.0",
       "claims": ["internal/bcryptpbkdf/doc.go", "NOTICE", "README.md"],
       "identity": [
         { "mode": "code", "ours": "internal/bcryptpbkdf/const.go", "theirs": "blowfish/const.go" },
@@ -90,7 +90,7 @@
         "paths": ["scrypt"]
       },
       "fork_point": "v0.57.0",
-      "unchanged_through": "v0.57.0",
+      "unchanged_through": "v0.58.0",
       "claims": ["internal/scrypt/doc.go", "NOTICE", "README.md"],
       "identity": [
         { "mode": "func", "name": "blockCopy", "ours": "internal/scrypt/scrypt.go", "theirs": "scrypt/scrypt.go" },
