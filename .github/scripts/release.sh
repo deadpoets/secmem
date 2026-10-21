@@ -204,6 +204,12 @@ $deps
 EOF
 fi
 
+# The build and test below are the last run before a version is permanent, so
+# they run on the toolchain CI pins, and the pin is the newest release.
+bash .github/scripts/go-current.sh --local ||
+  die "the Go toolchain is not current (above). Move the pins, or fix the
+             local go, and re-run."
+
 # Build and test against the RELEASED dependency graph, not the workspace. The
 # workspace masks a wrong go.mod by resolving siblings from disk.
 printf '  ...   building and testing %s with GOWORK=off\n' "$module"

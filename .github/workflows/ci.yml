@@ -39,7 +39,13 @@ env:
   # correctly red on a toolchain we could not float our way off. setup-go
   # fetches an exact version straight from the Go dist site when the manifest
   # does not have it yet, so pinning is also what makes CI reproducible.
-  # Bump deliberately when a patch release lands.
+  #
+  # A pin is only as current as the last person to move it, so go-current.yml
+  # checks it against go.dev on every PR and every few hours: both values must
+  # be the newest patch of their release, and every other pin site — the copies
+  # in fuzz.yml and forks.yml and the `toolchain` line in each go.mod — must
+  # equal GO_VERSION. Move them together; .github/scripts/go-current.sh lists
+  # any that disagree.
   #
   # Two toolchains, two tiers. Go supports its two newest releases and the
   # modules declare the older one as their floor (go.mod's `go` directive),
@@ -55,8 +61,8 @@ env:
   # it, GO_VERSION_OLDSTABLE to the release it displaces, and go.mod's floor
   # to the latter's minor. The leg's name is a fixed label, not the version,
   # so a patch bump never renames a required check.
-  GO_VERSION: "1.27.2"
-  GO_VERSION_OLDSTABLE: "1.26.9"
+  GO_VERSION: "1.27.3"
+  GO_VERSION_OLDSTABLE: "1.26.10"
 
 jobs:
   # Skip audit. A plain `go test` prints nothing for a t.Skip, so a proof that

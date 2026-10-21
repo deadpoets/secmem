@@ -6,10 +6,9 @@
 # union as CI, so one `go build ./...` at the root covers core, crypto and
 # lint; examples builds separately under GOWORK=off, matching its own CI job.
 #
-# Go's version comes from go.mod rather than CI's pinned GO_VERSION: a scan
-# job never executes the toolchain against untrusted input, so the manifest
-# lag that pin defends against does not apply, and a second pin site that
-# dependabot does not bump would rot.
+# Go's version comes from go.mod's `toolchain` line rather than a copy of CI's
+# GO_VERSION: go-current.sh holds that line equal to the pin, and a second
+# copy in this file would be one more site to move.
 #
 # This also satisfies OpenSSF Scorecard's SAST check, which looks for CodeQL
 # runs on recent commits.
@@ -43,7 +42,7 @@ jobs:
       # bump breaks the job rather than degrading it. Dependabot treats the two
       # subpaths as separate dependencies and will bump them in separate PRs —
       # dependabot.yml groups them to stop that.
-      - uses: github/codeql-action/init@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/init@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           languages: go
           build-mode: manual
@@ -51,6 +50,6 @@ jobs:
         run: |
           go build ./...
           cd examples && GOWORK=off go build ./...
-      - uses: github/codeql-action/analyze@24c54180a607b1449ed407dd24f251e4e9147c8d # v4.38.3
+      - uses: github/codeql-action/analyze@6f2ac81f5cd81fe351a197ba0b00d91d03cd2aee # v4.39.0
         with:
           category: "/language:go"
