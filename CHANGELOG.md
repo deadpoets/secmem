@@ -23,6 +23,10 @@ mark the stability commitment.
   pin is not the newest patch of its release, when the pin sites disagree, or
   (with `--local`) when the go that runs is not the pin. It runs on every PR
   and every six hours, in `release.sh`, and in the pre-push hook.
+- **`secmem-crypto`: `golang.org/x/crypto` moves to v0.58.0.** It fixes nothing
+  this module reaches; the forks' review against it is recorded in
+  `forks.json`.
+- **`secmem-lint`: `golang.org/x/tools` moves to v0.52.0.**
 
 ## [0.8.0] - 2026-10-11
 
