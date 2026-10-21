@@ -2,6 +2,8 @@ module github.com/deadpoets/secmem/secmem-crypto
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/deadpoets/secmem v0.8.0

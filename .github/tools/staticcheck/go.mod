@@ -2,6 +2,8 @@ module secmem-ci/staticcheck
 
 go 1.26.0
 
+toolchain go1.27.3
+
 tool honnef.co/go/tools/cmd/staticcheck
 
 require (

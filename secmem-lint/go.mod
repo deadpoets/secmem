@@ -2,6 +2,8 @@ module github.com/deadpoets/secmem/secmem-lint
 
 go 1.26.0
 
+toolchain go1.27.3
+
 require golang.org/x/tools v0.51.0
 
 require (
