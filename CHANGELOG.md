@@ -13,6 +13,17 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Changed
+
+- **Every module's `go.mod` carries `toolchain go1.27.3`**, the release CI
+  pins. A local `go` switches to it by itself; consumers ignore the line. CI
+  moves to go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`, reachable from
+  `secmem-crypto`).
+- **The Go pins are checked, not remembered.** `go-current.sh` fails when a
+  pin is not the newest patch of its release, when the pin sites disagree, or
+  (with `--local`) when the go that runs is not the pin. It runs on every PR
+  and every six hours, in `release.sh`, and in the pre-push hook.
+
 ## [0.8.0] - 2026-10-11
 
 Fixes from the October stabilization review, and `Seal` now authenticates

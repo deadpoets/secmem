@@ -1,0 +1,65 @@
+name: go-current
+
+# Is every Go toolchain this repository builds with the newest patch of its
+# release? See .github/scripts/go-current.sh for what is checked and why.
+#
+# Unlike Fork Watch this one gates. An upstream release there asks for a
+# porting decision no PR can make in passing; here the fix is moving a few
+# version strings, and running a toolchain with published security fixes
+# missing is not a state this repository is allowed to sit in. The scheduled
+# run is what catches a release between PRs: it opens or updates ONE tracking
+# issue, the same way forks.yml does.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: "23 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go-current:
+    name: go-current
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      issues: write # scheduled runs only; see the last step
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      # No setup-go: the check reads pins and go.dev, it never runs go.
+      - name: the Go pins are current and agree
+        run: |
+          set -o pipefail
+          bash .github/scripts/go-current.sh 2>&1 | tee "$RUNNER_TEMP/go-current.txt"
+
+      - name: open or update the tracking issue
+        if: failure() && github.event_name == 'schedule'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TITLE: "go-current: a newer Go release is out"
+        run: |
+          set -euo pipefail
+          body="$RUNNER_TEMP/issue.md"
+          {
+            echo "CI's Go pins are behind the newest release. Until they move, every PR"
+            echo "fails the go-current check. Move GO_VERSION and GO_VERSION_OLDSTABLE in"
+            echo "ci.yml, the copies in fuzz.yml and forks.yml, and each go.mod's"
+            echo "toolchain line together, then update the local go."
+            echo
+            echo "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            echo
+            echo '```'
+            cat "$RUNNER_TEMP/go-current.txt"
+            echo '```'
+          } > "$body"
+          existing=$(gh issue list --state open --search "$TITLE in:title" --json number --jq '.[0].number // empty')
+          if [ -n "$existing" ]; then
+            gh issue comment "$existing" --body-file "$body"
+          else
+            gh issue create --title "$TITLE" --body-file "$body" --label maintenance || \
+              gh issue create --title "$TITLE" --body-file "$body"
+          fi

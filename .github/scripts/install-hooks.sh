@@ -99,6 +99,11 @@ while read -r _ref sha _rref rsha; do
   fi
   bash "$checks" "$range" || status=1
 done
+# The go that runs here is the toolchain CI pins. Offline: whether the pin is
+# the newest release is CI's question; this one is about the local go.
+if [ -f .github/scripts/go-current.sh ]; then
+  bash .github/scripts/go-current.sh --local --offline >/dev/null || status=1
+fi
 if [ "$status" -ne 0 ]; then
   echo "pre-push: refused. A push to a public repository cannot be taken back." >&2
   echo "  bypass deliberately with: git push --no-verify" >&2
@@ -127,7 +132,7 @@ chmod +x "$hooks/pre-commit" "$hooks/commit-msg" "$hooks/pre-push"
 echo "installed:"
 echo "  $hooks/pre-commit   — blocks agent-tooling and credential paths, secrets and unformatted Go in the staged changes"
 echo "  $hooks/commit-msg   — blocks AI attribution trailers"
-echo "  $hooks/pre-push     — re-checks every commit being pushed: paths, secrets, trailers, signatures, gofmt"
+echo "  $hooks/pre-push     — re-checks every commit being pushed: paths, secrets, trailers, signatures, gofmt, and that the local go is CI's pinned toolchain"
 command -v gitleaks >/dev/null 2>&1 || echo "  NOTE: gitleaks is not installed; pre-push will refuse until it is (go install github.com/zricethezav/gitleaks/v8@latest)"
 echo
 echo "All are bypassable with --no-verify, deliberately: a hook that cannot be"
