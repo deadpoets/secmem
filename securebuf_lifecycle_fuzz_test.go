@@ -229,7 +229,7 @@ func step(t *testing.T, buf *SecureBuffer, m *model, opByte byte, next func() (b
 		checkMutate(t, "ReadFrom", m, err)
 
 	case opExpose:
-		_, err := buf.ExposeString()
+		_, err := buf.ExposeString() //nolint:secmem-lint // exercises the accessor; fuzz input, not a secret
 		checkRead(t, "ExposeString", m, err)
 
 	case opDestroy:

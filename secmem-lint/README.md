@@ -62,6 +62,30 @@ be a secmem / secmem-crypto type, **or** an interface whose `WithBytes` /
 `*SecureBuffer` behind an interface is still the buffer; a concrete type from
 another package with a look-alike method is not matched.
 
+A **borrowing wrapper** counts as an accessor too: a function or method that
+forwards one of its func parameters, unchanged, as the closure of a borrowing
+accessor (or of another such wrapper) and otherwise uses it only in a
+comparison with `nil` —
+
+```go
+func withPassphrase(cfg *Config, fn func([]byte) error) error {
+	if cfg == nil || cfg.Passphrase == nil {
+		return ErrDestroyed
+	}
+	return cfg.Passphrase.WithBytesErr(fn)
+}
+```
+
+— so the closures written at its call sites (`withPassphrase(cfg, func(p
+[]byte) error { ... })`) are checked exactly as if passed to `WithBytesErr`,
+and `-strict` does not report the forwarding line as unresolvable. The
+analysis is per package, but its result is exported as a `go/analysis` fact,
+so a wrapper is recognised in the packages that import it. A parameter the
+wrapper also calls, stores, or wraps in a new literal is not forwarding; in
+the last case the new literal is what is borrowed, and it is checked. The
+reentrancy check is silent at a wrapper's call sites, since the buffer it
+borrows is not named there.
+
 Anything else — a closure returned by a call (`buf.WithBytes(wrap(fn))`), a
 method value or struct field passed as the closure, a closure variable
 assigned more than once, a function from another package — is **not
@@ -104,7 +128,7 @@ Default (always on):
 | E1 | `string(tainted)` — a heap string is immutable and can never be wiped, wherever it goes |
 | E2 | `append(dst, tainted...)` or `append(dst, tainted)` where `dst` is memory outside the closure; `copy(dst, tainted)` likewise |
 | E3 | a tainted value assigned to a variable declared outside the closure, to a struct field, map or slice element, or pointer target whose storage is outside the closure (see the aggregate rule below) — by an assignment or by a `range` clause written with `=` (`for _, outer = range [][]byte{b}`); sent on a channel; returned from the closure, as a return operand (`return &myErr{b}`) or by being stored in one of the closure's **named results** (`err = &myErr{b}; return`, also from a deferred literal — reported at the store, and not cleared by a later overwrite); or handed to a goroutine (`go f(b)`, `go func() { ... b ... }()`); `panic(tainted)` |
-| E4 | a tainted value in **any** argument position of a known sink — or as the **receiver** of a sink method — see the table in [`sinks.go`](sinks.go): `fmt`'s print / format / append functions, `log`, `log/slog` (package functions including `slog.With`, `slog.Any` / `String` / `Group`, and `*Logger` methods including `With`), `testing.T` / `B` / `F` / `TB` log methods, `encoding/json` / `xml` / `gob` decoders, `json.Marshal` and the `Encoder.Encode` methods of all three, `encoding/hex` / `base64` / `base32` / `pem` encoders, the `bytes` / `slices` helpers that return a **heap copy** (`Clone`, `Concat`, `Join`, `Repeat`, `bytes.ToUpper` / `ToLower` / `ToTitle` / `Title` / `Map` / `Replace` / `ReplaceAll` / `ToValidUTF8` / `Runes`), `math/big.Int.SetBytes` / `SetString`, `os.WriteFile`, `Write` / `WriteString` on `*bytes.Buffer`, `*strings.Builder`, `*bufio.Writer` and `*os.File`, the retaining stores `sync.Map.Store` / `LoadOrStore` / `Swap` / `CompareAndSwap` and `Store` / `Swap` / `CompareAndSwap` on `atomic.Value` / `atomic.Pointer`, and the stdlib / `x/crypto` ciphers, key parsers and KDFs that copy the key into heap state (`aes.NewCipher`, `chacha20poly1305.New`, `hmac.New`, `ed25519.NewKeyFromSeed`, `ed25519.PrivateKey.Sign` / `Seed`, `x509.Parse*PrivateKey`, `ecdh.Curve.NewPrivateKey`, `hkdf` / `pbkdf2` / `scrypt` / `argon2` / `bcrypt`, …). A sink's result is not tainted again: one leak, one finding |
+| E4 | a tainted value in **any** argument position of a known sink — or as the **receiver** of a sink method — see the table in [`sinks.go`](sinks.go): `fmt`'s print / format / append functions, `log`, `log/slog` (package functions including `slog.With`, `slog.Any` / `String` / `Group`, and `*Logger` methods including `With`), `testing.T` / `B` / `F` / `TB` log methods, `encoding/json` / `xml` / `gob` decoders, `json.Marshal` and the `Encoder.Encode` methods of all three, `encoding/hex` / `base64` / `base32` / `pem` encoders, the `bytes` / `slices` helpers that return a **heap copy** (`Clone`, `Concat`, `Join`, `Repeat`, `bytes.ToUpper` / `ToLower` / `ToTitle` / `Title` / `Map` / `Replace` / `ReplaceAll` / `ToValidUTF8` / `Runes`), `math/big.Int.SetBytes` / `SetString`, `os.WriteFile`, `Write` / `WriteString` on `*bytes.Buffer`, `*strings.Builder`, `*bufio.Writer` and `*os.File`, the retaining stores `sync.Map.Store` / `LoadOrStore` / `Swap` / `CompareAndSwap` and `Store` / `Swap` / `CompareAndSwap` on `atomic.Value` / `atomic.Pointer`, and the stdlib / `x/crypto` ciphers, key parsers and KDFs that copy the key into heap state (`aes.NewCipher`, `chacha20poly1305.New`, `hmac.New`, `ed25519.NewKeyFromSeed`, `ed25519.PrivateKey.Sign` / `Seed`, `x509.Parse*PrivateKey`, `ecdh.Curve.NewPrivateKey`, `hkdf` / `pbkdf2` / `scrypt` / `argon2` / `bcrypt`, …). A sink's result is not tainted again: one leak, one finding. Also, **anywhere** — no closure needed — `SecureBuffer.ExposeString`, called or taken as a method value or expression (also through an interface with its shape): it is the immutable heap string E1 reports, made inside the library. A deliberate egress is one `//nolint:secmem-lint` line at a reviewed boundary |
 | R1 | a lock-taking secmem or secmem-crypto method called on the **same** buffer or key inside its own closure, synchronously. The borrowing and mutating methods take the buffer lock and are not reentrant; the read-only inspectors (`Len`, `MappedLen`, `IsSealed`, `IsDestroyed`) deadlock too once a writer is queued, because the lock is writer-preferring. A secmem-crypto key borrows its own buffer for every operation that needs the private half, so inside `WithSeed` / `WithScalar` / `WithDER` the same key's `Sign`, `SignMessage`, `SharedSecret`, `PublicKey` (X25519 recomputes it), `ConstantTimeEqual`, `Decapsulate`, `MarshalOpenSSHPrivateKey*` and `Destroy` are flagged; `Public`, `Equal` and `EncapsulationKeyBytes` read the public half captured at construction and are not. Methods are classified per type in [`reentrancy.go`](reentrancy.go) (a test fails for an exported method of these types that is not classified); through an interface value the method name decides. The receiver is matched by identity through field chains, embedded-field promotions (`e.Len()` and `e.SecureBuffer.Len()` name the same buffer), local aliases bound once (`b2 := buf`) and method values bound once (`l := buf.Len`) |
 | R2 | inside an `ArenaSlot` borrow: `Release` on the same slot, and `Destroy` / `ReadOnly` / `ReadWrite` on the slot's arena (they take the arena's exclusive lock, which the borrow holds for reading — a certain deadlock). The arena is known when the slot came from `slot, err := arena.Acquire()` in the same function; otherwise default mode is silent and `-strict` reports the call as unresolvable. `Acquire` and `LiveCount` take only the allocation mutex and are fine |
 

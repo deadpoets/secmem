@@ -12,7 +12,8 @@ func TestAnalyzer(t *testing.T) {
 	// enclosing go.work workspace so the fixtures resolve against the stub.
 	t.Setenv("GOWORK", "off")
 	analysistest.Run(t, analysistest.TestData(), secmemlint.Analyzer,
-		"escape", "flows", "sinks", "idioms", "resolve", "reentrancy", "suppress")
+		"escape", "flows", "sinks", "idioms", "resolve", "reentrancy", "suppress",
+		"expose", "wrappers")
 }
 
 // TestStrict covers the opt-in checks (N1, L1), which are off unless -strict is set.

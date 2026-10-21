@@ -27,6 +27,18 @@ mark the stability commitment.
   this module reaches; the forks' review against it is recorded in
   `forks.json`.
 - **`secmem-lint`: `golang.org/x/tools` moves to v0.52.0.**
+- **`secmem-lint`: `ExposeString` is an E4 finding wherever it is written**
+  ([#159](https://github.com/deadpoets/secmem/issues/159)), as a call, method
+  value or method expression. It makes the heap string `E1` reports for
+  `string(b)`, without a closure for `E1` to see. A deliberate egress is one
+  `//nolint:secmem-lint` line; code that calls it today gains a finding.
+- **`secmem-lint`: borrowing wrappers are checked at their call sites**
+  ([#158](https://github.com/deadpoets/secmem/issues/158)). A function or
+  method that forwards a func parameter unchanged to a borrowing accessor
+  counts as one, so the literals its callers pass are checked, and `-strict`
+  no longer reports its forwarding line. The result is a `go/analysis` fact,
+  so it holds across packages; `go vet` now runs the tool over dependencies
+  to collect it.
 
 ## [0.8.0] - 2026-10-11
 

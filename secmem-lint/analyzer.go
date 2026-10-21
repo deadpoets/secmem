@@ -23,11 +23,12 @@ const (
 // by cmd/secmem-lint (singlechecker, for `go vet -vettool`) or embedded as a
 // golangci-lint module plugin.
 var Analyzer = &analysis.Analyzer{ //nolint:gochecknoglobals // go/analysis convention: the analyzer is an exported package-level var.
-	Name:     "secmemlint",
-	Doc:      "flags secret material escaping a secmem borrowing closure",
-	URL:      "https://github.com/deadpoets/secmem/tree/main/secmem-lint",
-	Requires: []*analysis.Analyzer{inspect.Analyzer},
-	Run:      run,
+	Name:      "secmemlint",
+	Doc:       "flags secret material escaping a secmem borrowing closure",
+	URL:       "https://github.com/deadpoets/secmem/tree/main/secmem-lint",
+	Requires:  []*analysis.Analyzer{inspect.Analyzer},
+	Run:       run,
+	FactTypes: []analysis.Fact{new(borrowWrapper)},
 }
 
 // checker carries the per-pass state shared by every check.
@@ -36,6 +37,10 @@ type checker struct {
 	sup      *suppressor
 	defs     *defIndex
 	reported map[reportKey]bool
+	// wrappers are this package's borrowing wrappers and their forwarded
+	// parameter indices; forwarded are those parameters (see borrowWrapper).
+	wrappers  map[*types.Func][]int
+	forwarded map[*types.Var]bool
 }
 
 type reportKey struct {
@@ -49,11 +54,14 @@ func run(pass *analysis.Pass) (any, error) {
 		return nil, errors.New("secmem-lint: missing inspect analyzer result")
 	}
 	c := &checker{
-		pass:     pass,
-		sup:      newSuppressor(pass),
-		defs:     buildDefIndex(pass),
-		reported: make(map[reportKey]bool),
+		pass:      pass,
+		sup:       newSuppressor(pass),
+		defs:      buildDefIndex(pass),
+		reported:  make(map[reportKey]bool),
+		wrappers:  make(map[*types.Func][]int),
+		forwarded: make(map[*types.Var]bool),
 	}
+	c.findWrappers()
 
 	insp.WithStack([]ast.Node{(*ast.CallExpr)(nil)}, func(n ast.Node, push bool, stack []ast.Node) bool {
 		if !push {
@@ -68,7 +76,9 @@ func run(pass *analysis.Pass) (any, error) {
 			// The closure is something the analyzer cannot see into — a value
 			// returned by a call, a method value, a field. Silence would let a
 			// project believe it is covered; strict mode says so instead.
-			if strict {
+			// A wrapper's forwarded parameter is the exception: its closures
+			// are checked where they are written, at the wrapper's call sites.
+			if strict && !c.isForwardedParam(acc.closureArg) {
 				c.report(acc.closureArg.Pos(),
 					"borrowed closure is not a function literal and cannot be checked; pass a func literal, a local variable assigned one, or a function declared in this package")
 			}
@@ -88,6 +98,7 @@ func run(pass *analysis.Pass) (any, error) {
 		c.checkReentrancy(acc)
 		return true
 	})
+	c.checkExposeCalls(insp)
 	if strict {
 		checkSecretNamedStrings(pass, insp, c.sup)
 		checkMissingDestroy(pass, insp, c.sup)
@@ -153,6 +164,7 @@ type methodCall struct {
 	method   *types.Func
 	recv     ast.Expr
 	embedded []types.Object
+	shift    int // 1 for a method expression, whose first argument is the receiver
 }
 
 // receiverKey builds the identity chain of a resolved method call's receiver:
@@ -181,7 +193,7 @@ func (c *checker) borrowAccessor(call *ast.CallExpr, stack []ast.Node) (accessor
 	if status == notBorrow {
 		return accessor{}, notBorrow
 	}
-	arg := c.closureArgument(call)
+	arg := c.closureArgumentOf(call, mc)
 	if arg == nil {
 		return accessor{}, notBorrow
 	}
@@ -216,14 +228,13 @@ func (c *checker) borrowAccessor(call *ast.CallExpr, stack []ast.Node) (accessor
 // addBorrowedParams adds the []byte parameters of the func literal a borrowing
 // call is passed (if call is one) to set.
 func (c *checker) addBorrowedParams(call *ast.CallExpr, set map[types.Object]bool) {
-	if _, status := c.borrowCallee(call); status != resolved {
+	mc, status := c.borrowCallee(call)
+	if status != resolved {
 		return
 	}
-	for _, a := range call.Args {
-		if lit, ok := a.(*ast.FuncLit); ok {
-			for p := range c.byteSliceParams(lit.Type, c.pass.TypesInfo.TypeOf(lit)) {
-				set[p] = true
-			}
+	if lit, ok := c.closureArgumentOf(call, mc).(*ast.FuncLit); ok {
+		for p := range c.byteSliceParams(lit.Type, c.pass.TypesInfo.TypeOf(lit)) {
+			set[p] = true
 		}
 	}
 }
@@ -236,16 +247,21 @@ func (c *checker) addBorrowedParams(call *ast.CallExpr, set map[types.Object]boo
 // to one receiver, or several times to borrowing accessors of several
 // receivers (the closure is still borrowed and is checked; only the receiver's
 // identity is unknown). A variable that is a borrowing method value on some
-// assignments and something else on others is unresolvedCallee.
+// assignments and something else on others is unresolvedCallee. A call of a
+// borrowing wrapper (see borrowWrapper) resolves too, with no receiver.
 func (c *checker) borrowCallee(call *ast.CallExpr) (methodCall, accessorStatus) {
 	if id, ok := unparen(call.Fun).(*ast.Ident); ok {
-		return c.borrowCalleeVar(call, id)
+		if _, ok := c.pass.TypesInfo.Uses[id].(*types.Var); ok {
+			return c.borrowCalleeVar(call, id)
+		}
 	}
-	mc, ok := c.methodCallOf(call)
-	if !ok || !isBorrowMethod(mc.method) {
-		return methodCall{}, notBorrow
+	if mc, ok := c.methodCallOf(call); ok && isBorrowMethod(mc.method) {
+		return mc, resolved
 	}
-	return mc, resolved
+	if mc, ok := c.wrapperCall(call); ok {
+		return mc, resolved
+	}
+	return methodCall{}, notBorrow
 }
 
 // borrowCalleeVar resolves a call through a variable: every value the variable
@@ -267,8 +283,13 @@ func (c *checker) borrowCalleeVar(call *ast.CallExpr, id *ast.Ident) (methodCall
 			continue
 		}
 		mc, ok := c.methodCallOf(&ast.CallExpr{Fun: def.expr, Args: call.Args})
-		if !ok || !isBorrowMethod(mc.method) {
+		if !ok {
 			continue
+		}
+		if !isBorrowMethod(mc.method) {
+			if mc, ok = c.wrapperCall(&ast.CallExpr{Fun: def.expr, Args: call.Args}); !ok {
+				continue
+			}
 		}
 		if borrowing == 0 {
 			first = mc
@@ -303,6 +324,7 @@ func (c *checker) methodCallOf(call *ast.CallExpr) (methodCall, bool) {
 		return methodCall{}, false
 	}
 	var recv ast.Expr
+	shift := 0
 	switch selection.Kind() {
 	case types.MethodVal:
 		recv = sel.X
@@ -311,6 +333,7 @@ func (c *checker) methodCallOf(call *ast.CallExpr) (methodCall, bool) {
 			return methodCall{}, false
 		}
 		recv = call.Args[0]
+		shift = 1
 	default:
 		return methodCall{}, false
 	}
@@ -319,6 +342,7 @@ func (c *checker) methodCallOf(call *ast.CallExpr) (methodCall, bool) {
 		method:   m,
 		recv:     recv,
 		embedded: embeddedFields(c.pass.TypesInfo.TypeOf(recv), index[:len(index)-1]),
+		shift:    shift,
 	}, true
 }
 
