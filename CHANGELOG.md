@@ -77,6 +77,18 @@ callers is done now; each entry says what to write instead.
   returns the error, because a failed `MAP_FIXED` can leave a hole another
   mapping now occupies (the case fixed for allocation in 0.8.0).
 
+### Fixed
+
+- **`secmem-lint`: `//nolint // reason` suppresses a finding**, as the
+  documentation said. Only an exact `//nolint` did; the common form with an
+  explanation after it was ignored. Directives now follow golangci-lint's
+  grammar: a bare `nolint` covers every linter, and `nolint:<list>` covers
+  secmem-lint only when the list names `secmem-lint` or `all`.
+- **`secmem-lint`: every closure a borrowing wrapper forwards is checked.** A
+  wrapper that forwards two or more closure parameters had only the first
+  one's argument checked at its call sites, so a leak in another went
+  unreported, including the `-strict` report of an unresolvable closure.
+
 ### Changed
 
 - **`NewBufferFromReader` returns `(*SecureBuffer, error)`, and the buffer's

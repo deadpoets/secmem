@@ -68,34 +68,11 @@ func run(pass *analysis.Pass) (any, error) {
 			return true
 		}
 		call := n.(*ast.CallExpr)
-		acc, status := c.borrowAccessor(call, stack)
-		switch status {
-		case notBorrow:
-			return true
-		case unresolvedClosure:
-			// The closure is something the analyzer cannot see into — a value
-			// returned by a call, a method value, a field. Silence would let a
-			// project believe it is covered; strict mode says so instead.
-			// A wrapper's forwarded parameter is the exception: its closures
-			// are checked where they are written, at the wrapper's call sites.
-			if strict && !c.isForwardedParam(acc.closureArg) {
-				c.report(acc.closureArg.Pos(),
-					"borrowed closure is not a function literal and cannot be checked; pass a func literal, a local variable assigned one, or a function declared in this package")
-			}
-			return true
-		case unresolvedCallee:
-			// The call goes through a variable that holds a borrowing method
-			// value on some assignments and something else on others, so
-			// whether the closure is borrowed at all is a runtime question.
-			// The literal is not checked; strict mode says so.
-			if strict {
-				c.report(acc.closureArg.Pos(),
-					"closure passed through a variable that is sometimes a borrowing method value and sometimes not; it cannot be checked — bind the accessor once or call it directly")
-			}
-			return true
+		// A wrapper forwarding several closures borrows each of them: every
+		// forwarded argument is resolved and checked on its own.
+		for _, b := range c.borrowAccessors(call, stack) {
+			c.checkBorrow(b.acc, b.status)
 		}
-		c.checkCallbackEscapes(acc)
-		c.checkReentrancy(acc)
 		return true
 	})
 	c.checkExposeCalls(insp)
@@ -104,6 +81,36 @@ func run(pass *analysis.Pass) (any, error) {
 		checkMissingDestroy(pass, insp, c.sup)
 	}
 	return nil, nil //nolint:nilnil // go/analysis Run returns (nil result, nil error) when it has no Result to publish.
+}
+
+// checkBorrow runs the closure checks on one borrowed closure, or, in strict
+// mode, reports why it cannot.
+func (c *checker) checkBorrow(acc accessor, status accessorStatus) {
+	switch status {
+	case unresolvedClosure:
+		// The closure is something the analyzer cannot see into — a value
+		// returned by a call, a method value, a field. Silence would let a
+		// project believe it is covered; strict mode says so instead.
+		// A wrapper's forwarded parameter is the exception: its closures
+		// are checked where they are written, at the wrapper's call sites.
+		if strict && !c.isForwardedParam(acc.closureArg) {
+			c.report(acc.closureArg.Pos(),
+				"borrowed closure is not a function literal and cannot be checked; pass a func literal, a local variable assigned one, or a function declared in this package")
+		}
+		return
+	case unresolvedCallee:
+		// The call goes through a variable that holds a borrowing method
+		// value on some assignments and something else on others, so
+		// whether the closure is borrowed at all is a runtime question.
+		// The literal is not checked; strict mode says so.
+		if strict {
+			c.report(acc.closureArg.Pos(),
+				"closure passed through a variable that is sometimes a borrowing method value and sometimes not; it cannot be checked — bind the accessor once or call it directly")
+		}
+		return
+	}
+	c.checkCallbackEscapes(acc)
+	c.checkReentrancy(acc)
 }
 
 // report emits a finding with the shared secmem-lint prefix, unless the line is
@@ -183,20 +190,35 @@ func (c *checker) receiverKeyOf(mc methodCall) ([]types.Object, bool) {
 	return append(key, mc.embedded...), true
 }
 
-// borrowAccessor reports whether call is a secmem borrowing accessor and, if so,
-// resolves the closure it borrows to. Matching is type-aware: the method must be
-// declared on a secmem (or secmem-crypto) type, or on an interface whose method
-// has the borrowing shape, so an unrelated WithBytes on some other library's
-// concrete type is not flagged.
-func (c *checker) borrowAccessor(call *ast.CallExpr, stack []ast.Node) (accessor, accessorStatus) {
+// borrowedClosure is one closure a borrowing call borrows, and whether it
+// could be resolved.
+type borrowedClosure struct {
+	acc    accessor
+	status accessorStatus
+}
+
+// borrowAccessors reports whether call is a secmem borrowing accessor (or a
+// borrowing wrapper) and, if so, resolves each closure it borrows: one for an
+// accessor, one per forwarded parameter for a wrapper. It returns nil when
+// call is not a borrowing call. Matching is type-aware: the method must be
+// declared on a secmem (or secmem-crypto) type, or on an interface whose
+// method has the borrowing shape, so an unrelated WithBytes on some other
+// library's concrete type is not flagged.
+func (c *checker) borrowAccessors(call *ast.CallExpr, stack []ast.Node) []borrowedClosure {
 	mc, status := c.borrowCallee(call)
 	if status == notBorrow {
-		return accessor{}, notBorrow
+		return nil
 	}
-	arg := c.closureArgumentOf(call, mc)
-	if arg == nil {
-		return accessor{}, notBorrow
+	var out []borrowedClosure
+	for _, arg := range c.closureArgumentsOf(call, mc) {
+		acc, st := c.resolveBorrow(call, mc, status, arg, stack)
+		out = append(out, borrowedClosure{acc, st})
 	}
+	return out
+}
+
+// resolveBorrow resolves one closure argument arg of the borrowing call call.
+func (c *checker) resolveBorrow(call *ast.CallExpr, mc methodCall, status accessorStatus, arg ast.Expr, stack []ast.Node) (accessor, accessorStatus) {
 	acc := accessor{call: call, method: mc.method, recvExpr: mc.recv, closureArg: arg}
 	if status == unresolvedCallee {
 		return acc, unresolvedCallee
@@ -225,16 +247,18 @@ func (c *checker) borrowAccessor(call *ast.CallExpr, stack []ast.Node) (accessor
 	return acc, resolved
 }
 
-// addBorrowedParams adds the []byte parameters of the func literal a borrowing
-// call is passed (if call is one) to set.
+// addBorrowedParams adds the []byte parameters of the func literals a
+// borrowing call is passed (if call is one) to set.
 func (c *checker) addBorrowedParams(call *ast.CallExpr, set map[types.Object]bool) {
 	mc, status := c.borrowCallee(call)
 	if status != resolved {
 		return
 	}
-	if lit, ok := c.closureArgumentOf(call, mc).(*ast.FuncLit); ok {
-		for p := range c.byteSliceParams(lit.Type, c.pass.TypesInfo.TypeOf(lit)) {
-			set[p] = true
+	for _, arg := range c.closureArgumentsOf(call, mc) {
+		if lit, ok := arg.(*ast.FuncLit); ok {
+			for p := range c.byteSliceParams(lit.Type, c.pass.TypesInfo.TypeOf(lit)) {
+				set[p] = true
+			}
 		}
 	}
 }
@@ -703,24 +727,32 @@ func lineKey(file string, line int) string {
 	return file + ":" + strconv.Itoa(line)
 }
 
-// nolintApplies reports whether a //nolint directive covers secmem-lint: a bare
-// //nolint, or //nolint:<list> where the list contains secmem-lint or all
+// nolintApplies reports whether a //nolint directive covers secmem-lint. The
+// grammar is golangci-lint's: "nolint", optionally ":" and a comma-separated
+// list of linters, then the end of the comment or whitespace and anything
+// after it (conventionally "// explanation"). A bare directive covers every
+// linter; a list covers secmem-lint when it names secmem-lint or all
 // (golangci-lint's spelling of "every linter", honoured here so a line one
-// tool has excused is not failed by the other).
+// tool has excused is not failed by the other). //nolintfoo is not a
+// directive, and //nolint:gosec does not cover secmem-lint.
 func nolintApplies(comment string) bool {
 	t := strings.TrimSpace(strings.TrimPrefix(comment, "//"))
-	if t == "nolint" {
-		return true
-	}
-	if !strings.HasPrefix(t, "nolint:") {
+	rest, ok := strings.CutPrefix(t, "nolint")
+	if !ok {
 		return false
 	}
-	list := strings.TrimPrefix(t, "nolint:")
-	if i := strings.IndexByte(list, ' '); i >= 0 {
-		list = list[:i] // drop any trailing "// explanation"
+	if rest == "" || rest[0] == ' ' || rest[0] == '\t' {
+		return true // bare //nolint, with or without an explanation
+	}
+	list, ok := strings.CutPrefix(rest, ":")
+	if !ok {
+		return false // //nolintfoo
+	}
+	if i := strings.IndexAny(list, " \t"); i >= 0 {
+		list = list[:i] // drop the trailing "// explanation"
 	}
 	for _, name := range strings.Split(list, ",") {
-		switch strings.TrimSpace(name) {
+		switch name {
 		case "secmem-lint", "all":
 			return true
 		}
