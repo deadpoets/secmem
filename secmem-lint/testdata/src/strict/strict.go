@@ -175,3 +175,15 @@ func alsoCalls(buf *secmem.SecureBuffer, fn func([]byte) error) error {
 	_ = fn(nil)
 	return buf.WithBytesErr(fn) // want `secmem-lint: borrowed closure is not a function literal and cannot be checked`
 }
+
+// pair forwards two closures; the strict unresolvable check applies to each
+// forwarded argument at the call site, not only the first.
+func pair(buf *secmem.SecureBuffer, f1, f2 func([]byte)) { // want pair:`borrowWrapper\[1 2\]`
+	_ = buf.WithBytes(f1)
+	_ = buf.WithBytes(f2)
+}
+
+func pairCaller(buf *secmem.SecureBuffer, cb callbacks) {
+	defer buf.Destroy()
+	pair(buf, func(b []byte) {}, cb.fn) // want `secmem-lint: borrowed closure is not a function literal and cannot be checked`
+}

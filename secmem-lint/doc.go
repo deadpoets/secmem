@@ -31,7 +31,8 @@
 // wrapper: a function or method that forwards a func parameter, unchanged, as
 // the closure of an accessor or of another wrapper, and otherwise only
 // compares it with nil. A wrapper's call sites are checked as if they called
-// the accessor; the result is exported as a fact, so this holds in importing
+// the accessor — every forwarded parameter's argument, when a wrapper forwards
+// more than one; the result is exported as a fact, so this holds in importing
 // packages too. Anything else — a
 // closure returned by a call, a method value or field passed as the closure,
 // a closure variable assigned more than once, a function from another package,
@@ -71,7 +72,7 @@
 //     sent on a channel; returned from the closure, as a return operand or by
 //     being stored in one of its named results (err = &myErr{b}; return, also
 //     from a deferred literal); handed to a goroutine; or passed to panic.
-//   - a tainted value in any argument of a known standard-library sink, or as
+//   - a tainted value in any argument of a known standard-library or x/crypto sink, or as
 //     the receiver of a sink method (the table in sinks.go): fmt, log, log/slog
 //     (including the package-level slog.With) and testing log methods, the
 //     encoding decoders, json.Marshal and the json / xml / gob Encoder.Encode
@@ -135,8 +136,12 @@
 // # Suppression
 //
 // Any finding can be suppressed with a //nolint:secmem-lint comment on the
-// reported line, for the deliberate egress points a secret sometimes needs. A
-// bare //nolint and golangci-lint's //nolint:all are honoured too.
+// reported line, for the deliberate egress points a secret sometimes needs.
+// The directive follows golangci-lint's grammar: nolint, an optional
+// comma-separated :list of linters, then the end of the comment or whitespace
+// and an explanation (//nolint:secmem-lint // reason). A bare //nolint
+// (//nolint // reason) and a list naming all are honoured too; a list that
+// does not name secmem-lint or all (//nolint:gosec) is not.
 //
 // # Scope and limits
 //

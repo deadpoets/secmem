@@ -150,3 +150,18 @@ func notWrapperCallers(buf *secmem.SecureBuffer) {
 	_ = unused(buf, leaky)
 	_ = mutualA(leaky)
 }
+
+// both forwards two closures, each to its own buffer: every forwarded
+// argument at a call site is checked, not only the first.
+func both(a, b *secmem.SecureBuffer, f1, f2 func([]byte)) { // want both:`borrowWrapper\[2 3\]`
+	_ = a.WithBytes(f1)
+	_ = b.WithBytes(f2)
+}
+
+func bothCaller(a, b *secmem.SecureBuffer) {
+	both(a, b, func(p []byte) {
+		sink = p // want `secmem-lint: borrowed secret bytes assigned`
+	}, func(p []byte) {
+		sink = append(sink, p...) // want `secmem-lint: append\(\) copies borrowed secret bytes into a slice outside the closure`
+	})
+}
