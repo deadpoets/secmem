@@ -63,9 +63,9 @@ be a secmem / secmem-crypto type, **or** an interface whose `WithBytes` /
 another package with a look-alike method is not matched.
 
 A **borrowing wrapper** counts as an accessor too: a function or method that
-forwards one of its func parameters, unchanged, as the closure of a borrowing
-accessor (or of another such wrapper) and otherwise uses it only in a
-comparison with `nil` —
+forwards one or more of its func parameters, unchanged, each as the closure
+of a borrowing accessor (or of another such wrapper), and otherwise uses them
+only in a comparison with `nil` —
 
 ```go
 func withPassphrase(cfg *Config, fn func([]byte) error) error {
@@ -78,7 +78,9 @@ func withPassphrase(cfg *Config, fn func([]byte) error) error {
 
 — so the closures written at its call sites (`withPassphrase(cfg, func(p
 []byte) error { ... })`) are checked exactly as if passed to `WithBytesErr`,
-and `-strict` does not report the forwarding line as unresolvable. The
+and `-strict` does not report the forwarding line as unresolvable. A wrapper
+that forwards several parameters has every one of their arguments checked at
+each call site (and, under `-strict`, each one it cannot resolve reported). The
 analysis is per package, but its result is exported as a `go/analysis` fact,
 so a wrapper is recognised in the packages that import it. A parameter the
 wrapper also calls, stores, or wraps in a new literal is not forwarding; in
@@ -167,9 +169,13 @@ Strict (`-strict`, opt-in — heuristic and higher-noise):
 
 Put `//nolint:secmem-lint` on the reported line — for the deliberate egress
 points a secret sometimes needs (persisting a generated key, a test that reads
-a value out to assert on it). A bare `//nolint` and golangci-lint's
-`//nolint:all` are honoured too, so a line one tool has excused is not failed
-by the other:
+a value out to assert on it). The directive follows golangci-lint's grammar —
+`nolint`, an optional comma-separated `:list` of linters, then the end of the
+comment or whitespace and an explanation — so a bare `//nolint` (also
+`//nolint // reason`) and a list naming `all` (`//nolint:all // reason`,
+`//nolint:gosec,all`) are honoured too, and a line one tool has excused is not
+failed by the other. A list that names neither `secmem-lint` nor `all`
+(`//nolint:gosec // reason`) does not suppress a finding:
 
 ```go
 buf.WithBytes(func(b []byte) {

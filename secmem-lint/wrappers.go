@@ -242,18 +242,24 @@ func (c *checker) funcObj(fun ast.Expr) *types.Func {
 	return nil
 }
 
-// closureArgumentOf returns the argument carrying the borrowed closure of a
-// resolved borrowing call: for a wrapper, the first forwarded parameter's
-// argument; for an accessor, the first argument whose type is a func taking a
-// []byte.
-func (c *checker) closureArgumentOf(call *ast.CallExpr, mc methodCall) ast.Expr {
+// closureArgumentsOf returns the arguments carrying the borrowed closures of
+// a resolved borrowing call: for a wrapper, the argument of every forwarded
+// parameter; for an accessor, the first argument whose type is a func taking
+// a []byte. It is empty when there is none.
+func (c *checker) closureArgumentsOf(call *ast.CallExpr, mc methodCall) []ast.Expr {
 	if params := c.wrapperParams(mc.method); params != nil {
-		if i := mc.shift + params[0]; i < len(call.Args) {
-			return call.Args[i]
+		var args []ast.Expr
+		for _, p := range params {
+			if i := mc.shift + p; i < len(call.Args) {
+				args = append(args, call.Args[i])
+			}
 		}
-		return nil
+		return args
 	}
-	return c.closureArgument(call)
+	if arg := c.closureArgument(call); arg != nil {
+		return []ast.Expr{arg}
+	}
+	return nil
 }
 
 // isForwardedParam reports whether arg names a parameter this package's
