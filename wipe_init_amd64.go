@@ -1,5 +1,6 @@
 // AMD64 CPU feature detection and high-level wipe helpers.
 // Separated from wipe_amd64.go to keep assembly prototypes minimal.
+
 package secmem
 
 import "unsafe"

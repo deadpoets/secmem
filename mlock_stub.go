@@ -8,6 +8,7 @@
 // Constructors on these platforms fail with ErrNoSecureMemory unless the
 // caller opts in with WithInsecureFallback() — this file is reachable only
 // through that explicit opt-in (see gateInsecure in options.go).
+
 package secmem
 
 import (

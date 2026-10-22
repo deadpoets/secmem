@@ -7,6 +7,7 @@
 // architecture-specific assembly, so Scrub's frame scrub does nothing here and
 // secret hygiene relies on the Go runtime eventually reusing freed goroutine
 // stacks. Capabilities reports this — see FrameScrub.
+
 package secmem
 
 // wipeScratchFrameFull is a no-op on architectures without scrub assembly.

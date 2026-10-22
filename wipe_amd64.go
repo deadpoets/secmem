@@ -1,5 +1,6 @@
 // Assembly prototypes for AMD64 cryptographic memory wipe routines.
 // Implementations live in wipe_amd64.s.
+
 package secmem
 
 import "unsafe"

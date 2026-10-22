@@ -1,6 +1,7 @@
 // Vector-register clear for the ARM64 Scrub window. The implementation lives
 // in vecclear_arm64.s; the _arm64.go filename suffix constrains this file to
 // arm64 builds.
+
 package secmem
 
 // clearVectorRegs zeroes V0–V31 on the calling thread. See vecclear_amd64.go

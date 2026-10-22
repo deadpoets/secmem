@@ -2,6 +2,7 @@
 // Implementations live in wipe_arm64.s.
 //
 // The _arm64.go filename suffix constrains this file to arm64 builds only.
+
 package secmem
 
 import "unsafe"
