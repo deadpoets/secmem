@@ -17,27 +17,6 @@ The core's API pass before the 1.0 freeze. After 1.0, removing or renaming
 anything exported needs a new module path, so everything below that breaks
 callers is done now; each entry says what to write instead.
 
-### Removed
-
-- **`ErrArenaDestroyed`.** `SecureArena` and `ArenaSlot` methods return
-  `ErrDestroyed` after `Destroy`, as buffers do, and `ErrWiped` (which wraps
-  it) after `WipeAllSecrets`, so one `errors.Is(err, ErrDestroyed)` covers
-  every way an object dies; before, neither sentinel caught both for an
-  arena. Use `ErrDestroyed`.
-- **`NewSyscallSafeBuffer`.** Use `NewBuffer(raw, WithoutMemfdSecret())`; the
-  option (Added, below) works on every constructor.
-- **`HardenSeccomp`.** It was reserved and never set. The remaining
-  `HardenLevel` bits have explicit values (Changed, below).
-- **`RuntimeSecretEnforced` and the `devmode` build tag.** Whether an
-  inactive `runtime/secret` layer is fatal is the application's policy:
-  treat `AssertRuntimeSecret`'s error as fatal, or downgrade it behind a flag
-  or tag of your own.
-- **`HasCLFLUSHOPT`.** It only reported a speed detail; whether the wipe
-  flushes is `Capabilities.FlushedWipe`.
-- **`TerminationWipeTimeout`.** An exported constant's value is frozen with
-  the API. The termination handler still waits five seconds for
-  `WipeAllSecrets`, as documented on `InstallTerminationWipe`.
-
 ### Added
 
 - **`WithoutMemfdSecret`**, a constructor option that skips the Linux
@@ -76,18 +55,6 @@ callers is done now; each entry says what to write instead.
   `MAP_FIXED`; if that fails, the range is left as it is and `Destroy`
   returns the error, because a failed `MAP_FIXED` can leave a hole another
   mapping now occupies (the case fixed for allocation in 0.8.0).
-
-### Fixed
-
-- **`secmem-lint`: `//nolint // reason` suppresses a finding**, as the
-  documentation said. Only an exact `//nolint` did; the common form with an
-  explanation after it was ignored. Directives now follow golangci-lint's
-  grammar: a bare `nolint` covers every linter, and `nolint:<list>` covers
-  secmem-lint only when the list names `secmem-lint` or `all`.
-- **`secmem-lint`: every closure a borrowing wrapper forwards is checked.** A
-  wrapper that forwards two or more closure parameters had only the first
-  one's argument checked at its call sites, so a leak in another went
-  unreported, including the `-strict` report of an unresolvable closure.
 
 ### Changed
 
@@ -172,6 +139,39 @@ callers is done now; each entry says what to write instead.
 - **`secmem-crypto`: `golang.org/x/crypto` moves to v0.58.0.** It fixes nothing
   this module reaches; the forks' review against it is recorded in
   `forks.json`.
+
+### Removed
+
+- **`ErrArenaDestroyed`.** `SecureArena` and `ArenaSlot` methods return
+  `ErrDestroyed` after `Destroy`, as buffers do, and `ErrWiped` (which wraps
+  it) after `WipeAllSecrets`, so one `errors.Is(err, ErrDestroyed)` covers
+  every way an object dies; before, neither sentinel caught both for an
+  arena. Use `ErrDestroyed`.
+- **`NewSyscallSafeBuffer`.** Use `NewBuffer(raw, WithoutMemfdSecret())`; the
+  option (Added, below) works on every constructor.
+- **`HardenSeccomp`.** It was reserved and never set. The remaining
+  `HardenLevel` bits have explicit values (Changed, below).
+- **`RuntimeSecretEnforced` and the `devmode` build tag.** Whether an
+  inactive `runtime/secret` layer is fatal is the application's policy:
+  treat `AssertRuntimeSecret`'s error as fatal, or downgrade it behind a flag
+  or tag of your own.
+- **`HasCLFLUSHOPT`.** It only reported a speed detail; whether the wipe
+  flushes is `Capabilities.FlushedWipe`.
+- **`TerminationWipeTimeout`.** An exported constant's value is frozen with
+  the API. The termination handler still waits five seconds for
+  `WipeAllSecrets`, as documented on `InstallTerminationWipe`.
+
+### Fixed
+
+- **`secmem-lint`: `//nolint // reason` suppresses a finding**, as the
+  documentation said. Only an exact `//nolint` did; the common form with an
+  explanation after it was ignored. Directives now follow golangci-lint's
+  grammar: a bare `nolint` covers every linter, and `nolint:<list>` covers
+  secmem-lint only when the list names `secmem-lint` or `all`.
+- **`secmem-lint`: every closure a borrowing wrapper forwards is checked.** A
+  wrapper that forwards two or more closure parameters had only the first
+  one's argument checked at its call sites, so a leak in another went
+  unreported, including the `-strict` report of an unresolvable closure.
 
 ## [secmem-lint/v0.6.0] - 2026-10-22
 
