@@ -11,15 +11,15 @@ package secmem
 //
 // On linux/amd64 and linux/arm64 built with GOEXPERIMENT=runtimesecret, Scrub
 // is backed by runtime/secret and erases the registers, stack, and heap of fn's
-// entire call tree with runtime cooperation. This file is the fallback used on
-// every other build; it cannot match that, and scrubs only fn's stack frame via
-// assembly — REP STOSB + SFENCE on amd64, and a real store loop on arm64 since
-// scrubframe_arm64.s landed, so "a no-op on other architectures" now means
-// every architecture except those two.
+// entire call tree with runtime cooperation. Every other build uses this
+// fallback; it cannot match that, and scrubs only fn's stack frame, with
+// assembly — REP STOSB + SFENCE on amd64, a store loop on arm64. On every
+// other architecture the frame scrub is a no-op (see
+// [Capabilities.FrameScrub]).
 //
 // # Why the wipe runs twice
 //
-// wipeScratchFrameFull zeroes a 32 KiB region by allocating it as its own
+// The frame wipe zeroes a 32 KiB band by allocating it as its own
 // (non-inlined) stack frame. Goroutines start on a small stack (2 KiB on
 // Linux and macOS, 8 KiB on Windows; adaptive since Go 1.19), so on a
 // shallow call that allocation triggers a stack copy (morestack): a single
@@ -49,11 +49,10 @@ package secmem
 // they are saved onto a goroutine stack by the next asynchronous preemption on
 // the thread, after the window has stopped blocking it. The Go ABI keeps no
 // live value in either across a call, so the clears destroy nothing, and they
-// really reach what fn left; that is proven, not assumed, by
-// scrub_vecclear_test.go and scrub_gpclear_test.go, the empirical tests the
-// project requires of any register scrub. Reported as
-// Capabilities.VectorRegisterClear and Capabilities.GPRegisterClear. See
-// vecclear_amd64.go.
+// really reach what fn left; that is proven, not assumed, by register-dump
+// tests in the repository, which the project requires of any register scrub.
+// Reported as [Capabilities.VectorRegisterClear] and
+// [Capabilities.GPRegisterClear].
 //
 // # Best-effort limits (stated honestly)
 //
@@ -78,9 +77,10 @@ package secmem
 // On Linux the window additionally blocks SIGURG for its duration, which stops
 // runtime.asyncPreempt spilling the whole register file onto the stack at an
 // arbitrary instruction — the one residue source a frame wipe cannot predict.
-// See scrub_window_unix.go for why that does not stall the collector, and for
-// the one shape of fn that would. Elsewhere it is unsupported and reported as
-// such by Capabilities.AsyncPreemptSuppressed.
+// It does not stall the garbage collector, which can still stop the goroutine
+// at its next cooperative preemption point; an fn that loops for a long time
+// without a function call would hold such a stop up. Elsewhere it is
+// unsupported and reported as such by [Capabilities.AsyncPreemptSuppressed].
 //
 // The window pins the goroutine to its OS thread with runtime.LockOSThread on
 // every platform: on Linux because the signal mask is a property of the thread,
@@ -103,7 +103,7 @@ package secmem
 // were live at the panic: fn's call tree is not unwound until something
 // recovers. A deferred 32 KiB wipe therefore landed under the residue instead
 // of on it, and every byte of a live frame survived, measured identical to a
-// no-Scrub control (scrub_frame_panic_test.go). Scrub now runs fn through a
+// no-Scrub control by the repository's tests. Scrub now runs fn through a
 // helper that recovers the panic and returns its value; by the time the
 // helper has returned the panicking frames are dead stack below Scrub, the
 // clear and the wipe run there directly, and the value is re-raised — so the

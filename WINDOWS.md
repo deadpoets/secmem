@@ -167,13 +167,21 @@ in-process once the upstream fix is in the Go release CI pins.
 
 ## Reproducing a run
 
-Same self-contained binary as the Linux flow:
+Same self-contained binary as the Linux flow. Build it anywhere (PowerShell 7
+shown; `-o` names the file exactly, so give it the `.exe`):
 
-```sh
-GOOS=windows GOARCH=amd64 go test -c -o secmem-windows.test .
-secmem-windows.test.exe -test.count=1                       # full suite
-secmem-windows.test.exe -test.count=1 -test.v ^
-  -test.run "TestGuardPages|TestCanary|TestHardenProcess_Windows|TestSealCipher|TestWERExclusion"
+```powershell
+$env:GOOS='windows'; $env:GOARCH='amd64'
+go test -c -o secmem-windows.test.exe .
+Remove-Item Env:GOOS, Env:GOARCH
+```
+
+and run it on the Windows target (PowerShell):
+
+```powershell
+.\secmem-windows.test.exe -test.count=1                    # full suite
+.\secmem-windows.test.exe -test.count=1 -test.v `
+  -test.run 'TestGuardPages|TestCanary|TestHardenProcess_Windows|TestSealCipher|TestWERExclusion'
 ```
 
 Or, with a Go toolchain on the target machine:

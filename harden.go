@@ -114,6 +114,9 @@ func DisableCoreDumps() error {
 // hard limit allows and returns that value together with a non-nil error —
 // it never silently under-delivers. On Windows the equivalent budget is the
 // process minimum working-set size, adjusted via SetProcessWorkingSetSizeEx.
+// On a platform with no lockable off-heap memory (anything but Linux, Darwin
+// and Windows) there is no budget to raise, and it returns 0 and an error
+// wrapping [errors.ErrUnsupported].
 func EnsureMemlockLimit(bytes uint64) (achieved uint64, err error) {
 	return ensureMemlockLimit(bytes)
 }

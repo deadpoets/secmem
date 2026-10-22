@@ -1,8 +1,7 @@
 // options.go implements the constructor Option mechanism and the LOUD
-// degradation gate. The only option so far is WithInsecureFallback —
-// deliberately ugly to type: a silent fallback to the heap is the exact
-// footgun this library exists to prevent, so accepting one must be visible
-// at the call site.
+// degradation gate. WithInsecureFallback is deliberately ugly to type: a
+// silent fallback to the heap is the exact footgun this library exists to
+// prevent, so accepting one must be visible at the call site.
 
 package secmem
 
@@ -21,7 +20,7 @@ type config struct {
 }
 
 // Option configures a constructor ([NewBuffer], [NewEmptyBuffer],
-// [NewBufferFromReader], [NewArena]).
+// [NewBufferFromReader], [NewSecret], [NewArena]).
 type Option func(*config)
 
 // WithInsecureFallback permits a constructor to fall back to plain Go heap

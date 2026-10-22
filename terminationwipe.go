@@ -134,12 +134,15 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // only handler the restored default disposition terminates the process, and if
 // you have your own handler it receives the signal and decides when to exit.
 //
-// # The process always terminates
+// # When the signal cannot be re-raised
 //
-// Where the signal cannot be re-raised to any effect, secmem exits the process
-// itself, with forcedExitStatus: on Windows STATUS_CONTROL_C_EXIT, which is
-// indistinguishable from the un-intercepted signal; elsewhere 130, the shell
-// convention for SIGINT. One case is Windows:
+// When a re-raise succeeds, the restored disposition or a co-installed handler
+// decides whether and when the process ends. Where the signal cannot be
+// re-raised to any effect, this installer exits the process itself, with
+// status STATUS_CONTROL_C_EXIT (0xC000013A) on Windows, which is
+// indistinguishable from the un-intercepted signal, and 130, the shell
+// convention for SIGINT, elsewhere. [InstallTerminationWipeNoExit] never
+// exits. One case is Windows:
 // os.Process.Signal there implements only [os.Kill] and rejects os.Interrupt and
 // SIGTERM outright, and the console event that triggered the handler has already
 // been consumed, so there is nothing left to re-deliver.
@@ -159,9 +162,9 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // called — [os/signal.Ignored] reports the inherited state only until Notify
 // overrides it — and treats one of those as impossible to re-raise: the
 // default installer exits, the NoExit one warns and stays installed. The
-// exit status is forcedExitStatus's for the platform — 130 here, whichever
-// of the handler's signals it was, since an ignored signal has no
-// un-intercepted status to match.
+// exit status is the platform's one above — 130 on Unix, whichever of the
+// handler's signals it was, since an ignored signal has no un-intercepted
+// status to match.
 //
 // Verified behaviour before this was so: a real Ctrl-C wiped every secret and
 // the process kept running, exiting only on a SECOND Ctrl-C. That left it in the
@@ -221,15 +224,17 @@ func InstallTerminationWipe(signals ...os.Signal) (uninstall func()) {
 //
 // Choose it when your own handler performs a graceful shutdown that must not be
 // truncated — flushing logs, draining connections — and will exit on its own.
-// Read the warning above first: after the wipe your secrets are gone, and a
+// Read the warning in [InstallTerminationWipe] first: after the wipe your
+// secrets are gone, and a
 // shutdown path that keeps doing cryptography gets [ErrWiped] from every key
 // operation. Finish what does not need a secret, and exit promptly.
 //
 // It has an effect only on Windows and for a signal the process inherited as
-// ignored (see "The process always terminates" above); everywhere else the
-// re-raise is a real kill against a restored default disposition and the
-// process terminates through it. In those two cases the handler stays
-// installed after the signal (see "After the signal" above), so each Ctrl-C
+// ignored (see "When the signal cannot be re-raised" in
+// [InstallTerminationWipe]); everywhere else the re-raise is a real kill
+// against a restored default disposition and the process terminates through
+// it. In those two cases the handler stays installed after the signal (see
+// "After the signal" in [InstallTerminationWipe]), so each Ctrl-C
 // wipes again and none of them ends the process: with no handler of your own,
 // a second Ctrl-C no longer terminates it the way it did while the handler was
 // one-shot. Termination is entirely yours.

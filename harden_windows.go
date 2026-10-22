@@ -67,12 +67,12 @@ func hardenProcess() (HardenLevel, error) {
 	var level HardenLevel
 
 	if err := setMitigationPolicy(processStrictHandleCheckPolicy, strictHandleRaise|strictHandlePermanent); err != nil {
-		return level, fmt.Errorf("harden: strict handle checks: %w", err)
+		return level, fmt.Errorf("secmem: strict handle checks: %w", err)
 	}
 	level |= HardenStrictHandles
 
 	if err := setMitigationPolicy(processDynamicCodePolicy, dynamicCodeProhibit); err != nil {
-		return level, fmt.Errorf("harden: arbitrary code guard: %w", err)
+		return level, fmt.Errorf("secmem: arbitrary code guard: %w", err)
 	}
 	level |= HardenNoDynamicCode
 

@@ -58,22 +58,23 @@ import (
 //     depth, as slog resolves one at the attribute level),
 //     [encoding/json.Marshaler] (its JSON text, as text) and
 //     [fmt.GoStringer]. A method declared on the pointer is called for a
-//     value held directly too, and one that panics or returns an error
-//     leaves a tag, not the value's fields. Only a struct with none of
-//     these is walked, and then EVERY field is printed, as %+v prints it:
-//     unexported fields and fields tagged `json:"-"` included, because
-//     struct tags are not consulted. It cannot call methods on a value
-//     reached through an UNEXPORTED field, so there it does two things fmt
-//     does too: a pointer is printed as "<ptr>" and not followed, and a
-//     value whose type has any such method (or GoString, LogValue,
-//     MarshalJSON) is not walked into either — it is replaced by
-//     "[REDACTED:unexported]". A type that redacts itself in print —
-//     secmem's SecureBuffer, Secret and ArenaSlot among them — is
-//     therefore never taken apart field by field, whichever way it was
-//     reached, and neither is anything behind an unexported pointer.
-//     (Before these rules the walk did take them apart: it printed the
-//     buffer's bytes, then read into the guard page and faulted.) The one
-//     shape left is the one fmt shares: a defined type over such a struct
+//     value held directly too. A value with any of these methods is never
+//     walked, even when the method fails: a MarshalText, LogValue or
+//     MarshalJSON that panics leaves "[REDACTED:panic]", a MarshalText or
+//     MarshalJSON that returns an error leaves "[REDACTED:marshal_error]",
+//     and a Format, Error, String or GoString that panics leaves fmt's own
+//     "%!v(PANIC=…)" marker, which is then sanitized like any other text.
+//     Only a struct with none of these is walked, and then EVERY field is
+//     printed, as %+v prints it: unexported fields and fields tagged
+//     `json:"-"` included, because struct tags are not consulted. It cannot
+//     call methods on a value reached through an UNEXPORTED field, and there
+//     it differs from fmt: a pointer is printed as "<ptr>" and not followed
+//     (fmt prints its address), and a value whose type has any such method
+//     is replaced by "[REDACTED:unexported]" (fmt would print its fields).
+//     A type that redacts itself in print — secmem's SecureBuffer, Secret
+//     and ArenaSlot among them — is therefore never taken apart field by
+//     field, whichever way it was reached, and neither is anything behind
+//     an unexported pointer. The one shape left is the one fmt shares: a defined type over such a struct
 //     ("type mine secmem.SecureBuffer") has no methods, and held BY VALUE
 //     in a nested struct it is a plain struct to the walk and to fmt alike.
 //     Rendering stops at a fixed size, so a very large value costs a
@@ -85,7 +86,7 @@ import (
 // sensitive and neither value is credential-shaped on its own); a secret
 // under an innocent key with no recognizable shape; whatever the inner
 // handler's own ReplaceAttr or a custom Marshaler adds after this handler
-// is done. Prefer [secmem.Secret] for values you hold; use Handler as the
+// is done. Prefer [github.com/deadpoets/secmem.Secret] for values you hold; use Handler as the
 // backstop.
 type Handler struct {
 	inner     slog.Handler
@@ -180,24 +181,23 @@ func (h *Handler) Handle(ctx context.Context, r slog.Record) error {
 }
 
 // WithAttrs pre-sanitizes attrs once, so repeated records do not re-scan them,
-// and hands them straight to the inner handler.
-//
-// Holding them locally and re-adding them to every record — which is what this
-// used to do — misfiles them into any group opened later. slog's contract is
-// positional: attributes added before WithGroup belong OUTSIDE that group, but a
-// record attribute is emitted by the inner handler at whatever nesting it has
-// reached by then, so
+// and hands them straight to the inner handler, which keeps each one at the
+// group nesting it was added at: in
 //
 //	log.With("req", id).WithGroup("db").Info("query", "table", t)
 //
-// produced {"db":{"req":...,"table":...}} instead of {"req":...,"db":{"table":...}}.
-// Delegating to inner.WithAttrs pins each attribute at the nesting level it was
-// added at, which is the inner handler's job and not something this wrapper
-// should be re-deciding.
+// "req" stays outside the "db" group.
 func (h *Handler) WithAttrs(attrs []slog.Attr) slog.Handler {
 	if len(attrs) == 0 {
 		return h
 	}
+	// Holding attrs locally and re-adding them to every record would misfile
+	// them into any group opened later: slog's contract is positional, but a
+	// record attribute is emitted by the inner handler at whatever nesting it
+	// has reached by then, so the example above would produce
+	// {"db":{"req":...,"table":...}} instead of {"req":...,"db":{"table":...}}.
+	// This handler once did exactly that. Delegating to inner.WithAttrs pins
+	// each attribute where it was added, which is the inner handler's job.
 	sanitized := make([]slog.Attr, len(attrs))
 	for i, a := range attrs {
 		sanitized[i] = h.sanitizeAttr(h.path, h.redactAll, a)
@@ -453,7 +453,10 @@ func (h *Handler) renderValue(b *strings.Builder, rv reflect.Value, path []strin
 		// Format redacts, and whose fields are slices over guarded, possibly
 		// PROT_NONE memory) or a secmem.Secret in an unexported field from
 		// being printed byte by byte, or faulting on the guard page, by the
-		// very handler installed to stop secrets reaching the log.
+		// very handler installed to stop secrets reaching the log. (Before
+		// this rule and the "<ptr>" one below, the walk did take such values
+		// apart: it printed the buffer's bytes, then read into the guard page
+		// and faulted.)
 		b.WriteString(unexportedTag)
 		return
 	}

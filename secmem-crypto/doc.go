@@ -1,13 +1,18 @@
 // Package secmemcrypto adapts secmem's hardened memory primitives to the
 // standard library's crypto interfaces. Key material is held in a
-// [secmem.SecureBuffer] between operations; during an operation it is
-// either kept there and on the stack of a Scrub window (Ed25519 signing,
-// X25519, HKDF and HMAC over SHA-2 or SHA-3, the parsers, the KDFs and
-// AEAD helpers that write in place) or copied through the Go heap by a
+// [secmem.SecureBuffer] between operations. During an operation it is in
+// one of three places. Kept in locked memory and on the stack of a Scrub
+// window: Ed25519 signing, X25519, HKDF and HMAC over SHA-2 or SHA-3, the
+// plaintext of [OpenInto] and [SealFrom], the parsers' decoded key
+// structure, and the KDFs that run in a locked workspace ([Argon2Workspace],
+// [Argon2Pool], [BcryptPBKDFInto]). Held in a heap object this module wipes before return: [Argon2Into]'s working set,
+// [WithAESGCM]'s key schedule while its callback runs, and the AES schedule
+// of [ParsePrivateKeyWithPassphrase]. Or copied through the Go heap by a
 // standard-library primitive that has no in-place API, with every copy this
 // module can reach wiped before return and every copy it cannot named in the
-// type's documentation (RSA, ECDSA, ML-KEM). The module README classifies
-// every entry point.
+// documentation (RSA, ECDSA, ML-KEM, and HKDF or HMAC over any other hash,
+// which are refused on a legacy build unless opted in). The module README
+// classifies every entry point.
 //
 // Signers: [Ed25519Signer] (RFC 8032, signs in place), [ECDSASigner] and
 // [RSASigner] (custody at rest; each Sign re-materialises the key through

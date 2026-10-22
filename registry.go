@@ -665,7 +665,12 @@ func (j *janitor) wipeAllInPlace() error {
 //     regions already wiped once, precisely for this case.
 //
 //   - Safe to call concurrently with Destroy and from multiple goroutines; each
-//     region is wiped exactly once.
+//     region is wiped exactly once per call.
+//
+//   - The error joins what the passes found: [ErrCanaryViolation] for a region
+//     whose canary slack was overwritten, and an error for any region whose
+//     write access could not be restored and so was left unwiped. Neither
+//     stops the wipe of any other region.
 //
 // # It can block
 //

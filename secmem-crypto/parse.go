@@ -45,9 +45,10 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // working; test for this one when you want to tell "convert the file" from
 // "wait for a release".
 //
-// What it marks today is legacy PEM encryption — the Proc-Type / DEK-Info
-// headers openssl wrote before PKCS#8, and ssh-keygen before the OpenSSH
-// format. The construction derives its key by iterating MD5 over the
+// What it marks today is password-based key-file encryption of two kinds:
+// legacy PEM encryption, and the PKCS#8 schemes listed below. Legacy PEM
+// encryption is the Proc-Type / DEK-Info headers openssl wrote before
+// PKCS#8, and ssh-keygen before the OpenSSH format. The construction derives its key by iterating MD5 over the
 // passphrase and an 8-byte salt exactly once (OpenSSL's EVP_BytesToKey),
 // which is not a password KDF in any modern sense: there is no cost
 // parameter to raise, so an offline guess costs one MD5. The ciphertext is
@@ -59,7 +60,7 @@ var ErrEncryptedKey = errors.New("secmemcrypto: private key is passphrase-protec
 // `openssl pkey -in key -out key` both rewrite such a file in a format this
 // package reads.
 //
-// The PKCS#8 side of the same decision (pbes2.go): PBES1 and the PKCS#12
+// The PKCS#8 side of the same decision: PBES1 and the PKCS#12
 // password-based encryption schemes — a single pass of MD2, MD5 or SHA-1
 // over the passphrase, then DES, 3DES, RC2 or RC4 — and PBES2 over DES,
 // 3DES or RC2, are refused the same way. `openssl pkcs8 -topk8 -v2
@@ -81,10 +82,13 @@ var ErrRetiredAlgorithm = errors.New("secmemcrypto: retired algorithm, permanent
 // ErrUnsupportedKey, each keeping the sentinel it always returned.
 var errLegacyPEM = fmt.Errorf("%w: legacy PEM encryption (Proc-Type / DEK-Info headers); re-encrypt it with ssh-keygen -p or openssl pkey", ErrRetiredAlgorithm)
 
-// ErrUnsupportedKey is returned by [ParsePrivateKey] for a well-formed key of
-// a kind this package has no signer for: DSA, FIDO (sk-*) keys, certificates,
+// ErrUnsupportedKey is returned by [ParsePrivateKey] and
+// [ParsePrivateKeyWithPassphrase] for a well-formed key of a kind this
+// package has no signer for: DSA, FIDO (sk-*) keys, certificates,
 // X25519/X448 (agreement keys, not signers — see [NewX25519Key]), RSA-PSS
 // parameterised PKCS#8, and curves other than P-224/256/384/521.
+// [ParsePrivateKeyWithPassphrase] also returns it for a protection scheme it
+// does not run, as its documentation lists.
 var ErrUnsupportedKey = errors.New("secmemcrypto: unsupported private key type")
 
 // errMalformed is the inner error for every structural failure. It carries no
@@ -146,9 +150,8 @@ var (
 // decoded key structure lives in a SecureBuffer for the duration of the
 // call and is wiped before return; the seed, scalar, or DER the signer
 // keeps is copied into it directly, and an OpenSSH-format RSA key's CRT
-// exponents, which the file omits, are computed over stack arrays
-// (modreduce.go) rather than with math/big. parse_proof_test.go pins that
-// for every container.
+// exponents, which the file omits, are computed over stack arrays rather
+// than with math/big. The module's tests pin that for every container.
 //
 // What the signer constructors then put on the heap is theirs, and is not
 // nothing: [NewECDSASigner] runs [ecdsa.ParseRawPrivateKey], which builds a
@@ -162,7 +165,8 @@ var (
 // runtime; elsewhere they are left to the collector.
 //
 // data is the caller's: it is neither wiped nor retained. Read the file into a
-// SecureBuffer with [secmem.NewBufferFromReader] and call this from inside its
+// SecureBuffer — [secmem.NewEmptyBuffer] sized to the file, filled with
+// [secmem.SecureBuffer.ReadFrom] — and call this from inside its
 // WithBytesErr, then Destroy it — or, for an ordinary []byte, wipe it with
 // [secmem.SecureWipe] afterwards.
 func ParsePrivateKey(data []byte, opts ...Option) (Signer, error) {

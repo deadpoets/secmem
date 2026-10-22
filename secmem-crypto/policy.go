@@ -71,9 +71,11 @@ func (b bufferOptions) newBuffer(raw []byte) (*secmem.SecureBuffer, error) {
 // options it was built with), and the locked scratch a derivation or a
 // parser uses and frees within the call.
 //
-// The core option that exists today is [secmem.WithInsecureFallback]. Without
-// it this package is secure-memory-only: on a platform with no lockable
-// off-heap memory every allocating call fails with an error wrapping
+// Any core option passes through — for example [secmem.WithInsecureFallback]
+// or [secmem.WithUnauthenticatedSeal]. [secmem.WithInsecureFallback] is the
+// one that trades protection for portability. Without it this package is
+// secure-memory-only: on a platform with no lockable off-heap memory every
+// allocating call fails with an error wrapping
 // [secmem.ErrNoSecureMemory]. With it, there, the same calls succeed on
 // plain heap memory with none of the protections this module's documentation
 // describes — the buffers report Capabilities().Insecure — which is the

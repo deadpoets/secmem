@@ -249,9 +249,12 @@ func (f *secretField) UnmarshalJSON(raw []byte) error {
     return err
 }
 
-doc, err := secmem.NewBufferFromReader(resp.Body, int(resp.ContentLength))
+// Bound the read yourself: resp.ContentLength is -1 when the length is unknown.
+const maxDoc = 64 << 10
+doc, err := secmem.NewBufferFromReader(resp.Body, maxDoc+1) // Len() is the bytes read
 if err != nil { return err }
 defer doc.Destroy()
+if doc.Len() > maxDoc { return errors.New("config document too large") }
 var cfg struct {
     DBPassword secretField `json:"db_password"`
 }
@@ -269,8 +272,8 @@ where you want it. Two details carry the weight. `json.Unmarshal` hands an
 token is read from locked memory and `NewBuffer` wipes that span in place;
 `json.NewDecoder` instead reads into an internal buffer you can neither
 reach nor wipe, so it is the wrong tool here. And `io.ReadAll` grows by
-doubling, leaving the abandoned halves on the heap; read a known length
-into a buffer, or into a `[]byte` you own and `SecureWipe` afterwards. What
+doubling, leaving the abandoned halves on the heap; read up to a fixed
+bound into a buffer, or into a `[]byte` you own and `SecureWipe` afterwards. What
 remains is honest to state: a value with JSON escapes needs an explicit
 unescape, which is a heap transient at that call site; and YAML and TOML
 decoders copy tokens internally, so a secret in those formats is a residual
@@ -300,7 +303,7 @@ secmem.Scrub(func() {
 ```
 
 Why it matters: `Scrub` wipes the stack band its callback used and clears
-the vector registers, and under `GOEXPERIMENT=runtimesecret` the runtime
+the vector and general-purpose registers, and under `GOEXPERIMENT=runtimesecret` the runtime
 also erases heap allocated inside the window once nothing refers to it. A
 global, a package-level cache, a `sync.Map` or `sync.Pool` entry still
 refers to it, by design, and the `runtime/secret` contract says so: erasure

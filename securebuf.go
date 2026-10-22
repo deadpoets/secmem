@@ -39,8 +39,8 @@ import (
 )
 
 // SecureBuffer holds sensitive data in a page-aligned, mlock'd, off-heap memory
-// region. The region is allocated via mmap(MAP_ANON|MAP_PRIVATE) (or higher-
-// privilege equivalents on supported platforms) and is invisible to the Go GC.
+// region. The region is an off-heap mapping (mmap, memfd_secret, or
+// VirtualAlloc) and is invisible to the Go GC.
 //
 // Callers MUST call [SecureBuffer.Destroy] explicitly. The AddCleanup fallback
 // is a safety net only — it runs non-deterministically at GC time.
@@ -358,26 +358,39 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo, cfg confi
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-// Destroy performs an architectural wipe of the entire mapped region:
+// Destroy wipes the entire locked area and releases it:
 //
-//  1. Stop the AddCleanup fallback (prevents double-free).
-//  2. Mprotect(RW) — ensure the page is writable before wiping.
-//  3. secureWipeSlice — zero + CLFLUSH/CLFLUSHOPT + SFENCE/LFENCE.
-//  4. Madvise(DONTNEED_LOCKED) — release physical frames immediately.
-//  5. Retire the reservation. On Linux and Windows it becomes a no-access
-//     reservation with no memory behind it and joins the destroy-time
-//     quarantine (quarantine.go), to be unmapped when it is evicted;
-//     elsewhere, or with the quarantine off, it is unmapped now: Munmap
-//     (Linux munlocks first; Darwin deliberately does not, see
-//     mlock_darwin.go) / VirtualUnlock + VirtualFree.
-//  6. Nil out data and zero region — makes Destroy idempotent.
-//  7. runtime.KeepAlive(s) — ensures the GC does not run the cleanup
-//     concurrently between Stop() and the wipe.
+//  1. Cancel the garbage-collection fallback, so the region is released once.
+//  2. Make the area writable again, whatever Seal, ReadOnly or
+//     [WithClosedAtRest] left it at; a sealed buffer's tag is verified and,
+//     on Windows, its contents decrypted first.
+//  3. Check the canary slack behind the data for an out-of-bounds write.
+//  4. Overwrite the whole area with zeros by a routine the compiler cannot
+//     elide; on amd64 and arm64 it also flushes the cache lines (see
+//     [Capabilities.FlushedWipe]).
+//  5. Drop the physical pages and release the range. On Linux and Windows
+//     the range is first kept as a no-access reservation in the destroy-time
+//     quarantine (see [SetQuarantineLimits]), so a slice retained past
+//     Destroy faults; elsewhere, or with the quarantine off, it is unmapped
+//     at once.
 //
-// Destroy is idempotent and goroutine-safe.  After Destroy, IsDestroyed()
-// returns true and all subsequent method calls return ErrDestroyed — through
-// this handle and through every copy of it (see "Copies are aliases" on
-// [SecureBuffer]).
+// Destroy is idempotent and goroutine-safe; it waits for any in-flight access
+// to finish. The effect is seen through this handle and through every copy of
+// it (see "Copies are aliases" on [SecureBuffer]). Afterwards
+// [SecureBuffer.IsDestroyed] is true, the access, mutation, Seal/Unseal and
+// protection methods return [ErrDestroyed], [SecureBuffer.Len] and
+// [SecureBuffer.MappedLen] return 0, [SecureBuffer.IsSealed] is false, a
+// further Destroy returns nil, and [SecureBuffer.Capabilities] and
+// [SecureBuffer.LockOrder] keep reporting the values they had.
+//
+// An error reports a problem found on the way; it does not stop the
+// teardown, and the buffer is destroyed either way. Destroy returns
+// [ErrCanaryViolation] if the canary slack was overwritten (the wipe still
+// runs), [ErrIntegrity] if a sealed buffer's contents changed while dormant
+// (the wipe still runs), and a wrapped OS error if releasing the range or
+// placing it in quarantine failed, or if write access could not be restored,
+// in which case the range is released without the wipe; several may be
+// joined.
 func (s *SecureBuffer) Destroy() error {
 	if s == nil || s.bufferState == nil {
 		return nil
@@ -459,7 +472,7 @@ func (s *SecureBuffer) IsDestroyed() bool {
 // ---------------------------------------------------------------------------
 
 // Len returns the usable size of the buffer (the size requested by the caller).
-// May be smaller than [MappedLen] due to page-rounding.
+// May be smaller than [SecureBuffer.MappedLen] due to page-rounding.
 func (s *SecureBuffer) Len() int {
 	if s == nil || s.bufferState == nil {
 		return 0
@@ -484,10 +497,12 @@ func (s *SecureBuffer) MappedLen() int {
 
 // ReadOnly sets the buffer's memory protection to read-only.
 // This prevents accidental overwrites once a secret is fully loaded.
-// [Destroy] needs no [ReadWrite] first: it restores write access itself.
+// [SecureBuffer.Destroy] needs no [SecureBuffer.ReadWrite] first: it restores
+// write access itself.
 //
-// The exclusive lock is held to drain all in-flight Write/SetByteAt calls
-// before the mprotect, preventing a SIGSEGV from a concurrent write hitting a
+// ReadOnly takes the buffer's exclusive lock, so it waits for every in-flight
+// access — including a concurrent CopyIn, SetByteAt, ReadFrom or Truncate —
+// to finish before changing the protection; no such write can then hit the
 // PROT_READ page.
 //
 // The guard is at the API boundary: [SecureBuffer.CopyIn],
@@ -531,7 +546,7 @@ func (s *SecureBuffer) ReadOnly() error {
 }
 
 // ReadWrite restores read-write access to the buffer. It is not needed before
-// [Destroy], which makes the region writable for its own wipe.
+// [SecureBuffer.Destroy], which makes the region writable for its own wipe.
 //
 // The exclusive lock is held to drain all in-flight access before the
 // mprotect.
@@ -563,7 +578,7 @@ func (s *SecureBuffer) ReadWrite() error {
 }
 
 // Seal sets the buffer's memory protection to PROT_NONE, making any access
-// (including speculative reads) cause a hardware fault. This is the hardened
+// cause a hardware fault. This is the hardened
 // dormant state for long-lived secrets that are not actively being used.
 //
 // On Windows, Seal additionally encrypts the contents in place with a
@@ -573,7 +588,7 @@ func (s *SecureBuffer) ReadWrite() error {
 // This protects the sealed window only, and is not a defense against code
 // executing inside the process (which can call CryptUnprotectMemory itself)
 // nor against cold-boot RAM capture (the kernel's key is in RAM too). On
-// other platforms Seal is page protection only; on Linux the allocation-time
+// other platforms Seal has no cipher; on Linux the allocation-time
 // protections (memfd_secret, MADV_DONTDUMP) are the dump defenses.
 //
 // While sealed, all access methods (WithBytes, WithBytesErr, CopyOut, CopyIn,
@@ -583,7 +598,8 @@ func (s *SecureBuffer) ReadWrite() error {
 // [SecureBuffer.Destroy] works correctly on sealed buffers — it lifts the
 // PROT_NONE restriction (and decrypts) internally before wiping.
 //
-// Note: [ReadOnly] and [ReadWrite] return [ErrSealed] while sealed. To
+// Note: [SecureBuffer.ReadOnly] and [SecureBuffer.ReadWrite] return
+// [ErrSealed] while sealed. To
 // transition from Sealed to ReadOnly, call Unseal then ReadOnly. A buffer that
 // was read-only before Seal stays read-only after [SecureBuffer.Unseal] — the
 // protection is preserved across the seal cycle.
@@ -714,11 +730,20 @@ func (s *SecureBuffer) reapplyReadOnly() {
 	}
 }
 
-// Unseal lifts the PROT_NONE protection applied by [SecureBuffer.Seal],
-// restoring PROT_READ|PROT_WRITE access to the buffer.
+// Unseal lifts the PROT_NONE protection applied by [SecureBuffer.Seal] and
+// restores the buffer's protection at rest: read-write, read-only if
+// [SecureBuffer.ReadOnly] was in force when it was sealed, or no access for a
+// buffer built with [WithClosedAtRest] (which opens per use).
 //
-// After Unseal, all access methods work normally. To re-protect after use,
-// call Seal again.
+// Unseal verifies the seal tag before anything reads the bytes. If they
+// changed while dormant it returns [ErrIntegrity] and the buffer stays sealed.
+// Every other failure also leaves it sealed: on Windows, where Seal gave up
+// the page lock, a refused re-lock; a failed decrypt; or a failure to restore
+// the rest protection. The secret is never handed out unlocked, undecrypted
+// or with the wrong protection.
+//
+// After a successful Unseal, all access methods work normally. To re-protect
+// after use, call Seal again.
 //
 // Unseal is idempotent: calling it on an already-unsealed buffer is a no-op.
 func (s *SecureBuffer) Unseal() error {
@@ -821,12 +846,10 @@ func (s *SecureBuffer) IsSealed() bool {
 	return s.sealed
 }
 
-// Truncate re-slices data to n bytes and wipes the freed tail [n:].
-//
-// Invariant: region is NEVER modified. Only data is re-sliced. This keeps
-// the janitor's registration — which is what the AddCleanup fallback and the
-// emergency wipe resolve — describing the full allocation regardless of
-// Truncate calls.
+// Truncate shortens Len to n and wipes the freed tail; the allocation itself
+// is unchanged, and Destroy and [WipeAllSecrets] still wipe all of it. n must
+// be in [0, Len]. Like the other mutators it returns [ErrSealed] while sealed
+// and [ErrReadOnly] while read-only.
 func (s *SecureBuffer) Truncate(n int) error {
 	if s == nil {
 		return errors.New("secmem.SecureBuffer.Truncate: nil receiver")

@@ -74,8 +74,9 @@ var ErrNoSecureMemory = errors.New(
 var ErrIntegrity = errors.New(
 	"secmem: integrity failure — the sealed contents changed while dormant; buffer stays sealed")
 
-// ErrCanaryViolation is returned by Destroy (and ArenaSlot.Release) when the
-// canary slack adjacent to the secret was overwritten: some code in this
+// ErrCanaryViolation is returned by [SecureBuffer.Destroy],
+// [SecureArena.Destroy], [ArenaSlot.Release] and [WipeAllSecrets] when the
+// canary slack adjacent to a secret was overwritten: some code in this
 // process wrote past the end of a buffer or slot. The wipe and release
 // complete regardless — the violation is reported, never left mapped.
 //

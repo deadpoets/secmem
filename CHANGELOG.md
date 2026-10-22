@@ -13,7 +13,40 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+The core's API pass before the 1.0 freeze. After 1.0, removing or renaming
+anything exported needs a new module path, so everything below that breaks
+callers is done now; each entry says what to write instead.
+
+### Removed
+
+- **`ErrArenaDestroyed`.** `SecureArena` and `ArenaSlot` methods return
+  `ErrDestroyed` after `Destroy`, as buffers do, and `ErrWiped` (which wraps
+  it) after `WipeAllSecrets`, so one `errors.Is(err, ErrDestroyed)` covers
+  every way an object dies; before, neither sentinel caught both for an
+  arena. Use `ErrDestroyed`.
+- **`NewSyscallSafeBuffer`.** Use `NewBuffer(raw, WithoutMemfdSecret())`; the
+  option (Added, below) works on every constructor.
+- **`HardenSeccomp`.** It was reserved and never set. The remaining
+  `HardenLevel` bits have explicit values (Changed, below).
+- **`RuntimeSecretEnforced` and the `devmode` build tag.** Whether an
+  inactive `runtime/secret` layer is fatal is the application's policy:
+  treat `AssertRuntimeSecret`'s error as fatal, or downgrade it behind a flag
+  or tag of your own.
+- **`HasCLFLUSHOPT`.** It only reported a speed detail; whether the wipe
+  flushes is `Capabilities.FlushedWipe`.
+- **`TerminationWipeTimeout`.** An exported constant's value is frozen with
+  the API. The termination handler still waits five seconds for
+  `WipeAllSecrets`, as documented on `InstallTerminationWipe`.
+
 ### Added
+
+- **`WithoutMemfdSecret`**, a constructor option that skips the Linux
+  memfd_secret tier and allocates the locked anonymous mapping directly. The
+  kernel refuses to pin secretmem pages, so a buffer handed to O_DIRECT I/O,
+  io_uring registered buffers, `vmsplice` or `process_vm_readv` needs it. It
+  replaces `NewSyscallSafeBuffer` and also applies to `NewEmptyBuffer`,
+  `NewBufferFromReader` and `NewArena`, which the old constructor could not
+  serve.
 
 - **`WithClosedAtRest`: a buffer that is no-access except while in use.** A
   construction option for `SecureBuffer`. The pages are `PROT_NONE` /
@@ -46,6 +79,46 @@ mark the stability commitment.
 
 ### Changed
 
+- **`NewBufferFromReader` returns `(*SecureBuffer, error)`, and the buffer's
+  `Len` is the number of bytes read.** A source shorter than `size` used to
+  give a buffer of `size` bytes with a zero-filled tail and a count the caller
+  had to check, so a 20-byte file read as a 32-byte key became a key padded
+  with zeros. Now it gives a 20-byte buffer; where a secret must have an
+  exact length, check `Len`. An empty source is still refused with `io.EOF`.
+  Write `buf, err := NewBufferFromReader(r, size)`.
+- **`Capabilities.RegisterScrub` is `Capabilities.RuntimeSecret`**, and its
+  `String()` flag is `runtime-secret`. It reports `runtime/secret`, not
+  register clearing: since the register clears shipped, `RegisterScrub=false`
+  next to `GPRegisterClear=true` read as a contradiction.
+- **`HardenProcess` takes no arguments.** Its `context.Context` was unused.
+  Write `secmem.HardenProcess()`.
+- **`HardenLevel` bits have fixed values:** `HardenNoDump` 1, `HardenNoNewPriv`
+  2, `HardenStrictHandles` 4, `HardenNoDynamicCode` 8. They were assigned by
+  `iota` after `HardenNone`, which left bit 0 unused and would have moved them
+  had a constant been inserted. Code that tests bits by name is unaffected.
+- **`redact.Option` configures the constructor only.** Options were
+  functions of `*Sanitizer`, so `redact.WithMaxLen(n)(shared)` changed a
+  Sanitizer documented as immutable and safe for concurrent use. They now
+  act on unexported settings, and `NewSanitizer` copies the rules and
+  allowlist slices, so later changes to the caller's slices do not reach it.
+  Code that passes options to `NewSanitizer` is unaffected.
+- **The memfd_secret tier is attempted on linux/amd64 and linux/arm64 only.**
+  It was attempted on every 64-bit Linux, although the isolation proofs have
+  only run on those two and the documentation said so. Other architectures
+  get the locked anonymous mapping, as 32-bit builds always did.
+- **`httpauth`: an empty token is refused as "httpauth: token is empty".**
+  A live token truncated to nothing used to fail the request with an
+  offset-out-of-range error from the buffer. A destroyed, wiped or sealed
+  token still reports that state.
+- **Error messages:** `ErrDestroyed` reads "secure memory has been destroyed"
+  (it covers arenas too); `ErrRuntimeSecretInactive` and the errors
+  `HardenProcess` returns carry the `secmem:` prefix like every other error.
+  `errors.Is` is unchanged.
+- **Documentation:** comments at the top of platform files no longer render
+  as part of the package documentation, and exported docs no longer name
+  unexported identifiers or source files. Every package's godoc and every
+  repository document was checked against the code; the corrections are too
+  many to list and change no behaviour.
 - **`SecureArena` reuses released slots first-in, first-out.** The free list
   was last-in, first-out, so the slot a caller had just released was the next
   one handed out, and a slice wrongly kept from the old tenant's callback
@@ -56,8 +129,8 @@ mark the stability commitment.
   a secret its own `SecureBuffer` where that matters. Measured cost: none on
   the contended path, up to about 10% on a serial acquire/release loop over
   a large arena.
-- **Every module's `go.mod` carries `toolchain go1.27.3`**, the release CI
-  pins. A local `go` switches to it by itself; consumers ignore the line. CI
+- **The core's and `secmem-crypto`'s `go.mod` carry `toolchain go1.27.3`**
+  (`secmem-lint` shipped it in v0.6.0), the release CI pins. A local `go` switches to it by itself; consumers ignore the line. CI
   moves to go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`, reachable from
   `secmem-crypto`).
 - **The Go pins are checked, not remembered.** `go-current.sh` fails when a
@@ -195,17 +268,6 @@ which raises the floor for every consumer; CI runs on go1.27.2 and go1.26.9.
   bypassable with `--no-verify`, deliberately.
 
 ### Fixed
-
-- **`secmem-crypto`: an error from a PBES2 file could be built from its
-  decrypted plaintext.** After decryption, `ParsePrivateKeyWithPassphrase`
-  passed the plain PKCS#8 parser's "unsupported algorithm" error through, and
-  that error names the OID it read. AES-CBC is unauthenticated, so a modified
-  file opened with the correct passphrase could make that OID span the key
-  bytes and have them printed in the error. The two post-decryption refusals
-  that are not the wrong-passphrase error (`ErrUnsupportedKey`,
-  `ErrHeapTransients`) are now fixed strings; `errors.Is` is unchanged, the
-  message text is not. The test that pinned the one-bit promise swept only
-  ciphertext bytes; the new one sweeps the IV and a block splice.
 
 - **Windows: a buffer that had been sealed was no longer locked.**
   `PAGE_NOACCESS` takes a page out of the working set and Windows drops its
@@ -2809,6 +2871,15 @@ First tagged release of the core `secmem` module.
 [secmem-lint/v0.6.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.0
 [secmem-crypto/v0.9.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.9.0
 [0.7.0]: https://github.com/deadpoets/secmem/compare/v0.6.0...v0.7.0
+[0.6.0]: https://github.com/deadpoets/secmem/compare/v0.5.0...v0.6.0
+[0.5.0]: https://github.com/deadpoets/secmem/compare/v0.4.0...v0.5.0
+[0.4.0]: https://github.com/deadpoets/secmem/compare/v0.3.0...v0.4.0
+[secmem-crypto/v0.7.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.7.0
+[secmem-crypto/v0.6.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.6.0
+[secmem-crypto/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.5.0
+[secmem-crypto/v0.4.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.4.0
+[secmem-lint/v0.3.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.3.0
+[secmem-lint/v0.2.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.2.0
 [secmem-crypto/v0.8.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.8.0
 [secmem-lint/v0.4.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.4.0
 [secmem-crypto/v0.3.2]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.3.2

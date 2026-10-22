@@ -348,11 +348,12 @@ type ArenaSlot struct {
 //
 // The underlying slab is one contiguous guarded mmap region: PROT_NONE guard
 // pages bracket the slab's two outer edges, and each slot is followed by a
-// canaryLen-byte canary strip, verified on [ArenaSlot.Release] and on
+// 16-byte canary strip, verified on [ArenaSlot.Release] and on
 // [SecureArena.Destroy]. There are deliberately NO guard pages between slots
 // (a page per gap would defeat the slab's O(1)-OS-overhead purpose); the
 // strips detect inter-slot overflows instead of trapping them.
-// A single emergency janitor registration covers all slots.
+// The whole slab is one registration for [WipeAllSecrets], which covers
+// every slot.
 //
 // slotSize and count must both be > 0, and count must be <= math.MaxInt32.
 //
@@ -388,8 +389,8 @@ type ArenaSlot struct {
 // (16) is held below locked (slotSize+16, so at least 17), that ratio is always
 // under 2 — the band of counts that can kill the process is now narrower than a
 // factor of two, for every arena shape. It was up to 6.2x wide when the index
-// cost 88 bytes per slot. That bound, not the byte count, is what
-// TestArena_HeapMetadataStaysUnderLockedSlab is really pinning.
+// cost 88 bytes per slot. That bound, not the byte count, is what the
+// repository's tests pin.
 //
 // Reaching the band at all takes an unbounded locked budget: on a default
 // RLIMIT_MEMLOCK the slab is refused long before memory is at risk. If you raise
@@ -510,16 +511,27 @@ func NewArena(slotSize, count int, opts ...Option) (*SecureArena, error) {
 // Lifecycle
 // ---------------------------------------------------------------------------
 
-// Destroy wipes the entire slab and releases the mmap'd region.
+// Destroy wipes the entire slab and releases it:
 //
-// Steps:
-//  1. Mark arena destroyed (atomic; new Acquire and borrows fail fast).
-//  2. Acquire exclusive mu lock (waits for all in-flight callbacks to return).
-//  3. Wipe full raw region (REP STOSB + CLFLUSH on amd64).
-//  4. Madvise DONTNEED_LOCKED.
-//  5. Unmap (Linux munlocks first; Darwin deliberately does not — see
-//     mlock_darwin.go).
-//  6. Nil raw — makes IsDestroyed() = true and Destroy idempotent.
+//  1. Refuse new Acquire calls and new borrows at once.
+//  2. Wait for every in-flight borrowing callback to return.
+//  3. Make the slab writable again if [SecureArena.ReadOnly] left it
+//     read-only, and check every slot's canary strip.
+//  4. Overwrite the whole slab with zeros by a routine the compiler cannot
+//     elide; on amd64 and arm64 it also flushes the cache lines (see
+//     [Capabilities.FlushedWipe]).
+//  5. Drop the physical pages and release the range. On Linux and Windows
+//     the range is first kept as a no-access reservation in the destroy-time
+//     quarantine (see [SetQuarantineLimits]), so a slice retained past
+//     Destroy faults; elsewhere, or with the quarantine off, it is unmapped
+//     at once. [SecureArena.IsDestroyed] then reports true.
+//
+// An error reports a problem found on the way; it does not stop the
+// teardown, and the arena is destroyed either way: [ErrCanaryViolation] if a
+// slot's canary strip was overwritten (the wipe still runs), or a wrapped OS
+// error if releasing the range failed, or if write access could not be
+// restored, in which case the range is released without the wipe (joined if
+// several).
 //
 // Destroy is idempotent and goroutine-safe. A second concurrent Destroy blocks
 // on the exclusive lock rather than returning the moment it sees the destroyed
@@ -562,7 +574,7 @@ func (a *SecureArena) Destroy() error {
 }
 
 // IsDestroyed reports whether the arena has been destroyed: its slab wiped and
-// unmapped. While a [SecureArena.Destroy] is still waiting for a borrowing
+// released. While a [SecureArena.Destroy] is still waiting for a borrowing
 // callback to return it reports false, although Acquire and new borrows are
 // already refused — the secrets are still in memory until Destroy returns.
 func (a *SecureArena) IsDestroyed() bool {
@@ -933,7 +945,8 @@ func (s *ArenaSlot) Release() error {
 	return nil
 }
 
-// Index returns the slot's zero-based index within the arena.
+// Index returns the slot's zero-based index within the arena, or -1 for a nil
+// or zero-value slot.
 func (s *ArenaSlot) Index() int {
 	if s == nil || s.arena == nil {
 		return -1

@@ -64,6 +64,13 @@ var ErrAEADOutOfScope = errors.New("secmemcrypto: AEAD used after its WithAESGCM
 // existing field that starts to hold something else; for the toolchains CI
 // runs, the tripwire test's own oracle (the wiped object no longer computes
 // AES-GCM under the key) covers that.
+//
+// key is borrowed for the whole of fn, so [secmem.SecureBuffer.Destroy],
+// [secmem.SecureBuffer.Seal] and the other writers on key block until fn
+// returns, and fn must not call an access method on key itself. A
+// [SealFrom] or [OpenInto] inside fn is a nested borrow of a second buffer:
+// acquire in ascending [secmem.SecureBuffer.LockOrder], i.e. create key
+// before the plaintext or output buffer.
 func WithAESGCM(key *secmem.SecureBuffer, fn func(aead cipher.AEAD) error) error {
 	if key == nil {
 		return errors.New("secmemcrypto: with aes-gcm: nil key buffer")

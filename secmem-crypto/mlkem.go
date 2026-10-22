@@ -33,7 +33,7 @@ import (
 // DecapsulationKey768 which, in go1.26, stores the seed halves d and z
 // verbatim ([32]byte each) and the secret polynomial vector s (about
 // 1.5 KB) next to the public parts. That object is wiped by reflection
-// through its unexported fields (mlkemwipe.go) at the end of every
+// through its unexported fields at the end of every
 // expansion — construction, and each Decapsulate — with a tripwire test
 // pinning the layout and a call that fails closed, returning an error,
 // when the layout is not the one it expects. So the seed and s are on the

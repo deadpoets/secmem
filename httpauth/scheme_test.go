@@ -110,6 +110,23 @@ func TestInsecure_HTTPSEntryRefusesHTTP(t *testing.T) {
 	}
 }
 
+// AllowInsecureHTTP opts in bare entries only: a host pinned to https by a
+// scheme-qualified entry still refuses cleartext.
+func TestInsecure_AllowInsecureHTTPDoesNotOverrideHTTPSEntry(t *testing.T) {
+	t.Parallel()
+	tok := newToken(t, []byte("tok"))
+	srv, c := newPlainServer(t)
+
+	tr := httpauth.NewBearer(tok, srv.Client().Transport, "https://"+hostOf(t, srv))
+	tr.AllowInsecureHTTP = true
+	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
+		t.Fatalf("err = %v, want ErrInsecureScheme", err)
+	}
+	if n := c.count(); n != 0 {
+		t.Fatalf("%d request(s) reached the server, want 0", n)
+	}
+}
+
 func TestInsecure_HTTPSEntryAdmitsHTTPS(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))

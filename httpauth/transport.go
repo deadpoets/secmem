@@ -46,8 +46,10 @@
 //   - The header-writer's pooled sorter. HTTP/1 header writing sorts the
 //     Header map's key/value slices through a sync.Pool-backed sorter; the
 //     []string holding the credential stays reachable from that pool entry
-//     until the sorter is reused, which is the next header write on any
-//     connection in the process.
+//     until a later header write that draws the same sorter overwrites that
+//     slot (which takes at least as many keys as the credential's sorted
+//     position) or replaces the slice with a larger one, or the pool drops
+//     the sorter.
 //   - An [net/http/httptrace.ClientTrace] with WroteHeaderField set is handed
 //     the value as a string, and keeps whatever it keeps.
 //   - Anything a Base transport that logs or caches requests keeps for
@@ -66,8 +68,9 @@
 // otherwise, and a redirect from https://api.example.com to
 // http://api.example.com passes it. The credential is therefore never
 // injected into a request whose scheme is not https unless the caller opts
-// in — with [Transport.AllowInsecureHTTP] for every host, or with an
-// "http://host" entry in Hosts for one — and a cleartext request to an
+// in — with [Transport.AllowInsecureHTTP] for every host not pinned to
+// https by an "https://host" entry, or with an "http://host" entry in Hosts
+// for one — and a cleartext request to an
 // admitted host fails with [ErrInsecureScheme] rather than going out
 // without the header, so the downgrade is visible instead of a puzzling 401.
 //
@@ -124,7 +127,9 @@ type Transport struct {
 	// Header is the header to set (default "Authorization").
 	Header string
 
-	// Prefix precedes the token in the header value, e.g. "Bearer ".
+	// Prefix precedes the token in the header value, e.g. "Bearer ". It is
+	// ignored on a Transport built with NewBasic, which always uses "Basic "
+	// and base64-encodes the username and password.
 	Prefix string
 
 	// Token holds the credential. The Transport does not own it: the caller
@@ -150,7 +155,10 @@ type Transport struct {
 	Hosts []string
 
 	// AllowInsecureHTTP permits injecting the credential into a request whose
-	// URL scheme is not https, for every host the filter admits. Off by
+	// URL scheme is not https, for every host the filter admits through a
+	// bare (scheme-less) entry or an empty filter. It does not override an
+	// entry that carries a scheme: a host listed only as "https://host" still
+	// refuses cleartext with ErrInsecureScheme. Off by
 	// default: without it a plain http URL, or an https→http redirect on an
 	// admitted host, fails with ErrInsecureScheme instead of sending the
 	// token in cleartext. Prefer an "http://host" entry in Hosts, which opts
@@ -212,6 +220,12 @@ func NewBasic(username string, password *secmem.SecureBuffer, base http.RoundTri
 // when the base set it), and drops "h2" from the TLS config's advertised
 // protocols so the server cannot select it either. base itself is not
 // modified.
+//
+// With a nil base, if http.DefaultTransport has been replaced by something
+// other than an *http.Transport, there is nothing to copy: the result is a
+// bare &http.Transport{Proxy: http.ProxyFromEnvironment} with the settings
+// above, and none of the default transport's timeouts, dialer or connection
+// limits.
 func ForceHTTP1(base *http.Transport) *http.Transport {
 	var t *http.Transport
 	switch {
@@ -257,9 +271,14 @@ func ForceHTTP1(base *http.Transport) *http.Transport {
 // not sent. The request body is closed on every path, including the ones
 // that fail before Base is called.
 //
-// Errors: [ErrNilRequest]; [ErrInsecureScheme]; [ErrNoToken] for a nil
-// Token; an error wrapping [secmem.ErrDestroyed] or [secmem.ErrSealed] for a
-// Token in that state; [ErrBasicUsername]; otherwise whatever Base returns.
+// Errors: a non-sentinel error for a nil *Transport; [ErrNilRequest];
+// [ErrInsecureScheme]; [ErrNoToken] for a nil Token; an error wrapping
+// [secmem.ErrDestroyed] (or [secmem.ErrWiped], which wraps it) or
+// [secmem.ErrSealed] for a Token in that state; a "token is empty" error for
+// a live Token of length zero (after Truncate(0)); a "token changed length
+// during read" error when the Token is truncated concurrently with the read;
+// [ErrBasicUsername]; otherwise whatever Base returns. In every case but the
+// last the request is not sent.
 func (t *Transport) RoundTrip(req *http.Request) (*http.Response, error) {
 	if t == nil {
 		closeBody(req)
@@ -473,10 +492,14 @@ func (t *Transport) basicValue() (string, error) {
 // and the copy, and is refused rather than sent as a shorter credential.
 func (t *Transport) copyToken(dst []byte, n int) error {
 	if n == 0 {
-		// Len is 0 for a destroyed buffer and never for a live one (the
-		// constructors refuse empty input). Ask CopyOut anyway so the error
-		// names the real state rather than guessing at it.
-		if _, err := t.Token.CopyOut(dst, 0); err != nil {
+		// Len is 0 for a destroyed buffer, and also for a live one that was
+		// truncated to nothing (the constructors refuse empty input, but
+		// Truncate(0) does not). Ask CopyOut so a destroyed, wiped or sealed
+		// buffer reports its state; any other answer — for a live empty
+		// buffer it is an offset-out-of-range error — means the token is
+		// simply empty, and that is what the caller is told.
+		_, err := t.Token.CopyOut(dst, 0)
+		if errors.Is(err, secmem.ErrDestroyed) || errors.Is(err, secmem.ErrSealed) {
 			return fmt.Errorf("httpauth: reading token: %w", err)
 		}
 		return errors.New("httpauth: token is empty")

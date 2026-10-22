@@ -1,7 +1,8 @@
 // Package redact sanitizes strings destined for logs and other text sinks:
 // it masks credential-shaped substrings and neutralizes log-injection
-// sequences (CWE-117). It is the boundary-level complement to secmem.Secret —
-// where Secret makes a held value self-redacting, redact scrubs free-form
+// sequences (CWE-117). It is the boundary-level complement to
+// [github.com/deadpoets/secmem.Secret] — where Secret makes a held value
+// self-redacting, redact scrubs free-form
 // text that has already been assembled (a log line, an error message).
 //
 // HONESTY — what this is and is not:
@@ -11,7 +12,8 @@
 //     entropy); it cannot catch a secret that looks like ordinary prose, and
 //     a determined format will always slip a regex. Never rely on it as the
 //     only thing between a secret and a log — keep secrets in a
-//     [secmem.SecureBuffer]/[secmem.Secret] and never format them in the
+//     [github.com/deadpoets/secmem.SecureBuffer] or
+//     [github.com/deadpoets/secmem.Secret] and never format them in the
 //     first place. redact exists to reduce blast radius when that discipline
 //     slips, not to license slipping.
 //
@@ -53,7 +55,11 @@
 //     credential-shaped key but not for a value logged under an innocent one.
 //
 // The package is stdlib-only and safe for concurrent use: a [Sanitizer] is
-// immutable after construction.
+// immutable after construction. [NewSanitizer] copies the rule and allowlist
+// slices it is given, and an [Option] configures only the constructor, so
+// nothing the caller holds can change a built Sanitizer. (The compiled
+// patterns and [Rule.Filter] functions are shared, not copied; a
+// [regexp.Regexp] is safe for concurrent use and a Filter must be.)
 package redact
 
 import (
@@ -70,7 +76,7 @@ type Category string
 
 const (
 	// CategoryInjection covers CWE-117 log-injection neutralization (CRLF,
-	// ANSI escapes, shell metacharacters). Not a secrecy control.
+	// ANSI CSI escapes, ${…} and $(…) shell expansions). Not a secrecy control.
 	CategoryInjection Category = "injection"
 
 	// CategorySecret covers credential-shaped substrings — key=value pairs
@@ -112,7 +118,8 @@ func (r Rule) tag() string {
 }
 
 // Sanitizer applies an ordered set of rules to a string. It is immutable
-// after construction and safe for concurrent use.
+// after construction — [NewSanitizer] copies its inputs and no [Option] can
+// reach a built Sanitizer — and safe for concurrent use.
 type Sanitizer struct {
 	rules     []Rule
 	allowlist []*regexp.Regexp
@@ -138,8 +145,8 @@ const truncatedTag = "[REDACTED:truncated]"
 // rune boundary) BEFORE any rule runs, and the cut is suffixed with
 // "[REDACTED:truncated]"; that is what bounds the work a hostile input can
 // cause. The result is cut again the same way if replacement tags grew it
-// past n, so the output is never longer than n plus the marker. Zero disables
-// truncation. The constructor default is 4096.
+// past n, so the output is never longer than n plus the marker. Zero or a
+// negative n disables truncation. The constructor default is 4096.
 func WithMaxLen(n int) Option {
 	return func(c *sanitizerConfig) { c.maxLen = n }
 }

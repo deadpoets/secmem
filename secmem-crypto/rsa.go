@@ -32,7 +32,7 @@ import (
 // FIPS-form key (a second copy of every secret integer as bigmod limbs,
 // which x509's parser builds and every Sign uses) — signs with the standard
 // library, then wipes both: the FIPS-form key by reflection through its
-// unexported fields (rsawipe.go; the layout is pinned by a tripwire test
+// unexported fields (the layout is pinned by a tripwire test
 // and Sign returns an error, not a signature, when it cannot be located)
 // and every exported big.Int limb by hand.
 //
@@ -51,7 +51,7 @@ import (
 // math/big's pooled division scratch is not among them: for a two-prime
 // key nothing on this path divides, and the one derivation this module
 // performs itself — the CRT exponents of an OpenSSH-format key — is
-// computed over stack arrays (modreduce.go). A deprecated multi-prime key
+// computed over stack arrays. A deprecated multi-prime key
 // is the exception: crypto/rsa derives its CRT values with math/big, whose
 // scratch is returned to a sync.Pool unwiped.
 //

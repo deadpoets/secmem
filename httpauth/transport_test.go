@@ -353,6 +353,37 @@ func TestSealedToken_ErrSealedThenWorksAfterUnseal(t *testing.T) {
 	}
 }
 
+// A live Token truncated to nothing is refused with a plain "token is empty"
+// error — not CopyOut's offset-out-of-range error, and not a state sentinel
+// it is not in — and nothing is sent.
+func TestEmptyToken_RefusedAsEmpty(t *testing.T) {
+	t.Parallel()
+	for _, basic := range []bool{false, true} {
+		tok := newToken(t, []byte("tok"))
+		if err := tok.Truncate(0); err != nil {
+			t.Fatalf("Truncate(0): %v", err)
+		}
+		srv, c := newServer(t)
+		var tr *httpauth.Transport
+		if basic {
+			tr = httpauth.NewBasic("alice", tok, srv.Client().Transport)
+		} else {
+			tr = httpauth.NewBearer(tok, srv.Client().Transport)
+		}
+		err := do(t, tr, srv.URL)
+		if err == nil || !strings.Contains(err.Error(), "token is empty") {
+			t.Fatalf("basic=%v: err = %v, want a \"token is empty\" error", basic, err)
+		}
+		if strings.Contains(err.Error(), "out of range") ||
+			errors.Is(err, secmem.ErrDestroyed) || errors.Is(err, secmem.ErrSealed) {
+			t.Fatalf("basic=%v: err = %v, want only \"token is empty\"", basic, err)
+		}
+		if n := c.count(); n != 0 {
+			t.Fatalf("basic=%v: %d request(s) reached the server, want 0", basic, n)
+		}
+	}
+}
+
 func TestNilToken_ErrNoToken(t *testing.T) {
 	t.Parallel()
 	srv, c := newServer(t)

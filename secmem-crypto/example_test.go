@@ -265,6 +265,17 @@ func ExampleArgon2Pool() {
 	if _, err := secmem.EnsureMemlockLimit(256 << 20); err != nil {
 		panic(err) // raise the budget once, before the first allocation
 	}
+
+	// The passphrase lives in a buffer and is borrowed around the call.
+	// It is created first on purpose: Derive borrows a workspace and key
+	// itself, and an outer borrow must come first in ascending
+	// SecureBuffer.LockOrder, i.e. its buffer must be the oldest.
+	passphrase, err := secmem.NewBuffer([]byte("correct horse battery staple"))
+	if err != nil {
+		panic(err)
+	}
+	defer passphrase.Destroy()
+
 	pool, err := secmemcrypto.NewArgon2Pool(2, secmemcrypto.Argon2Memory, secmemcrypto.Argon2Threads)
 	if err != nil {
 		panic(err)
@@ -280,7 +291,9 @@ func ExampleArgon2Pool() {
 	params := secmemcrypto.Argon2Params{
 		Time: secmemcrypto.Argon2Time, Memory: secmemcrypto.Argon2Memory, Threads: secmemcrypto.Argon2Threads,
 	}
-	if err := pool.Derive([]byte("correct horse battery staple"), []byte("16-byte-salt-xxx"), params, key); err != nil {
+	if err := passphrase.WithBytesErr(func(p []byte) error {
+		return pool.Derive(p, []byte("16-byte-salt-xxx"), params, key)
+	}); err != nil {
 		panic(err)
 	}
 	// key now holds the tag, in locked memory; the pool's working state is

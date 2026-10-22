@@ -85,8 +85,8 @@ to contributions:
 ## Maintaining the forks
 
 `secmem-crypto` carries copies of other people's code: x/crypto's `argon2`,
-`blake2b`, `bcrypt_pbkdf` and `blowfish`, the standard library's X25519
-ladder, and the EFF wordlist. Each exists because the upstream leaves key
+`blake2b`, `bcrypt_pbkdf`, `blowfish` and `scrypt`, the standard library's
+X25519 ladder, and the EFF wordlist. Each exists because the upstream leaves key
 material in memory that nothing exported can reach — the reasons are in each
 fork's `doc.go`. A copy means the upstream's later fixes are not ours
 automatically, so this is the standing procedure for noticing.
@@ -134,9 +134,9 @@ decision, and the decision is yours, not the tool's:
    all, there is nothing to review: `go run ./internal/forkcheck -update`
    advances `unchanged_through` by itself.
 2. If it touches the algorithm, port it by hand. The fork's differential
-   tests against upstream (`TestMatchesUpstream`,
-   `TestBlowfish_MatchesUpstream`) and its RFC vectors are what tell you the
-   port is faithful; run them before and after. Then move `fork_point` in
+   tests against upstream (`TestMatchesUpstream` in `internal/argon2` and
+   `internal/scrypt`, `TestBlowfish_MatchesUpstream`) and its RFC vectors
+   are what tell you the port is faithful; run them before and after. Then move `fork_point` in
    `forks.json` **and** the prose that states it — the manifest lists those
    files, and `forks_test.go` fails while any of them disagrees. Drop any
    `reviewed` entries at or below the new fork point; the manifest will not

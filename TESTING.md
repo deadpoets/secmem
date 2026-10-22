@@ -74,10 +74,12 @@ that is said outright rather than dressed up.
   a change that needs core API newer than the tag in `go.mod` fails on the
   PR rather than for the first consumer. Every other job resolves the core
   from the sibling tree.
-- **Cross-compiled** for linux/arm64, darwin/arm64, darwin/amd64, windows/arm64
-  and windows/386 (build + vet + test-binary compile) so the whole matrix at
-  least builds. The platforms with no secure-memory API — freebsd/amd64,
-  openbsd/amd64, wasip1/wasm, which take the LOUD heap stub — are
+- **Cross-compiled** for linux/arm64, darwin/arm64, darwin/amd64,
+  windows/arm64, windows/amd64 (executed by the test job too; this row gives
+  it the full `go vet`) and windows/386 (build + vet + test-binary compile) so
+  the whole matrix at least builds. The platforms with no secure-memory API —
+  freebsd/amd64, openbsd/amd64, wasip1/wasm and plan9/amd64, which take the
+  LOUD heap stub — are
   compile-checked the same way and **never executed** anywhere in CI; that is
   what the README's "other" column means by compile-checked.
 - **Fuzz seed corpora** run as ordinary tests in CI on every PR. Active,
@@ -85,7 +87,7 @@ that is said outright rather than dressed up.
   every package of the core and `secmem-crypto` modules, three minutes each by
   default, with any new failing input uploaded as an artifact so a finding
   survives the runner. The Makefile's `fuzz` target is the local equivalent.
-- **CodeQL** runs on every push and PR.
+- **CodeQL** runs on pushes to `main`, on PRs into `main`, and weekly.
 - **The guard-page fault proofs run out-of-process.** Recovering a hardware
   fault in-process with `debug.SetPanicOnFault` trips a Go runtime bug on
   windows/amd64 with AMX-capable CPUs
@@ -290,7 +292,7 @@ Three regimes, and they differ by orders of magnitude:
 
 | Regime | Bound by | Benchmarks |
 |---|---|---|
-| Allocation / teardown | syscalls — `mmap`, `mprotect`, `mlock`, 4× `madvise`, `munlock`, `munmap` | `BenchmarkNewBuffer`, `BenchmarkNewEmptyBuffer`, `BenchmarkNewDestroy`, `BenchmarkScope` |
+| Allocation / teardown | syscalls — `mmap`, `mprotect`, `mlock`, 4× `madvise`, then at teardown the `MAP_FIXED` replace that moves the range into the destroy quarantine (Linux; the `munmap` is deferred until the region is evicted), or `munlock` + `munmap` where it is not held | `BenchmarkNewBuffer`, `BenchmarkNewEmptyBuffer`, `BenchmarkNewDestroy`, `BenchmarkScope` |
 | Wipe | memory bandwidth, plus the cache-flush loop | `BenchmarkSecureWipeSlice`, `BenchmarkSecureWipe_4K`, `BenchmarkSecureWipe_64K` |
 | Borrow / access | a handful of atomic operations | `BenchmarkWithBytesErr`, `BenchmarkByteAt`, `BenchmarkCopyOut`, `BenchmarkBufferRWLock_*` |
 | Contention | one shared cache line — never a lock, never the data | `BenchmarkArenaBorrowParallel`, `BenchmarkArenaChurnParallel`, `BenchmarkBufferRWLock_RLockUnlock_Parallel` (run with `-cpu 1,2,4,8,16`) |
@@ -345,7 +347,7 @@ Two conclusions worth keeping:
 Both hot-path mutexes are gone. `bufferRWLock`'s read side became one atomic
 `Add` in each direction, biased negative while a writer is active or waiting so
 a single `Add` both tests for writers and enrolls the reader; everything that
-blocks still blocks in `cond.Wait`, so the four synctest tests pass unchanged
+blocks still blocks in `cond.Wait`, so the synctest tests pass unchanged
 and writer preference, `tryLock`'s refusal contract, and the drain-before-`munmap`
 guarantee are intact (`buflock.go` carries the full missed-wakeup argument, and
 `TestBufferRWLock_ExclusionStress` hammers it on real threads). The arena's

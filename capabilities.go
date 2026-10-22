@@ -18,8 +18,8 @@ import (
 // the platform as a whole ([Probe]) or for one specific allocation
 // ([SecureBuffer.Capabilities], [SecureArena.Capabilities]).
 //
-// Every field is stated per the platform guarantee matrix in the package
-// documentation. A false field is not an error — it is the truth about what
+// Every field is stated per the platform guarantee matrix in README.md. A
+// false field is not an error — it is the truth about what
 // this build, kernel, and allocation provide. Use [Capabilities.Warnings] to
 // enumerate the protections NOT in force.
 type Capabilities struct {
@@ -44,7 +44,8 @@ type Capabilities struct {
 
 	// MemfdSecret reports kernel isolation: the pages are invisible to
 	// /proc/<pid>/mem, ptrace, and other readers of process memory.
-	// Linux amd64/arm64 with kernel 5.14+ and CONFIG_SECRETMEM only, and can
+	// Linux amd64/arm64 only, kernel 5.14+ with CONFIG_SECRETMEM; on arm64 the
+	// kernel also needs rodata=full or equivalent (see KERNELS.md). It can
 	// fail per-allocation.
 	MemfdSecret bool
 
@@ -208,11 +209,18 @@ func capsFromAlloc(info allocInfo) Capabilities {
 // force; per-allocation truth is [SecureBuffer.Capabilities].
 //
 // Probe is not cached: it reflects the kernel and limits at the moment of the
-// call. If even the probe allocation fails, the report is fully degraded
-// (every protection false). That is what an unsupported platform looks like,
-// but it is also what a process that has used up its lock budget gets, with
-// every existing buffer still locked and guarded: Probe cannot tell the two
-// apart, so probe at startup, before the budget is spent, and use
+// call. On a platform with no lockable off-heap memory the probe allocation
+// succeeds on the Go heap and the report has Insecure set (the probe is a
+// report, not an opt-in to [WithInsecureFallback]).
+//
+// If the probe allocation fails, every per-allocation field (OffHeap,
+// Mlocked, MemfdSecret, NoDump, NoFork, GuardPages, DestroyQuarantine) is
+// false, while the process-wide fields (FlushedWipe, RuntimeSecret,
+// FrameScrub, AsyncPreemptSuppressed, VectorRegisterClear, GPRegisterClear)
+// are still reported. That is what a process that has used up its lock
+// budget gets, with every existing buffer still locked and guarded, and it
+// is indistinguishable from a platform whose allocator refuses outright:
+// probe at startup, before the budget is spent, and use
 // [SecureBuffer.Capabilities] for the truth about a buffer you hold.
 func Probe() Capabilities {
 	region, _, info, err := allocSecretMem(1)
@@ -340,8 +348,13 @@ func (c Capabilities) String() string {
 // the honest per-allocation counterpart to [Probe] (memfd_secret can fail
 // per-call and fall through to mmap+mlock; this reflects what happened).
 //
-// The report is fixed at construction and remains valid after Destroy.
-// A nil receiver reports a fully degraded posture.
+// The allocation facts are fixed at construction and remain valid after
+// Destroy. DestroyQuarantine and AsyncPreemptSuppressed are process-wide and
+// reflect the moment of the call: the first follows [SetQuarantineLimits],
+// the second turns false if suppression has failed.
+//
+// A nil receiver reports every per-allocation field false; the process-wide
+// fields are reported as for any other buffer.
 func (s *SecureBuffer) Capabilities() Capabilities {
 	if s == nil || s.bufferState == nil {
 		return capsFromAlloc(allocInfo{})
@@ -352,8 +365,12 @@ func (s *SecureBuffer) Capabilities() Capabilities {
 // Capabilities reports how this arena's slab is actually backed. Every slot
 // shares the slab's single allocation, so one report covers them all.
 //
-// The report is fixed at construction and remains valid after Destroy.
-// A nil receiver reports a fully degraded posture.
+// The allocation facts are fixed at construction and remain valid after
+// Destroy. DestroyQuarantine and AsyncPreemptSuppressed are process-wide and
+// reflect the moment of the call, as for [SecureBuffer.Capabilities].
+//
+// A nil receiver reports every per-allocation field false; the process-wide
+// fields are reported as for any other arena.
 func (a *SecureArena) Capabilities() Capabilities {
 	if a == nil || a.arenaState == nil {
 		return capsFromAlloc(allocInfo{})

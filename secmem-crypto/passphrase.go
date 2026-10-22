@@ -98,7 +98,7 @@ func selectWord(slot []byte, words wordList, idx int64) int {
 }
 
 // drawWordIndex draws a uniform index in [0, bound) with crypto/rand — one
-// rejection-free [rand.Int] draw, exactly as the previous list[idx]
+// [rand.Int] call (which rejection-samples internally), exactly as the previous list[idx]
 // implementation did, so the same random bytes still select the same word.
 // The big.Int the draw lands in is zeroed before it is dropped.
 func drawWordIndex(bound int64) (int64, error) {
@@ -112,7 +112,8 @@ func drawWordIndex(bound int64) (int64, error) {
 }
 
 // GenerateDicewarePassphrase draws n words uniformly at random — via
-// crypto/rand, one rejection-free draw per word — from the 7776-word EFF
+// crypto/rand, one unbiased draw per word (crypto/rand.Int, which
+// rejection-samples internally) — from the 7776-word EFF
 // long wordlist (~12.9 bits of entropy per word: log2(7776)), joins them
 // with single spaces, and writes the result directly into a fresh
 // SecureBuffer the caller owns and must Destroy. n must be >= 1; the EFF's
@@ -121,8 +122,8 @@ func drawWordIndex(bound int64) (int64, error) {
 // Individual words are public wordlist content, but which ones get chosen,
 // and in what order, is exactly the passphrase. So every selected word is
 // written straight into the returned buffer, inside its own borrowing
-// closure, by a constant-access-pattern gather over the whole list (see
-// [selectWord]): the passphrase never exists as a []string of chosen words,
+// closure, by a constant-access-pattern gather over the whole list: the
+// passphrase never exists as a []string of chosen words,
 // a joined heap string, or a []byte anywhere else, and the reads of the
 // shared wordlist do not reveal which entries were chosen. The buffer is
 // allocated for n longest words and trimmed to the real length with
@@ -136,8 +137,8 @@ func drawWordIndex(bound int64) (int64, error) {
 // rejection sampling, and the index in the transient big.Int) and the
 // write offsets inside the SecureBuffer, which advance by each chosen
 // word's length. Those writes land in process-private locked memory, not in
-// a shared page, so they are outside the shared-table channel selectWord
-// closes; they could at most leak cumulative word lengths to an observer
+// a shared page, so they are outside the shared-table channel the
+// constant-access-pattern gather closes; they could at most leak cumulative word lengths to an observer
 // already co-resident on the core, which the threat model excludes.
 //
 // opts may carry [BufferOptions] for the returned buffer.

@@ -34,8 +34,8 @@ import (
 
 // Argon2Workspace is a locked, reusable working set for one Argon2 cost
 // profile. Create one with [NewArgon2Workspace], derive with
-// [Argon2Workspace.Derive] as many times as needed, and [Destroy] it when
-// done. One derivation runs at a time; concurrent Derive calls queue.
+// [Argon2Workspace.Derive] as many times as needed, and
+// [Argon2Workspace.Destroy] it when done. One derivation runs at a time; concurrent Derive calls queue.
 //
 // Between derivations the region holds zeros: every Derive ends with
 // secmem's cache-flushing wipe over the whole region, whether or not it
@@ -126,7 +126,8 @@ func (w *Argon2Workspace) Destroy() error {
 	return w.mem.Destroy()
 }
 
-// Argon2Pool is a fixed set of [Argon2Workspace]s for concurrent callers.
+// Argon2Pool is a fixed set of [Argon2Workspace] values for concurrent
+// callers.
 // Its size is the ceiling on simultaneous derivations and therefore on
 // locked memory (size × [Argon2Workspace.Size]); a Derive that finds every
 // workspace busy waits for one. All workspaces are allocated up front, so
