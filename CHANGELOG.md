@@ -13,9 +13,16 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
-The core's API pass before the 1.0 freeze. After 1.0, removing or renaming
-anything exported needs a new module path, so everything below that breaks
-callers is done now; each entry says what to write instead.
+## [1.0.0-rc.1] - 2026-10-22
+
+The first release candidate for 1.0. 1.0 is the stability commitment:
+after it, removing or renaming anything exported needs a new module path, so
+this release makes every break the API pass decided on, and each entry below
+that breaks callers says what to write instead. Also here: the destroy-time
+quarantine and `WithClosedAtRest`, an `httpauth` that will not be built
+without being told which hosts get the credential, and every package's
+documentation checked against the code. A pre-release is never selected by
+`go get` on its own; ask for `@v1.0.0-rc.1` to try it.
 
 ### Added
 
@@ -26,7 +33,6 @@ callers is done now; each entry says what to write instead.
   replaces `NewSyscallSafeBuffer` and also applies to `NewEmptyBuffer`,
   `NewBufferFromReader` and `NewArena`, which the old constructor could not
   serve.
-
 - **`WithClosedAtRest`: a buffer that is no-access except while in use.** A
   construction option for `SecureBuffer`. The pages are `PROT_NONE` /
   `PAGE_NOACCESS` at rest, opened for a borrowing callback or an access
@@ -39,7 +45,6 @@ callers is done now; each entry says what to write instead.
   pageable while closed; `Seal` encrypts for that reason and this option does
   not. It is off by default, reported as `Capabilities().ClosedAtRest`, and
   refused by `NewArena`.
-
 - **Destroy-time quarantine (Linux, Windows).** `Destroy` used to unmap a
   region, and the next allocation was usually given the same addresses, so a
   slice wrongly retained from a callback became a view of a different live
@@ -128,17 +133,13 @@ callers is done now; each entry says what to write instead.
   a secret its own `SecureBuffer` where that matters. Measured cost: none on
   the contended path, up to about 10% on a serial acquire/release loop over
   a large arena.
-- **The core's and `secmem-crypto`'s `go.mod` carry `toolchain go1.27.3`**
-  (`secmem-lint` shipped it in v0.6.0), the release CI pins. A local `go` switches to it by itself; consumers ignore the line. CI
-  moves to go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`, reachable from
-  `secmem-crypto`).
+- **The core's `go.mod` carries `toolchain go1.27.3`**, the release CI pins.
+  A local `go` switches to it by itself; consumers ignore the line. CI moves
+  to go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`).
 - **The Go pins are checked, not remembered.** `go-current.sh` fails when a
   pin is not the newest patch of its release, when the pin sites disagree, or
   (with `--local`) when the go that runs is not the pin. It runs on every PR
   and every six hours, in `release.sh`, and in the pre-push hook.
-- **`secmem-crypto`: `golang.org/x/crypto` moves to v0.58.0.** It fixes nothing
-  this module reaches; the forks' review against it is recorded in
-  `forks.json`.
 
 ### Removed
 
@@ -160,6 +161,34 @@ callers is done now; each entry says what to write instead.
 - **`TerminationWipeTimeout`.** An exported constant's value is frozen with
   the API. The termination handler still waits five seconds for
   `WipeAllSecrets`, as documented on `InstallTerminationWipe`.
+
+## [secmem-crypto/v0.10.1] - 2026-10-22
+
+Documentation corrections, and the toolchain and dependency moves. No API or
+behaviour change. It still requires core v0.8.0, and builds against
+v1.0.0-rc.1 as well.
+
+### Changed
+
+- **`go.mod` carries `toolchain go1.27.3`**, the release CI pins. A local
+  `go` switches to it by itself; consumers ignore the line. CI moves to
+  go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`, which this module
+  reaches).
+- **`secmem-crypto`: `golang.org/x/crypto` moves to v0.58.0.** It fixes nothing
+  this module reaches; the forks' review against it is recorded in
+  `forks.json`.
+- **Documentation.** Every exported doc and the README were checked against
+  the code: the KDF and AEAD helpers say what is on the heap and when it is
+  wiped, the in-place writers state the ascending-`LockOrder` rule for nested
+  borrows, `WithAESGCM` says its key stays borrowed while the callback runs,
+  `ExampleArgon2Pool` keeps its passphrase in a `SecureBuffer`, and exported
+  docs no longer name source files or unexported functions.
+
+## [secmem-lint/v0.6.1] - 2026-10-22
+
+Two bugs in v0.6.0's suppression and wrapper handling. No API change; a
+project that relied on a bare `//nolint // reason` not suppressing anything
+sees fewer findings, and one with multi-closure wrappers may see more.
 
 ### Fixed
 
@@ -2899,7 +2928,10 @@ First tagged release of the core `secmem` module.
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
 [secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.8.0...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.1...HEAD
+[1.0.0-rc.1]: https://github.com/deadpoets/secmem/compare/v0.8.0...v1.0.0-rc.1
+[secmem-crypto/v0.10.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.1
+[secmem-lint/v0.6.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.1
 [secmem-lint/v0.6.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.0
 [secmem-crypto/v0.9.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.9.0
 [0.7.0]: https://github.com/deadpoets/secmem/compare/v0.6.0...v0.7.0
