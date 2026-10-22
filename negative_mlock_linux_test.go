@@ -86,11 +86,11 @@ func init() {
 	}
 
 	// A panic here fails the child (non-zero exit) and the parent reports it.
-	// NewSyscallSafeBuffer forces the mmap+mlock path (no memfd), so mlock is
+	// WithoutMemfdSecret forces the mmap+mlock path (no memfd), so mlock is
 	// unavoidably attempted.
-	if buf, err := NewSyscallSafeBuffer([]byte("must-fail-cleanly")); err == nil {
+	if buf, err := NewBuffer([]byte("must-fail-cleanly"), WithoutMemfdSecret()); err == nil {
 		_ = buf.Destroy()
-		os.Stderr.WriteString("NewSyscallSafeBuffer succeeded under RLIMIT_MEMLOCK=0 — expected an error\n")
+		os.Stderr.WriteString("NewBuffer(WithoutMemfdSecret) succeeded under RLIMIT_MEMLOCK=0 — expected an error\n")
 		os.Exit(1)
 	}
 

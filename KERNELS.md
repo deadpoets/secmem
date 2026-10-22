@@ -186,6 +186,10 @@ executed. Reported posture, verbatim from `Probe().String()`:
 | Libre Renegade · arm64 | `[off-heap mlock memfd_secret no-dump no-fork wipe+flush frame-scrub preempt-suppress guard-pages] missing:[register-scrub]` |
 | Hyper-V guest · amd64 | `[off-heap mlock memfd_secret no-dump no-fork wipe+flush frame-scrub preempt-suppress guard-pages] missing:[register-scrub]` |
 
+These runs predate v1.0, which renamed the `register-scrub` flag to
+`runtime-secret` (the field is now `Capabilities.RuntimeSecret`) and added
+`destroy-quarantine`.
+
 `frame-scrub` is new on arm64: the stack-frame wipe was real assembly on amd64
 and a **no-op stub** on arm64 until this run, so every arm64 build without
 `GOEXPERIMENT=runtimesecret` reserved no headroom and erased no residue while

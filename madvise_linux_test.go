@@ -146,15 +146,15 @@ func runVMFlagProofs(t *testing.T, buf *SecureBuffer) {
 }
 
 // TestMadvise_AnonTierFlagsInForce proves the flags on the mmap+mlock tier,
-// which NewSyscallSafeBuffer always uses (never memfd).
+// which WithoutMemfdSecret always uses (never memfd).
 func TestMadvise_AnonTierFlagsInForce(t *testing.T) {
-	buf, err := NewSyscallSafeBuffer([]byte("no-thp-copies-of-me"))
+	buf, err := NewBuffer([]byte("no-thp-copies-of-me"), WithoutMemfdSecret())
 	if err != nil {
-		t.Skipf("NewSyscallSafeBuffer: %v (an mlock refusal is an environment condition)", err)
+		t.Skipf("NewBuffer(WithoutMemfdSecret): %v (an mlock refusal is an environment condition)", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 	if buf.Capabilities().MemfdSecret {
-		t.Fatal("NewSyscallSafeBuffer produced a memfd_secret-backed buffer; this test is the anon tier's proof")
+		t.Fatal("NewBuffer(WithoutMemfdSecret) produced a memfd_secret-backed buffer; this test is the anon tier's proof")
 	}
 	runVMFlagProofs(t, buf)
 }
@@ -249,9 +249,9 @@ func ksmMergeAnyChild(t *testing.T) {
 
 	// Subject: the anon tier's secret area, which the allocator advised
 	// MADV_UNMERGEABLE after the same process-wide opt-in marked it.
-	buf, err := NewSyscallSafeBuffer([]byte("never-deduplicated"))
+	buf, err := NewBuffer([]byte("never-deduplicated"), WithoutMemfdSecret())
 	if err != nil {
-		t.Skipf("NewSyscallSafeBuffer: %v (an mlock refusal is an environment condition)", err)
+		t.Skipf("NewBuffer(WithoutMemfdSecret): %v (an mlock refusal is an environment condition)", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 	flags, err := vmFlagsFor(secretAreaAddr(buf))

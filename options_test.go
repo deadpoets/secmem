@@ -81,9 +81,9 @@ func TestConstructors_AcceptOptions(t *testing.T) {
 	}
 	_ = buf.Destroy()
 
-	buf, err = NewSyscallSafeBuffer([]byte("syscall-safe-opts"), WithInsecureFallback())
+	buf, err = NewBuffer([]byte("syscall-safe-opts"), WithoutMemfdSecret(), WithInsecureFallback())
 	if err != nil {
-		t.Fatalf("NewSyscallSafeBuffer: %v", err)
+		t.Fatalf("NewBuffer(WithoutMemfdSecret): %v", err)
 	}
 	_ = buf.Destroy()
 

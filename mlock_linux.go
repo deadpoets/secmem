@@ -260,8 +260,8 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 }
 
 // allocMapAnon allocates the guarded L3 layout only — no memfd_secret
-// attempt. Used by NewSyscallSafeBuffer for ingestion paths where data
-// arrives from a kernel-controlled channel.
+// attempt. Used for [WithoutMemfdSecret], whose buffers a kernel path that
+// pins user pages must be able to use.
 func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	pageSize, rounded, total, err := guardedSizes(size)
 	if err != nil {

@@ -129,7 +129,7 @@ func run(socketPath string, allowHeapTransients bool, logger *slog.Logger) error
 
 	// Core dumps off, no-new-privs on (Linux; best effort per platform).
 	// A crash after this point does not write key pages to disk.
-	level, err := secmem.HardenProcess(context.Background())
+	level, err := secmem.HardenProcess()
 	if err != nil {
 		// Report and continue: partial hardening beats refusing to run,
 		// but the operator must see exactly what they did not get.

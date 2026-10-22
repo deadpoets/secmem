@@ -33,11 +33,14 @@ func ExampleParsePrivateKey() {
 	file := pem.EncodeToMemory(block)
 
 	// Read the file into locked memory rather than os.ReadFile's heap slice.
-	buf, _, err := secmem.NewBufferFromReader(bytes.NewReader(file), len(file))
+	buf, err := secmem.NewEmptyBuffer(len(file))
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer buf.Destroy()
+	if _, err := buf.ReadFrom(bytes.NewReader(file)); err != nil {
+		log.Fatal(err)
+	}
 
 	var signer secmemcrypto.Signer
 	if err := buf.WithBytesErr(func(b []byte) error {

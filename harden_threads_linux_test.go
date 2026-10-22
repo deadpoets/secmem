@@ -4,7 +4,6 @@ package secmem
 
 import (
 	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -92,7 +91,7 @@ func TestHardenProcess_NoNewPrivsOnEveryThread(t *testing.T) {
 		<-started
 	}
 
-	level, err := HardenProcess(context.Background())
+	level, err := HardenProcess()
 	if err != nil {
 		t.Fatalf("HardenProcess: %v", err)
 	}

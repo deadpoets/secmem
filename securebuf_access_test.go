@@ -208,14 +208,14 @@ func TestNewBufferFromReader(t *testing.T) {
 	t.Parallel()
 
 	want := []byte("reader-secret")
-	buf, n, err := NewBufferFromReader(bytes.NewReader(want), len(want))
+	buf, err := NewBufferFromReader(bytes.NewReader(want), len(want))
 	if err != nil {
 		t.Fatalf("NewBufferFromReader: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
-	if n != int64(len(want)) {
-		t.Fatalf("NewBufferFromReader read %d bytes, want %d", n, len(want))
+	if buf.Len() != len(want) {
+		t.Fatalf("NewBufferFromReader Len() = %d, want %d", buf.Len(), len(want))
 	}
 	var match bool
 	if err := buf.WithBytesErr(func(b []byte) error {

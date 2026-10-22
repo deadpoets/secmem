@@ -58,6 +58,7 @@ package redact
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -118,8 +119,16 @@ type Sanitizer struct {
 	maxLen    int
 }
 
-// Option configures a [Sanitizer].
-type Option func(*Sanitizer)
+// Option configures a [Sanitizer] at construction. It acts on the
+// constructor's settings, never on a built Sanitizer, which no option can
+// change.
+type Option func(*sanitizerConfig)
+
+// sanitizerConfig collects the effects of Options.
+type sanitizerConfig struct {
+	allowlist []*regexp.Regexp
+	maxLen    int
+}
 
 // truncatedTag is appended to a message cut by [WithMaxLen].
 const truncatedTag = "[REDACTED:truncated]"
@@ -132,7 +141,7 @@ const truncatedTag = "[REDACTED:truncated]"
 // past n, so the output is never longer than n plus the marker. Zero disables
 // truncation. The constructor default is 4096.
 func WithMaxLen(n int) Option {
-	return func(s *Sanitizer) { s.maxLen = n }
+	return func(c *sanitizerConfig) { c.maxLen = n }
 }
 
 // WithAllowlist sets patterns that exempt a [CategoryEntropy] match from
@@ -140,20 +149,26 @@ func WithMaxLen(n int) Option {
 // match is spared when an allowlist match ends exactly where it begins (a
 // label such as "commit=" directly before a hash) or contains it entirely (a
 // pattern that matches label and value together). Only entropy matches
-// consult the allowlist.
+// consult the allowlist. The slice is copied; changing it afterwards does not
+// change the Sanitizer.
 func WithAllowlist(patterns []*regexp.Regexp) Option {
-	return func(s *Sanitizer) { s.allowlist = patterns }
+	return func(c *sanitizerConfig) { c.allowlist = patterns }
 }
 
 // NewSanitizer builds a Sanitizer from rules and options. Rules are applied in
-// slice order, so put higher-confidence rules first. The default max length is
-// 4096 characters.
+// slice order, so put higher-confidence rules first. The rules slice is
+// copied, so the Sanitizer is unaffected by later changes to it. The default
+// max length is 4096 bytes.
 func NewSanitizer(rules []Rule, opts ...Option) *Sanitizer {
-	s := &Sanitizer{rules: rules, maxLen: 4096}
+	cfg := sanitizerConfig{maxLen: 4096}
 	for _, opt := range opts {
-		opt(s)
+		opt(&cfg)
 	}
-	return s
+	return &Sanitizer{
+		rules:     slices.Clone(rules),
+		allowlist: slices.Clone(cfg.allowlist),
+		maxLen:    cfg.maxLen,
+	}
 }
 
 // maxSanitizePasses bounds the fixpoint iteration in [Sanitize]. Tags never

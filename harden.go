@@ -1,11 +1,9 @@
 package secmem
 
-import (
-	"context"
-	"sync"
-)
+import "sync"
 
 // HardenLevel is a bitmask describing which hardening mitigations were applied.
+// Each mitigation has a fixed bit; the values are part of the API.
 type HardenLevel int
 
 const (
@@ -13,27 +11,24 @@ const (
 	HardenNone HardenLevel = 0
 
 	// HardenNoDump indicates PR_SET_DUMPABLE=0 was set — core dumps disabled.
-	HardenNoDump HardenLevel = 1 << iota
+	HardenNoDump HardenLevel = 1 << 0
 
 	// HardenNoNewPriv indicates PR_SET_NO_NEW_PRIVS=1 was set on every thread
 	// of the process — no privilege escalation through a child it starts. It
 	// is not reported by a binary that links cgo, where only the calling
 	// thread can be reached; see [HardenProcess].
-	HardenNoNewPriv
-
-	// HardenSeccomp indicates a seccomp BPF filter was loaded (reserved; not yet implemented).
-	HardenSeccomp
+	HardenNoNewPriv HardenLevel = 1 << 1
 
 	// HardenStrictHandles indicates Windows strict handle checking is in
 	// force: use of a stale or invalid handle raises an exception instead of
 	// silently succeeding against whatever object now owns the handle value.
-	HardenStrictHandles
+	HardenStrictHandles HardenLevel = 1 << 2
 
 	// HardenNoDynamicCode indicates Windows Arbitrary Code Guard is in force:
 	// the process can no longer create executable memory or make writable
 	// memory executable. Pure-Go binaries never need either; JIT-based cgo
 	// dependencies would break, which is why HardenProcess is opt-in.
-	HardenNoDynamicCode
+	HardenNoDynamicCode HardenLevel = 1 << 3
 )
 
 // HardenProcess applies process-level hardening mitigations.
@@ -56,9 +51,7 @@ const (
 //     generates code at runtime (pure Go never does; a JIT inside a cgo
 //     dependency would).
 //   - Elsewhere: no-op returning (HardenNone, nil).
-//
-// ctx is reserved for future cancellation; currently unused but required by convention.
-func HardenProcess(_ context.Context) (HardenLevel, error) {
+func HardenProcess() (HardenLevel, error) {
 	return hardenProcess()
 }
 

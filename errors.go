@@ -5,9 +5,11 @@ import (
 	"fmt"
 )
 
-// ErrDestroyed is returned by SecureBuffer methods after the buffer has been
-// destroyed. It is the canonical sentinel for the destroyed/wiped state.
-var ErrDestroyed = errors.New("secmem: secure buffer has been destroyed")
+// ErrDestroyed is returned by [SecureBuffer], [SecureArena] and [ArenaSlot]
+// methods once the buffer or arena has been destroyed. It is the one sentinel
+// for "this object is dead": [ErrWiped], returned after [WipeAllSecrets],
+// wraps it, so errors.Is(err, ErrDestroyed) holds however the object died.
+var ErrDestroyed = errors.New("secmem: secure memory has been destroyed")
 
 // ErrWiped is returned by every borrow, read and mutation after
 // [WipeAllSecrets] has emergency-wiped the object. The secret is gone and the
@@ -42,10 +44,6 @@ var ErrSealed = errors.New("secmem: secure buffer is sealed")
 // with the slice. That write faults. Treat a borrowed slice as read-only for
 // as long as the buffer or slab is; see PITFALLS.md.
 var ErrReadOnly = errors.New("secmem: secure buffer is read-only — call ReadWrite before mutating")
-
-// ErrArenaDestroyed is returned by SecureArena and ArenaSlot methods after the
-// arena has been destroyed via Destroy().
-var ErrArenaDestroyed = errors.New("secmem: secure arena has been destroyed")
 
 // ErrArenaFull is returned by SecureArena.Acquire when all slots are in use.
 var ErrArenaFull = errors.New("secmem: secure arena is full — no free slots")

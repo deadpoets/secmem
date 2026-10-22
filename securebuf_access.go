@@ -447,25 +447,31 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	return int64(n), cerr
 }
 
-// NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.
-// The returned buffer may be partially filled if r returns fewer than size bytes;
-// the returned count reports how many bytes were read, so check it where a
-// short secret is not acceptable. A source that yields nothing at all is
-// refused with [io.EOF] and no buffer: an empty key file is far more often a
-// mistake than a secret, and unlike [SecureBuffer.ReadFrom], which follows
-// [io.ReaderFrom] and reports (0, nil), a constructor can say so.
-func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, int64, error) {
+// NewBufferFromReader allocates a SecureBuffer of up to size bytes and fills
+// it from r. The buffer's [SecureBuffer.Len] is the number of bytes read: a
+// source shorter than size gives a shorter buffer, never a zero-padded one,
+// so where a secret must have an exact length, check Len. A source longer
+// than size is read only up to size; the rest stays in r.
+//
+// A source that yields nothing at all is refused with [io.EOF] and no buffer:
+// an empty key file is far more often a mistake than a secret, and unlike
+// [SecureBuffer.ReadFrom], which follows [io.ReaderFrom] and reports (0, nil),
+// a constructor can say so. Any other read error is returned with no buffer.
+func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, error) {
 	buf, err := NewEmptyBuffer(size, opts...)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	n, err := buf.ReadFrom(r)
 	if err == nil && n == 0 {
 		err = io.EOF
 	}
+	if err == nil && int(n) < size {
+		err = buf.Truncate(int(n))
+	}
 	if err != nil {
 		_ = buf.Destroy()
-		return nil, n, err
+		return nil, err
 	}
-	return buf, n, nil
+	return buf, nil
 }

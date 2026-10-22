@@ -28,13 +28,25 @@ func TestReadFrom_EmptyReaderIsNotAnError(t *testing.T) {
 
 	// The constructor keeps refusing an empty source, deliberately: with
 	// io.EOF and no buffer.
-	fromEmpty, n, err := NewBufferFromReader(bytes.NewReader(nil), 16)
-	if !errors.Is(err, io.EOF) || n != 0 || fromEmpty != nil {
-		t.Errorf("NewBufferFromReader(empty) = (%v, %d, %v), want (nil, 0, io.EOF)", fromEmpty != nil, n, err)
+	fromEmpty, err := NewBufferFromReader(bytes.NewReader(nil), 16)
+	if !errors.Is(err, io.EOF) || fromEmpty != nil {
+		t.Errorf("NewBufferFromReader(empty) = (%v, %v), want (nil, io.EOF)", fromEmpty != nil, err)
 	}
-	short, n, err := NewBufferFromReader(bytes.NewReader([]byte{1}), 16)
-	if err != nil || n != 1 {
-		t.Fatalf("NewBufferFromReader(one byte) = (_, %d, %v), want 1, nil", n, err)
+	// A short source gives a short buffer: Len is what was read, and the
+	// slice a borrow hands out is exactly that, not zero-padded to size.
+	short, err := NewBufferFromReader(bytes.NewReader([]byte{1}), 16)
+	if err != nil {
+		t.Fatalf("NewBufferFromReader(one byte): %v", err)
 	}
-	_ = short.Destroy()
+	defer func() { _ = short.Destroy() }()
+	if short.Len() != 1 {
+		t.Errorf("NewBufferFromReader(one byte).Len() = %d, want 1", short.Len())
+	}
+	if err := short.WithBytes(func(b []byte) {
+		if len(b) != 1 || cap(b) != 1 || b[0] != 1 {
+			t.Errorf("borrowed slice = %v (cap %d), want [1] (cap 1)", b, cap(b))
+		}
+	}); err != nil {
+		t.Fatalf("WithBytes: %v", err)
+	}
 }

@@ -14,8 +14,8 @@ func TestProbe_BuildIdentity(t *testing.T) {
 	if c.GOOS != runtime.GOOS || c.GOARCH != runtime.GOARCH {
 		t.Fatalf("Probe identity = %s/%s, want %s/%s", c.GOOS, c.GOARCH, runtime.GOOS, runtime.GOARCH)
 	}
-	if c.RegisterScrub != RuntimeSecretActive() {
-		t.Errorf("Probe().RegisterScrub = %v, want RuntimeSecretActive() = %v", c.RegisterScrub, RuntimeSecretActive())
+	if c.RuntimeSecret != RuntimeSecretActive() {
+		t.Errorf("Probe().RuntimeSecret = %v, want RuntimeSecretActive() = %v", c.RuntimeSecret, RuntimeSecretActive())
 	}
 }
 
@@ -66,7 +66,7 @@ func TestBufferCapabilities_MatchesAllocation(t *testing.T) {
 		t.Errorf("buffer backing (offheap=%v mlock=%v insecure=%v) diverges from probe (offheap=%v mlock=%v insecure=%v)",
 			c.OffHeap, c.Mlocked, c.Insecure, p.OffHeap, p.Mlocked, p.Insecure)
 	}
-	if c.FlushedWipe != p.FlushedWipe || c.RegisterScrub != p.RegisterScrub {
+	if c.FlushedWipe != p.FlushedWipe || c.RuntimeSecret != p.RuntimeSecret {
 		t.Error("process-wide fields differ between buffer report and probe")
 	}
 }
@@ -104,18 +104,34 @@ func TestCapabilities_NilReceivers(t *testing.T) {
 	}
 }
 
-// TestSyscallSafeBuffer_NeverMemfd pins NewSyscallSafeBuffer's contract: it
-// allocates via MAP_ANON only, so its capabilities must never claim
-// memfd_secret isolation.
-func TestSyscallSafeBuffer_NeverMemfd(t *testing.T) {
-	t.Parallel()
-	buf, err := NewSyscallSafeBuffer([]byte("syscall-safe"))
+// TestWithoutMemfdSecret_NeverMemfd pins the option's contract on every
+// constructor that takes it: the allocation never uses memfd_secret. Checked
+// on all platforms (MemfdSecret is false off Linux regardless).
+func TestWithoutMemfdSecret_NeverMemfd(t *testing.T) {
+	if !platformHasSecureMemory {
+		t.Skip("no secure memory on this platform")
+	}
+	buf, err := NewBuffer([]byte("syscall-safe"), WithoutMemfdSecret())
 	if err != nil {
-		t.Fatalf("NewSyscallSafeBuffer: %v", err)
+		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
-	if buf.Capabilities().MemfdSecret {
-		t.Error("NewSyscallSafeBuffer reported MemfdSecret = true; it must allocate via MAP_ANON only")
+	empty, err := NewEmptyBuffer(32, WithoutMemfdSecret())
+	if err != nil {
+		t.Fatalf("NewEmptyBuffer: %v", err)
+	}
+	defer func() { _ = empty.Destroy() }()
+	arena, err := NewArena(32, 4, WithoutMemfdSecret())
+	if err != nil {
+		t.Fatalf("NewArena: %v", err)
+	}
+	defer func() { _ = arena.Destroy() }()
+	for name, c := range map[string]Capabilities{
+		"NewBuffer": buf.Capabilities(), "NewEmptyBuffer": empty.Capabilities(), "NewArena": arena.Capabilities(),
+	} {
+		if c.MemfdSecret {
+			t.Errorf("%s(WithoutMemfdSecret) reported MemfdSecret = true; it must allocate via MAP_ANON only", name)
+		}
 	}
 }
 
@@ -160,7 +176,7 @@ func TestCapabilities_Warnings(t *testing.T) {
 		GOOS: "linux", GOARCH: "amd64",
 		OffHeap: true, Mlocked: true, MemfdSecret: true,
 		NoDump: true, NoFork: true,
-		FlushedWipe: true, RegisterScrub: true, GuardPages: true,
+		FlushedWipe: true, RuntimeSecret: true, GuardPages: true,
 		FrameScrub: true, AsyncPreemptSuppressed: true, VectorRegisterClear: true,
 		GPRegisterClear: true, DestroyQuarantine: true,
 	}
@@ -189,7 +205,7 @@ func TestCapabilities_VectorClearWarning(t *testing.T) {
 	if has(Capabilities{VectorRegisterClear: true}) {
 		t.Error("vector clear in force: warning must not fire")
 	}
-	if has(Capabilities{RegisterScrub: true}) {
+	if has(Capabilities{RuntimeSecret: true}) {
 		t.Error("runtime/secret in force: warning must not fire, it erases registers itself")
 	}
 }

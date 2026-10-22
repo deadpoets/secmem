@@ -249,7 +249,7 @@ func (f *secretField) UnmarshalJSON(raw []byte) error {
     return err
 }
 
-doc, _, err := secmem.NewBufferFromReader(resp.Body, int(resp.ContentLength))
+doc, err := secmem.NewBufferFromReader(resp.Body, int(resp.ContentLength))
 if err != nil { return err }
 defer doc.Destroy()
 var cfg struct {

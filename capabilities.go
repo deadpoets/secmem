@@ -66,18 +66,20 @@ type Capabilities struct {
 	// written, but lines may linger in cache.
 	FlushedWipe bool
 
-	// RegisterScrub reports runtime/secret erasure is active
+	// RuntimeSecret reports that runtime/secret erasure is active
 	// (GOEXPERIMENT=runtimesecret on a supported platform): [Scrub] erases
 	// the registers, stack, and heap of its callback's entire call tree.
-	// When false, Scrub is a best-effort stack-frame wipe.
-	RegisterScrub bool
+	// When false, Scrub falls back to the layers reported by FrameScrub,
+	// VectorRegisterClear and GPRegisterClear. It is what
+	// [RuntimeSecretActive] reports.
+	RuntimeSecret bool
 
 	// FrameScrub reports that [Scrub]'s stack-frame burn is real assembly on
 	// this architecture (amd64, arm64) rather than the no-op stub. When false,
 	// Scrub reserves no headroom and erases no stack residue; only the
-	// runtime/secret path (see RegisterScrub) covers the stack at all.
+	// runtime/secret path (see RuntimeSecret) covers the stack at all.
 	//
-	// When RegisterScrub is also true the frame burn is not what runs —
+	// When RuntimeSecret is also true the frame burn is not what runs —
 	// runtime/secret supersedes it and covers the stack more thoroughly — so
 	// read this as architecture support for the fallback path, not as a claim
 	// about which routine executed.
@@ -99,7 +101,7 @@ type Capabilities struct {
 	// the callback returns. Vectorised crypto keeps its working state there and
 	// nothing else in the process ever clears it. Real assembly on amd64 and
 	// arm64, proven by a register-dump test; a no-op elsewhere. When false and
-	// RegisterScrub is also false, residue in the vector file outlives the
+	// RuntimeSecret is also false, residue in the vector file outlives the
 	// window.
 	//
 	// General-purpose registers are reported separately, by GPRegisterClear.
@@ -112,7 +114,7 @@ type Capabilities struct {
 	// Scalar code and short copies leave secrets there, and the next
 	// asynchronous preemption on the thread saves them onto a goroutine stack
 	// outside the window. Real assembly on amd64 and arm64, proven by a
-	// register-dump test; a no-op elsewhere. When false and RegisterScrub is
+	// register-dump test; a no-op elsewhere. When false and RuntimeSecret is
 	// also false, that residue outlives the window.
 	GPRegisterClear bool
 
@@ -184,7 +186,7 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		NoDump:        info.noDump,
 		NoFork:        info.noFork,
 		FlushedWipe:   archWipeFlushed,
-		RegisterScrub: RuntimeSecretActive(),
+		RuntimeSecret: RuntimeSecretActive(),
 
 		FrameScrub:             archFrameScrub,
 		AsyncPreemptSuppressed: asyncPreemptSuppressionInForce(),
@@ -255,19 +257,19 @@ func (c Capabilities) Warnings() []string {
 	if !c.FlushedWipe {
 		w = append(w, "wipe is a constant-time store only — no cache-line flush on this architecture")
 	}
-	if !c.RegisterScrub {
+	if !c.RuntimeSecret {
 		w = append(w, "runtime/secret erasure inactive — Scrub is a best-effort stack-frame wipe")
 	}
-	if !c.FrameScrub && !c.RegisterScrub {
+	if !c.FrameScrub && !c.RuntimeSecret {
 		w = append(w, "no stack scrub on this architecture — Scrub does not erase stack residue at all")
 	}
 	if !c.AsyncPreemptSuppressed {
 		w = append(w, "async preemption not suppressed — the runtime may spill the register file to the stack inside a Scrub window")
 	}
-	if !c.VectorRegisterClear && !c.RegisterScrub {
+	if !c.VectorRegisterClear && !c.RuntimeSecret {
 		w = append(w, "vector registers not cleared after a Scrub window — residue from vectorised crypto survives on this architecture")
 	}
-	if !c.GPRegisterClear && !c.RegisterScrub {
+	if !c.GPRegisterClear && !c.RuntimeSecret {
 		w = append(w, "general-purpose registers not cleared after a Scrub window — residue from scalar code and short copies survives on this architecture")
 	}
 	if !c.GuardPages {
@@ -300,7 +302,7 @@ func (c Capabilities) String() string {
 	flag("no-dump", c.NoDump)
 	flag("no-fork", c.NoFork)
 	flag("wipe+flush", c.FlushedWipe)
-	flag("register-scrub", c.RegisterScrub)
+	flag("runtime-secret", c.RuntimeSecret)
 	flag("frame-scrub", c.FrameScrub)
 	flag("preempt-suppress", c.AsyncPreemptSuppressed)
 	flag("vector-clear", c.VectorRegisterClear)

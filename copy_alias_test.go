@@ -171,12 +171,12 @@ func TestSecureArena_CopyIsAnAlias(t *testing.T) {
 	if !c.IsDestroyed() {
 		t.Error("copy.IsDestroyed() = false after the original was destroyed")
 	}
-	if _, err := c.Acquire(); !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("Acquire through a copy after Destroy = %v, want ErrArenaDestroyed", err)
+	if _, err := c.Acquire(); !errors.Is(err, ErrDestroyed) {
+		t.Errorf("Acquire through a copy after Destroy = %v, want ErrDestroyed", err)
 	}
 	called := false
-	if err := slot.WithBytes(func([]byte) { called = true }); !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("slot.WithBytes after Destroy = %v, want ErrArenaDestroyed", err)
+	if err := slot.WithBytes(func([]byte) { called = true }); !errors.Is(err, ErrDestroyed) {
+		t.Errorf("slot.WithBytes after Destroy = %v, want ErrDestroyed", err)
 	}
 	if called {
 		t.Error("a slot borrow ran its callback after the arena was destroyed")
@@ -272,15 +272,15 @@ func TestZeroValues_BehaveAsDestroyed(t *testing.T) {
 	})
 	noPanic("SecureArena.Acquire", func() {
 		_, err := a.Acquire()
-		wantErr("SecureArena.Acquire", err, ErrArenaDestroyed)
+		wantErr("SecureArena.Acquire", err, ErrDestroyed)
 	})
 	noPanic("SecureArena.LiveCount/Cap/SlotSize", func() {
 		if a.LiveCount() != 0 || a.Cap() != 0 || a.SlotSize() != 0 {
 			t.Error("SecureArena size queries on a zero value are not all 0")
 		}
 	})
-	noPanic("SecureArena.ReadOnly", func() { wantErr("SecureArena.ReadOnly", a.ReadOnly(), ErrArenaDestroyed) })
-	noPanic("SecureArena.ReadWrite", func() { wantErr("SecureArena.ReadWrite", a.ReadWrite(), ErrArenaDestroyed) })
+	noPanic("SecureArena.ReadOnly", func() { wantErr("SecureArena.ReadOnly", a.ReadOnly(), ErrDestroyed) })
+	noPanic("SecureArena.ReadWrite", func() { wantErr("SecureArena.ReadWrite", a.ReadWrite(), ErrDestroyed) })
 	noPanic("SecureArena.Capabilities", func() {
 		if got, want := a.Capabilities(), (*SecureArena)(nil).Capabilities(); got != want {
 			t.Errorf("SecureArena.Capabilities() on a zero value = %v, want the nil receiver's %v", got, want)

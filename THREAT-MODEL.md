@@ -261,7 +261,7 @@ Constraints of the Go runtime, not defects in this library:
 - **A GC stack-shrink between `fn`'s return and the exit wipe.**
   `shrinkstack` is asynchronous, runtime-owned, and unreachable from Go; if it
   frees `fn`'s segment first, the wipe runs on the copy. Only the
-  `runtime/secret` path (`Capabilities.RegisterScrub`, i.e.
+  `runtime/secret` path (`Capabilities.RuntimeSecret`, i.e.
   `GOEXPERIMENT=runtimesecret`) closes this, because it has runtime cooperation.
 - **Cooperative preemption is unaffected.** A long window can still be
   descheduled at a call boundary and have its stack scanned, and possibly

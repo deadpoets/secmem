@@ -198,7 +198,7 @@ func NewBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
 	if err := gateInsecure(platformHasSecureMemory, cfg); err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
-	region, data, info, err := allocSecretMem(len(raw))
+	region, data, info, err := cfg.alloc(len(raw))
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewBuffer: %w", err)
 	}
@@ -227,7 +227,7 @@ func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 	if err := gateInsecure(platformHasSecureMemory, cfg); err != nil {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
-	region, data, info, err := allocSecretMem(size)
+	region, data, info, err := cfg.alloc(size)
 	if err != nil {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
@@ -236,39 +236,6 @@ func NewEmptyBuffer(size int, opts ...Option) (*SecureBuffer, error) {
 		return nil, fmt.Errorf("secmem.NewEmptyBuffer: %w", err)
 	}
 	return newSecureBuffer(region, data, info, cfg)
-}
-
-// NewSyscallSafeBuffer allocates via MAP_ANON only (no memfd_secret attempt).
-// Use this for ingestion paths where syscall arguments are read directly into
-// the buffer — memfd_secret's extra isolation is not needed because the data
-// arrives from a kernel-controlled channel.
-func NewSyscallSafeBuffer(raw []byte, opts ...Option) (*SecureBuffer, error) {
-	if len(raw) == 0 {
-		return nil, errors.New("secmem.NewSyscallSafeBuffer: empty input")
-	}
-	defer secureWipeSlice(raw) // on failure too — see NewBuffer
-	defer clearRegisters()     // see NewBuffer
-	cfg := applyOptions(opts)
-	if err := gateInsecure(platformHasSecureMemory, cfg); err != nil {
-		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
-	}
-	region, data, info, err := allocMapAnon(len(raw))
-	if err != nil {
-		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
-	}
-	if err := fillCanary(region.inner[len(data):]); err != nil {
-		_ = freeSecretMem(region)
-		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
-	}
-	// Register first, copy second — see fillInitial.
-	sb, err := newSecureBuffer(region, data, info, cfg)
-	if err != nil {
-		return nil, err
-	}
-	if err := sb.fillInitial(raw); err != nil {
-		return nil, fmt.Errorf("secmem.NewSyscallSafeBuffer: %w", err)
-	}
-	return sb, nil
 }
 
 // fillInitial copies raw into a buffer newSecureBuffer has just registered,

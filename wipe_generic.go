@@ -80,9 +80,6 @@ func secureWipeSlice(b []byte) {
 	secureWipe(unsafe.Pointer(&b[0]), uintptr(len(b)))
 }
 
-// HasCLFLUSHOPT always returns false on non-amd64 platforms.
-func HasCLFLUSHOPT() bool { return false }
-
 // cpuid is not available on non-amd64; returns zero values.
 func cpuid(_, _ uint32) (uint32, uint32, uint32, uint32) { return 0, 0, 0, 0 }
 

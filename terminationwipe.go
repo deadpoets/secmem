@@ -18,16 +18,17 @@ import (
 	"time"
 )
 
-// TerminationWipeTimeout is how long the handler installed by
-// [InstallTerminationWipe] waits for [WipeAllSecrets] before it goes on to
-// terminate the process anyway. WipeAllSecrets waits for every borrowing
-// callback to return, and one that never does would otherwise hold the handler
-// forever, with the signal's default disposition suppressed the whole time.
-const TerminationWipeTimeout = 5 * time.Second
+// defaultTerminationWipeTimeout is how long the handler installed by
+// InstallTerminationWipe waits for WipeAllSecrets before it goes on to
+// terminate the process anyway: five seconds. WipeAllSecrets waits for every
+// borrowing callback to return, and one that never does would otherwise hold
+// the handler forever, with the signal's default disposition suppressed the
+// whole time. Unexported so the value is not part of the API.
+const defaultTerminationWipeTimeout = 5 * time.Second
 
 // terminationWipeTimeout is the bound the handler uses; a variable so a test
 // does not have to wait out the real one.
-var terminationWipeTimeout = TerminationWipeTimeout
+var terminationWipeTimeout = defaultTerminationWipeTimeout
 
 // wipeAllSecretsBounded runs [WipeAllSecrets] and waits for it for at most
 // timeout. It reports whether the wipe finished. When it did not, the wipe is
@@ -181,7 +182,7 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // that is blocked (on I/O, on a lock, or on a nested call into its own buffer)
 // would hold the handler in the wipe indefinitely: the process would not
 // terminate, and with this handler still registered no later signal would
-// terminate it either. The handler therefore waits [TerminationWipeTimeout]
+// terminate it either. The handler therefore waits five seconds
 // and then proceeds exactly as if the wipe had finished, with a warning
 // logged. By then every secret that was not borrowed is already zeroed. The
 // one inside the stuck callback is not, and the process is about to end with

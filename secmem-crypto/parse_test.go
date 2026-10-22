@@ -202,11 +202,14 @@ func TestParsePrivateKey_RoundTrip(t *testing.T) {
 func TestParsePrivateKey_FromSecureBuffer(t *testing.T) {
 	k := parseTestKeys(t)[0]
 	data := encodings(t, k)[0].data
-	buf, _, err := secmem.NewBufferFromReader(bytes.NewReader(data), len(data))
+	buf, err := secmem.NewEmptyBuffer(len(data))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer buf.Destroy()
+	if _, err := buf.ReadFrom(bytes.NewReader(data)); err != nil {
+		t.Fatal(err)
+	}
 	var s Signer
 	err = buf.WithBytesErr(func(b []byte) error {
 		var perr error

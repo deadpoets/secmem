@@ -18,7 +18,7 @@ import (
 //
 //  1. No operation ever panics or faults.
 //  2. Acquire fills up to Cap and then returns ErrArenaFull; on a destroyed
-//     arena every state-changing method returns ErrArenaDestroyed.
+//     arena every state-changing method returns ErrDestroyed.
 //  3. Release refuses with ErrReadOnly while the arena is read-only and leaves
 //     the slot live; otherwise it frees the slot. It never faults on the wipe.
 //  4. LiveCount equals the number of slots the model believes are acquired.
@@ -72,7 +72,7 @@ func FuzzArenaLifecycle(f *testing.F) {
 				slot, err := a.Acquire()
 				switch {
 				case destroyed:
-					mustBe(t, "Acquire", err, ErrArenaDestroyed)
+					mustBe(t, "Acquire", err, ErrDestroyed)
 				case len(live) >= arenaCap:
 					mustBe(t, "Acquire", err, ErrArenaFull)
 				default:
@@ -102,7 +102,7 @@ func FuzzArenaLifecycle(f *testing.F) {
 			case aoReadOnly:
 				err := a.ReadOnly()
 				if destroyed {
-					mustBe(t, "ReadOnly", err, ErrArenaDestroyed)
+					mustBe(t, "ReadOnly", err, ErrDestroyed)
 				} else {
 					mustBeNil(t, "ReadOnly", err)
 					readOnly = true
@@ -111,7 +111,7 @@ func FuzzArenaLifecycle(f *testing.F) {
 			case aoReadWrite:
 				err := a.ReadWrite()
 				if destroyed {
-					mustBe(t, "ReadWrite", err, ErrArenaDestroyed)
+					mustBe(t, "ReadWrite", err, ErrDestroyed)
 				} else {
 					mustBeNil(t, "ReadWrite", err)
 					readOnly = false

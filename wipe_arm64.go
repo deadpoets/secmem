@@ -13,10 +13,6 @@ import "unsafe"
 //go:noescape
 func secureWipe(ptr unsafe.Pointer, length uintptr)
 
-// HasCLFLUSHOPT always returns false on arm64.
-// Cache eviction is performed unconditionally via DC CIVAC in secureWipe.
-func HasCLFLUSHOPT() bool { return false }
-
 // setCLFLUSHOPTFlag is a no-op on arm64.
 func setCLFLUSHOPTFlag(_ byte) {}
 

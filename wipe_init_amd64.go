@@ -4,7 +4,8 @@ package secmem
 
 import "unsafe"
 
-// supportsCLFLUSHOPT caches the CPUID result for HasCLFLUSHOPT queries.
+// supportsCLFLUSHOPT caches the CPUID result: whether the CPU has CLFLUSHOPT,
+// which the wipe loop uses for a pipelined flush when present.
 // The assembly GLOBL ·hasCLFLUSHOPT is set in parallel so the wipe loop
 // can read it without a CGo/unsafe boundary.
 var supportsCLFLUSHOPT bool //nolint:gochecknoglobals // CPU feature flag — set once during init, read-only thereafter.
@@ -47,12 +48,6 @@ func detectCLFLUSHOPT(query cpuidFunc) bool {
 	_, ebx, _, _ := query(7, 0)
 	return (ebx>>23)&1 != 0
 }
-
-// HasCLFLUSHOPT reports whether the CPU supports the CLFLUSHOPT instruction.
-// Detected once via CPUID at package init; cached for the process lifetime.
-// When true, secureWipe uses pipelined CLFLUSHOPT (Intel Skylake+ / AMD Zen+).
-// When false, it falls back to strictly-ordered CLFLUSH (universally supported).
-func HasCLFLUSHOPT() bool { return supportsCLFLUSHOPT }
 
 // secureWipeSlice zeroes all bytes in b using the full architectural wipe:
 // LFENCE → REP STOSB → SFENCE → CLFLUSH[OPT] loop → SFENCE+LFENCE.

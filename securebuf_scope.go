@@ -53,7 +53,7 @@ func Scope(size int, fn func(*SecureBuffer) error) (retErr error) {
 //	var match bool
 //	err := secmem.ScopeWith(
 //	    func() (*secmem.SecureBuffer, error) {
-//	        return secmem.NewSyscallSafeBuffer(rawToken)
+//	        return secmem.NewBuffer(rawToken)
 //	    },
 //	    func(buf *secmem.SecureBuffer) (err error) {
 //	        match, err = buf.ConstantTimeEqual(presented)
