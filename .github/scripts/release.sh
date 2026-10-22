@@ -331,13 +331,19 @@ ok "tag pushed"
 # actually succeeded, which is a worse outcome than a missing sidebar entry the
 # maintainer can add later.
 #
-# --latest only for the primary module. Otherwise a nested module's patch
-# release would claim the repository's "Latest" badge and a visitor would land
-# on secmem-crypto instead of secmem.
+# --latest only for the primary module's final releases. Otherwise a nested
+# module's patch release would claim the repository's "Latest" badge and a
+# visitor would land on secmem-crypto instead of secmem. A pre-release (a
+# version with a "-" suffix, e.g. v1.0.0-rc.1) is marked as one and never
+# takes the badge: go get does not select it on its own, and the release page
+# must not present it as current either.
 if command -v gh >/dev/null 2>&1; then
-  latest_flag="--latest=false"
-  [ -z "$prefix" ] && latest_flag="--latest"
-  if gh release create "$tag" --title "$tag" --notes-file "$notes" $latest_flag >/dev/null 2>&1; then
+  release_flags="--latest=false"
+  case "$version" in
+    *-*) release_flags="--prerelease --latest=false" ;;
+    *) [ -z "$prefix" ] && release_flags="--latest" ;;
+  esac
+  if gh release create "$tag" --title "$tag" --notes-file "$notes" $release_flags >/dev/null 2>&1; then
     ok "GitHub Release created from the CHANGELOG section"
   else
     printf '  warn  could not create the GitHub Release (tag IS published).\n'
