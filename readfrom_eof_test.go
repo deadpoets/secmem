@@ -44,7 +44,7 @@ func TestReadFrom_EmptyReaderIsNotAnError(t *testing.T) {
 	}
 	if err := short.WithBytes(func(b []byte) {
 		if len(b) != 1 || cap(b) != 1 || b[0] != 1 {
-			t.Errorf("borrowed slice = %v (cap %d), want [1] (cap 1)", b, cap(b))
+			t.Errorf("borrowed slice has len %d, cap %d, first-byte-ok %v; want len 1, cap 1, the byte read", len(b), cap(b), len(b) > 0 && b[0] == 1)
 		}
 	}); err != nil {
 		t.Fatalf("WithBytes: %v", err)
