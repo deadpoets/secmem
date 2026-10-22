@@ -26,7 +26,17 @@ mark the stability commitment.
 - **`secmem-crypto`: `golang.org/x/crypto` moves to v0.58.0.** It fixes nothing
   this module reaches; the forks' review against it is recorded in
   `forks.json`.
-- **`secmem-lint`: `golang.org/x/tools` moves to v0.52.0.**
+
+## [secmem-lint/v0.6.0] - 2026-10-22
+
+The analyzer reports `ExposeString` as it reports `string(b)`, and checks
+the closures passed to a function that forwards one to a borrowing accessor.
+No exported API changed; this is a minor rather than a patch because the new
+findings can fail a downstream CI run that passed before.
+`golang.org/x/tools` moves to v0.52.0.
+
+### Added
+
 - **`secmem-lint`: `ExposeString` is an E4 finding wherever it is written**
   ([#159](https://github.com/deadpoets/secmem/issues/159)), as a call, method
   value or method expression. It makes the heap string `E1` reports for
@@ -2754,7 +2764,8 @@ First tagged release of the core `secmem` module.
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
 [secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.7.0...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v0.8.0...HEAD
+[secmem-lint/v0.6.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.0
 [secmem-crypto/v0.9.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.9.0
 [0.7.0]: https://github.com/deadpoets/secmem/compare/v0.6.0...v0.7.0
 [secmem-crypto/v0.8.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.8.0
