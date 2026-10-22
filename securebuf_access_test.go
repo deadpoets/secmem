@@ -244,7 +244,7 @@ func TestExposeString_ReturnsCopy(t *testing.T) {
 			}
 			defer func() { _ = buf.Destroy() }()
 
-			got, err := buf.ExposeString()
+			got, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 			if err != nil {
 				t.Fatalf("ExposeString: %v", err)
 			}
@@ -293,7 +293,7 @@ func TestExposeString_BufferStateErrors(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
 			buf := tc.setup(t)
-			got, err := buf.ExposeString()
+			got, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 			if !errors.Is(err, tc.want) {
 				t.Errorf("ExposeString err = %v, want %v", err, tc.want)
 			}
@@ -317,7 +317,7 @@ func TestExposeString_CopySurvivesDestroy(t *testing.T) {
 		t.Fatalf("NewBuffer: %v", err)
 	}
 
-	got, err := buf.ExposeString()
+	got, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 	if err != nil {
 		t.Fatalf("ExposeString: %v", err)
 	}

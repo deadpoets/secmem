@@ -27,7 +27,12 @@
 // closure is checked for escapes but the receiver's identity is unknown and
 // the reentrancy check stays silent. The receiver must be a secmem /
 // secmem-crypto type or an interface whose WithBytes-family method has the
-// borrowing shape (one func parameter taking a []byte). Anything else — a
+// borrowing shape (one func parameter taking a []byte), or a borrowing
+// wrapper: a function or method that forwards a func parameter, unchanged, as
+// the closure of an accessor or of another wrapper, and otherwise only
+// compares it with nil. A wrapper's call sites are checked as if they called
+// the accessor; the result is exported as a fact, so this holds in importing
+// packages too. Anything else — a
 // closure returned by a call, a method value or field passed as the closure,
 // a closure variable assigned more than once, a function from another package,
 // a literal passed through a variable that is a borrowing method value on some
@@ -79,6 +84,9 @@
 //     parsers, KDFs and ed25519.PrivateKey methods that copy a key into heap
 //     state. Interface-typed writers (io.Writer, net.Conn) are the intended
 //     egress and are not flagged.
+//   - SecureBuffer.ExposeString anywhere, closure or not: called, or taken as
+//     a method value or expression (also through an interface of its shape).
+//     It makes the heap string string(b) would, inside the library.
 //   - a lock-taking secmem or secmem-crypto method called synchronously on
 //     the SAME buffer or key inside its own closure, the receiver matched by
 //     identity through field chains, embedded-field promotions (e.Len() and

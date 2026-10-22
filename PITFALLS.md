@@ -55,13 +55,14 @@ s := string(b)
 // GOOD — if you need a string-shaped read, use ExposeString, understand it
 // snapshots under the read lock, and keep its lifetime as short as possible;
 // prefer staying in []byte inside WithBytes.
-str, err := buf.ExposeString()
+str, err := buf.ExposeString() //nolint:secmem-lint // reviewed: the driver takes only a string
 ```
 
 Why it matters: strings are immutable in Go, so a secret-turned-string can
 never be zeroed and lingers until the GC reclaims it. `ExposeString` exists
 for the cases that truly need it and documents the trade-off; reaching for
-`string(b)` yourself is the silent version.
+`string(b)` yourself is the silent version. secmem-lint reports both, so each
+string egress is a suppressed line someone reviewed.
 
 ## 3. Printing or logging the secret type the "obvious" way
 

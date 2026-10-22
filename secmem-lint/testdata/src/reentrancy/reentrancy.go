@@ -10,7 +10,7 @@ import (
 func sameBufferMethod(buf *secmem.SecureBuffer) {
 	_ = buf.WithBytes(func(b []byte) {
 		_ = b
-		buf.ExposeString() // want `secmem-lint: ExposeString called on the same buffer`
+		buf.ExposeString() // want `secmem-lint: ExposeString called on the same buffer` `secmem-lint: ExposeString copies the secret into an immutable heap string`
 	})
 }
 

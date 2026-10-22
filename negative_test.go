@@ -124,7 +124,7 @@ func TestBuffer_NeverPanicsAfterDestroy(t *testing.T) {
 		_ = buf.Truncate(0)
 		_ = buf.WithBytes(func([]byte) {})
 		_ = buf.WithBytesErr(func([]byte) error { return nil })
-		_, _ = buf.ExposeString()
+		_, _ = buf.ExposeString() //nolint:secmem-lint // exercises the accessor; test fixture, not a secret
 		_, _ = buf.CopyOut(make([]byte, 4), 0)
 		_, _ = buf.CopyIn([]byte("x"), 0)
 		_, _ = buf.ByteAt(0)

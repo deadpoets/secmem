@@ -160,3 +160,18 @@ func slotIsNotOwned(arena *secmem.SecureArena) {
 	slot, _ := arena.Acquire()
 	_ = slot.WithBytes(func(b []byte) {})
 }
+
+// --- a borrowing wrapper's own forwarding line ---
+
+// forwards is a borrowing wrapper: its closures are checked at its call
+// sites, so the forwarding call is not reported as unresolvable.
+func forwards(buf *secmem.SecureBuffer, fn func([]byte) error) error { // want forwards:`borrowWrapper\[1\]`
+	return buf.WithBytesErr(fn) // ok: checked where the closure is written
+}
+
+// alsoCalls uses fn outside the borrow too, so it is not a wrapper and the
+// forwarding call is still unresolvable.
+func alsoCalls(buf *secmem.SecureBuffer, fn func([]byte) error) error {
+	_ = fn(nil)
+	return buf.WithBytesErr(fn) // want `secmem-lint: borrowed closure is not a function literal and cannot be checked`
+}

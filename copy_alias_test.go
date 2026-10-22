@@ -245,7 +245,7 @@ func TestZeroValues_BehaveAsDestroyed(t *testing.T) {
 	bufErrs := map[string]func() error{
 		"WithBytes":         func() error { return b.WithBytes(never) },
 		"WithBytesErr":      func() error { return b.WithBytesErr(neverErr) },
-		"ExposeString":      func() error { _, e := b.ExposeString(); return e },
+		"ExposeString":      func() error { _, e := b.ExposeString(); return e }, //nolint:secmem-lint // exercises the accessor; test fixture, not a secret
 		"CopyOut":           func() error { _, e := b.CopyOut(make([]byte, 1), 0); return e },
 		"CopyIn":            func() error { _, e := b.CopyIn([]byte{1}, 0); return e },
 		"ByteAt":            func() error { _, e := b.ByteAt(0); return e },
