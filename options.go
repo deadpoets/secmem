@@ -16,6 +16,7 @@ import (
 type config struct {
 	insecureFallback    bool
 	unauthenticatedSeal bool
+	closedAtRest        bool
 }
 
 // Option configures a constructor ([NewBuffer], [NewEmptyBuffer],

@@ -49,6 +49,13 @@ these are the operational differences a Windows deployment has to plan for.
   contents in place with `CryptProtectMemory`, so a dump taken while sealed
   holds ciphertext; `Seal` fails closed (stays sealed) if the cipher rollback
   on a protection failure also fails.
+- **`WithClosedAtRest` leaves plaintext pageable while closed; use `Seal`
+  for a dormant key.** The option makes the page `PAGE_NOACCESS` between
+  borrows, and for the reason in the next item that page is no longer locked.
+  Unlike `Seal` it does not encrypt, so what can reach the pagefile is the
+  secret itself. Each borrow locks the page again before the callback reads
+  it. On Linux and macOS the lock survives the protection change and the
+  option has no such cost.
 - **A sealed page is not locked.** `PAGE_NOACCESS` takes the page out of the
   working set, and Windows drops its `VirtualLock` when it does. While sealed
   the page holds `CryptProtectMemory` ciphertext and may be paged out as

@@ -53,6 +53,15 @@ and decrypt from it, the
 `*Into` KDFs derive into it. `Seal` the buffer whenever the key is dormant;
 protection is proportional to dormancy.
 
+For a long-lived, high-value key that is used rarely (a CA key, a master
+key), `WithClosedAtRest` does that automatically: the buffer is no-access
+except during a borrow. It is opt-in and stays that way, because each borrow
+then costs about 2 µs instead of about 13 ns, which is invisible under an RSA
+signature and several times the cost of a short HMAC. Do not put it on
+per-request or per-session keys. On Windows use `Seal` for a dormant key
+instead: a closed-at-rest page there is not locked and holds plaintext,
+where a sealed one holds ciphertext ([WINDOWS.md](WINDOWS.md)).
+
 [PROTECTION.md](PROTECTION.md) lists, per key type, how far this holds and
 what stays open.
 

@@ -34,6 +34,7 @@ import (
 	"fmt"
 	"log/slog"
 	"runtime"
+	"sync"
 	"sync/atomic"
 )
 
@@ -45,8 +46,11 @@ import (
 // is a safety net only — it runs non-deterministically at GC time.
 //
 // WARNING: Never retain a reference from [SecureBuffer.WithBytes]
-// beyond the buffer's lifetime.  After Destroy,
-// the backing memory is unmapped; any retained slice becomes a dangling pointer.
+// beyond the buffer's lifetime.  After Destroy, any retained slice is a
+// dangling pointer. On Linux and Windows the destroyed range is kept for a
+// while as a no-access reservation, so using such a slice faults; once the
+// range leaves that quarantine (see [SetQuarantineLimits]), and everywhere
+// else, it can point into whatever was allocated there next.
 //
 // # Copies are aliases
 //
@@ -142,6 +146,17 @@ type bufferState struct {
 	sealGen    uint64
 	sealNonce  [sealNonceLen]byte
 	sealTag    [sealTagLen]byte
+
+	// closedAtRest is set by [WithClosedAtRest]: the region is no-access
+	// except while a borrow or an access method is using it. Immutable after
+	// construction. See closedatrest.go.
+	closedAtRest bool
+
+	// openMu guards openers, the number of uses that currently hold a
+	// closed-at-rest region open. Borrows hold mu shared, so they need a lock
+	// of their own to agree on who opens and who closes.
+	openMu  sync.Mutex
+	openers int
 }
 
 // ---------------------------------------------------------------------------
@@ -278,9 +293,18 @@ func (s *SecureBuffer) fillInitial(raw []byte) error {
 		_ = s.Destroy()
 		return ErrWiped
 	}
+	if err := s.open(); err != nil {
+		s.mu.unlock()
+		_ = s.Destroy()
+		return err
+	}
 	copy(s.data, raw)
+	err := s.close()
 	s.mu.unlock()
-	return nil
+	if err != nil {
+		_ = s.Destroy()
+	}
+	return err
 }
 
 // newSecureBuffer wires up a SecureBuffer from a pre-allocated (region, data)
@@ -348,6 +372,18 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo, cfg confi
 		}
 	}, sb.janitorKey)
 
+	// Closed at rest: the buffer is born closed. A copying constructor opens
+	// it for the copy like any other use (fillInitial). Not on the insecure
+	// heap fallback, where there is no page protection to apply.
+	if cfg.closedAtRest && !backing.insecure {
+		if err := mprotectSecretMem(region, 0 /*PROT_NONE*/); err != nil {
+			_ = sb.Destroy()
+			return nil, fmt.Errorf("secmem: closing a closed-at-rest buffer: %w", err)
+		}
+		st.closedAtRest = true
+		st.backing.closedAtRest = true
+	}
+
 	return sb, nil
 }
 
@@ -361,9 +397,12 @@ func newSecureBuffer(region secRegion, data []byte, backing allocInfo, cfg confi
 //  2. Mprotect(RW) — ensure the page is writable before wiping.
 //  3. secureWipeSlice — zero + CLFLUSH/CLFLUSHOPT + SFENCE/LFENCE.
 //  4. Madvise(DONTNEED_LOCKED) — release physical frames immediately.
-//  5. freeSecretMem — unmap the reservation: Munmap (Linux munlocks first;
-//     Darwin deliberately does not, see mlock_darwin.go) / VirtualUnlock +
-//     VirtualFree.
+//  5. Retire the reservation. On Linux and Windows it becomes a no-access
+//     reservation with no memory behind it and joins the destroy-time
+//     quarantine (quarantine.go), to be unmapped when it is evicted;
+//     elsewhere, or with the quarantine off, it is unmapped now: Munmap
+//     (Linux munlocks first; Darwin deliberately does not, see
+//     mlock_darwin.go) / VirtualUnlock + VirtualFree.
 //  6. Nil out data and zero region — makes Destroy idempotent.
 //  7. runtime.KeepAlive(s) — ensures the GC does not run the cleanup
 //     concurrently between Stop() and the wipe.
@@ -513,8 +552,12 @@ func (s *SecureBuffer) ReadOnly() error {
 	if s.sealed {
 		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", ErrSealed)
 	}
-	if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
-		return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", err)
+	// A closed-at-rest buffer stays closed: the mode is recorded and applied
+	// each time it is opened.
+	if !s.closedAtRest {
+		if err := mprotectSecretMem(s.region, 1 /*PROT_READ*/); err != nil {
+			return fmt.Errorf("secmem.SecureBuffer.ReadOnly: %w", err)
+		}
 	}
 	s.readOnly = true
 	return nil
@@ -543,8 +586,10 @@ func (s *SecureBuffer) ReadWrite() error {
 	if s.sealed {
 		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", ErrSealed)
 	}
-	if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
-		return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", err)
+	if !s.closedAtRest { // see ReadOnly
+		if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
+			return fmt.Errorf("secmem.SecureBuffer.ReadWrite: %w", err)
+		}
 	}
 	s.readOnly = false
 	return nil
@@ -629,7 +674,7 @@ func (s *SecureBuffer) Seal() error {
 	// PROT_NONE regardless, s.readOnly stays set, and Unseal re-applies
 	// PROT_READ. On non-Windows the cipher is a no-op, but the lift keeps the
 	// path uniform; the rollback paths below restore PROT_READ.
-	if s.readOnly {
+	if s.readOnly || s.closedAtRest {
 		if err := mprotectSecretMem(s.region, 3 /*PROT_READ|PROT_WRITE*/); err != nil {
 			return fmt.Errorf("secmem.SecureBuffer.Seal: %w", err)
 		}
@@ -690,14 +735,15 @@ var sealProtect = func(region secRegion) error {
 	return mprotectSecretMem(region, 0 /*PROT_NONE*/)
 }
 
-// reapplyReadOnly re-applies PROT_READ when the buffer is flagged read-only.
+// reapplyReadOnly re-applies the buffer's rest protection: PROT_READ when it
+// is flagged read-only, PROT_NONE when it is closed at rest.
 // Seal lifts that protection to run the in-place seal cipher; on a Seal
 // rollback path this restores it so the physical page protection stays in sync
-// with s.readOnly. Best-effort — the caller is already returning an error.
+// with the buffer's state. Best-effort — the caller is already returning an error.
 // Caller holds s.mu and the region is live.
 func (s *SecureBuffer) reapplyReadOnly() {
-	if s.readOnly {
-		_ = mprotectSecretMem(s.region, 1 /*PROT_READ*/)
+	if prot := s.restProtection(); prot != 3 /*PROT_READ|PROT_WRITE*/ {
+		_ = mprotectSecretMem(s.region, prot)
 	}
 }
 
@@ -762,8 +808,8 @@ func (s *SecureBuffer) Unseal() error {
 	// PROT_READ so the physical protection matches s.readOnly — a post-Unseal
 	// mutator then refuses with ErrReadOnly instead of faulting. On failure the
 	// buffer stays sealed (fail closed) rather than exposing a writable region.
-	if s.readOnly {
-		if err := unsealRestoreReadOnly(s.region); err != nil {
+	if rest := s.restProtection(); rest != 3 /*PROT_READ|PROT_WRITE*/ {
+		if err := unsealRestoreReadOnly(s.region, rest); err != nil {
 			// The region is read-write plaintext at this point, which is not
 			// what sealed means, and Seal would return nil without touching
 			// it. Seal it again: encrypt where the seal cipher applies, then
@@ -790,11 +836,12 @@ func (s *SecureBuffer) Unseal() error {
 	return nil
 }
 
-// unsealRestoreReadOnly is Unseal's PROT_READ step for a buffer that was
-// read-only when sealed. A package var for the reason sealProtect is one: so a
+// unsealRestoreReadOnly is Unseal's last step for a buffer whose rest
+// protection is not read-write: PROT_READ for one that was read-only when
+// sealed, PROT_NONE for one that is closed at rest. A package var for the reason sealProtect is one: so a
 // test can make it fail and drive the path that has to seal again.
-var unsealRestoreReadOnly = func(region secRegion) error {
-	return mprotectSecretMem(region, 1 /*PROT_READ*/)
+var unsealRestoreReadOnly = func(region secRegion, prot int) error {
+	return mprotectSecretMem(region, prot)
 }
 
 // IsSealed reports whether the buffer is currently in the sealed (PROT_NONE) state.
@@ -843,7 +890,13 @@ func (s *SecureBuffer) Truncate(n int) error {
 	}
 	tail := s.data[n:]
 	if len(tail) > 0 {
+		if err := s.open(); err != nil {
+			return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", err)
+		}
 		secureWipeSlice(tail)
+		if err := s.close(); err != nil {
+			return fmt.Errorf("secmem.SecureBuffer.Truncate: %w", err)
+		}
 	}
 	// Capacity clamped to n as well as length: the slice a later borrow hands
 	// out can then not be re-sliced back over the tail just wiped. Harmless if

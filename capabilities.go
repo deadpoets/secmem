@@ -132,6 +132,22 @@ type Capabilities struct {
 	// flipped while sealed is handed back as the secret. False by default,
 	// for [Probe], and for a [SecureArena], which has no Seal.
 	UnauthenticatedSeal bool
+
+	// ClosedAtRest reports that this buffer was built with [WithClosedAtRest]:
+	// its pages are no-access except while a borrow or an access method is
+	// using it. An opt-in, so its absence is not a degradation and produces no
+	// warning. Always false in a [Probe] report and for an arena.
+	ClosedAtRest bool
+
+	// DestroyQuarantine reports that a destroyed region is kept for a while
+	// as a no-access reservation instead of being unmapped at once, so a
+	// slice wrongly retained past Destroy faults rather than aliasing the
+	// next allocation. Implemented on Linux and Windows; bounded by
+	// [SetQuarantineLimits], and false when those limits are zero: unlike
+	// the allocation facts above, it reflects the limits at the time of the
+	// call. Like GuardPages it is a memory-safety bug-catcher, not a secrecy
+	// mechanism.
+	DestroyQuarantine bool
 }
 
 // allocInfo records which protections one specific allocation actually
@@ -150,6 +166,10 @@ type allocInfo struct {
 	// choice (WithUnauthenticatedSeal); it rides here because this is what
 	// Capabilities reads.
 	unauthenticatedSeal bool
+
+	// closedAtRest is not the allocator's to report: newSecureBuffer sets it
+	// when the buffer was built with WithClosedAtRest.
+	closedAtRest bool
 }
 
 // capsFromAlloc composes a Capabilities report from a specific allocation's
@@ -175,6 +195,8 @@ func capsFromAlloc(info allocInfo) Capabilities {
 		Insecure:   info.insecure,
 
 		UnauthenticatedSeal: info.unauthenticatedSeal,
+		ClosedAtRest:        info.closedAtRest,
+		DestroyQuarantine:   info.guardPages && quarantineInForce(),
 	}
 }
 
@@ -254,6 +276,9 @@ func (c Capabilities) Warnings() []string {
 	if c.UnauthenticatedSeal {
 		w = append(w, "seal is not authenticated (WithUnauthenticatedSeal) — a bit flipped while sealed is handed back as the secret")
 	}
+	if !c.DestroyQuarantine {
+		w = append(w, "no destroy quarantine — a slice retained past Destroy can alias the next allocation")
+	}
 	return w
 }
 
@@ -281,6 +306,10 @@ func (c Capabilities) String() string {
 	flag("vector-clear", c.VectorRegisterClear)
 	flag("gp-clear", c.GPRegisterClear)
 	flag("guard-pages", c.GuardPages)
+	flag("destroy-quarantine", c.DestroyQuarantine)
+	if c.ClosedAtRest { // an opt-in: listed when on, not counted missing when off
+		have = append(have, "closed-at-rest")
+	}
 
 	var b strings.Builder
 	b.WriteString(c.GOOS)

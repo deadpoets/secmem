@@ -13,8 +13,49 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`WithClosedAtRest`: a buffer that is no-access except while in use.** A
+  construction option for `SecureBuffer`. The pages are `PROT_NONE` /
+  `PAGE_NOACCESS` at rest, opened for a borrowing callback or an access
+  method and closed when the last concurrent one ends, so a stray read
+  elsewhere in the process, or a slice kept from an earlier callback, faults
+  instead of reaching the secret. It costs two page-protection system calls
+  per use that finds the buffer closed (about 2 µs per borrow against 13 ns
+  measured on both Linux and Windows); buffers built without it are not
+  slowed. On Windows a closed page is not locked, so its plaintext is
+  pageable while closed; `Seal` encrypts for that reason and this option does
+  not. It is off by default, reported as `Capabilities().ClosedAtRest`, and
+  refused by `NewArena`.
+
+- **Destroy-time quarantine (Linux, Windows).** `Destroy` used to unmap a
+  region, and the next allocation was usually given the same addresses, so a
+  slice wrongly retained from a callback became a view of a different live
+  buffer. A destroyed region is now wiped and then kept as a no-access
+  reservation with nothing behind it: such a slice faults, and nothing can be
+  allocated there. A held region costs address space only, no memory and no
+  lock budget. The quarantine is a FIFO bounded by `SetQuarantineLimits`
+  (default 4096 regions / 4 GiB of address space, 64 regions / 16 MiB on
+  32-bit; zero turns it off), so the protection covers the most recently
+  destroyed regions and lapses on eviction. Reported as
+  `Capabilities().DestroyQuarantine`; not implemented on macOS, where the
+  replacement mapping has not been run. On Linux the region is replaced with
+  `MAP_FIXED`; if that fails, the range is left as it is and `Destroy`
+  returns the error, because a failed `MAP_FIXED` can leave a hole another
+  mapping now occupies (the case fixed for allocation in 0.8.0).
+
 ### Changed
 
+- **`SecureArena` reuses released slots first-in, first-out.** The free list
+  was last-in, first-out, so the slot a caller had just released was the next
+  one handed out, and a slice wrongly kept from the old tenant's callback
+  pointed at the new tenant's secret at once. A released slot now goes to
+  the back of the list. That delays the reuse and does not prevent it: the
+  arena documentation now says slots are not isolated from a retained slice
+  (the quarantine and `WithClosedAtRest` work on whole mappings), and to give
+  a secret its own `SecureBuffer` where that matters. Measured cost: none on
+  the contended path, up to about 10% on a serial acquire/release loop over
+  a large arena.
 - **Every module's `go.mod` carries `toolchain go1.27.3`**, the release CI
   pins. A local `go` switches to it by itself; consumers ignore the line. CI
   moves to go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`, reachable from

@@ -78,6 +78,9 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if s.sealed {
 		return ErrSealed
 	}
+	if s.closedAtRest {
+		return s.borrowClosed(fn, nil)
+	}
 	fn(s.data)
 	return nil
 }
@@ -109,6 +112,9 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 	}
 	if s.sealed {
 		return ErrSealed
+	}
+	if s.closedAtRest {
+		return s.borrowClosed(nil, fn)
 	}
 	return fn(s.data)
 }
@@ -179,6 +185,9 @@ func (s *SecureBuffer) CopyOut(dst []byte, srcOffset int) (int, error) {
 	if srcOffset < 0 || srcOffset >= len(s.data) {
 		return 0, fmt.Errorf("secmem.SecureBuffer.CopyOut: srcOffset %d out of range [0, %d)", srcOffset, len(s.data))
 	}
+	if s.closedAtRest {
+		return s.copyClosed(dst, s.data[srcOffset:])
+	}
 	return copy(dst, s.data[srcOffset:]), nil
 }
 
@@ -211,7 +220,7 @@ func (s *SecureBuffer) CopyIn(src []byte, dstOffset int) (int, error) {
 	if dstOffset < 0 || dstOffset >= len(s.data) {
 		return 0, fmt.Errorf("secmem.SecureBuffer.CopyIn: dstOffset %d out of range [0, %d)", dstOffset, len(s.data))
 	}
-	return copy(s.data[dstOffset:], src), nil
+	return s.store(s.data[dstOffset:], src)
 }
 
 // ByteAt returns the byte at index i.
@@ -238,6 +247,11 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 	}
 	if i < 0 || i >= len(s.data) {
 		return 0, fmt.Errorf("secmem.SecureBuffer.ByteAt: index %d out of range [0, %d)", i, len(s.data))
+	}
+	if s.closedAtRest {
+		var one [1]byte
+		_, err := s.copyClosed(one[:], s.data[i:i+1])
+		return one[0], err
 	}
 	return s.data[i], nil
 }
@@ -269,8 +283,9 @@ func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	if i < 0 || i >= len(s.data) {
 		return fmt.Errorf("secmem.SecureBuffer.SetByteAt: index %d out of range [0, %d)", i, len(s.data))
 	}
-	s.data[i] = v
-	return nil
+	one := [1]byte{v}
+	_, err := s.store(s.data[i:i+1], one[:])
+	return err
 }
 
 // ConstantTimeEqual performs a constant-time comparison of the buffer contents
@@ -294,6 +309,9 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 	}
 	if len(s.data) != len(other) {
 		return false, nil
+	}
+	if s.closedAtRest {
+		return s.equalClosed(other)
 	}
 	return subtle.ConstantTimeCompare(s.data, other) == 1, nil
 }
@@ -325,10 +343,19 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 		s.mu.rUnlock()
 		return 0, ErrSealed
 	}
+	if err := s.open(); err != nil {
+		s.mu.rUnlock()
+		return 0, err
+	}
 	// Copy under rLock so the snapshot is consistent; release before blocking I/O.
 	tmp := make([]byte, len(s.data))
 	copy(tmp, s.data)
+	cerr := s.close()
 	s.mu.rUnlock()
+	if cerr != nil {
+		secureWipeSlice(tmp)
+		return 0, cerr
+	}
 
 	// Deferred so the heap copy is wiped on every outcome — including a
 	// panicking io.Writer, which would otherwise unwind past an inline wipe.
@@ -410,9 +437,14 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	}
 	// The count returned is what was stored: a Truncate between the size
 	// snapshot above and this copy leaves room for fewer bytes than were read.
+	if err := s.open(); err != nil {
+		s.mu.unlock()
+		return 0, err
+	}
 	n = copy(s.data, tmp[:n])
+	cerr := s.close()
 	s.mu.unlock()
-	return int64(n), nil
+	return int64(n), cerr
 }
 
 // NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.

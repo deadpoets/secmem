@@ -36,7 +36,7 @@ func TestUnseal_FailedReadOnlyRestoreStaysSealed(t *testing.T) {
 	refused := errors.New("mprotect refused (injected)")
 	origRestore, origProtect := unsealRestoreReadOnly, sealProtect
 	defer func() { unsealRestoreReadOnly, sealProtect = origRestore, origProtect }()
-	unsealRestoreReadOnly = func(secRegion) error { return refused }
+	unsealRestoreReadOnly = func(secRegion, int) error { return refused }
 	reprotected := 0
 	sealProtect = func(r secRegion) error { reprotected++; return origProtect(r) }
 

@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"runtime"
 	"strconv"
 	"strings"
 	"testing"
@@ -75,6 +76,53 @@ var faultProbeCases = map[string]func() (skip bool){
 		inner := buf.region.inner
 		end := uintptr(unsafe.Pointer(&inner[0])) + uintptr(len(inner))
 		announceAndRead(end)
+		return false
+	},
+
+	// A slice kept past Destroy, read after new buffers have been allocated
+	// and filled. With the destroy-time quarantine the range is still a
+	// no-access reservation and the read MUST fault; without it the range is
+	// handed to one of the new buffers and the read returns its bytes.
+	"retained_after_destroy": func() bool {
+		buf, err := NewEmptyBuffer(64)
+		if err != nil {
+			return true
+		}
+		var retained []byte
+		_ = buf.WithBytes(func(b []byte) { retained = b }) //nolint:secmem-lint // the retained slice is the misuse under test
+		addr := uintptr(unsafe.Pointer(&retained[0]))
+		_ = buf.Destroy()
+		// Few enough to fit the default Windows lock quota.
+		later := make([]*SecureBuffer, 0, 16)
+		for i := 0; i < 16; i++ {
+			nb, err := NewEmptyBuffer(64)
+			if err != nil {
+				return true
+			}
+			_ = nb.WithBytes(func(b []byte) {
+				for j := range b {
+					b[j] = 0xEE
+				}
+			})
+			later = append(later, nb)
+		}
+		announceAndRead(addr)
+		runtime.KeepAlive(later)
+		return false
+	},
+
+	// A slice kept from a callback of a live closed-at-rest buffer: the page
+	// is no-access again once the callback has returned, so the read MUST
+	// fault.
+	"closed_at_rest_retained": func() bool {
+		buf, err := NewEmptyBuffer(64, WithClosedAtRest())
+		if err != nil {
+			return true
+		}
+		defer func() { _ = buf.Destroy() }()
+		var retained []byte
+		_ = buf.WithBytes(func(b []byte) { retained = b }) //nolint:secmem-lint // the retained slice is the misuse under test
+		announceAndRead(uintptr(unsafe.Pointer(&retained[0])))
 		return false
 	},
 
