@@ -1,7 +1,8 @@
 //go:build !amd64 && !arm64
 
-// Portable fallback for non-amd64 platforms. On amd64 the real implementations
+// Portable fallback for platforms other than amd64 and arm64. On amd64 the real implementations
 // live in wipe_amd64.s / wipe_amd64.go / wipe_init_amd64.go.
+
 package secmem
 
 import (
@@ -79,9 +80,6 @@ func secureWipeSlice(b []byte) {
 	}
 	secureWipe(unsafe.Pointer(&b[0]), uintptr(len(b)))
 }
-
-// HasCLFLUSHOPT always returns false on non-amd64 platforms.
-func HasCLFLUSHOPT() bool { return false }
 
 // cpuid is not available on non-amd64; returns zero values.
 func cpuid(_, _ uint32) (uint32, uint32, uint32, uint32) { return 0, 0, 0, 0 }

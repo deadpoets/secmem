@@ -68,7 +68,7 @@ var faultProbeCases = map[string]func() (skip bool){
 	"empty_past":  func() bool { return probeEmptyBuffer(func(base, end uintptr) uintptr { return end }) },
 	// The syscall-safe (allocMapAnon) path is guarded too: past-the-end faults.
 	"syscallsafe_past": func() bool {
-		buf, err := NewSyscallSafeBuffer([]byte("guarded-ingest"))
+		buf, err := NewBuffer([]byte("guarded-ingest"), WithoutMemfdSecret())
 		if err != nil {
 			return true
 		}

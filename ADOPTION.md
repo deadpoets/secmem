@@ -168,7 +168,11 @@ where:
   two pages per buffer: the guard pages are part of the secretmem mapping,
   and the kernel charges the whole mapping. They have no backing frames, but
   they count against the limit. On every other tier the guards cost no
-  budget. The rounding is what dominates for small secrets. A 40-byte token
+  budget, and a buffer built with `WithoutMemfdSecret` takes the mmap+mlock
+  tier, so it does not pay them. That option is required anyway for a buffer
+  handed to a kernel path that pins user pages (`O_DIRECT`, io_uring
+  registered buffers, `vmsplice`, `process_vm_readv`), which refuses
+  secretmem memory with `EFAULT`. The rounding is what dominates for small secrets. A 40-byte token
   costs a full page, 4 KiB on x86-64 and on most arm64 kernels, 16 KiB or
   64 KiB on some; read `os.Getpagesize()` on the target rather than assuming.
   The ceiling is therefore `limit / pagesize` small buffers on mmap+mlock and
@@ -263,7 +267,9 @@ whatever is still registered, not the plan.
 ## 6. Keep it true in CI
 
 - Run `secmem-lint` as a vet tool. It rejects the one mistake with no visible
-  symptom, the borrowed slice escaping its closure.
+  symptom, the borrowed slice escaping its closure, and flags every
+  `ExposeString` call, so each heap string copy of a secret is a reviewed
+  `//nolint:secmem-lint` line.
 - Run the test suite once with a small lock budget (`ulimit -l 64` on Linux)
   to see the fail-closed path exercised, and once with the production budget.
 - Keep the residual list from section 3 in your own threat model and revisit

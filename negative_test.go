@@ -61,9 +61,9 @@ func TestConstructors_NeverPanicOnBadInput(t *testing.T) {
 			t.Error("NewEmptyBuffer(MaxInt) returned no error — overflow guard missing")
 		}
 	})
-	mustNotPanic(t, "NewSyscallSafeBuffer(nil)", func() {
-		if _, err := NewSyscallSafeBuffer(nil); err == nil {
-			t.Error("NewSyscallSafeBuffer(nil) returned no error")
+	mustNotPanic(t, "NewBuffer(nil, WithoutMemfdSecret())", func() {
+		if _, err := NewBuffer(nil, WithoutMemfdSecret()); err == nil {
+			t.Error("NewBuffer(nil, WithoutMemfdSecret()) returned no error")
 		}
 	})
 	mustNotPanic(t, "NewArena(0,0)", func() {
@@ -83,7 +83,7 @@ func TestConstructors_NeverPanicOnBadInput(t *testing.T) {
 		}
 	})
 	mustNotPanic(t, "NewBufferFromReader(negative)", func() {
-		if b, _, err := NewBufferFromReader(bytes.NewReader([]byte("x")), -1); err == nil {
+		if b, err := NewBufferFromReader(bytes.NewReader([]byte("x")), -1); err == nil {
 			_ = b.Destroy()
 			t.Error("NewBufferFromReader(negative) returned no error")
 		}

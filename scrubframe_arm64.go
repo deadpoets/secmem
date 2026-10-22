@@ -2,6 +2,7 @@
 
 // Go prototype for the ARM64 scrub-frame assembly. The implementation lives in
 // scrubframe_arm64.s.
+
 package secmem
 
 // zeroFrameSize is the byte count wipeScratchFrameFull clears, held in a

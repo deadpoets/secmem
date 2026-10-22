@@ -52,17 +52,17 @@ func TestSecureBuffer_NewEmpty(t *testing.T) {
 	}
 }
 
-// TestSecureBuffer_NewSyscallSafe verifies the MAP_ANON-only path.
-func TestSecureBuffer_NewSyscallSafe(t *testing.T) {
+// TestSecureBuffer_WithoutMemfdSecret verifies the MAP_ANON-only path.
+func TestSecureBuffer_WithoutMemfdSecret(t *testing.T) {
 	t.Parallel()
 
 	raw := make([]byte, 32)
 	for i := range raw {
 		raw[i] = byte(i)
 	}
-	buf, err := NewSyscallSafeBuffer(raw)
+	buf, err := NewBuffer(raw, WithoutMemfdSecret())
 	if err != nil {
-		t.Fatalf("NewSyscallSafe: %v", err)
+		t.Fatalf("NewBuffer(WithoutMemfdSecret): %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 

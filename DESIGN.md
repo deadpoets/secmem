@@ -54,8 +54,11 @@ security library that quietly degrades is worse than one that stops.
 
 Off-heap memory can still be swapped to disk by the kernel, and a swapped
 page is a plaintext secret written to persistent storage, outliving the
-process and often surviving a reboot. `mlock` (Unix) and `VirtualLock`
-(Windows) pin the pages in RAM so they are never written to swap.
+process and often surviving a reboot. `mlock` (Unix) pins the pages in RAM so
+they are never written to swap. `VirtualLock` (Windows) is weaker: it pins
+the pages into the process's working set, but when the whole process is
+swapped out its working set goes with it, locked pages included (see
+[WINDOWS.md](WINDOWS.md)).
 
 On Linux, where it is available, secmem prefers `memfd_secret` (kernel
 5.14+). This is stronger than mlock in kind, not degree: the pages are
@@ -92,7 +95,7 @@ still inside the secret's own pages — would not hit a guard. So the slack
 between the secret and the trailing guard holds a random canary, verified at
 `Destroy`/`Release`. A modified canary means some code in this process wrote
 past the end of a buffer: `ErrCanaryViolation`, reported but never fatal —
-the wipe and unmap always complete. This is a memory-safety assertion, a bug
+the wipe always completes, and the region is then released or quarantined. This is a memory-safety assertion, a bug
 report about *your* process, complementing the guard pages' coverage of the
 larger overshoots.
 
@@ -227,13 +230,15 @@ buffers without the caller having to restore them.
 
 The channel through which in-memory secrets most often actually escape is
 not an attacker reading RAM — it is the program logging the wrong variable.
-So `Secret` and `SecureBuffer` implement every interface that `fmt`,
-`encoding/json`, and `log/slog` dispatch on (`Stringer`, `GoStringer`,
-`TextMarshaler`, `json.Marshaler`, `slog.LogValuer`) and return a fixed
-`[REDACTED]` sentinel from all of them — so the default, laziest thing a
-developer can do (`log.Printf("%v", secret)`) is already safe. `MarshalJSON`
-deliberately *redacts* rather than *erroring*: a caller who ignores the
-error still cannot leak. The separate [`redact`](redact/) package extends
+So the types answer the interfaces that `fmt`, `encoding/json`, and
+`log/slog` dispatch on with a fixed `[REDACTED]` sentinel. `Secret`
+implements `String`, `GoString`, `MarshalText`, `MarshalJSON` and
+`LogValue`; `SecureBuffer` (and `SecureArena`, `ArenaSlot`) implement
+`String`, `GoString`, `Format` and `LogValue`, and having no exported fields
+encode as `{}` under `encoding/json`. So the default, laziest thing a
+developer can do (`log.Printf("%v", secret)`) is already safe. `Secret`'s
+`MarshalJSON` deliberately *redacts* rather than *erroring*: a caller who
+ignores the error still cannot leak. The separate [`redact`](redact/) package extends
 this to arbitrary log output with a `slog.Handler` that sanitizes
 credential-shaped and high-entropy strings, so even a future logging bug on
 a plain string is filtered. Types that secmem does *not* implement an
@@ -275,6 +280,13 @@ the code makes that inspectable rather than asking for trust.
                          (flush: DRAM, vs DMA/cold
                          boot — out of scope, depth)
   Scrub vector clear     residue in XMM/YMM/ZMM, V   VZEROALL+VPXORQ / VEOR after fn
+  Scrub GP clear         residue in scalar registers zero caller-clobbered GPRs
+                         (saved by async preemption) after fn (amd64/arm64)
+  closed at rest         stray reads/writes between  no-access except while in
+                         uses (opt-in)               use; WithClosedAtRest
+  destroy quarantine     slice kept past Destroy     range held no-access, FIFO
+                         aliasing the next buffer    (Linux, Windows; bounded by
+                                                     SetQuarantineLimits)
   janitor + term-wipe    unwiped-on-exit/crash       finalizer + signal handler
   redaction              logging the secret          Stringer/Marshaler sentinels
   refuse-by-default      silent heap fallback        ErrNoSecureMemory

@@ -4,7 +4,9 @@
 // garbage-collected heap, in OS-locked pages that are excluded from swap and,
 // where the platform allows, from core dumps and from other processes. The
 // bytes are wiped on release by an architecture-specific routine and are reached
-// only through a borrowing closure, so the plaintext never outlives its use.
+// primarily through a borrowing closure; the accessors that copy plaintext out
+// (ExposeString, CopyOut, WriteTo, ByteAt) are explicit and documented as
+// weaker.
 //
 // The core module is pure Go — CGO is not required — and depends only on
 // golang.org/x/sys.
@@ -31,7 +33,8 @@
 //
 // The mechanisms below are best-effort and vary by platform. What each one
 // achieves on a given OS and architecture — and what it does not — is set out
-// in the per-platform capability matrix; the summary here is the intent.
+// in the platform guarantee matrix in README.md; the summary here is the
+// intent.
 //
 //   - Off the Go heap. Secret bytes live in mmap'd pages (VirtualAlloc on
 //     Windows), outside the heap the garbage collector scans and recycles
@@ -43,8 +46,9 @@
 //     manager outswaps an idle process's working set as a whole, locked pages
 //     go to the pagefile with it. Capabilities.Warnings says so on Windows.
 //
-//   - Kernel isolation. On 64-bit Linux (amd64/arm64, kernel 5.14+ with
-//     CONFIG_SECRETMEM) pages are backed by memfd_secret, which hides them from
+//   - Kernel isolation. On Linux amd64/arm64 (kernel 5.14+ with
+//     CONFIG_SECRETMEM; on arm64 also rodata=full or equivalent, see
+//     KERNELS.md) pages are backed by memfd_secret, which hides them from
 //     /proc/<pid>/mem, ptrace, and other readers of process memory. Elsewhere
 //     this is unavailable and the mapping falls through to locked anonymous
 //     memory.

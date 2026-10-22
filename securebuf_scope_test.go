@@ -77,7 +77,7 @@ func TestScopeWith_CustomConstructor(t *testing.T) {
 
 	called := false
 	ctor := func() (*SecureBuffer, error) {
-		return NewSyscallSafeBuffer([]byte("scope-with-test"))
+		return NewBuffer([]byte("scope-with-test"), WithoutMemfdSecret())
 	}
 	if err := ScopeWith(ctor, func(buf *SecureBuffer) error {
 		called = true

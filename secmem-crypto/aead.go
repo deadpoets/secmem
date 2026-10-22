@@ -40,6 +40,11 @@ import (
 // entered protected memory. The decryption runs inside [secmem.ScrubErr]
 // so block-cipher residue on the stack/registers is erased on
 // GOEXPERIMENT=runtimesecret builds.
+//
+// out is borrowed for the call; if you nest the call inside another
+// buffer's borrow — inside [WithAESGCM], or with the ciphertext or
+// additional data read from a SecureBuffer — acquire in ascending
+// [secmem.SecureBuffer.LockOrder].
 func OpenInto(out *secmem.SecureBuffer, aead cipher.AEAD, nonce, ciphertext, additionalData []byte) error {
 	if aead == nil {
 		return errors.New("secmemcrypto: open: nil aead")
@@ -103,6 +108,12 @@ func OpenInto(out *secmem.SecureBuffer, aead cipher.AEAD, nonce, ciphertext, add
 //
 // The plaintext is read inside [secmem.ScrubErr]; pass dst as nil (or a
 // slice with spare capacity) exactly as you would to cipher.AEAD.Seal.
+// Like cipher.AEAD.Seal, it allocates the ciphertext unless dst has the
+// capacity for it.
+//
+// plaintext is borrowed for the call; if you nest the call inside another
+// buffer's borrow — inside [WithAESGCM], for instance — acquire in
+// ascending [secmem.SecureBuffer.LockOrder].
 func SealFrom(dst []byte, aead cipher.AEAD, nonce []byte, plaintext *secmem.SecureBuffer, additionalData []byte) ([]byte, error) {
 	if aead == nil {
 		return nil, errors.New("secmemcrypto: seal: nil aead")

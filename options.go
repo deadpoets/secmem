@@ -1,8 +1,7 @@
 // options.go implements the constructor Option mechanism and the LOUD
-// degradation gate. The only option so far is WithInsecureFallback —
-// deliberately ugly to type: a silent fallback to the heap is the exact
-// footgun this library exists to prevent, so accepting one must be visible
-// at the call site.
+// degradation gate. WithInsecureFallback is deliberately ugly to type: a
+// silent fallback to the heap is the exact footgun this library exists to
+// prevent, so accepting one must be visible at the call site.
 
 package secmem
 
@@ -17,10 +16,11 @@ type config struct {
 	insecureFallback    bool
 	unauthenticatedSeal bool
 	closedAtRest        bool
+	noMemfdSecret       bool
 }
 
 // Option configures a constructor ([NewBuffer], [NewEmptyBuffer],
-// [NewSyscallSafeBuffer], [NewBufferFromReader], [NewArena]).
+// [NewBufferFromReader], [NewSecret], [NewArena]).
 type Option func(*config)
 
 // WithInsecureFallback permits a constructor to fall back to plain Go heap
@@ -52,6 +52,29 @@ func WithInsecureFallback() Option {
 // protects against.
 func WithUnauthenticatedSeal() Option {
 	return func(c *config) { c.unauthenticatedSeal = true }
+}
+
+// WithoutMemfdSecret makes a constructor skip the memfd_secret tier on Linux
+// and allocate the guarded, locked anonymous mapping directly. On other
+// platforms it changes nothing.
+//
+// memfd_secret memory is removed from the kernel's own mappings, which is its
+// point, and the kernel therefore refuses to pin it: a buffer that has to be
+// handed to a path that pins user pages — O_DIRECT I/O, io_uring registered
+// buffers, vmsplice, process_vm_readv — fails there with EFAULT. Use this
+// option for such a buffer. It also costs two fewer pages of the lock budget
+// per allocation. Everything else is unchanged; [Capabilities.MemfdSecret]
+// reports false for the buffer.
+func WithoutMemfdSecret() Option {
+	return func(c *config) { c.noMemfdSecret = true }
+}
+
+// alloc allocates through the tier the options ask for.
+func (c config) alloc(size int) (secRegion, []byte, allocInfo, error) {
+	if c.noMemfdSecret {
+		return allocMapAnon(size)
+	}
+	return allocSecretMem(size)
 }
 
 // applyOptions folds opts into a config. Nil options are ignored (no-panic).

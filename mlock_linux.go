@@ -41,7 +41,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"unsafe"
+	"runtime"
 
 	"golang.org/x/sys/unix"
 )
@@ -172,15 +172,15 @@ func allocMapAnonGuarded(pageSize, rounded, total int) (secRegion, allocInfo, er
 // through to L3. noFork reports whether MADV_DONTFORK took effect on the
 // mapping.
 func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bool, err error) {
-	// This tier is attempted on 64-bit architectures only. That is a scope
-	// decision, not a syscall-number hazard: 447 is memfd_secret on 386 as
-	// well (and unassigned on 32-bit arm, where the call would just return
-	// ENOSYS), but the isolation proofs have only ever been run on amd64 and
-	// arm64, and a tier nobody has measured is not offered. 32-bit builds
-	// fall through to the mmap+mlock path. The check is a compile-time
-	// constant, so it costs nothing on 64-bit builds.
-	if unsafe.Sizeof(uintptr(0)) != 8 {
-		return secRegion{}, false, errors.New("memfd_secret: requires a 64-bit architecture")
+	// This tier is attempted on amd64 and arm64 only. That is a scope
+	// decision, not a syscall-number hazard: 447 is memfd_secret on 386 and
+	// the other 64-bit ports as well (and unassigned on 32-bit arm, where the
+	// call would just return ENOSYS), but the isolation proofs have only ever
+	// been run on amd64 and arm64, and a tier nobody has measured is not
+	// offered. Every other architecture falls through to the mmap+mlock path.
+	// GOARCH is a compile-time constant, so the check costs nothing.
+	if runtime.GOARCH != "amd64" && runtime.GOARCH != "arm64" {
+		return secRegion{}, false, errors.New("memfd_secret: offered on amd64 and arm64 only")
 	}
 	// Close-on-exec, asked for at creation. Without it the descriptor stays
 	// inheritable for the whole window below — ftruncate and the mmap — and
@@ -260,8 +260,8 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 }
 
 // allocMapAnon allocates the guarded L3 layout only — no memfd_secret
-// attempt. Used by NewSyscallSafeBuffer for ingestion paths where data
-// arrives from a kernel-controlled channel.
+// attempt. Used for [WithoutMemfdSecret], whose buffers a kernel path that
+// pins user pages must be able to use.
 func allocMapAnon(size int) (region secRegion, data []byte, info allocInfo, err error) {
 	pageSize, rounded, total, err := guardedSizes(size)
 	if err != nil {

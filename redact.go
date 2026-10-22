@@ -19,6 +19,7 @@
 // read no fields, and the copy a value receiver makes is cheap and harmless:
 // SecureBuffer and SecureArena are one pointer to their shared state (a copy
 // is an alias, see their type docs), and an ArenaSlot is a handle.
+
 package secmem
 
 import (

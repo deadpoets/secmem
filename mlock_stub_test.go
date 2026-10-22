@@ -25,10 +25,10 @@ func TestStub_FailsClosed(t *testing.T) {
 	if _, err := NewEmptyBuffer(16); !errors.Is(err, ErrNoSecureMemory) {
 		t.Errorf("NewEmptyBuffer = %v, want ErrNoSecureMemory", err)
 	}
-	if _, err := NewSyscallSafeBuffer([]byte("x")); !errors.Is(err, ErrNoSecureMemory) {
-		t.Errorf("NewSyscallSafeBuffer = %v, want ErrNoSecureMemory", err)
+	if _, err := NewBuffer([]byte("x"), WithoutMemfdSecret()); !errors.Is(err, ErrNoSecureMemory) {
+		t.Errorf("NewBuffer(WithoutMemfdSecret) = %v, want ErrNoSecureMemory", err)
 	}
-	if _, _, err := NewBufferFromReader(bytes.NewReader([]byte("x")), 1); !errors.Is(err, ErrNoSecureMemory) {
+	if _, err := NewBufferFromReader(bytes.NewReader([]byte("x")), 1); !errors.Is(err, ErrNoSecureMemory) {
 		t.Errorf("NewBufferFromReader = %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := NewArena(16, 2); !errors.Is(err, ErrNoSecureMemory) {

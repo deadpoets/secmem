@@ -121,17 +121,17 @@ func TestDetectCLFLUSHOPT_MaxLeafAtLeast7_ReadsBit23(t *testing.T) {
 
 // TestDetectCLFLUSHOPT_MatchesInit pins the seam to the value init installed:
 // running the detection again against the real CPUID must agree with
-// HasCLFLUSHOPT, so the tested function is the one the wipe loop's flag came
+// supportsCLFLUSHOPT, so the tested function is the one the wipe loop's flag came
 // from and not a copy that could drift.
 func TestDetectCLFLUSHOPT_MatchesInit(t *testing.T) {
 	t.Parallel()
 
 	maxLeaf, _, _, _ := cpuid(0, 0)
 	got := detectCLFLUSHOPT(cpuid)
-	t.Logf("CPUID(0).EAX (max basic leaf) = %#x; detectCLFLUSHOPT = %v; HasCLFLUSHOPT = %v",
-		maxLeaf, got, HasCLFLUSHOPT())
-	if got != HasCLFLUSHOPT() {
-		t.Errorf("detectCLFLUSHOPT(cpuid) = %v but HasCLFLUSHOPT() = %v; init did not install this detection's result",
-			got, HasCLFLUSHOPT())
+	t.Logf("CPUID(0).EAX (max basic leaf) = %#x; detectCLFLUSHOPT = %v; supportsCLFLUSHOPT = %v",
+		maxLeaf, got, supportsCLFLUSHOPT)
+	if got != supportsCLFLUSHOPT {
+		t.Errorf("detectCLFLUSHOPT(cpuid) = %v but supportsCLFLUSHOPT = %v; init did not install this detection's result",
+			got, supportsCLFLUSHOPT)
 	}
 }

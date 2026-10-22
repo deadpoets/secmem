@@ -62,7 +62,7 @@ So each function here derives, signs, or decrypts **into or out of** a
 | `Argon2Into`, `Argon2IDKeyInto`, `Argon2DeriveInto` | Argon2 on an in-tree fork that wipes its whole working state (see below); RFC 9106 K/X inputs, §4 defaults, §5 vectors. The working set is a heap allocation — pageable and dumpable during the call — that the fork wipes deterministically before returning | **contained** (heap workspace, wiped) |
 | `Argon2Workspace`, `Argon2Pool` | the same derivation with the working state in a locked, registered buffer, reused across calls; fails closed when the lock budget is too small | **contained** |
 | `BcryptPBKDFInto` | OpenSSH's bcrypt_pbkdf, on the fork below, with its whole working state in a locked buffer; for interoperating with that format, not as a password KDF chosen fresh (it is not memory-hard — use Argon2) | **contained** |
-| `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place. Zero allocations, both directions. They keep the **plaintext** off the heap; the AEAD's key is wherever the caller's `cipher.AEAD` keeps it — on the heap, for as long as that object lives, unless it came from `WithAESGCM` | **contained** (plaintext) |
+| `OpenInto`, `SealFrom` | AEAD decrypt into / encrypt from secure memory; `OpenInto` errors rather than succeeding on an AEAD that did not write in place. `OpenInto` allocates nothing; `SealFrom` allocates the ciphertext unless `dst` has the capacity for it, as `cipher.AEAD.Seal` does. They keep the **plaintext** off the heap; the AEAD's key is wherever the caller's `cipher.AEAD` keeps it — on the heap, for as long as that object lives, unless it came from `WithAESGCM` | **contained** (plaintext) |
 | `WithAESGCM` | lends AES-GCM built from a key in a buffer to a callback, then wipes every copy of the key schedule — both round-key arrays of the `aes.Block`, their copy inside the GCM object, and its GHASH table — by reflection with a tripwire, on return, error or panic; the layout is checked before the key is expanded. The lent AEAD panics with `ErrAEADOutOfScope` if kept and used after the callback. Build it per use; sealing 1 KiB costs about 2.4 µs against 0.2 µs on a kept AEAD (`BenchmarkAESGCM`), mostly the cache-flushing wipe | **contained** (between uses) |
 | `X25519Key` | key agreement with the private scalar in a buffer, used in place: the RFC 7748 ladder (the standard library's own, copied into `internal/x25519` and pinned to the toolchain's source) runs over the borrowed scalar inside a Scrub window and writes the shared secret straight into the buffer it returns. Nothing is allocated beyond that buffer | **contained** |
 | `MLKEM768Key` | ML-KEM-768 with the 64-byte seed in a buffer. The expanded decapsulation key — which holds the seed verbatim and the secret polynomial `s` — is wiped by reflection with a tripwire after every expansion; the encapsulation key is computed once at construction; crypto/mlkem's hash states and polynomials stay on the stack in the Scrub window. What remains is the 32-byte message each `Decapsulate` recovers, a heap slice nothing can reach, which gives that ciphertext's shared key. **Refused on a legacy build** with `ErrHeapTransients` unless the caller passes `AllowHeapTransients()` | **contained** (the decapsulation key); **runtimesecret-only** (each decapsulation's shared key) |
@@ -86,14 +86,14 @@ go1.27.
 | Type / function | Protected at rest | Per-operation copies, legacy build | Per-operation copies, runtimesecret build | Verdict, legacy | Verdict, runtimesecret |
 |---|---|---|---|---|---|
 | `Ed25519Signer` | 32-byte seed | none on the heap. Two stack copies of the seed inside `sha512.Sum512` and the scalars, points and nonce pre-image (≤ 4 KiB message) on the stack, all in the Scrub band; the pre-image of a longer message on the heap, wiped | same | The seed is protected for its whole life, and the only heap object a signature makes is the signature. This is the type the headline is true of | same |
-| `ECDSASigner` | the scalar (28–66 bytes) | **wiped:** the `big.Int` D limbs. **not wiped:** the scalar's bytes in a fresh `[]byte`, in a `bigmod.Nat`, and in two FIPS-form keys — one dropped after the parse, one kept in `crypto/ecdsa`'s package-level cache until the collector evicts it, one to two GC cycles after `Sign` | the same objects, erased by the runtime at the first collection after they become unreachable; the cached one a collection after its eviction | The at-rest custody is real (the durable copy is locked, guard-paged, wiped on `Destroy`, and covered by `WipeAllSecrets`), but every signature leaves several unwiped copies of the scalar on the heap, one of them for a GC cycle or more. On a legacy build the buffer changes *where* the scalar is at rest, not whether it is in the heap dump of a process that signs | At rest; the copies of the last signatures are on the heap until the next collection, which for a key that signs often means almost always |
+| `ECDSASigner` | the scalar (28–66 bytes) | **wiped:** the `big.Int` D limbs. **not wiped:** the scalar's bytes in a fresh `[]byte`, in two `bigmod.Nat`s (one from the parse, one in the signature arithmetic), and in two FIPS-form keys — one dropped after the parse, one kept in `crypto/ecdsa`'s package-level cache until the collector evicts it, one to two GC cycles after `Sign` | the same objects, erased by the runtime at the first collection after they become unreachable; the cached one a collection after its eviction | The at-rest custody is real (the durable copy is locked, guard-paged, wiped on `Destroy`, and covered by `WipeAllSecrets`), but every signature leaves several unwiped copies of the scalar on the heap, one of them for a GC cycle or more. On a legacy build the buffer changes *where* the scalar is at rest, not whether it is in the heap dump of a process that signs | At rest; the copies of the last signatures are on the heap until the next collection, which for a key that signs often means almost always |
 | `RSASigner` | the whole DER (1–2 KB) | **wiped:** all the `big.Int` limbs and the FIPS-form key (d, p, q with their Montgomery constants, dP, dQ, qInv). **not wiped:** the parse's `big.Int.Bytes()` copies of D, P, Q and Qinv, `Validate`'s comparison copies, and the signature's modular-arithmetic scratch (Montgomery tables built from p and q). `math/big`'s pooled scratch is not used for two-prime keys | the same, erased at the first collection after they become unreachable | As ECDSA, at a larger scale: the whole private key is rebuilt on the heap per signature and the copies nothing wipes are the size of the key. Same verdict — real at rest, not during use | same as ECDSA |
 | `X25519Key` | 32-byte scalar | none on the heap: the clamped scalar and the ladder's field elements on the stack, in the Scrub band; the shared secret written into its buffer | same | contained | contained |
 | `MLKEM768Key` | 64-byte seed | **wiped:** the expanded key (seed halves and `s`). **on the stack, in the Scrub band:** the SHA3/SHAKE states, σ and the key-generation polynomials. **not wiped:** the 32-byte message each decapsulation recovers, which gives that ciphertext's shared key | the message erased at the first collection after the call | the decapsulation key contained; each decapsulation's shared key exposed; refused unless opted in | the decapsulation key contained; each shared key exposed until the next collection |
 | `Encapsulate` | the shared key it returns | none on the heap: the slice holding the shared key and the encryption randomness is wiped whole; the message and the digest that absorbs it are on the stack, in the Scrub band | same | contained | contained |
 | `HKDFInto`, `HMACInto` | the output (the secret is the caller's to hold in a buffer) | SHA-2 / SHA-3: none on the heap — the padded key, the pseudorandom key and the digest states are on the stack in the Scrub band or in a locked buffer. Other hashes: refused unless opted in; then the key XORed into both pads and both digest states, in heap objects | SHA-2 / SHA-3: same. Other hashes: erased once unreachable | contained over SHA-2 and SHA-3 | contained over SHA-2 and SHA-3 |
 | `Argon2Into` | output only | a heap workspace holding everything, wiped by the fork before return; dumpable and pageable during the call | same | contained, with a window during the call; use `Argon2Workspace` to close it | same |
-| `Argon2Workspace`, `BcryptPBKDFInto`, `OpenInto`, `SealFrom`, the parsers | output / working set in locked memory | none on the heap | none | contained | contained |
+| `Argon2Workspace`, `BcryptPBKDFInto`, `OpenInto`, `SealFrom`, the parsers | output / working set in locked memory | none unwiped on the heap (the passphrase parser's AES key schedule is wiped by reflection before return; a `BcryptPBKDFInto` salt over 60 bytes spills to a heap buffer that is wiped) | none | contained | contained |
 | `WithAESGCM` | the AES key | during the callback, the round keys in the `aes.Block` and the GCM object on the heap; after it, none — all wiped before return | same | contained between uses; the schedule is on the heap only while the callback runs | same |
 
 ### RSASigner and ECDSASigner on a legacy build
@@ -176,8 +176,10 @@ stack) — takes `...Option`. There are two:
   `MLKEM768Key.Decapsulate`, the Ed25519 `MarshalOpenSSHPrivateKey` forms —
   are allocated the same way, with no option at that call.
 
-The core has one option today, `secmem.WithInsecureFallback()`, and it matters
-on exactly the platforms the core describes: those with no lockable off-heap
+Any core option passes through — for example `secmem.WithInsecureFallback()`
+or `secmem.WithUnauthenticatedSeal()`. `WithInsecureFallback` is the one that
+changes where this module works, and it matters on exactly the platforms the
+core describes: those with no lockable off-heap
 memory (anything but Linux, macOS and Windows). **Without it this module is
 secure-memory-only there**: every allocating call fails with an error
 wrapping `secmem.ErrNoSecureMemory`, which is the core's default and the
@@ -196,9 +198,12 @@ for it.
 
 ## The parts that should make you look twice
 
-Three pieces of this module do what a security reviewer is right to be
-suspicious of: one reimplements a signature scheme, two fork cryptographic
-libraries. Each reason is stated here, up front.
+Five pieces of this module do what a security reviewer is right to be
+suspicious of: one reimplements a signature scheme, three fork cryptographic
+libraries (the Argon2, bcrypt_pbkdf and scrypt code of `golang.org/x/crypto`),
+and one copies the X25519 ladder out of the standard library's `crypto/ecdh`.
+The first four have a section each below; the ladder is copied verbatim apart
+from its field-package import, with its provenance in `NOTICE`. Each reason is stated here, up front.
 
 ### An in-place Ed25519 signer
 
@@ -383,4 +388,5 @@ later. See [CHANGELOG.md](../CHANGELOG.md).
 `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys` (the
 CPU-feature check for the Argon2 fork's SSE path), plus the core module. Pure
 Go, `CGO_ENABLED=0`. Third-party material embedded under other licences (the
-EFF wordlist, the Argon2, bcrypt_pbkdf and scrypt forks) is itemised in `NOTICE`.
+EFF wordlist, the Argon2, bcrypt_pbkdf and scrypt forks, and the X25519 ladder
+copied from `crypto/ecdh`) is itemised in `NOTICE`.

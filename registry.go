@@ -665,7 +665,12 @@ func (j *janitor) wipeAllInPlace() error {
 //     regions already wiped once, precisely for this case.
 //
 //   - Safe to call concurrently with Destroy and from multiple goroutines; each
-//     region is wiped exactly once.
+//     region is wiped exactly once per call.
+//
+//   - The error joins what the passes found: [ErrCanaryViolation] for a region
+//     whose canary slack was overwritten, and an error for any region whose
+//     write access could not be restored and so was left unwiped. Neither
+//     stops the wipe of any other region.
 //
 // # It can block
 //
@@ -681,7 +686,7 @@ func (j *janitor) wipeAllInPlace() error {
 // path must be bounded, run WipeAllSecrets in its own goroutine and exit on a
 // timer — the first pass will have done its work regardless — and keep
 // borrowing callbacks short, which the borrowing contract asks for anyway.
-// [InstallTerminationWipe] does exactly that, with [TerminationWipeTimeout].
+// [InstallTerminationWipe] does exactly that, with a five-second bound.
 //
 // A callback also blocks it by calling back into its own buffer while this
 // call is queued: Len, MappedLen, IsSealed and IsDestroyed take the same read

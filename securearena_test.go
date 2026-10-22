@@ -373,8 +373,8 @@ func TestArena_AcquireAfterDestroy(t *testing.T) {
 	_ = a.Destroy()
 
 	_, err = a.Acquire()
-	if !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("Acquire after Destroy = %v, want ErrArenaDestroyed", err)
+	if !errors.Is(err, ErrDestroyed) {
+		t.Errorf("Acquire after Destroy = %v, want ErrDestroyed", err)
 	}
 }
 
@@ -389,8 +389,8 @@ func TestArena_WithBytesAfterDestroy(t *testing.T) {
 	_ = a.Destroy()
 
 	err = slot.WithBytesErr(func([]byte) error { return nil })
-	if !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("WithBytesErr after Destroy = %v, want ErrArenaDestroyed", err)
+	if !errors.Is(err, ErrDestroyed) {
+		t.Errorf("WithBytesErr after Destroy = %v, want ErrDestroyed", err)
 	}
 }
 
@@ -418,8 +418,8 @@ func TestArena_NilReceiverSafe(t *testing.T) {
 		t.Errorf("nil LiveCount = %d, want 0", a.LiveCount())
 	}
 	_, err := a.Acquire()
-	if !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("nil Acquire = %v, want ErrArenaDestroyed", err)
+	if !errors.Is(err, ErrDestroyed) {
+		t.Errorf("nil Acquire = %v, want ErrDestroyed", err)
 	}
 }
 
@@ -661,11 +661,11 @@ func TestArena_ReadOnlyReadWrite(t *testing.T) {
 
 	_ = a.Destroy()
 
-	if err := a.ReadOnly(); !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("ReadOnly after Destroy = %v, want ErrArenaDestroyed", err)
+	if err := a.ReadOnly(); !errors.Is(err, ErrDestroyed) {
+		t.Errorf("ReadOnly after Destroy = %v, want ErrDestroyed", err)
 	}
-	if err := a.ReadWrite(); !errors.Is(err, ErrArenaDestroyed) {
-		t.Errorf("ReadWrite after Destroy = %v, want ErrArenaDestroyed", err)
+	if err := a.ReadWrite(); !errors.Is(err, ErrDestroyed) {
+		t.Errorf("ReadWrite after Destroy = %v, want ErrDestroyed", err)
 	}
 }
 

@@ -36,9 +36,9 @@ go test -run TestReportEnvironment -v
 
 ## Privilege and the memlock budget — measured
 
-Verified on real hardware across amd64 (kernels 5.10 → 7.0.8) and arm64 (Ampere
-Altra, kernels 6.8 → 6.17, four distros), running the identical binary in three
-privilege contexts:
+Verified on amd64 VMs (Hetzner cloud, WSL2, a local Hyper-V guest; kernels
+5.10 → 7.0.8) and arm64 Ampere Altra VMs on OCI (kernels 6.8 → 6.17, four
+distro images), running the identical binary in three privilege contexts:
 
 | Context | Outcome | Why |
 |---|---|---|
@@ -47,19 +47,23 @@ privilege contexts:
 | **non-root**, allocation exceeds `RLIMIT_MEMLOCK` (e.g. `ulimit -l 0`) | **fails closed** (the wrapped `mlock` error: `ENOMEM` over a non-zero limit, `EPERM` at a zero one) | the pages cannot be locked, so secmem refuses rather than leave the secret swappable. |
 
 The takeaway that matters for deployment: the fail-closed path is only reachable
-by an **unprivileged process with a memlock budget smaller than the secret**.
+by a process **without `CAP_IPC_LOCK` and with a memlock budget smaller than
+the secret** — which includes root in a default container (below).
 [ADOPTION.md](ADOPTION.md) has the formula for sizing that budget from the
 containers a service holds at peak. A
-root process can always lock memory, so under root the question is never "will it
+process holding `CAP_IPC_LOCK` can always lock memory, so there the question is never "will it
 fail closed" but "are the *other* protections (kernel isolation, dump exclusion)
 in force" — which `Probe` answers.
 
 ## Containers
 
-- **Root containers** (the common default): the container "root" holds
-  `CAP_IPC_LOCK`, so `mlock` always works and the fail-closed path is not
-  reachable — there is nothing to fail. Protections are in force; check `Probe`
-  for `memfd_secret` and dump-exclusion status.
+- **Root containers** (the common default): the container "root" does **not**
+  hold `CAP_IPC_LOCK` by default — the default Docker and containerd
+  capability set omits it. Unless the container runs with
+  `--cap-add IPC_LOCK` (or privileged), locking is bounded by
+  `RLIMIT_MEMLOCK` exactly as for a non-root process, and the fail-closed path
+  is reachable. With the capability, `mlock` always works. Either way, check
+  `Probe` for `memfd_secret` and dump-exclusion status.
 
 - **Rootless containers** (rootless podman/docker): the process is unprivileged,
   and `RLIMIT_MEMLOCK` is whatever the runtime sets — frequently low. A secret
@@ -79,8 +83,11 @@ in force" — which `Probe` answers.
 ## Kernel configuration
 
 `memfd_secret`'s L4 path (kernel isolation from `/proc/<pid>/mem`, ptrace, and
-other readers) requires `CONFIG_SECRETMEM=y`, present from Linux 5.14. **Version
-alone is not sufficient** — measured across distros:
+other readers) is attempted on linux/amd64 and linux/arm64 only. It requires
+`CONFIG_SECRETMEM=y`, present from Linux 5.14, and on arm64 a linear map the
+kernel can split at page granularity — `rodata=full` (or `DEBUG_PAGEALLOC`, or
+KFENCE); see [KERNELS.md](KERNELS.md). **Version alone is not sufficient** —
+measured across distros:
 
 | Distro image | Kernel | Arch | `memfd_secret` |
 |---|---|---|---|

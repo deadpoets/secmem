@@ -2,6 +2,7 @@
 
 // Go prototype for the AMD64 scrub-frame assembly. The implementation lives in
 // scrubframe_amd64.s.
+
 package secmem
 
 // wipeScratchFrameFull allocates a 32 KiB local frame and zeros it via

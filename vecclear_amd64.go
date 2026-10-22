@@ -1,6 +1,7 @@
 // Vector-register clear for the AMD64 Scrub window. The implementation lives
 // in vecclear_amd64.s; the _amd64.go filename suffix constrains this file to
 // amd64 builds.
+
 package secmem
 
 import "golang.org/x/sys/cpu"

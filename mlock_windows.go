@@ -23,6 +23,7 @@
 // GOOS=windows go vet still fires; this is an accepted known gap. See:
 //
 //	https://github.com/golang/go/issues/19720
+
 package secmem
 
 import (

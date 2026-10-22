@@ -28,6 +28,22 @@ func newToken(t *testing.T, raw []byte) *secmem.SecureBuffer {
 	return tok
 }
 
+// mustNew returns a function that unwraps a constructor's result, failing
+// the test on an error: mustNew(t)(httpauth.NewBearer(...)).
+func mustNew(t *testing.T) func(*httpauth.Transport, error) *httpauth.Transport {
+	t.Helper()
+	return func(tr *httpauth.Transport, err error) *httpauth.Transport {
+		t.Helper()
+		if err != nil {
+			t.Fatalf("constructor: %v", err)
+		}
+		if tr == nil {
+			t.Fatal("constructor returned a nil *Transport and no error")
+		}
+		return tr
+	}
+}
+
 // capture records what a test server saw: the header of every request, in
 // arrival order, plus the Basic credentials of the last one.
 type capture struct {
@@ -104,7 +120,7 @@ func TestBearer_HeaderArrivesVerbatim(t *testing.T) {
 	tok := newToken(t, raw)
 	srv, c := newServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -121,7 +137,7 @@ func TestNewHeader_CustomHeaderEmptyPrefix(t *testing.T) {
 	tok := newToken(t, raw)
 	srv, c := newServer(t)
 
-	tr := httpauth.NewHeader("X-API-Key", "", tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewHeader("X-API-Key", "", tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -140,7 +156,7 @@ func TestNewHeader_EmptyHeaderDefaultsToAuthorization(t *testing.T) {
 	tok := newToken(t, raw)
 	srv, c := newServer(t)
 
-	tr := httpauth.NewHeader("", "Token ", tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewHeader("", "Token ", tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -158,7 +174,7 @@ func TestBasic_ServerDecodesUserAndPassword(t *testing.T) {
 	tok := newToken(t, raw)
 	srv, c := newServer(t)
 
-	tr := httpauth.NewBasic("alice", tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBasic("alice", tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -179,28 +195,27 @@ func TestBasic_ServerDecodesUserAndPassword(t *testing.T) {
 	}
 }
 
-func TestBasic_UsernameWithColonIsRefused(t *testing.T) {
+// A username containing ':' cannot be sent correctly under RFC 7617, so
+// NewBasic refuses it before any Transport exists to send it.
+func TestBasic_UsernameWithColonIsRefusedAtConstruction(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("pw"))
-	srv, c := newServer(t)
-
-	tr := httpauth.NewBasic("a:b", tok, srv.Client().Transport)
-	err := do(t, tr, srv.URL)
+	tr, err := httpauth.NewBasic("a:b", tok, httpauth.WithHosts("api.example.com"))
 	if !errors.Is(err, httpauth.ErrBasicUsername) {
 		t.Fatalf("err = %v, want ErrBasicUsername", err)
 	}
-	if n := c.count(); n != 0 {
-		t.Fatalf("%d request(s) reached the server, want 0", n)
+	if tr != nil {
+		t.Fatalf("NewBasic returned a Transport alongside the error")
 	}
 }
 
-func TestLiteralWithBasicPrefix_IsPlainHeaderNotBase64(t *testing.T) {
+func TestNewHeaderWithBasicPrefix_IsPlainHeaderNotBase64(t *testing.T) {
 	t.Parallel()
 	raw := []byte("already-encoded")
 	tok := newToken(t, raw)
 	srv, c := newServer(t)
 
-	tr := &httpauth.Transport{Base: srv.Client().Transport, Prefix: "Basic ", Token: tok}
+	tr := mustNew(t)(httpauth.NewHeader("", "Basic ", tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -218,7 +233,7 @@ func TestRoundTrip_CallerRequestUntouchedAndResponseRequestScrubbed(t *testing.T
 	tok := newToken(t, []byte("tok"))
 	srv, c := newServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	req, err := http.NewRequest(http.MethodGet, srv.URL, nil)
 	if err != nil {
 		t.Fatalf("NewRequest: %v", err)
@@ -276,7 +291,7 @@ func TestRoundTrip_CloneIsNotModifiedAfterBaseReturns(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	base := &errBase{header: "Authorization"}
 
-	tr := httpauth.NewBearer(tok, base)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(base), httpauth.WithAnyHost()))
 	err := do(t, tr, "https://example.invalid/")
 	if !errors.Is(err, errBaseFailed) {
 		t.Fatalf("err = %v, want the base's error", err)
@@ -297,7 +312,7 @@ func TestDestroyedToken_ErrDestroyedAndNoRequest(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, secmem.ErrDestroyed) {
 		t.Fatalf("err = %v, want errors.Is(err, secmem.ErrDestroyed)", err)
@@ -315,7 +330,7 @@ func TestDestroyedToken_BasicAlsoReportsErrDestroyed(t *testing.T) {
 		t.Fatalf("Destroy: %v", err)
 	}
 
-	tr := httpauth.NewBasic("alice", tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBasic("alice", tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, secmem.ErrDestroyed) {
 		t.Fatalf("err = %v, want errors.Is(err, secmem.ErrDestroyed)", err)
@@ -333,7 +348,7 @@ func TestSealedToken_ErrSealedThenWorksAfterUnseal(t *testing.T) {
 		t.Fatalf("Seal: %v", err)
 	}
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, secmem.ErrSealed) {
 		t.Fatalf("err = %v, want errors.Is(err, secmem.ErrSealed)", err)
@@ -353,11 +368,44 @@ func TestSealedToken_ErrSealedThenWorksAfterUnseal(t *testing.T) {
 	}
 }
 
-func TestNilToken_ErrNoToken(t *testing.T) {
+// A live Token truncated to nothing is refused with a plain "token is empty"
+// error — not CopyOut's offset-out-of-range error, and not a state sentinel
+// it is not in — and nothing is sent.
+func TestEmptyToken_RefusedAsEmpty(t *testing.T) {
+	t.Parallel()
+	for _, basic := range []bool{false, true} {
+		tok := newToken(t, []byte("tok"))
+		if err := tok.Truncate(0); err != nil {
+			t.Fatalf("Truncate(0): %v", err)
+		}
+		srv, c := newServer(t)
+		var tr *httpauth.Transport
+		if basic {
+			tr = mustNew(t)(httpauth.NewBasic("alice", tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
+		} else {
+			tr = mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
+		}
+		err := do(t, tr, srv.URL)
+		if err == nil || !strings.Contains(err.Error(), "token is empty") {
+			t.Fatalf("basic=%v: err = %v, want a \"token is empty\" error", basic, err)
+		}
+		if strings.Contains(err.Error(), "out of range") ||
+			errors.Is(err, secmem.ErrDestroyed) || errors.Is(err, secmem.ErrSealed) {
+			t.Fatalf("basic=%v: err = %v, want only \"token is empty\"", basic, err)
+		}
+		if n := c.count(); n != 0 {
+			t.Fatalf("basic=%v: %d request(s) reached the server, want 0", basic, n)
+		}
+	}
+}
+
+// TestZeroTransport_ErrNoToken: the zero value has no token and no host
+// decision. It must refuse, not forward every request unauthenticated.
+func TestZeroTransport_ErrNoToken(t *testing.T) {
 	t.Parallel()
 	srv, c := newServer(t)
-	tr := httpauth.NewBearer(nil, srv.Client().Transport)
-	err := do(t, tr, srv.URL)
+	var tr httpauth.Transport
+	err := do(t, &tr, srv.URL)
 	if !errors.Is(err, httpauth.ErrNoToken) {
 		t.Fatalf("err = %v, want ErrNoToken", err)
 	}
@@ -372,7 +420,7 @@ func TestHosts_OnlyListedHostGetsHeader(t *testing.T) {
 	srv1, c1 := newServer(t)
 	srv2, c2 := newServer(t)
 
-	tr := httpauth.NewBearer(tok, srv1.Client().Transport, hostOf(t, srv1))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv1.Client().Transport), httpauth.WithHosts(hostOf(t, srv1))))
 	if err := do(t, tr, srv1.URL); err != nil {
 		t.Fatalf("RoundTrip to listed host: %v", err)
 	}
@@ -399,7 +447,7 @@ func TestHosts_ExcludedRequestDoesNotTouchToken(t *testing.T) {
 	}
 
 	// A destroyed token would fail the request if it were read at all.
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "other.example.invalid")
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("other.example.invalid")))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip to an excluded host read the token: %v", err)
 	}
@@ -416,8 +464,7 @@ func TestHosts_MatchIsCaseInsensitive(t *testing.T) {
 	// httptest binds a numeric address, so upper-case the hostname the
 	// request will use instead and keep the filter as written.
 	host := hostOf(t, srv)
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "LOCALHOST:"+portOf(t, host))
-	tr.AllowInsecureHTTP = true
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("LOCALHOST:"+portOf(t, host)), httpauth.WithInsecureHTTP()))
 	target := "http://localhost:" + portOf(t, host)
 	if err := do(t, tr, target); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
@@ -443,7 +490,7 @@ func TestHosts_PortIsPartOfTheMatch(t *testing.T) {
 
 	// The bare hostname without the port does not match "host:port".
 	host := hostOf(t, srv)
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, strings.TrimSuffix(host, ":"+portOf(t, host)))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts(strings.TrimSuffix(host, ":"+portOf(t, host)))))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -472,7 +519,7 @@ func TestRedirect_HostsKeepsHeaderOffTheSecondHost(t *testing.T) {
 	srv2, c2 := newServer(t)
 	srv1, c1 := redirectServer(t, srv2.URL+"/target")
 
-	tr := httpauth.NewBearer(tok, srv1.Client().Transport, hostOf(t, srv1))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv1.Client().Transport), httpauth.WithHosts(hostOf(t, srv1))))
 	client := &http.Client{Transport: tr}
 	resp, err := client.Get(srv1.URL)
 	if err != nil {
@@ -490,17 +537,17 @@ func TestRedirect_HostsKeepsHeaderOffTheSecondHost(t *testing.T) {
 	}
 }
 
-// With Hosts empty the credential follows a redirect to another host. This
+// With WithAnyHost the credential follows a redirect to another host. This
 // is the documented footgun, asserted so that the documentation stays true:
 // http.Client drops Authorization from the request it was given, but this
 // transport sits below the Client and injects on every hop it is handed.
-func TestRedirect_EmptyHostsLeaksHeaderToSecondHost_DocumentedFootgun(t *testing.T) {
+func TestRedirect_AnyHostLeaksHeaderToSecondHost_DocumentedFootgun(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
 	srv2, c2 := newServer(t)
 	srv1, c1 := redirectServer(t, srv2.URL+"/target")
 
-	tr := httpauth.NewBearer(tok, srv1.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv1.Client().Transport), httpauth.WithAnyHost()))
 	client := &http.Client{Transport: tr}
 	resp, err := client.Get(srv1.URL)
 	if err != nil {
@@ -520,8 +567,7 @@ func TestBaseNil_UsesDefaultTransport(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, nil)
-	tr.AllowInsecureHTTP = true
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithAnyHost(), httpauth.WithInsecureHTTP()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip via http.DefaultTransport: %v", err)
 	}
@@ -533,7 +579,7 @@ func TestBaseNil_UsesDefaultTransport(t *testing.T) {
 func TestNilRequest_Error(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
-	tr := httpauth.NewBearer(tok, nil)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithAnyHost()))
 	resp, err := tr.RoundTrip(nil)
 	if resp != nil {
 		_ = resp.Body.Close()
@@ -564,7 +610,7 @@ func TestRoundTrip_ConcurrentUse(t *testing.T) {
 	raw := []byte("concurrent-token")
 	tok := newToken(t, raw)
 	srv, c := newServer(t)
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 
 	const n = 16
 	var wg sync.WaitGroup
@@ -618,16 +664,17 @@ func TestRoundTrip_ClosesTheBodyWhenItRefuses(t *testing.T) {
 	}
 	base := &errBase{header: "Authorization"}
 	var nilTransport *httpauth.Transport
+	var zeroTransport httpauth.Transport
 	cases := []struct {
 		name   string
 		tr     http.RoundTripper
 		target string
 		want   error
 	}{
-		{"cleartext refused", httpauth.NewBearer(live, base), "http://example.invalid/", httpauth.ErrInsecureScheme},
-		{"nil token", httpauth.NewBearer(nil, base), "https://example.invalid/", httpauth.ErrNoToken},
-		{"destroyed token", httpauth.NewBearer(destroyed, base), "https://example.invalid/", secmem.ErrDestroyed},
-		{"basic username", httpauth.NewBasic("a:b", live, base), "https://example.invalid/", httpauth.ErrBasicUsername},
+		{"cleartext refused", mustNew(t)(httpauth.NewBearer(live, httpauth.WithBase(base), httpauth.WithAnyHost())), "http://example.invalid/", httpauth.ErrInsecureScheme},
+		{"https entry refuses http", mustNew(t)(httpauth.NewBearer(live, httpauth.WithBase(base), httpauth.WithHosts("https://example.invalid"))), "http://example.invalid/", httpauth.ErrInsecureScheme},
+		{"zero transport", &zeroTransport, "https://example.invalid/", httpauth.ErrNoToken},
+		{"destroyed token", mustNew(t)(httpauth.NewBearer(destroyed, httpauth.WithBase(base), httpauth.WithAnyHost())), "https://example.invalid/", secmem.ErrDestroyed},
 		{"nil transport", nilTransport, "https://example.invalid/", nil},
 	}
 	for _, c := range cases {

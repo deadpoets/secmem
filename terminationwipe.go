@@ -18,16 +18,17 @@ import (
 	"time"
 )
 
-// TerminationWipeTimeout is how long the handler installed by
-// [InstallTerminationWipe] waits for [WipeAllSecrets] before it goes on to
-// terminate the process anyway. WipeAllSecrets waits for every borrowing
-// callback to return, and one that never does would otherwise hold the handler
-// forever, with the signal's default disposition suppressed the whole time.
-const TerminationWipeTimeout = 5 * time.Second
+// defaultTerminationWipeTimeout is how long the handler installed by
+// InstallTerminationWipe waits for WipeAllSecrets before it goes on to
+// terminate the process anyway: five seconds. WipeAllSecrets waits for every
+// borrowing callback to return, and one that never does would otherwise hold
+// the handler forever, with the signal's default disposition suppressed the
+// whole time. Unexported so the value is not part of the API.
+const defaultTerminationWipeTimeout = 5 * time.Second
 
 // terminationWipeTimeout is the bound the handler uses; a variable so a test
 // does not have to wait out the real one.
-var terminationWipeTimeout = TerminationWipeTimeout
+var terminationWipeTimeout = defaultTerminationWipeTimeout
 
 // wipeAllSecretsBounded runs [WipeAllSecrets] and waits for it for at most
 // timeout. It reports whether the wipe finished. When it did not, the wipe is
@@ -133,12 +134,15 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // only handler the restored default disposition terminates the process, and if
 // you have your own handler it receives the signal and decides when to exit.
 //
-// # The process always terminates
+// # When the signal cannot be re-raised
 //
-// Where the signal cannot be re-raised to any effect, secmem exits the process
-// itself, with forcedExitStatus: on Windows STATUS_CONTROL_C_EXIT, which is
-// indistinguishable from the un-intercepted signal; elsewhere 130, the shell
-// convention for SIGINT. One case is Windows:
+// When a re-raise succeeds, the restored disposition or a co-installed handler
+// decides whether and when the process ends. Where the signal cannot be
+// re-raised to any effect, this installer exits the process itself, with
+// status STATUS_CONTROL_C_EXIT (0xC000013A) on Windows, which is
+// indistinguishable from the un-intercepted signal, and 130, the shell
+// convention for SIGINT, elsewhere. [InstallTerminationWipeNoExit] never
+// exits. One case is Windows:
 // os.Process.Signal there implements only [os.Kill] and rejects os.Interrupt and
 // SIGTERM outright, and the console event that triggered the handler has already
 // been consumed, so there is nothing left to re-deliver.
@@ -158,9 +162,9 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // called — [os/signal.Ignored] reports the inherited state only until Notify
 // overrides it — and treats one of those as impossible to re-raise: the
 // default installer exits, the NoExit one warns and stays installed. The
-// exit status is forcedExitStatus's for the platform — 130 here, whichever
-// of the handler's signals it was, since an ignored signal has no
-// un-intercepted status to match.
+// exit status is the platform's one above — 130 on Unix, whichever of the
+// handler's signals it was, since an ignored signal has no un-intercepted
+// status to match.
 //
 // Verified behaviour before this was so: a real Ctrl-C wiped every secret and
 // the process kept running, exiting only on a SECOND Ctrl-C. That left it in the
@@ -181,7 +185,7 @@ func completeTermination(sig os.Signal, forceExit, inheritedIgnore bool, reraise
 // that is blocked (on I/O, on a lock, or on a nested call into its own buffer)
 // would hold the handler in the wipe indefinitely: the process would not
 // terminate, and with this handler still registered no later signal would
-// terminate it either. The handler therefore waits [TerminationWipeTimeout]
+// terminate it either. The handler therefore waits five seconds
 // and then proceeds exactly as if the wipe had finished, with a warning
 // logged. By then every secret that was not borrowed is already zeroed. The
 // one inside the stuck callback is not, and the process is about to end with
@@ -220,15 +224,17 @@ func InstallTerminationWipe(signals ...os.Signal) (uninstall func()) {
 //
 // Choose it when your own handler performs a graceful shutdown that must not be
 // truncated — flushing logs, draining connections — and will exit on its own.
-// Read the warning above first: after the wipe your secrets are gone, and a
+// Read the warning in [InstallTerminationWipe] first: after the wipe your
+// secrets are gone, and a
 // shutdown path that keeps doing cryptography gets [ErrWiped] from every key
 // operation. Finish what does not need a secret, and exit promptly.
 //
 // It has an effect only on Windows and for a signal the process inherited as
-// ignored (see "The process always terminates" above); everywhere else the
-// re-raise is a real kill against a restored default disposition and the
-// process terminates through it. In those two cases the handler stays
-// installed after the signal (see "After the signal" above), so each Ctrl-C
+// ignored (see "When the signal cannot be re-raised" in
+// [InstallTerminationWipe]); everywhere else the re-raise is a real kill
+// against a restored default disposition and the process terminates through
+// it. In those two cases the handler stays installed after the signal (see
+// "After the signal" in [InstallTerminationWipe]), so each Ctrl-C
 // wipes again and none of them ends the process: with no handler of your own,
 // a second Ctrl-C no longer terminates it the way it did while the handler was
 // one-shot. Termination is entirely yours.

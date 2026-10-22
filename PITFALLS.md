@@ -206,21 +206,27 @@ client := api.NewClient(token)
 ```go
 // GOOD — inject per request from the SecureBuffer; the string exists for
 // one request and the transport drops it as soon as the request completes.
-client := &http.Client{Transport: httpauth.NewBearer(buf, nil, "api.example.com")}
+t, err := httpauth.NewBearer(buf, httpauth.WithHosts("api.example.com"))
+if err != nil {
+    return err
+}
+client := &http.Client{Transport: t}
 ```
 
 Why it matters: every SDK takes the token as a `string` and keeps it, which
 is pitfall 2 with the longest possible lifetime. `httpauth` bounds the copy to
 one request, builds it inside a `Scrub` window, and wipes the scratch it was
 assembled from. The per-request string is still a string — that residual is
-stated in the package doc, not hidden. Always pass the API's host: the
-transport sits below `http.Client`, so the Client's rule of dropping
-`Authorization` on a cross-domain redirect does not cover what is injected
-here, and with no host filter the credential follows the redirect. The host
-filter is scheme-aware: the credential goes out over https only, and a plain
-`http://` URL or an https→http redirect to a listed host fails with
-`ErrInsecureScheme` rather than sending the token in the clear — opt in per
-host with an `http://host` entry, or for all hosts with `AllowInsecureHTTP`.
+stated in the package doc, not hidden. The constructors require a host
+decision — `WithHosts`, or an explicit `WithAnyHost` — and fail with
+`ErrNoHosts` without one: the transport sits below `http.Client`, so the
+Client's rule of dropping `Authorization` on a cross-domain redirect does not
+cover what is injected here, and with no host filter the credential follows
+the redirect. The host filter is scheme-aware: the credential goes out over
+https only, and a plain `http://` URL or an https→http redirect to a listed
+host fails with `ErrInsecureScheme` rather than sending the token in the
+clear — opt in per host with an `http://host` entry, or for all hosts with
+`WithInsecureHTTP`.
 
 ## 9. Leaving a secret inside a decoded document
 
@@ -249,9 +255,12 @@ func (f *secretField) UnmarshalJSON(raw []byte) error {
     return err
 }
 
-doc, _, err := secmem.NewBufferFromReader(resp.Body, int(resp.ContentLength))
+// Bound the read yourself: resp.ContentLength is -1 when the length is unknown.
+const maxDoc = 64 << 10
+doc, err := secmem.NewBufferFromReader(resp.Body, maxDoc+1) // Len() is the bytes read
 if err != nil { return err }
 defer doc.Destroy()
+if doc.Len() > maxDoc { return errors.New("config document too large") }
 var cfg struct {
     DBPassword secretField `json:"db_password"`
 }
@@ -269,8 +278,8 @@ where you want it. Two details carry the weight. `json.Unmarshal` hands an
 token is read from locked memory and `NewBuffer` wipes that span in place;
 `json.NewDecoder` instead reads into an internal buffer you can neither
 reach nor wipe, so it is the wrong tool here. And `io.ReadAll` grows by
-doubling, leaving the abandoned halves on the heap; read a known length
-into a buffer, or into a `[]byte` you own and `SecureWipe` afterwards. What
+doubling, leaving the abandoned halves on the heap; read up to a fixed
+bound into a buffer, or into a `[]byte` you own and `SecureWipe` afterwards. What
 remains is honest to state: a value with JSON escapes needs an explicit
 unescape, which is a heap transient at that call site; and YAML and TOML
 decoders copy tokens internally, so a secret in those formats is a residual
@@ -300,7 +309,7 @@ secmem.Scrub(func() {
 ```
 
 Why it matters: `Scrub` wipes the stack band its callback used and clears
-the vector registers, and under `GOEXPERIMENT=runtimesecret` the runtime
+the vector and general-purpose registers, and under `GOEXPERIMENT=runtimesecret` the runtime
 also erases heap allocated inside the window once nothing refers to it. A
 global, a package-level cache, a `sync.Map` or `sync.Pool` entry still
 refers to it, by design, and the `runtime/secret` contract says so: erasure

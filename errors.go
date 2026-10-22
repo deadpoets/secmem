@@ -5,9 +5,11 @@ import (
 	"fmt"
 )
 
-// ErrDestroyed is returned by SecureBuffer methods after the buffer has been
-// destroyed. It is the canonical sentinel for the destroyed/wiped state.
-var ErrDestroyed = errors.New("secmem: secure buffer has been destroyed")
+// ErrDestroyed is returned by [SecureBuffer], [SecureArena] and [ArenaSlot]
+// methods once the buffer or arena has been destroyed. It is the one sentinel
+// for "this object is dead": [ErrWiped], returned after [WipeAllSecrets],
+// wraps it, so errors.Is(err, ErrDestroyed) holds however the object died.
+var ErrDestroyed = errors.New("secmem: secure memory has been destroyed")
 
 // ErrWiped is returned by every borrow, read and mutation after
 // [WipeAllSecrets] has emergency-wiped the object. The secret is gone and the
@@ -43,10 +45,6 @@ var ErrSealed = errors.New("secmem: secure buffer is sealed")
 // as long as the buffer or slab is; see PITFALLS.md.
 var ErrReadOnly = errors.New("secmem: secure buffer is read-only — call ReadWrite before mutating")
 
-// ErrArenaDestroyed is returned by SecureArena and ArenaSlot methods after the
-// arena has been destroyed via Destroy().
-var ErrArenaDestroyed = errors.New("secmem: secure arena has been destroyed")
-
 // ErrArenaFull is returned by SecureArena.Acquire when all slots are in use.
 var ErrArenaFull = errors.New("secmem: secure arena is full — no free slots")
 
@@ -76,8 +74,9 @@ var ErrNoSecureMemory = errors.New(
 var ErrIntegrity = errors.New(
 	"secmem: integrity failure — the sealed contents changed while dormant; buffer stays sealed")
 
-// ErrCanaryViolation is returned by Destroy (and ArenaSlot.Release) when the
-// canary slack adjacent to the secret was overwritten: some code in this
+// ErrCanaryViolation is returned by [SecureBuffer.Destroy],
+// [SecureArena.Destroy], [ArenaSlot.Release] and [WipeAllSecrets] when the
+// canary slack adjacent to a secret was overwritten: some code in this
 // process wrote past the end of a buffer or slot. The wipe and release
 // complete regardless — the violation is reported, never left mapped.
 //

@@ -286,6 +286,10 @@ func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer)
 // [ErrHeapTransients] unless opts include [AllowHeapTransients]; on a
 // runtimesecret build the objects are erased at the first garbage collection
 // after they become unreachable, not when HMACInto returns.
+//
+// out is borrowed for the call; if secret or info is itself borrowed from
+// another SecureBuffer around it, that is a nested borrow: acquire in
+// ascending [secmem.SecureBuffer.LockOrder] (create that buffer before out).
 func HMACInto(h func() hash.Hash, secret, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
 	if h == nil {
 		return errors.New("secmemcrypto: nil hash function")
@@ -377,6 +381,10 @@ func HMACSHA256Into(secret, info []byte, out *secmem.SecureBuffer, opts ...Optio
 // [AllowHeapTransients]; on a runtimesecret build the objects are erased at
 // the first garbage collection after they become unreachable, not when
 // HKDFInto returns.
+//
+// out is borrowed for the call; if secret, salt or info is itself borrowed
+// from another SecureBuffer around it, that is a nested borrow: acquire in
+// ascending [secmem.SecureBuffer.LockOrder] (create that buffer before out).
 func HKDFInto(h func() hash.Hash, secret, salt, info []byte, out *secmem.SecureBuffer, opts ...Option) error {
 	if h == nil {
 		return errors.New("secmemcrypto: nil hash function")

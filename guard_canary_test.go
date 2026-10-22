@@ -102,10 +102,10 @@ func TestGuardPages_FaultOnBothEdges(t *testing.T) {
 	}
 }
 
-// TestGuardPages_SyscallSafePath proves the no-memfd allocMapAnon path
+// TestGuardPages_WithoutMemfdSecret proves the no-memfd allocMapAnon path
 // produces guarded memory too. The probe runs out-of-process; see
 // fault_probe_test.go.
-func TestGuardPages_SyscallSafePath(t *testing.T) {
+func TestGuardPages_WithoutMemfdSecret(t *testing.T) {
 	if !probeFaulted(t, "syscallsafe_past") {
 		t.Error("allocMapAnon path: trailing guard page is not in force")
 	}

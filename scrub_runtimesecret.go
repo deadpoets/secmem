@@ -9,7 +9,7 @@ package secmem
 
 import "runtime/secret"
 
-// Scrub runs fn with hardware-backed secret hygiene: the registers and stack
+// Scrub runs fn with runtime-backed secret hygiene (runtime/secret): the registers and stack
 // used by fn's entire call tree are erased before Scrub returns, and heap
 // allocations made by fn are erased once the GC observes they are unreachable.
 //
@@ -37,7 +37,7 @@ import "runtime/secret"
 // restored, the original thread keeps SIGURG and SIGPROF blocked for the rest of
 // the process. Scrub detects the case it can observe (the goroutine has already
 // moved) and panics rather than restore the wrong thread's mask; the leak itself
-// is not repairable. See scrub_window_unix.go.
+// is not repairable.
 //
 // Scrub(nil) is a no-op.
 func Scrub(fn func()) {

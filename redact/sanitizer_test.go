@@ -280,3 +280,26 @@ func TestSanitize_AllowlistAfterEarlierLabel(t *testing.T) {
 		t.Errorf("allowlisted hex was redacted because the label also appeared earlier: %q", got)
 	}
 }
+
+// TestNewSanitizer_CopiesItsInputs pins the immutability the Sanitizer
+// documents: the rules and allowlist slices a caller passed in can be changed
+// afterwards without changing what an already-built Sanitizer does. It used to
+// keep the caller's slices, so a later write raced every concurrent Sanitize.
+func TestNewSanitizer_CopiesItsInputs(t *testing.T) {
+	t.Parallel()
+	rules := redact.DefaultRules()
+	allow := []*regexp.Regexp{regexp.MustCompile(`commit=`)}
+	s := redact.NewSanitizer(rules, redact.WithAllowlist(allow))
+
+	msg := "password=hunter2 commit=" + sha256hex
+	before := s.Sanitize(msg)
+
+	for i := range rules {
+		rules[i].Pattern = regexp.MustCompile(`a^`) // never matches
+	}
+	allow[0] = regexp.MustCompile(`a^`)
+
+	if after := s.Sanitize(msg); after != before {
+		t.Fatalf("changing the caller's slices changed the Sanitizer:\nbefore %q\nafter  %q", before, after)
+	}
+}

@@ -10,9 +10,10 @@ import "errors"
 // ErrRuntimeSecretInactive indicates the process was built without
 // GOEXPERIMENT=runtimesecret on a platform that supports it — the
 // register/stack/heap erasure layer ([Scrub]) is therefore NOT active and
-// only the legacy best-effort frame scrub is in force.
+// only the fallback layers are in force (see [Capabilities.FrameScrub],
+// [Capabilities.VectorRegisterClear] and [Capabilities.GPRegisterClear]).
 var ErrRuntimeSecretInactive = errors.New(
-	"runtime/secret erasure inactive: built without GOEXPERIMENT=runtimesecret on a supported platform")
+	"secmem: runtime/secret erasure inactive: built without GOEXPERIMENT=runtimesecret on a supported platform")
 
 // AssertRuntimeSecret enforces the memory-hardening posture at startup
 // (fail-closed).
@@ -27,8 +28,9 @@ var ErrRuntimeSecretInactive = errors.New(
 //
 // Call early in main(), after [HardenProcess]. Callers that must tolerate an
 // inactive layer (e.g. a developer running an ad-hoc `go build` without the
-// experiment) can downgrade the error to a warning, but the default posture is
-// to refuse to start.
+// experiment) can downgrade the error to a warning — behind a flag or build
+// tag of their own, since that is a policy only the application can set — but
+// the default posture is to refuse to start.
 func AssertRuntimeSecret() error {
 	if runtimeSecretSupported() && !RuntimeSecretActive() {
 		return ErrRuntimeSecretInactive

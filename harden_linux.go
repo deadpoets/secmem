@@ -24,7 +24,7 @@ func hardenProcess() (HardenLevel, error) {
 	// dumpable flag belongs to the address space, so one call covers the
 	// process.
 	if err := unix.Prctl(unix.PR_SET_DUMPABLE, 0, 0, 0, 0); err != nil {
-		return level, fmt.Errorf("harden: PR_SET_DUMPABLE: %w", err)
+		return level, fmt.Errorf("secmem: PR_SET_DUMPABLE: %w", err)
 	}
 	level |= HardenNoDump
 
@@ -46,10 +46,10 @@ func hardenProcess() (HardenLevel, error) {
 		// thread, which covers what it goes on to create, and do NOT report
 		// HardenNoNewPriv: the process as a whole does not have it.
 		if err := unix.Prctl(unix.PR_SET_NO_NEW_PRIVS, 1, 0, 0, 0); err != nil {
-			return level, fmt.Errorf("harden: PR_SET_NO_NEW_PRIVS: %w", err)
+			return level, fmt.Errorf("secmem: PR_SET_NO_NEW_PRIVS: %w", err)
 		}
 	default:
-		return level, fmt.Errorf("harden: PR_SET_NO_NEW_PRIVS: %w", errno)
+		return level, fmt.Errorf("secmem: PR_SET_NO_NEW_PRIVS: %w", errno)
 	}
 
 	// L1c: seccomp BPF filter — not yet implemented. A useful filter needs a

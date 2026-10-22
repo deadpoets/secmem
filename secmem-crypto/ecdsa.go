@@ -78,7 +78,7 @@ var errCandidateRejected = errors.New("candidate rejected")
 // The per-operation parse recomputes the public key (one scalar-base
 // multiplication), making a P-256 signature roughly half again as
 // expensive as with a plain *ecdsa.PrivateKey kept on the heap. The exact
-// delta is hardware-dependent; the benchmark pair in bench_block3_test.go
+// delta is hardware-dependent; a benchmark pair in the module's tests
 // measures it on yours. That price is deliberate.
 //
 // The public key is derived once at construction and cached: Public and

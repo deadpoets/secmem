@@ -11,8 +11,8 @@ attack.
 secmem reduces the window and the surface in which a secret is exposed in
 process memory:
 
-- It keeps secret bytes off the Go GC heap (so they are not scanned, moved, or
-  copied by the collector), locked out of swap, and — on 64-bit Linux
+- It keeps secret bytes off the Go GC heap (so they are not scanned by the collector or
+  left unwiped in freed heap spans), locked out of swap, and — on 64-bit Linux
   (amd64/arm64) with `memfd_secret` — hidden from other readers of process
   memory.
 - It wipes them deterministically on `Destroy`, with an architecture-specific
@@ -155,8 +155,9 @@ are. Stated per shape:
   cipher under the tag is the next step, and until it lands this row is a
   gap, not a control. Allocating the prekey once per process and never
   moving it is deliberate: RAMBleed placed OpenSSH's key by triggering fresh
-  allocations into frames it had prepared, and a page allocated at startup
-  offers no such opening — at the price that an attacker has the process
+  allocations into frames it had prepared, and a page allocated once, lazily on
+  the first `Seal`, and kept for the process lifetime offers no repeated
+  opening — at the price that an attacker has the process
   lifetime to read it.
 
 - **The real fixes are below the library.** ECC and DDR5 refresh management
@@ -194,11 +195,14 @@ at moments your code does not choose:
 - **Shrinking.** While scanning a goroutine, the collector may move it to a
   smaller stack (`shrinkstack`) — another copy, another abandoned segment.
 - **Asynchronous preemption.** The runtime sends the thread SIGURG, and the
-  handler, `runtime.asyncPreempt`, saves *all user registers* onto that
-  goroutine's stack before entering the scheduler. That is the entire register
-  file, general-purpose and vector, spilled at an instruction boundary nothing
-  chose. One landing mid-cipher-round writes live key material to the stack at
-  an offset nothing tracks.
+  handler, `runtime.asyncPreempt`, saves *all user registers* before entering
+  the scheduler, at an instruction boundary nothing chose. The general-purpose
+  registers go onto that goroutine's stack. The vector registers, since go1.26
+  on amd64 and arm64, go to a per-P scratch buffer that the runtime copies into
+  an off-heap block (see [PROTECTION.md](PROTECTION.md)); other
+  architectures spill them onto the stack too. One landing
+  mid-cipher-round writes live key material to the stack, or to that buffer,
+  at an offset nothing tracks.
 
 ### What Scrub does about it
 
@@ -261,7 +265,7 @@ Constraints of the Go runtime, not defects in this library:
 - **A GC stack-shrink between `fn`'s return and the exit wipe.**
   `shrinkstack` is asynchronous, runtime-owned, and unreachable from Go; if it
   frees `fn`'s segment first, the wipe runs on the copy. Only the
-  `runtime/secret` path (`Capabilities.RegisterScrub`, i.e.
+  `runtime/secret` path (`Capabilities.RuntimeSecret`, i.e.
   `GOEXPERIMENT=runtimesecret`) closes this, because it has runtime cooperation.
 - **Cooperative preemption is unaffected.** A long window can still be
   descheduled at a call boundary and have its stack scanned, and possibly
@@ -326,9 +330,14 @@ A deliberate omission, stated as one rather than dressed up as a platform limit:
   dump taken while sealed contains ciphertext — but the key is in kernel RAM,
   so this is dump hardening, not cold-boot protection.
 
-- **The guard pages and canary are a bug-catcher, not a confidentiality
-  control.** They turn an accidental adjacent over/under-flow into a fault or a
-  reported violation. They do nothing against an attacker who can already read
+- **The guard pages, canary, destroy quarantine and `WithClosedAtRest` are
+  bug-catchers, not confidentiality controls.** The guard pages and canary
+  turn an accidental adjacent over/under-flow into a fault or a reported
+  violation; the destroy quarantine (Linux, Windows; bounded by
+  `SetQuarantineLimits`) turns a slice retained past `Destroy` into a fault
+  rather than an alias of the next allocation, for as long as the region is
+  held; `WithClosedAtRest` (opt-in) makes a buffer no-access between uses, so
+  a stray access faults. They do nothing against an attacker who can already read
   the mapping. The seal tag is in the same class for *writes*: it reports
   that dormant bytes changed, and nothing about who read them.
 

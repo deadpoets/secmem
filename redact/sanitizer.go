@@ -1,7 +1,8 @@
 // Package redact sanitizes strings destined for logs and other text sinks:
 // it masks credential-shaped substrings and neutralizes log-injection
-// sequences (CWE-117). It is the boundary-level complement to secmem.Secret —
-// where Secret makes a held value self-redacting, redact scrubs free-form
+// sequences (CWE-117). It is the boundary-level complement to
+// [github.com/deadpoets/secmem.Secret] — where Secret makes a held value
+// self-redacting, redact scrubs free-form
 // text that has already been assembled (a log line, an error message).
 //
 // HONESTY — what this is and is not:
@@ -11,7 +12,8 @@
 //     entropy); it cannot catch a secret that looks like ordinary prose, and
 //     a determined format will always slip a regex. Never rely on it as the
 //     only thing between a secret and a log — keep secrets in a
-//     [secmem.SecureBuffer]/[secmem.Secret] and never format them in the
+//     [github.com/deadpoets/secmem.SecureBuffer] or
+//     [github.com/deadpoets/secmem.Secret] and never format them in the
 //     first place. redact exists to reduce blast radius when that discipline
 //     slips, not to license slipping.
 //
@@ -53,11 +55,16 @@
 //     credential-shaped key but not for a value logged under an innocent one.
 //
 // The package is stdlib-only and safe for concurrent use: a [Sanitizer] is
-// immutable after construction.
+// immutable after construction. [NewSanitizer] copies the rule and allowlist
+// slices it is given, and a [SanitizerOption] configures only the
+// constructor, so nothing the caller holds can change a built Sanitizer. (The compiled
+// patterns and [Rule.Filter] functions are shared, not copied; a
+// [regexp.Regexp] is safe for concurrent use and a Filter must be.)
 package redact
 
 import (
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -69,7 +76,7 @@ type Category string
 
 const (
 	// CategoryInjection covers CWE-117 log-injection neutralization (CRLF,
-	// ANSI escapes, shell metacharacters). Not a secrecy control.
+	// ANSI CSI escapes, ${…} and $(…) shell expansions). Not a secrecy control.
 	CategoryInjection Category = "injection"
 
 	// CategorySecret covers credential-shaped substrings — key=value pairs
@@ -111,15 +118,24 @@ func (r Rule) tag() string {
 }
 
 // Sanitizer applies an ordered set of rules to a string. It is immutable
-// after construction and safe for concurrent use.
+// after construction — [NewSanitizer] copies its inputs and no [SanitizerOption] can
+// reach a built Sanitizer — and safe for concurrent use.
 type Sanitizer struct {
 	rules     []Rule
 	allowlist []*regexp.Regexp
 	maxLen    int
 }
 
-// Option configures a [Sanitizer].
-type Option func(*Sanitizer)
+// SanitizerOption configures a [Sanitizer] at construction, as
+// [HandlerOption] configures a [Handler]. It acts on the constructor's
+// settings, never on a built Sanitizer, which no option can change.
+type SanitizerOption func(*sanitizerConfig)
+
+// sanitizerConfig collects the effects of Options.
+type sanitizerConfig struct {
+	allowlist []*regexp.Regexp
+	maxLen    int
+}
 
 // truncatedTag is appended to a message cut by [WithMaxLen].
 const truncatedTag = "[REDACTED:truncated]"
@@ -129,10 +145,10 @@ const truncatedTag = "[REDACTED:truncated]"
 // rune boundary) BEFORE any rule runs, and the cut is suffixed with
 // "[REDACTED:truncated]"; that is what bounds the work a hostile input can
 // cause. The result is cut again the same way if replacement tags grew it
-// past n, so the output is never longer than n plus the marker. Zero disables
-// truncation. The constructor default is 4096.
-func WithMaxLen(n int) Option {
-	return func(s *Sanitizer) { s.maxLen = n }
+// past n, so the output is never longer than n plus the marker. Zero or a
+// negative n disables truncation. The constructor default is 4096.
+func WithMaxLen(n int) SanitizerOption {
+	return func(c *sanitizerConfig) { c.maxLen = n }
 }
 
 // WithAllowlist sets patterns that exempt a [CategoryEntropy] match from
@@ -140,20 +156,26 @@ func WithMaxLen(n int) Option {
 // match is spared when an allowlist match ends exactly where it begins (a
 // label such as "commit=" directly before a hash) or contains it entirely (a
 // pattern that matches label and value together). Only entropy matches
-// consult the allowlist.
-func WithAllowlist(patterns []*regexp.Regexp) Option {
-	return func(s *Sanitizer) { s.allowlist = patterns }
+// consult the allowlist. The slice is copied; changing it afterwards does not
+// change the Sanitizer.
+func WithAllowlist(patterns []*regexp.Regexp) SanitizerOption {
+	return func(c *sanitizerConfig) { c.allowlist = patterns }
 }
 
 // NewSanitizer builds a Sanitizer from rules and options. Rules are applied in
-// slice order, so put higher-confidence rules first. The default max length is
-// 4096 characters.
-func NewSanitizer(rules []Rule, opts ...Option) *Sanitizer {
-	s := &Sanitizer{rules: rules, maxLen: 4096}
+// slice order, so put higher-confidence rules first. The rules slice is
+// copied, so the Sanitizer is unaffected by later changes to it. The default
+// max length is 4096 bytes.
+func NewSanitizer(rules []Rule, opts ...SanitizerOption) *Sanitizer {
+	cfg := sanitizerConfig{maxLen: 4096}
 	for _, opt := range opts {
-		opt(s)
+		opt(&cfg)
 	}
-	return s
+	return &Sanitizer{
+		rules:     slices.Clone(rules),
+		allowlist: slices.Clone(cfg.allowlist),
+		maxLen:    cfg.maxLen,
+	}
 }
 
 // maxSanitizePasses bounds the fixpoint iteration in [Sanitize]. Tags never

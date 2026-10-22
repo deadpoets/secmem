@@ -88,8 +88,7 @@ func TestRoundTrip_LeavesTheRequestAloneWhileTheTransportWritesIt(t *testing.T) 
 
 	base := &http.Transport{}
 	t.Cleanup(base.CloseIdleConnections)
-	tr := httpauth.NewBearer(tok, base)
-	tr.AllowInsecureHTTP = true
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(base), httpauth.WithAnyHost(), httpauth.WithInsecureHTTP()))
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace),
 		http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
 	if err != nil {

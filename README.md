@@ -98,12 +98,15 @@ provided · **LOUD** opt-in only. This table is the threat model's spine; see
 | Register + heap scrub ([`Scrub`](https://pkg.go.dev/github.com/deadpoets/secmem#Scrub)) — heap objects erased at the next garbage collection, not on return | ✓ with `GOEXPERIMENT=runtimesecret` | ✓ if set (amd64/arm64) | ✗ | ✗ | ✗ |
 | Encrypted while sealed ([`Seal`](https://pkg.go.dev/github.com/deadpoets/secmem#SecureBuffer.Seal)) | ✗ | ✗ | ✗ | ✓ CryptProtectMemory | ✗ |
 | Sealed bytes authenticated — a bit flipped while dormant (Rowhammer, soft error) is refused by `Unseal` | ✓ HMAC-SHA-512, 16 KiB prekey | ✓ | ✓ | ✓ (over the ciphertext) | ⚠ tag over heap bytes; `Seal` itself is advisory |
+| Destroy quarantine — a destroyed range is held no-access for a while, so a slice retained past `Destroy` faults instead of aliasing the next allocation (bounded FIFO, [`SetQuarantineLimits`](https://pkg.go.dev/github.com/deadpoets/secmem#SetQuarantineLimits)) | ✓ | ✓ | ✗ | ✓ | ✗ |
+| Closed between uses ([`WithClosedAtRest`](https://pkg.go.dev/github.com/deadpoets/secmem#WithClosedAtRest)) — no-access except while a borrow or access method is using it | **opt-in** | **opt-in** | **opt-in** | **opt-in** (a closed page is unlocked: see [WINDOWS.md](WINDOWS.md)) | ✗ |
 | Process hardening ([`HardenProcess`](https://pkg.go.dev/github.com/deadpoets/secmem#HardenProcess)) | ✓ dumpable=0, no-new-privs on every thread (calling thread only with cgo) | ✓ | ✗ | ✓ ACG + strict handles | ✗ |
 | Fails loudly, never silently degrades | ✓ | ✓ | ✓ | ✓ | ✓ (**LOUD** opt-in) |
 
-The suite has been executed on real **linux/amd64 and linux/arm64** hardware,
-spanning kernels 5.10 through 7.x (see [`KERNELS.md`](KERNELS.md)). On arm64
-(Ampere Altra), the `memfd_secret` L4 path, the guard-page fault, the
+The suite has been executed on **linux/amd64** (cloud and local VMs, WSL2)
+and **linux/arm64** (Ampere Altra VMs on OCI, and single-board Cortex-A53 and
+Tegra hardware), spanning kernels 5.10 through 7.x (see
+[`KERNELS.md`](KERNELS.md)). On arm64, the `memfd_secret` L4 path, the guard-page fault, the
 `/proc/self/mem` isolation proof, and the architecture-specific wipe assembly
 all pass.
 
@@ -156,10 +159,10 @@ On a unified-memory SoC (Tegra, Apple Silicon, AMD APUs, most ARM SBCs) note
 also that locking a page constrains the CPU's view of it, not an on-die
 GPU/NPU sharing the same DRAM — see [`THREAT-MODEL.md`](THREAT-MODEL.md).
 
-Guard pages and the canary are a **memory-safety bug-catcher, not a
-confidentiality control** — they trap an accidental over/under-flow, and do
-nothing against a privileged reader of process memory (that is
-`memfd_secret`'s job). The seal tag is the same kind of thing for the dormant
+Guard pages, the canary and the destroy quarantine are a **memory-safety
+bug-catcher, not a confidentiality control** — they trap an accidental
+over/under-flow or a slice retained past `Destroy`, and do nothing against a
+privileged reader of process memory (that is `memfd_secret`'s job). The seal tag is the same kind of thing for the dormant
 window: it detects a changed bit, it does not hide one. The Windows
 sealed-state cipher raises the bar against memory dumps of a dormant secret;
 it is not cold-boot protection. All three are detailed in the godoc and the
@@ -174,7 +177,9 @@ threat model, which has a section on Rowhammer.
   log scrubbing. Standard library only.
 - **`secmem/httpauth`** — an `http.RoundTripper` that injects a credential
   header per request from a `SecureBuffer`, so an HTTP client never holds the
-  token as a long-lived string. Standard library only.
+  token as a long-lived string. It will not be built without being told which
+  hosts receive the credential, and refuses to send it over cleartext unless
+  told to. Standard library and the core package only.
 
 Two further modules live in this repository and are versioned and tagged
 independently, so neither adds anything to the core's dependency graph:
@@ -189,8 +194,9 @@ independently, so neither adds anything to the core's dependency graph:
   `filippo.io/edwards25519`, `golang.org/x/crypto` and `golang.org/x/sys`.
 - **[`secmem-lint`](secmem-lint/)** — a `go/analysis` analyzer (and
   `go vet -vettool` binary) that checks the borrowing-closure discipline at
-  compile time: the slice handed to `WithBytes` must not escape the closure.
-  It detects a documented set of escape shapes, not every possible one; its
+  compile time: the slice handed to `WithBytes` (or to a closure passed
+  through a borrowing wrapper) must not escape the closure. It also flags
+  every `ExposeString` call, which makes an unwipeable heap string. It detects a documented set of escape shapes, not every possible one; its
   README lists exactly what it resolves. Depends only on `golang.org/x/tools`.
 
 ## Documentation

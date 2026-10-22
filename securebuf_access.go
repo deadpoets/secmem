@@ -38,9 +38,13 @@ import (
 // lock is writer-preferring, so if another goroutine calls
 // Destroy/CopyIn/Seal/ReadOnly, or [WipeAllSecrets] runs, while fn holds the
 // read lock, a nested same-buffer read lock would block on the waiting writer
-// while that writer blocks on fn's outstanding read lock — a deadlock. Nesting
-// access to a DIFFERENT buffer (e.g. the decrypt-into pattern:
-// key.WithBytesErr → out.WithBytesErr) is safe and expected.
+// while that writer blocks on fn's outstanding read lock — a deadlock.
+//
+// Nesting access to a DIFFERENT buffer (e.g. the decrypt-into pattern:
+// key.WithBytesErr → out.WithBytesErr) is safe only if every goroutine that
+// nests the same two buffers does so in the same order; two goroutines
+// nesting them in opposite orders can deadlock once a writer is queued on
+// either. Nest in ascending [SecureBuffer.LockOrder].
 //
 // READ-ONLY BUFFERS: while the buffer is read-only ([SecureBuffer.ReadOnly])
 // the slice is backed by a PROT_READ page. A write through it is not
@@ -57,8 +61,9 @@ import (
 // residue test. That covers what fn leaves behind; a preemption landing while
 // fn is still running is only prevented inside a [Scrub] window.
 //
-// Returns ErrDestroyed if the buffer has been destroyed, and [ErrWiped] (which
-// wraps it) if [WipeAllSecrets] emptied it; fn is not called in either case.
+// Returns [ErrDestroyed] if the buffer has been destroyed, [ErrWiped] (which
+// wraps it) if [WipeAllSecrets] emptied it, and [ErrSealed] if it is sealed;
+// fn is not called in any of these cases.
 func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 	if fn == nil {
 		return errors.New("secmem.SecureBuffer.WithBytes: nil fn")
@@ -86,12 +91,14 @@ func (s *SecureBuffer) WithBytes(fn func([]byte)) error {
 }
 
 // WithBytesErr is like WithBytes but fn may return an error, which is propagated.
-// Returns ErrDestroyed if the buffer has been destroyed and [ErrWiped] if
-// [WipeAllSecrets] emptied it; fn is not called in either case.
+// Returns [ErrDestroyed] if the buffer has been destroyed, [ErrWiped] if
+// [WipeAllSecrets] emptied it, and [ErrSealed] if it is sealed; fn is not
+// called in any of these cases.
 //
 // NOT REENTRANT: as with [SecureBuffer.WithBytes], fn must not call another
 // access method on the same buffer (deadlock risk under a concurrent writer);
-// nesting onto a different buffer is safe. As there too, a write through the
+// nesting onto a different buffer is safe only in a consistent order, as
+// there (ascending [SecureBuffer.LockOrder]). As there too, a write through the
 // slice while the buffer is read-only faults rather than returning
 // [ErrReadOnly].
 func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
@@ -134,13 +141,13 @@ func (s *SecureBuffer) WithBytesErr(fn func([]byte) error) error {
 // routinely do — but it extends the secret's lifetime beyond secmem's control.
 // Do not use ExposeString for material whose exposure must end at Destroy.
 //
-// The copy is taken under the read lock. On GOEXPERIMENT=runtimesecret builds
-// it is a garbage-collector-tracked allocation, erased once nothing references
+// The copy is taken under the read lock. On linux/amd64 and linux/arm64
+// GOEXPERIMENT=runtimesecret builds it is a garbage-collector-tracked allocation, erased once nothing references
 // it — best-effort timing, never a guarantee; a string you keep is never
 // erased.
 //
-// Returns ErrDestroyed if the buffer has been destroyed and ErrSealed if it is
-// sealed.
+// Returns [ErrDestroyed] if the buffer has been destroyed, [ErrWiped] if
+// [WipeAllSecrets] emptied it, and [ErrSealed] if it is sealed.
 func (s *SecureBuffer) ExposeString() (string, error) {
 	var str string
 	if err := s.WithBytesErr(func(b []byte) error {
@@ -260,7 +267,7 @@ func (s *SecureBuffer) ByteAt(i int) (byte, error) {
 // Returns an error if i is out of range or the buffer has been destroyed.
 //
 // The exclusive lock is held to prevent races with ReadOnly/ReadWrite and
-// concurrent Write calls.
+// with concurrent CopyIn, SetByteAt, ReadFrom and Truncate calls.
 func (s *SecureBuffer) SetByteAt(i int, v byte) error {
 	if s == nil || s.bufferState == nil {
 		return ErrDestroyed
@@ -321,7 +328,7 @@ func (s *SecureBuffer) ConstantTimeEqual(other []byte) (bool, error) {
 //
 // This decouples Destroy from any I/O latency: a stalled network peer or slow
 // pipe no longer prevents Destroy (including the emergency-wipe path) from
-// proceeding. The temporary copy is wiped via secureWipeSlice after the write.
+// proceeding. The temporary copy is wiped after the write, on every outcome.
 //
 // NOTE: For network or pipe targets, wrap w with a write deadline before
 // calling WriteTo to bound the lifetime of the in-flight copy.
@@ -369,8 +376,8 @@ func (s *SecureBuffer) WriteTo(w io.Writer) (int64, error) {
 // a temporary heap slice first, then copied into secure memory under the lock.
 //
 // This prevents a stalled network peer or slow pipe from blocking Destroy
-// (including the emergency-wipe path). The temporary slice is wiped via
-// secureWipeSlice after the copy regardless of outcome.
+// (including the emergency-wipe path). The temporary slice is wiped after the
+// copy regardless of outcome.
 func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	if s == nil || s.bufferState == nil {
 		return 0, ErrDestroyed
@@ -447,25 +454,31 @@ func (s *SecureBuffer) ReadFrom(r io.Reader) (int64, error) {
 	return int64(n), cerr
 }
 
-// NewBufferFromReader allocates a SecureBuffer of size bytes and fills it from r.
-// The returned buffer may be partially filled if r returns fewer than size bytes;
-// the returned count reports how many bytes were read, so check it where a
-// short secret is not acceptable. A source that yields nothing at all is
-// refused with [io.EOF] and no buffer: an empty key file is far more often a
-// mistake than a secret, and unlike [SecureBuffer.ReadFrom], which follows
-// [io.ReaderFrom] and reports (0, nil), a constructor can say so.
-func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, int64, error) {
+// NewBufferFromReader allocates a SecureBuffer of up to size bytes and fills
+// it from r. The buffer's [SecureBuffer.Len] is the number of bytes read: a
+// source shorter than size gives a shorter buffer, never a zero-padded one,
+// so where a secret must have an exact length, check Len. A source longer
+// than size is read only up to size; the rest stays in r.
+//
+// A source that yields nothing at all is refused with [io.EOF] and no buffer:
+// an empty key file is far more often a mistake than a secret, and unlike
+// [SecureBuffer.ReadFrom], which follows [io.ReaderFrom] and reports (0, nil),
+// a constructor can say so. Any other read error is returned with no buffer.
+func NewBufferFromReader(r io.Reader, size int, opts ...Option) (*SecureBuffer, error) {
 	buf, err := NewEmptyBuffer(size, opts...)
 	if err != nil {
-		return nil, 0, err
+		return nil, err
 	}
 	n, err := buf.ReadFrom(r)
 	if err == nil && n == 0 {
 		err = io.EOF
 	}
+	if err == nil && int(n) < size {
+		err = buf.Truncate(int(n))
+	}
 	if err != nil {
 		_ = buf.Destroy()
-		return nil, n, err
+		return nil, err
 	}
-	return buf, n, nil
+	return buf, nil
 }
