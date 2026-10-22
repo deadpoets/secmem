@@ -27,7 +27,7 @@ func TestInsecure_BareHostEntryRefusesHTTP(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, hostOf(t, srv))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts(hostOf(t, srv))))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, httpauth.ErrInsecureScheme) {
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
@@ -37,12 +37,12 @@ func TestInsecure_BareHostEntryRefusesHTTP(t *testing.T) {
 	}
 }
 
-func TestInsecure_EmptyHostsRefusesHTTP(t *testing.T) {
+func TestInsecure_AnyHostRefusesHTTP(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, httpauth.ErrInsecureScheme) {
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
@@ -61,19 +61,18 @@ func TestInsecure_RefusedRequestDoesNotTouchToken(t *testing.T) {
 	}
 	// A destroyed token would report ErrDestroyed if it were read; the scheme
 	// rule must come first.
-	tr := httpauth.NewBearer(tok, srv.Client().Transport)
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
 }
 
-func TestInsecure_AllowInsecureHTTPOptsIn(t *testing.T) {
+func TestInsecure_WithInsecureHTTPOptsIn(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, hostOf(t, srv))
-	tr.AllowInsecureHTTP = true
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts(hostOf(t, srv)), httpauth.WithInsecureHTTP()))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -87,7 +86,7 @@ func TestInsecure_HTTPEntryOptsInPerHost(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "http://"+hostOf(t, srv))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("http://"+hostOf(t, srv))))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -101,7 +100,7 @@ func TestInsecure_HTTPSEntryRefusesHTTP(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "https://"+hostOf(t, srv)+"/")
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("https://"+hostOf(t, srv)+"/")))
 	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
@@ -110,15 +109,14 @@ func TestInsecure_HTTPSEntryRefusesHTTP(t *testing.T) {
 	}
 }
 
-// AllowInsecureHTTP opts in bare entries only: a host pinned to https by a
+// WithInsecureHTTP opts in bare entries only: a host pinned to https by a
 // scheme-qualified entry still refuses cleartext.
-func TestInsecure_AllowInsecureHTTPDoesNotOverrideHTTPSEntry(t *testing.T) {
+func TestInsecure_WithInsecureHTTPDoesNotOverrideHTTPSEntry(t *testing.T) {
 	t.Parallel()
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "https://"+hostOf(t, srv))
-	tr.AllowInsecureHTTP = true
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("https://"+hostOf(t, srv)), httpauth.WithInsecureHTTP()))
 	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
@@ -132,7 +130,7 @@ func TestInsecure_HTTPSEntryAdmitsHTTPS(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, c := newServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "HTTPS://"+hostOf(t, srv))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("HTTPS://"+hostOf(t, srv))))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip: %v", err)
 	}
@@ -146,7 +144,7 @@ func TestInsecure_UnlistedHostForwardedRegardlessOfScheme(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, c := newPlainServer(t)
 
-	tr := httpauth.NewBearer(tok, srv.Client().Transport, "other.example.invalid")
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("other.example.invalid")))
 	if err := do(t, tr, srv.URL); err != nil {
 		t.Fatalf("RoundTrip to an unlisted host: %v", err)
 	}
@@ -167,7 +165,7 @@ func TestRedirect_HTTPSToHTTPIsRefused(t *testing.T) {
 	plain, c2 := newPlainServer(t)
 	tlsSrv, c1 := redirectServer(t, plain.URL+"/target")
 
-	tr := httpauth.NewBearer(tok, tlsSrv.Client().Transport, hostOf(t, tlsSrv), hostOf(t, plain))
+	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(tlsSrv.Client().Transport), httpauth.WithHosts(hostOf(t, tlsSrv), hostOf(t, plain))))
 	client := &http.Client{Transport: tr}
 	resp, err := client.Get(tlsSrv.URL)
 	if resp != nil {
@@ -214,11 +212,11 @@ func TestForceHTTP1_RequestIsHTTP11(t *testing.T) {
 	}
 
 	// Control: the server does speak h2 to a willing client.
-	if err := do(t, httpauth.NewBearer(tok, base), srv.URL); err != nil {
+	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(base), httpauth.WithAnyHost())), srv.URL); err != nil {
 		t.Fatalf("RoundTrip (h2): %v", err)
 	}
 	// Recipe: the same base, forced to HTTP/1.1.
-	if err := do(t, httpauth.NewBearer(tok, httpauth.ForceHTTP1(base)), srv.URL); err != nil {
+	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(httpauth.ForceHTTP1(base)), httpauth.WithAnyHost())), srv.URL); err != nil {
 		t.Fatalf("RoundTrip (forced h1): %v", err)
 	}
 
@@ -277,12 +275,12 @@ func TestForceHTTP1_OverridesProtocols(t *testing.T) {
 	t.Cleanup(base.CloseIdleConnections)
 
 	// Control: this base does negotiate h2.
-	if err := do(t, httpauth.NewBearer(tok, base), srv.URL); err != nil {
+	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(base), httpauth.WithAnyHost())), srv.URL); err != nil {
 		t.Fatalf("RoundTrip (h2): %v", err)
 	}
 	forced := httpauth.ForceHTTP1(base)
 	t.Cleanup(forced.CloseIdleConnections)
-	if err := do(t, httpauth.NewBearer(tok, forced), srv.URL); err != nil {
+	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(forced), httpauth.WithAnyHost())), srv.URL); err != nil {
 		t.Fatalf("RoundTrip (forced h1): %v", err)
 	}
 

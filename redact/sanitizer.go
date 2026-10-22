@@ -56,8 +56,8 @@
 //
 // The package is stdlib-only and safe for concurrent use: a [Sanitizer] is
 // immutable after construction. [NewSanitizer] copies the rule and allowlist
-// slices it is given, and an [Option] configures only the constructor, so
-// nothing the caller holds can change a built Sanitizer. (The compiled
+// slices it is given, and a [SanitizerOption] configures only the
+// constructor, so nothing the caller holds can change a built Sanitizer. (The compiled
 // patterns and [Rule.Filter] functions are shared, not copied; a
 // [regexp.Regexp] is safe for concurrent use and a Filter must be.)
 package redact
@@ -118,7 +118,7 @@ func (r Rule) tag() string {
 }
 
 // Sanitizer applies an ordered set of rules to a string. It is immutable
-// after construction — [NewSanitizer] copies its inputs and no [Option] can
+// after construction — [NewSanitizer] copies its inputs and no [SanitizerOption] can
 // reach a built Sanitizer — and safe for concurrent use.
 type Sanitizer struct {
 	rules     []Rule
@@ -126,10 +126,10 @@ type Sanitizer struct {
 	maxLen    int
 }
 
-// Option configures a [Sanitizer] at construction. It acts on the
-// constructor's settings, never on a built Sanitizer, which no option can
-// change.
-type Option func(*sanitizerConfig)
+// SanitizerOption configures a [Sanitizer] at construction, as
+// [HandlerOption] configures a [Handler]. It acts on the constructor's
+// settings, never on a built Sanitizer, which no option can change.
+type SanitizerOption func(*sanitizerConfig)
 
 // sanitizerConfig collects the effects of Options.
 type sanitizerConfig struct {
@@ -147,7 +147,7 @@ const truncatedTag = "[REDACTED:truncated]"
 // cause. The result is cut again the same way if replacement tags grew it
 // past n, so the output is never longer than n plus the marker. Zero or a
 // negative n disables truncation. The constructor default is 4096.
-func WithMaxLen(n int) Option {
+func WithMaxLen(n int) SanitizerOption {
 	return func(c *sanitizerConfig) { c.maxLen = n }
 }
 
@@ -158,7 +158,7 @@ func WithMaxLen(n int) Option {
 // pattern that matches label and value together). Only entropy matches
 // consult the allowlist. The slice is copied; changing it afterwards does not
 // change the Sanitizer.
-func WithAllowlist(patterns []*regexp.Regexp) Option {
+func WithAllowlist(patterns []*regexp.Regexp) SanitizerOption {
 	return func(c *sanitizerConfig) { c.allowlist = patterns }
 }
 
@@ -166,7 +166,7 @@ func WithAllowlist(patterns []*regexp.Regexp) Option {
 // slice order, so put higher-confidence rules first. The rules slice is
 // copied, so the Sanitizer is unaffected by later changes to it. The default
 // max length is 4096 bytes.
-func NewSanitizer(rules []Rule, opts ...Option) *Sanitizer {
+func NewSanitizer(rules []Rule, opts ...SanitizerOption) *Sanitizer {
 	cfg := sanitizerConfig{maxLen: 4096}
 	for _, opt := range opts {
 		opt(&cfg)

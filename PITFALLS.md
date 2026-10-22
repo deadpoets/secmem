@@ -206,21 +206,27 @@ client := api.NewClient(token)
 ```go
 // GOOD — inject per request from the SecureBuffer; the string exists for
 // one request and the transport drops it as soon as the request completes.
-client := &http.Client{Transport: httpauth.NewBearer(buf, nil, "api.example.com")}
+t, err := httpauth.NewBearer(buf, httpauth.WithHosts("api.example.com"))
+if err != nil {
+    return err
+}
+client := &http.Client{Transport: t}
 ```
 
 Why it matters: every SDK takes the token as a `string` and keeps it, which
 is pitfall 2 with the longest possible lifetime. `httpauth` bounds the copy to
 one request, builds it inside a `Scrub` window, and wipes the scratch it was
 assembled from. The per-request string is still a string — that residual is
-stated in the package doc, not hidden. Always pass the API's host: the
-transport sits below `http.Client`, so the Client's rule of dropping
-`Authorization` on a cross-domain redirect does not cover what is injected
-here, and with no host filter the credential follows the redirect. The host
-filter is scheme-aware: the credential goes out over https only, and a plain
-`http://` URL or an https→http redirect to a listed host fails with
-`ErrInsecureScheme` rather than sending the token in the clear — opt in per
-host with an `http://host` entry, or for all hosts with `AllowInsecureHTTP`.
+stated in the package doc, not hidden. The constructors require a host
+decision — `WithHosts`, or an explicit `WithAnyHost` — and fail with
+`ErrNoHosts` without one: the transport sits below `http.Client`, so the
+Client's rule of dropping `Authorization` on a cross-domain redirect does not
+cover what is injected here, and with no host filter the credential follows
+the redirect. The host filter is scheme-aware: the credential goes out over
+https only, and a plain `http://` URL or an https→http redirect to a listed
+host fails with `ErrInsecureScheme` rather than sending the token in the
+clear — opt in per host with an `http://host` entry, or for all hosts with
+`WithInsecureHTTP`.
 
 ## 9. Leaving a secret inside a decoded document
 

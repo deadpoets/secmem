@@ -177,7 +177,9 @@ threat model, which has a section on Rowhammer.
   log scrubbing. Standard library only.
 - **`secmem/httpauth`** — an `http.RoundTripper` that injects a credential
   header per request from a `SecureBuffer`, so an HTTP client never holds the
-  token as a long-lived string. Standard library and the core package only.
+  token as a long-lived string. It will not be built without being told which
+  hosts receive the credential, and refuses to send it over cleartext unless
+  told to. Standard library and the core package only.
 
 Two further modules live in this repository and are versioned and tagged
 independently, so neither adds anything to the core's dependency graph:

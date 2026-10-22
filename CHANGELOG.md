@@ -108,16 +108,36 @@ callers is done now; each entry says what to write instead.
   2, `HardenStrictHandles` 4, `HardenNoDynamicCode` 8. They were assigned by
   `iota` after `HardenNone`, which left bit 0 unused and would have moved them
   had a constant been inserted. Code that tests bits by name is unaffected.
-- **`redact.Option` configures the constructor only.** Options were
-  functions of `*Sanitizer`, so `redact.WithMaxLen(n)(shared)` changed a
-  Sanitizer documented as immutable and safe for concurrent use. They now
-  act on unexported settings, and `NewSanitizer` copies the rules and
-  allowlist slices, so later changes to the caller's slices do not reach it.
-  Code that passes options to `NewSanitizer` is unaffected.
+- **`redact.Option` is `redact.SanitizerOption`, and it configures the
+  constructor only.** Options were functions of `*Sanitizer`, so
+  `redact.WithMaxLen(n)(shared)` changed a Sanitizer documented as immutable
+  and safe for concurrent use. They now act on unexported settings, and
+  `NewSanitizer` copies the rules and allowlist slices, so later changes to
+  the caller's slices do not reach it. The new name sits beside
+  `HandlerOption`. Code that only passes options to `NewSanitizer` is
+  unaffected; code that names the type writes `redact.SanitizerOption`.
 - **The memfd_secret tier is attempted on linux/amd64 and linux/arm64 only.**
   It was attempted on every 64-bit Linux, although the isolation proofs have
   only run on those two and the documentation said so. Other architectures
   get the locked anonymous mapping, as 32-bit builds always did.
+- **`httpauth`: a `Transport` is built only by its constructors, is
+  immutable, and requires a host decision.** It was configured through
+  exported fields, so a Transport in use could be changed under concurrent
+  requests, could be built incoherently (a Basic transport with a `Prefix`
+  it ignored), and, when the host list was left out, injected the
+  credential into every request, including after a redirect to another
+  domain: this transport sits below `http.Client`, so the Client's own
+  stripping of `Authorization` on such a redirect does not apply. Now
+  `NewBearer`, `NewHeader` and `NewBasic` take options and return
+  `(*Transport, error)`; construction fails with the new `ErrNoHosts` unless
+  `WithHosts(...)` or, deliberately, `WithAnyHost()` is given, and with the
+  new `ErrInvalidConfig` for a header name that is not an HTTP token, a
+  prefix containing CR, LF or NUL, or a malformed host entry; a nil token is
+  `ErrNoToken` and a ':' in a Basic username `ErrBasicUsername`, both at
+  construction. Migration: `httpauth.NewBearer(tok, nil, "api.example.com")`
+  becomes `httpauth.NewBearer(tok, httpauth.WithHosts("api.example.com"))`;
+  a `base` argument becomes `WithBase(rt)`, and `AllowInsecureHTTP = true`
+  becomes `WithInsecureHTTP()`.
 - **`httpauth`: an empty token is refused as "httpauth: token is empty".**
   A live token truncated to nothing used to fail the request with an
   offset-out-of-range error from the buffer. A destroyed, wiped or sealed
