@@ -99,3 +99,14 @@ func (w *Argon2Workspace) Size() int      { return 0 }
 func NewArgon2Workspace(memory uint32, threads uint8, opts ...Option) (*Argon2Workspace, error) {
 	return &Argon2Workspace{}, nil
 }
+
+// The remaining exported methods of the key types; see the note at the end of
+// the secmem stub.
+type OpenSSHPassphraseParams struct{}
+
+func (s *Ed25519Signer) MarshalOpenSSHPrivateKeyWithPassphraseParams(comment string, passphrase []byte, p OpenSSHPassphraseParams) (*secmem.SecureBuffer, error) {
+	return nil, nil
+}
+
+func (s *ECDSASigner) Equal(x crypto.PublicKey) bool { return false }
+func (s *RSASigner) Equal(x crypto.PublicKey) bool   { return false }

@@ -3,6 +3,12 @@
 // borrowing accessors to the real package path.
 package secmem
 
+import (
+	"fmt"
+	"io"
+	"log/slog"
+)
+
 type SecureBuffer struct{}
 
 func (b *SecureBuffer) WithBytes(fn func([]byte)) error          { return nil }
@@ -62,3 +68,38 @@ func (b SecureBuffer) String() string     { return "" }
 func (s *ArenaSlot) Index() int           { return 0 }
 func (s Secret) String() string           { return "" }
 func (s Secret) Destroy() error           { return nil }
+
+// The rest of the exported method sets, so that any method the libraries have
+// can be written in a fixture, and so the stub test can hold the two in step
+// (locktable_derive_test.go). Lock-taking first, then lock-free.
+type Capabilities struct{}
+
+func (b *SecureBuffer) ReadFrom(r io.Reader) (int64, error) { return 0, nil }
+func (b *SecureBuffer) WriteTo(w io.Writer) (int64, error)  { return 0, nil }
+func (b *SecureBuffer) Truncate(n int) error                { return nil }
+func (b *SecureBuffer) Unseal() error                       { return nil }
+func (b *SecureBuffer) ReadOnly() error                     { return nil }
+func (b *SecureBuffer) ReadWrite() error                    { return nil }
+
+func (s Secret) ConstantTimeEqual(other Secret) bool { return false }
+func (s Secret) WriteTo(w io.Writer) (int64, error)  { return 0, nil }
+
+func (b *SecureBuffer) Capabilities() Capabilities { return Capabilities{} }
+func (b SecureBuffer) GoString() string            { return "" }
+func (b SecureBuffer) Format(f fmt.State, _ rune)  {}
+func (b SecureBuffer) LogValue() slog.Value        { return slog.Value{} }
+func (s Secret) GoString() string                  { return "" }
+func (s Secret) LogValue() slog.Value              { return slog.Value{} }
+func (s Secret) MarshalText() ([]byte, error)      { return nil, nil }
+func (s Secret) MarshalJSON() ([]byte, error)      { return nil, nil }
+func (a *SecureArena) Cap() int                    { return 0 }
+func (a *SecureArena) SlotSize() int               { return 0 }
+func (a *SecureArena) Capabilities() Capabilities  { return Capabilities{} }
+func (a SecureArena) String() string               { return "" }
+func (a SecureArena) GoString() string             { return "" }
+func (a SecureArena) Format(f fmt.State, _ rune)   {}
+func (a SecureArena) LogValue() slog.Value         { return slog.Value{} }
+func (s ArenaSlot) String() string                 { return "" }
+func (s ArenaSlot) GoString() string               { return "" }
+func (s ArenaSlot) Format(f fmt.State, _ rune)     {}
+func (s ArenaSlot) LogValue() slog.Value           { return slog.Value{} }
