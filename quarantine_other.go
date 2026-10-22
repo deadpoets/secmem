@@ -10,6 +10,8 @@ package secmem
 // platforms there is no reservation to keep. Destroy unmaps as before.
 const quarantineSupported = false
 
+const quarantineFailureKeepsRange = true // unused: nothing is ever quarantined
+
 func quarantineSecretMem(secRegion) error { return nil }
 
 func releaseQuarantined([]byte) error { return nil }

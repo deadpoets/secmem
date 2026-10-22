@@ -10,6 +10,11 @@ import (
 
 const quarantineSupported = true
 
+// quarantineFailureKeepsRange is true: MEM_DECOMMIT never releases the
+// reservation, so after a failed one the range is still this process's and
+// retireSecretMem can fall back to freeing it.
+const quarantineFailureKeepsRange = true
+
 // quarantineSecretMem decommits the secret area and keeps the reservation.
 // The guards were never committed, so afterwards the whole range is reserved
 // address space with nothing behind it: any access is an access violation and

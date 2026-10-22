@@ -1,6 +1,7 @@
 package secmem
 
 import (
+	"fmt"
 	"strconv"
 	"sync"
 )
@@ -111,8 +112,17 @@ func retireSecretMem(region secRegion) error {
 		return freeSecretMem(region)
 	}
 	if err := quarantineSecretMem(region); err != nil {
-		// The reservation could not be converted (the VMA limit, say).
-		// Nothing may be left mapped and readable, so fall back to the unmap.
+		if !quarantineFailureKeepsRange {
+			// The replace failed part-way, and what is at these addresses
+			// now is unknown: the old mapping, nothing, or — once the hole
+			// was there — something another thread mapped. Unmapping the
+			// range would destroy that. The contents were wiped before this
+			// call, so leaving the range as it is costs address space (and,
+			// if the old mapping survived, its lock charge), never a secret.
+			return fmt.Errorf("secmem: destroy quarantine: replacing the region failed, its address range is left as it is: %w", err)
+		}
+		// The reservation is intact; nothing may be left mapped and
+		// readable, so fall back to the unmap.
 		return freeSecretMem(region)
 	}
 

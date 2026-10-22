@@ -39,10 +39,23 @@ mark the stability commitment.
   32-bit; zero turns it off), so the protection covers the most recently
   destroyed regions and lapses on eviction. Reported as
   `Capabilities().DestroyQuarantine`; not implemented on macOS, where the
-  replacement mapping has not been run.
+  replacement mapping has not been run. On Linux the region is replaced with
+  `MAP_FIXED`; if that fails, the range is left as it is and `Destroy`
+  returns the error, because a failed `MAP_FIXED` can leave a hole another
+  mapping now occupies (the case fixed for allocation in 0.8.0).
 
 ### Changed
 
+- **`SecureArena` reuses released slots first-in, first-out.** The free list
+  was last-in, first-out, so the slot a caller had just released was the next
+  one handed out, and a slice wrongly kept from the old tenant's callback
+  pointed at the new tenant's secret at once. A released slot now goes to
+  the back of the list. That delays the reuse and does not prevent it: the
+  arena documentation now says slots are not isolated from a retained slice
+  (the quarantine and `WithClosedAtRest` work on whole mappings), and to give
+  a secret its own `SecureBuffer` where that matters. Measured cost: none on
+  the contended path, up to about 10% on a serial acquire/release loop over
+  a large arena.
 - **Every module's `go.mod` carries `toolchain go1.27.3`**, the release CI
   pins. A local `go` switches to it by itself; consumers ignore the line. CI
   moves to go1.27.3 and go1.26.10 (GO-2026-6809, `crypto/x509`, reachable from

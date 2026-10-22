@@ -138,7 +138,7 @@ func TestClosedAtRest_EveryMethodOpensAndCloses(t *testing.T) {
 		{"CopyIn", func() error { _, err := buf.CopyIn([]byte("XY"), 1); return err }},
 		{"ReadFrom", func() error { _, err := buf.ReadFrom(bytes.NewReader([]byte("read-from"))); return err }},
 		{"ExposeString", func() error {
-			s, err := buf.ExposeString()
+			s, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 			if err == nil && s[:9] != "read-from" {
 				err = errors.New("ExposeString does not show what ReadFrom stored")
 			}
