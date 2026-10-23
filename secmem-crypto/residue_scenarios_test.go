@@ -148,15 +148,17 @@ var residueScenarios = []residueScenario{
 		},
 	},
 	{
-		// A 32-byte copy leaves the secret's two halves in the vector
-		// registers it moved them through; a goroutine then preempted
-		// asynchronously has its register file saved onto its stack, where
-		// nothing erases it. This is what Scrub's signal mask and register
-		// clear exist for, and the pair below proves both halves of that.
+		// A 32-byte copy leaves the secret's two halves in the registers it
+		// moved them through; a goroutine then preempted asynchronously has
+		// its register file saved where nothing erases it. This is what
+		// Scrub's signal mask and register clear exist for, and the pair
+		// below proves both halves of that. This side holds the preempted
+		// goroutine at that depth until teardown (preemptedCopyHeld), so the
+		// saved copy is present when the scan looks for it.
 		name: "control/preempted-copy-outside-scrub", class: residueControlSpill, nOps: 4,
 		needsPreemption: true,
 		material:        randomSecret(32, "secret"),
-		victim:          preemptedCopy(false),
+		victim:          preemptedCopyHeld,
 	},
 	{
 		// The copy runs inside two WithBytesErr borrows and no Scrub window,
@@ -960,6 +962,104 @@ func copyWithin(dst, src *secmem.SecureBuffer, off, n int) error {
 }
 
 var residueSpinAcc uint64
+
+// preemptedCopyHeld is the outside-Scrub control. Each operation runs the
+// copy on a goroutine of its own, which then keeps spinning at the same depth
+// (residueSpinHold) until the next operation or the teardown releases it, so
+// every asynchronous preemption saves the registers still holding the secret
+// into a live frame of that goroutine, or into the runtime's per-P register
+// buffers, again and again. The copy the scan looks for is therefore there
+// when it looks.
+//
+// The in-Scrub twin cannot be held this way — a Scrub window that never ends
+// would block the collector's stop-the-world — and does not need to be: it
+// asserts that nothing is found. This side used to spin once and return, and
+// relied on the saved registers surviving in dead stack below the spin until
+// the scan: what the harness's reply path wrote over that stack, and whether
+// the collector had shrunk and moved it, decided whether anything was left.
+// On linux/arm64 nothing was, about once in two hundred runs.
+func preemptedCopyHeld(buf *secmem.SecureBuffer, _ []byte) (func() error, func() error, error) {
+	dst, err := secmem.NewEmptyBuffer(32)
+	if err != nil {
+		return nil, nil, err
+	}
+	var stop atomic.Bool
+	collected := make(chan struct{})
+	go func() {
+		defer close(collected)
+		for !stop.Load() {
+			runtime.GC()
+		}
+	}()
+	var (
+		release *atomic.Bool // the current holder's
+		held    = make(chan error, 8)
+		holders int
+	)
+	letGo := func() error {
+		if release == nil {
+			return nil
+		}
+		release.Store(true)
+		release = nil
+		var first error
+		for ; holders > 0; holders-- {
+			if err := <-held; err != nil && first == nil {
+				first = err
+			}
+		}
+		return first
+	}
+	op := func() error {
+		if err := letGo(); err != nil {
+			return err
+		}
+		rel, spun := new(atomic.Bool), new(atomic.Bool)
+		release = rel
+		holders++
+		go func() {
+			held <- buf.WithBytesErr(func(s []byte) error {
+				return dst.WithBytesErr(func(d []byte) error {
+					copy(d, s[:32])
+					residueSpinHold(200_000_000, spun, rel)
+					return nil
+				})
+			})
+		}()
+		for !spun.Load() {
+			runtime.Gosched()
+		}
+		return nil
+	}
+	destroy := func() error {
+		err := letGo() // the borrows end before Destroy, which waits for them
+		stop.Store(true)
+		<-collected
+		return errors.Join(err, destroyAll(dst.Destroy, buf.Destroy)())
+	}
+	return op, destroy, nil
+}
+
+// residueSpinHold spins n iterations, reports that through spun, and then
+// keeps spinning until release is set. It makes no calls, so the frames below
+// it are never reused while it runs, and it touches few registers: those a
+// 32-byte copy leaves the secret in (X0/X1 on amd64; R6, R7, R12 and R13 on
+// arm64) stay as the copy left them. It must not be inlined: in the caller's
+// frame the register allocator, short of low registers, reached for R6 and R7
+// and overwrote the secret's first half on arm64.
+//
+//go:noinline
+func residueSpinHold(n int, spun, release *atomic.Bool) {
+	for i := 0; i < n; i++ {
+		residueSpinAcc += uint64(i) ^ residueSpinAcc>>3
+	}
+	spun.Store(true)
+	for !release.Load() {
+		for i := 0; i < 1<<16; i++ {
+			residueSpinAcc += uint64(i) ^ residueSpinAcc>>3
+		}
+	}
+}
 
 // residueSpin burns CPU without a call, so the scheduler can take the
 // goroutine off it only by asynchronous preemption.
