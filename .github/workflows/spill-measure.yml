@@ -37,13 +37,14 @@ jobs:
       - name: old victim, then new
         working-directory: secmem-crypto
         run: |
+          set +e
           sudo prlimit --pid $$ --memlock=unlimited:unlimited || true
           f=residue_scenarios_test.go
           cp "$f" "$RUNNER_TEMP/new.go"
           git show "origin/${{ github.base_ref }}:secmem-crypto/$f" > "$RUNNER_TEMP/old.go"
           measure() {
             cp "$RUNNER_TEMP/$1.go" "$f"
-            go test -count="$RUNS" -v -run '^TestKeyResidue$/^control/preempted-copy-outside-scrub$' . > "$RUNNER_TEMP/$1.out" 2>&1 || true
+            go test -timeout 0 -count="$RUNS" -v -run '^TestKeyResidue$/^control/preempted-copy-outside-scrub$' . > "$RUNNER_TEMP/$1.out" 2>&1 || true
             pass=$(grep -c -- '--- PASS: TestKeyResidue/control/preempted-copy-outside-scrub' "$RUNNER_TEMP/$1.out")
             fail=$(grep -c -- '--- FAIL: TestKeyResidue/control/preempted-copy-outside-scrub' "$RUNNER_TEMP/$1.out")
             hits=$(grep 'preempted-copy-outside-scrub: used:' "$RUNNER_TEMP/$1.out" | sed -E 's/.*used: +//; s/ \(.*//; s/none/0/; s/secret×//')
