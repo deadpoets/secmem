@@ -1,0 +1,61 @@
+# TEMPORARY: measures the outside-Scrub preemption control, old victim against
+# new, before the change is merged. Removed before the PR leaves draft.
+name: spill-measure
+
+on:
+  pull_request:
+    paths:
+      - .github/workflows/spill-measure.yml
+      - secmem-crypto/residue_scenarios_test.go
+
+permissions:
+  contents: read
+
+env:
+  GO_VERSION: "1.27.3"
+
+jobs:
+  measure:
+    name: measure (${{ matrix.runner }}${{ matrix.goexperiment && format(', {0}', matrix.goexperiment) || '' }})
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [ubuntu-24.04-arm, ubuntu-latest]
+        goexperiment: ["", runtimesecret]
+    runs-on: ${{ matrix.runner }}
+    env:
+      GOEXPERIMENT: ${{ matrix.goexperiment }}
+      RUNS: "300"
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: ${{ env.GO_VERSION }}
+      - uses: ./.github/actions/setup-workspace
+      - name: old victim, then new
+        working-directory: secmem-crypto
+        run: |
+          sudo prlimit --pid $$ --memlock=unlimited:unlimited || true
+          f=residue_scenarios_test.go
+          cp "$f" "$RUNNER_TEMP/new.go"
+          git show "origin/${{ github.base_ref }}:secmem-crypto/$f" > "$RUNNER_TEMP/old.go"
+          measure() {
+            cp "$RUNNER_TEMP/$1.go" "$f"
+            go test -count="$RUNS" -v -run '^TestKeyResidue$/^control/preempted-copy-outside-scrub$' . > "$RUNNER_TEMP/$1.out" 2>&1 || true
+            pass=$(grep -c -- '--- PASS: TestKeyResidue/control/preempted-copy-outside-scrub' "$RUNNER_TEMP/$1.out")
+            fail=$(grep -c -- '--- FAIL: TestKeyResidue/control/preempted-copy-outside-scrub' "$RUNNER_TEMP/$1.out")
+            hits=$(grep 'preempted-copy-outside-scrub: used:' "$RUNNER_TEMP/$1.out" | sed -E 's/.*used: +//; s/ \(.*//; s/none/0/; s/secret×//')
+            min=$(echo "$hits" | sort -n | head -1); max=$(echo "$hits" | sort -n | tail -1)
+            zeros=$(echo "$hits" | grep -cx 0)
+            {
+              echo "### $1 victim: $pass pass, $fail fail, used-phase hits min $min max $max, zero-hit runs $zeros of $(echo "$hits" | grep -c .)"
+              echo '```'
+              echo "$hits" | sort -n | uniq -c
+              echo '```'
+            } | tee -a "$GITHUB_STEP_SUMMARY"
+          }
+          measure old
+          measure new
+          cp "$RUNNER_TEMP/new.go" "$f"
