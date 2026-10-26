@@ -228,4 +228,4 @@ Participation is governed by the [Code of Conduct](CODE_OF_CONDUCT.md).
 
 ## License
 
-Apache-2.0. See [LICENSE](LICENSE).
+Copyright 2026 Chris Fink. Licensed under Apache-2.0; see [LICENSE](LICENSE) and [NOTICE](NOTICE).
