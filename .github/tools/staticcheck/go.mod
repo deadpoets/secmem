@@ -2,7 +2,7 @@ module secmem-ci/staticcheck
 
 go 1.26.0
 
-toolchain go1.27.3
+toolchain go1.27.4
 
 tool honnef.co/go/tools/cmd/staticcheck
 

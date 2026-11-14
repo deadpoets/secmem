@@ -128,15 +128,27 @@
 // # RLIMIT_MEMLOCK budget
 //
 // Each SecureBuffer locks at least one page. On Linux with memfd_secret live,
-// it also locks its two guard pages, because the kernel charges the whole
-// secretmem mapping; a one-page secret then costs three pages. So the number
-// of concurrent small buffers is RLIMIT_MEMLOCK divided by the page size on
-// the mmap+mlock tier, and about a third of that on memfd_secret. Read the
+// what its two guard pages cost depends on the kernel. One that charges a
+// secretmem mapping when it is mapped charges the guards with it, so a
+// one-page secret costs three pages. One that charges secretmem page by page
+// as it is faulted (mainline since September 2026, and the stable kernels that
+// took the change as a security fix) charges only the secret's own pages. So
+// the number of concurrent small buffers is RLIMIT_MEMLOCK divided by the page
+// size on the mmap+mlock tier, and on memfd_secret either the same or about a
+// third of it. Read the
 // limit rather than assuming one: `ulimit -l` reports it in KiB, and it varies
 // by two orders of magnitude across ordinary systems. Stock Ubuntu 26.04/amd64
 // and Armbian/arm64 installs have the systemd default of 8 MiB: 2048 one-page
-// buffers on mmap+mlock, about 680 on memfd_secret. The historical 64 KiB
+// buffers on mmap+mlock, about 680 on memfd_secret where the guards are
+// charged. The historical 64 KiB
 // kernel default is not what current systemd-based distributions set.
+//
+// The per-fault kernels also count memfd_secret pages per user, across every
+// process of the uid, and do not exempt CAP_IPC_LOCK. A buffer that no longer
+// fits that budget is allocated on the mmap+mlock tier, which has the
+// process's own budget, and its Capabilities say so. Either way the charge is
+// taken in the constructor: every page is faulted in before a buffer is
+// returned, so using a buffer never runs into the limit.
 //
 // A process that holds one buffer per live secret should raise the limit once,
 // before its first allocation — either through the OS:

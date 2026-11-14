@@ -9,6 +9,8 @@ github.com/deadpoets/secmem TestExternalExtraction_SecureBufferUnreadable
 github.com/deadpoets/secmem TestMadvise_MemfdSecretTierFlagsInForce
 github.com/deadpoets/secmem TestMadviseBeforeFree_MemfdSecretZapsOnlyPageTables
 github.com/deadpoets/secmem TestAllocFailure_UnmapsOnlyOwnedAddressSpace
+github.com/deadpoets/secmem TestMemfdSecret_PopulatedAtAllocation
+github.com/deadpoets/secmem TestMemfdSecret_PopulateRefusalFallsThrough
 
 # The success path is verified out-of-process in TestHelpersIsolated; this
 # test is the ErrUnsupported pin for platforms without a core-dump rlimit.

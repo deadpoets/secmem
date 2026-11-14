@@ -158,16 +158,23 @@ budget  ≥  Σ over buffers      pageround(len)
          + Σ over workspaces   Argon2Workspace.Size()
          + transients
          + headroom
-         + 2 pages per buffer, arena and workspace   (Linux, memfd_secret live)
+         + 2 pages per buffer, arena and workspace   (Linux, memfd_secret live,
+                                                      kernel charges at mmap)
 ```
 
 where:
 
 - **`pageround(len)`** is `len` rounded up to a whole page. A `SecureBuffer`
   locks the pages holding the secret. On Linux with `memfd_secret` live, add
-  two pages per buffer: the guard pages are part of the secretmem mapping,
-  and the kernel charges the whole mapping. They have no backing frames, but
-  they count against the limit. On every other tier the guards cost no
+  two pages per buffer unless the kernel is known to charge secretmem per
+  fault: the guard pages are part of the secretmem mapping,
+  and a kernel that charges at mmap charges the whole mapping. They have no
+  backing frames, but they count against the limit. A kernel with
+  "mm/secretmem: properly account locked pages" (mainline since September
+  2026, backported to stable kernels as a security fix) charges a page when it
+  is first faulted, and the guards never are. It also counts the
+  `memfd_secret` budget per user, across every process of the uid, and
+  `CAP_IPC_LOCK` does not lift it. On every other tier the guards cost no
   budget, and a buffer built with `WithoutMemfdSecret` takes the mmap+mlock
   tier, so it does not pay them. That option is required anyway for a buffer
   handed to a kernel path that pins user pages (`O_DIRECT`, io_uring
@@ -176,7 +183,7 @@ where:
   costs a full page, 4 KiB on x86-64 and on most arm64 kernels, 16 KiB or
   64 KiB on some; read `os.Getpagesize()` on the target rather than assuming.
   The ceiling is therefore `limit / pagesize` small buffers on mmap+mlock and
-  `limit / (3 × pagesize)` on `memfd_secret`: with the 8 MiB systemd default
+  `limit / (3 × pagesize)` on `memfd_secret` charged at mmap: with the 8 MiB systemd default
   that is 2048 or about 680 buffers at 4 KiB pages, and 128 or about 42 at
   64 KiB. Near the ceiling, an allocation that no longer fits the
   `memfd_secret` charge falls back to mmap+mlock, which `Capabilities`
