@@ -13,6 +13,32 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [0.8.1] - 2026-11-14
+
+A maintenance release from the `release/v0.8` branch: the one fix
+below, on top of 0.8.0.
+
+### Fixed
+
+- **Linux: an over-budget `memfd_secret` allocation is an error again, not a
+  `SIGBUS`.** Kernels carrying "mm/secretmem: properly account locked pages"
+  (mainline since September 2026, backported to stable kernels as a security
+  fix; Ubuntu 26.04's 7.0.0-1019-azure has it) no longer refuse a secretmem
+  mapping that exceeds `RLIMIT_MEMLOCK`. They charge each page when it is
+  first faulted and answer a fault over the limit with `SIGBUS`. Every
+  earlier release left the pages to fault on first use, so on such a kernel a
+  constructor succeeded and the process died at a later write, where the old
+  kernels returned an error. The allocator now faults every page in before it
+  returns, through a syscall so that a refusal is an errno, and falls through
+  to mmap+mlock as for any other `memfd_secret` refusal. On those kernels the
+  secretmem budget is per user, `CAP_IPC_LOCK` does not lift it, and the
+  guard pages are no longer charged; `ENVIRONMENTS.md` and `ADOPTION.md` have
+  the details.
+
+### Changed
+
+- **`go.mod` carries `toolchain go1.27.4`**, the release CI pins.
+
 ## [0.8.0] - 2026-10-11
 
 Fixes from the October stabilization review, and `Seal` now authenticates
@@ -2721,6 +2747,7 @@ First tagged release of the core `secmem` module.
   cover all three types, both the pointer and (where a value copy is not
   itself a `go vet` copylocks violation) a dereferenced value.
 
+[0.8.1]: https://github.com/deadpoets/secmem/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
 [secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0

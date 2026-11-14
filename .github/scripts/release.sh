@@ -5,6 +5,9 @@
 #   core:          release.sh . v0.3.0
 #   nested module: release.sh secmem-crypto v0.3.1
 #
+# From main, or from a maintenance branch release/vX.Y for a patch release of
+# that line (see the branch check below).
+#
 # Run it from anywhere in the checkout. It works out the tag name, verifies
 # every precondition, shows you the tag it is about to create, and only then
 # asks once for confirmation. Nothing is pushed until every check has passed.
@@ -59,17 +62,33 @@ printf '\nreleasing %s as %s\n\n' "$module" "$tag"
 # Preconditions. Each one is a way this has gone wrong or could.
 # ---------------------------------------------------------------------------
 
+# Tags come off main, with one exception: a maintenance branch release/vX.Y
+# may publish patch releases of its own line (vX.Y.Z, no pre-release suffix)
+# and nothing else. That is how an older line gets a fix after main has moved
+# on to a version its users cannot take. The branch name is the permission:
+# release/v0.8 can never tag v0.9.0 or v1.0.0, and a nested module's tag is
+# held to the same line.
 branch=$(git rev-parse --abbrev-ref HEAD)
-[ "$branch" = "main" ] || die "on branch '$branch', not main. Tags come off main."
-ok "on main"
+case "$branch" in
+  main) ;;
+  release/v[0-9]*.[0-9]*)
+    line="${branch#release/}"
+    case "$version" in
+      *-*) die "on maintenance branch '$branch': pre-releases come off main." ;;
+      "$line".[0-9]*) ;;
+      *) die "on maintenance branch '$branch', which may only release $line.Z, not $version." ;;
+    esac ;;
+  *) die "on branch '$branch'. Tags come off main, or off release/vX.Y for a patch of that line." ;;
+esac
+ok "on $branch"
 
 [ -z "$(git status --porcelain)" ] || die "working tree is dirty. Commit or stash first."
 ok "working tree clean"
 
-git fetch --quiet origin main
-[ "$(git rev-list --count origin/main..HEAD)" = "0" ] || die "local main has commits origin/main does not. Push first."
-[ "$(git rev-list --count HEAD..origin/main)" = "0" ] || die "origin/main is ahead. Run: git pull --ff-only"
-ok "main matches origin/main"
+git fetch --quiet origin "$branch" || die "origin has no branch '$branch'. Push it first."
+[ "$(git rev-list --count "origin/$branch..HEAD")" = "0" ] || die "local $branch has commits origin/$branch does not. Push first."
+[ "$(git rev-list --count "HEAD..origin/$branch")" = "0" ] || die "origin/$branch is ahead. Run: git pull --ff-only"
+ok "$branch matches origin/$branch"
 
 git rev-parse -q --verify "refs/tags/$tag" >/dev/null && die "tag $tag already exists locally. Pick the next version."
 git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 && die "tag $tag already exists on origin. Pick the next version."
@@ -204,6 +223,12 @@ $deps
 EOF
 fi
 
+# The build and test below are the last run before a version is permanent, so
+# they run on the toolchain CI pins, and the pin is the newest release.
+bash .github/scripts/go-current.sh --local ||
+  die "the Go toolchain is not current (above). Move the pins, or fix the
+             local go, and re-run."
+
 # Build and test against the RELEASED dependency graph, not the workspace. The
 # workspace masks a wrong go.mod by resolving siblings from disk.
 printf '  ...   building and testing %s with GOWORK=off\n' "$module"
@@ -325,13 +350,32 @@ ok "tag pushed"
 # actually succeeded, which is a worse outcome than a missing sidebar entry the
 # maintainer can add later.
 #
-# --latest only for the primary module. Otherwise a nested module's patch
-# release would claim the repository's "Latest" badge and a visitor would land
-# on secmem-crypto instead of secmem.
+# --latest only for the primary module's final releases. Otherwise a nested
+# module's patch release would claim the repository's "Latest" badge and a
+# visitor would land on secmem-crypto instead of secmem. A pre-release (a
+# version with a "-" suffix, e.g. v1.0.0-rc.1) is marked as one and never
+# takes the badge: go get does not select it on its own, and the release page
+# must not present it as current either.
+#
+# A maintenance-branch release takes the badge only while no newer final
+# release of the primary module exists: v0.8.1 is the current release until
+# v1.0.0 ships, and a v0.8.2 cut after that is not.
+newer_final_exists() {
+  git fetch --quiet --tags origin || return 0 # cannot tell: do not claim the badge
+  git tag -l 'v[0-9]*' | python3 -c 'import re, sys
+def parse(v):
+    m = re.match(r"^v(\d+)\.(\d+)\.(\d+)$", v.strip())
+    return tuple(int(x) for x in m.groups()) if m else None
+mine = parse(sys.argv[1])
+sys.exit(0 if any(t and t > mine for t in map(parse, sys.stdin)) else 1)' "$version"
+}
 if command -v gh >/dev/null 2>&1; then
-  latest_flag="--latest=false"
-  [ -z "$prefix" ] && latest_flag="--latest"
-  if gh release create "$tag" --title "$tag" --notes-file "$notes" $latest_flag >/dev/null 2>&1; then
+  release_flags="--latest=false"
+  case "$version" in
+    *-*) release_flags="--prerelease --latest=false" ;;
+    *) if [ -z "$prefix" ] && ! newer_final_exists; then release_flags="--latest"; fi ;;
+  esac
+  if gh release create "$tag" --title "$tag" --notes-file "$notes" $release_flags >/dev/null 2>&1; then
     ok "GitHub Release created from the CHANGELOG section"
   else
     printf '  warn  could not create the GitHub Release (tag IS published).\n'
