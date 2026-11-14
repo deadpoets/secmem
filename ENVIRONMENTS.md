@@ -46,6 +46,22 @@ distro images), running the identical binary in three privilege contexts:
 | **non-root**, allocation within `RLIMIT_MEMLOCK` | allocation **succeeds** | small secrets fit the default per-user memlock budget. |
 | **non-root**, allocation exceeds `RLIMIT_MEMLOCK` (e.g. `ulimit -l 0`) | **fails closed** (the wrapped `mlock` error: `ENOMEM` over a non-zero limit, `EPERM` at a zero one) | the pages cannot be locked, so secmem refuses rather than leave the secret swappable. |
 
+**Kernels that charge `memfd_secret` per fault** ("mm/secretmem: properly
+account locked pages": mainline since September 2026, and backported to stable
+kernels as a security fix; first seen here on Ubuntu 26.04's 7.0.0-1019-azure)
+change the first row for that tier only. `CAP_IPC_LOCK` no longer lifts the
+limit for secretmem, the budget is counted per user across all of the uid's
+processes, and the kernel answers a page fault over it with `SIGBUS` instead of
+refusing the mapping. secmem faults every page in inside the constructor, so
+the refusal is still an error there and never a signal later; the allocation
+then falls through to mmap+mlock, where the table above applies unchanged. A
+root process with a low `RLIMIT_MEMLOCK` therefore still gets its buffer, on
+the mmap+mlock tier once the secretmem budget is spent: check
+`Capabilities().MemfdSecret` per buffer, and raise the limit
+(`EnsureMemlockLimit`) to keep large allocations on the stronger tier. Releases
+before this fix do not populate, and on such a kernel an over-budget allocation
+kills the process with `SIGBUS` at its first write.
+
 The takeaway that matters for deployment: the fail-closed path is only reachable
 by a process **without `CAP_IPC_LOCK` and with a memlock budget smaller than
 the secret** — which includes root in a default container (below).

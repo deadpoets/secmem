@@ -83,9 +83,19 @@ are never wiped and never re-protected — touching them at all is a
 bug — so the region code keeps a strict distinction between "the memory you
 protect" (the inner secret pages) and "the memory you unmap" (the whole
 reservation including guards). On the `memfd_secret` tier the guards are part
-of the one secretmem mapping, so the kernel counts them against
-`RLIMIT_MEMLOCK`: two extra pages per buffer. On the mmap+mlock tier they are
-not locked and cost nothing.
+of the one secretmem mapping, so a kernel that charges the mapping at mmap
+counts them against `RLIMIT_MEMLOCK`: two extra pages per buffer. A kernel
+that charges secretmem per fault does not, because the guards are never
+faulted. On the mmap+mlock tier they are not locked and cost nothing.
+
+Every page of the secret area is faulted in before a `memfd_secret`
+allocation is returned. On the per-fault kernels a first touch over the
+budget is a `SIGBUS`, not an error, so the charge has to be taken where a
+refusal can still be returned. The touch is a one-byte `getrandom(2)` into
+each page: a fault inside a syscall's copy comes back as `EFAULT`, never as a
+signal, and the populate interfaces (`MADV_POPULATE_WRITE`, `mlock`) cannot
+be used because `get_user_pages` refuses secretmem. A refused page releases
+the mapping and the allocation falls through to mmap+mlock.
 
 ## Why a canary as well as guard pages
 

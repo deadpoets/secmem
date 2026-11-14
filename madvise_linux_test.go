@@ -6,11 +6,18 @@
 // and require the flag behind each claim on the secret area, on BOTH
 // allocation tiers (the anon+mlock path and, where live, memfd_secret):
 //
-//	lo  VM_LOCKED     mlock, or secretmem's own lock       — "no swap"
+//	lo  VM_LOCKED     mlock, or secretmem's own lock (*)   — "no swap"
 //	dd  VM_DONTDUMP   MADV_DONTDUMP, or secretmem's own    — "excluded from dumps"
 //	dc  VM_DONTCOPY   MADV_DONTFORK                        — "not inherited across fork"
 //	nh  VM_NOHUGEPAGE MADV_NOHUGEPAGE                      — "no THP copies"
 //	mg  VM_MERGEABLE  must be ABSENT after MADV_UNMERGEABLE — "no KSM copies"
+//
+// (*) On the memfd_secret tier the lock is a property of the file, not of the
+// VMA: secretmem folios are unevictable whatever the VMA flags say. Kernels
+// before "mm/secretmem: properly account locked pages" also set VM_LOCKED on
+// the mapping; kernels with it do not. So that tier's "no swap" proof is
+// either the lo flag or, without it, that the secret area is a secretmem
+// mapping — see requireSecretmemLock.
 //
 // The rule for a missing flag: when Capabilities claims the protection, a
 // missing flag is a failure — the report and the kernel disagree. When it
@@ -60,6 +67,44 @@ func smapsLineFor(addr uintptr, field string) (string, error) {
 		return "", err
 	}
 	return "", fmt.Errorf("mapping at %x (field %q) not found in smaps", addr, field)
+}
+
+// smapsHeaderFor returns the header line (range, permissions, offset, device,
+// inode, path) of the /proc/self/smaps entry whose range starts at addr.
+func smapsHeaderFor(addr uintptr) (string, error) {
+	return smapsLineFor(addr, fmt.Sprintf("%x-", addr))
+}
+
+// requireSecretmemLock is the memfd_secret tier's "no swap" proof. Where the
+// kernel marks the mapping VM_LOCKED the flag is required as on the other
+// tier. Where it does not (per-fault accounting; see the file comment), the
+// secret area must be a mapping of a secretmem file, whose folios the kernel
+// keeps unevictable by construction, and every page of it must already be
+// resident, so no later touch can be refused for lack of memlock budget.
+func requireSecretmemLock(t *testing.T, buf *SecureBuffer) {
+	t.Helper()
+	addr := secretAreaAddr(buf)
+	flags, err := vmFlagsFor(addr)
+	if err != nil {
+		t.Fatalf("reading smaps: %v", err)
+	}
+	if hasVMFlag(flags, "lo") {
+		t.Logf("page locking in force: kernel records %q on the secretmem mapping", "lo")
+		return
+	}
+	header, err := smapsHeaderFor(addr)
+	if err != nil {
+		t.Fatalf("reading smaps: %v", err)
+	}
+	if !strings.Contains(header, "secretmem") {
+		t.Fatalf("Capabilities reports memfd_secret, but the secret area is neither VM_LOCKED nor a secretmem mapping:\n%s\n%s", header, flags)
+	}
+	for i, in := range residentPages(t, buf.region.inner) {
+		if !in {
+			t.Fatalf("secretmem page %d is not resident: its memlock charge has not been taken", i)
+		}
+	}
+	t.Logf("page locking in force: secretmem mapping without %q (this kernel charges secretmem per fault), every page resident: %s", "lo", header)
 }
 
 // vmFlagsFor returns the VmFlags line of the /proc/self/smaps entry whose
@@ -129,6 +174,13 @@ func runVMFlagProofs(t *testing.T, buf *SecureBuffer) {
 	t.Logf("tier: memfd_secret=%v; %s", caps.MemfdSecret, caps)
 
 	t.Run("lo_locked", func(t *testing.T) {
+		if caps.MemfdSecret {
+			if !caps.Mlocked {
+				t.Fatal("a memfd_secret buffer does not report Mlocked")
+			}
+			requireSecretmemLock(t, buf)
+			return
+		}
 		requireVMFlag(t, buf, "lo", "page locking (mlock)", caps.Mlocked, unix.MADV_NORMAL)
 	})
 	t.Run("dd_dontdump", func(t *testing.T) {
@@ -160,7 +212,8 @@ func TestMadvise_AnonTierFlagsInForce(t *testing.T) {
 }
 
 // TestMadvise_MemfdSecretTierFlagsInForce proves the same flags on the
-// memfd_secret tier. secretmem sets VM_LOCKED and VM_DONTDUMP itself at mmap;
+// memfd_secret tier. secretmem sets VM_DONTDUMP itself at mmap, and VM_LOCKED
+// too on kernels that charge the mapping at mmap (see requireSecretmemLock);
 // MADV_DONTFORK and MADV_NOHUGEPAGE are the allocator's own calls on that VMA.
 func TestMadvise_MemfdSecretTierFlagsInForce(t *testing.T) {
 	buf, err := NewEmptyBuffer(64)
