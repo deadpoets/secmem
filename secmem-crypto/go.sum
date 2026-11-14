@@ -1,7 +1,7 @@
 filippo.io/edwards25519 v1.2.0 h1:crnVqOiS4jqYleHd9vaKZ+HKtHfllngJIiOpNpoJsjo=
 filippo.io/edwards25519 v1.2.0/go.mod h1:xzAOLCNug/yB62zG1bQ8uziwrIqIuxhctzJT18Q77mc=
-github.com/deadpoets/secmem v0.8.0 h1:NArY3Nfyd+f4M3rHrFjUpdgGL3FnR2H2IhAZSsSFX/Q=
-github.com/deadpoets/secmem v0.8.0/go.mod h1:3WhtT3yLvm0oDyHvsYsZKL3imKW2bKV95WchviuAw/c=
+github.com/deadpoets/secmem v0.8.1 h1:i9lmW3dPCUOtS5J5zx278slPbDwBTcaBDW4EyyIuubQ=
+github.com/deadpoets/secmem v0.8.1/go.mod h1:k2dpuhst7akh3+6xcoEjN+xGJ7d85eYtm70buQoIrBk=
 golang.org/x/crypto v0.58.0 h1:COkYLr4k7nDI4r6QtMML2AfzeIswWHAJthLS6K/M/54=
 golang.org/x/crypto v0.58.0/go.mod h1:Xh+kl5A+M0gMiWDytH2Hhr5Z7WbNCpv/eB/EFgfSk+w=
 golang.org/x/sys v0.49.0 h1:XbzkgYJHdqh/8m2Uu0W/dQv8nktxx4BFHp1M0gROTXA=

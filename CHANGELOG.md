@@ -13,6 +13,13 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [1.0.0-rc.2] - 2026-11-14
+
+The second release candidate for 1.0: one fix on top of rc.1, for Linux
+kernels that charge `memfd_secret` per fault. The same fix is in 0.8.1 for the
+0.8 line. A pre-release is never selected by `go get` on its own; ask for
+`@v1.0.0-rc.2` to try it.
+
 ### Fixed
 
 - **Linux: an over-budget `memfd_secret` allocation is an error again, not a
@@ -32,8 +39,60 @@ mark the stability commitment.
 
 ### Changed
 
-- **All modules: `go.mod` carries `toolchain go1.27.4`**, and CI moves to
+- **`go.mod` carries `toolchain go1.27.4`**, the release CI pins. CI moves to
   go1.27.4 and go1.26.11.
+
+## [secmem-crypto/v0.10.2] - 2026-11-14
+
+Requires core v0.8.1, the first 0.8 release with the `memfd_secret` fix
+above, so a build that takes this module can no longer resolve a core that
+dies of `SIGBUS` on an over-budget allocation. No API or behaviour change of
+its own. It builds against v1.0.0-rc.2 as well.
+
+### Changed
+
+- **Requires `github.com/deadpoets/secmem` v0.8.1** (was v0.8.0).
+- **The module ships its own `LICENSE`.** A module zip holds only its own
+  directory, so every earlier version was published without the licence text
+  and pkg.go.dev could not treat it as redistributable. `NOTICE` gains the
+  copyright line.
+- **`go.mod` carries `toolchain go1.27.4`**, the release CI pins.
+
+## [secmem-lint/v0.6.2] - 2026-11-14
+
+No change to the analyzer.
+
+### Changed
+
+- **The module ships its own `LICENSE` and `NOTICE`**, for the reason given
+  under secmem-crypto v0.10.2.
+- **`go.mod` carries `toolchain go1.27.4`**, the release CI pins.
+
+## [0.8.1] - 2026-11-14
+
+A maintenance release from the `release/v0.8` branch: the one fix below, on
+top of 0.8.0.
+
+### Fixed
+
+- **Linux: an over-budget `memfd_secret` allocation is an error again, not a
+  `SIGBUS`.** Kernels carrying "mm/secretmem: properly account locked pages"
+  (mainline since September 2026, backported to stable kernels as a security
+  fix; Ubuntu 26.04's 7.0.0-1019-azure has it) no longer refuse a secretmem
+  mapping that exceeds `RLIMIT_MEMLOCK`. They charge each page when it is
+  first faulted and answer a fault over the limit with `SIGBUS`. Every
+  earlier release left the pages to fault on first use, so on such a kernel a
+  constructor succeeded and the process died at a later write, where the old
+  kernels returned an error. The allocator now faults every page in before it
+  returns, through a syscall so that a refusal is an errno, and falls through
+  to mmap+mlock as for any other `memfd_secret` refusal. On those kernels the
+  secretmem budget is per user, `CAP_IPC_LOCK` does not lift it, and the
+  guard pages are no longer charged; `ENVIRONMENTS.md` and `ADOPTION.md` have
+  the details.
+
+### Changed
+
+- **`go.mod` carries `toolchain go1.27.4`**, the release CI pins.
 
 ## [1.0.0-rc.1] - 2026-10-22
 
@@ -2950,7 +3009,11 @@ First tagged release of the core `secmem` module.
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
 [secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.1...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.2...HEAD
+[1.0.0-rc.2]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.1...v1.0.0-rc.2
+[secmem-crypto/v0.10.2]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.2
+[secmem-lint/v0.6.2]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.2
+[0.8.1]: https://github.com/deadpoets/secmem/compare/v0.8.0...v0.8.1
 [1.0.0-rc.1]: https://github.com/deadpoets/secmem/compare/v0.8.0...v1.0.0-rc.1
 [secmem-crypto/v0.10.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.1
 [secmem-lint/v0.6.1]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.1

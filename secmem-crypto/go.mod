@@ -6,7 +6,7 @@ toolchain go1.27.4
 
 require (
 	filippo.io/edwards25519 v1.2.0
-	github.com/deadpoets/secmem v0.8.0
+	github.com/deadpoets/secmem v0.8.1
 	golang.org/x/crypto v0.58.0
 )
 
