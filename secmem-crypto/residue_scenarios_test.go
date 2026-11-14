@@ -1018,13 +1018,18 @@ func preemptedCopyHeld(buf *secmem.SecureBuffer, _ []byte) (func() error, func()
 		release = rel
 		holders++
 		go func() {
-			held <- buf.WithBytesErr(func(s []byte) error {
+			err := buf.WithBytesErr(func(s []byte) error {
 				return dst.WithBytesErr(func(d []byte) error {
 					copy(d, s[:32])
 					residueSpinHold(200_000_000, spun, rel)
 					return nil
 				})
 			})
+			// A borrow that failed never reached the spin. Without this the
+			// wait below would never end; the error surfaces at the next
+			// letGo.
+			spun.Store(true)
+			held <- err
 		}()
 		for !spun.Load() {
 			runtime.Gosched()
