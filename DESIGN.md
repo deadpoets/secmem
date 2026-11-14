@@ -93,9 +93,10 @@ allocation is returned. On the per-fault kernels a first touch over the
 budget is a `SIGBUS`, not an error, so the charge has to be taken where a
 refusal can still be returned. The touch is a one-byte `getrandom(2)` into
 each page: a fault inside a syscall's copy comes back as `EFAULT`, never as a
-signal, and the populate interfaces (`MADV_POPULATE_WRITE`, `mlock`) cannot
-be used because `get_user_pages` refuses secretmem. A refused page releases
-the mapping and the allocation falls through to mmap+mlock.
+signal. It has to be the raw syscall, because the vDSO `getrandom` writes the
+buffer from user mode, and the populate interfaces (`MADV_POPULATE_WRITE`,
+`mlock`) are refused on a secretmem mapping. A refused page releases the
+mapping and the allocation falls through to mmap+mlock.
 
 ## Why a canary as well as guard pages
 

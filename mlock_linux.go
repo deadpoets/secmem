@@ -62,6 +62,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -298,13 +299,18 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 // getrandom(2) writes one byte into each page, and a fault taken inside a
 // syscall's copy to user memory is reported as EFAULT from the syscall, never
 // as a signal. The byte is zeroed again at once, so the area is returned
-// all-zero as a fresh mapping would be. The obvious alternatives do not work
-// on this mapping: MADV_POPULATE_WRITE and mlock's populate both go through
-// get_user_pages, which refuses secretmem VMAs outright.
+// all-zero as a fresh mapping would be. The populate interfaces do not work
+// on this mapping: MADV_POPULATE_WRITE fails with EINVAL and mlock with
+// ENOMEM (measured on 6.18), faulting nothing in, because get_user_pages does
+// not accept secretmem VMAs.
 //
 // One syscall per page is noise next to the fault it triggers (a secretmem
 // fault allocates a folio and removes it from the kernel's direct map).
 // GRND_INSECURE never blocks; the byte's quality is irrelevant.
+//
+// ⚠ The call must be the raw syscall. unix.Getrandom, like every libc
+// getrandom, prefers the vDSO implementation, which fills the buffer from
+// user mode: the fault is then an ordinary user fault and the SIGBUS is back.
 //
 // Every page that was faulted before a failure stays charged until the caller
 // unmaps the region, which drops the last reference to the secretmem file.
@@ -328,7 +334,12 @@ func populateSecretMem(inner []byte, pageSize int) error {
 // populateTouch is the kernel-side one-byte write populateSecretMem uses, a
 // package var so a test can refuse a page the way an over-budget fault does.
 var populateTouch = func(b []byte) (int, error) { //nolint:gochecknoglobals // test seam.
-	return unix.Getrandom(b, unix.GRND_INSECURE)
+	//nolint:gosec // G103: the syscall takes the address of the byte to write.
+	n, _, errno := unix.Syscall(unix.SYS_GETRANDOM, uintptr(unsafe.Pointer(&b[0])), 1, unix.GRND_INSECURE)
+	if errno != 0 {
+		return 0, errno
+	}
+	return int(n), nil
 }
 
 // allocMapAnon allocates the guarded L3 layout only — no memfd_secret
