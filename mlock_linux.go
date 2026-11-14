@@ -18,9 +18,29 @@
 //     carry no RLIMIT_MEMLOCK charge.
 //   - L4 (memfd_secret): the secretmem file is sized to the WHOLE range and
 //     mapped once, PROT_NONE, at an address the kernel picks; the middle is
-//     then mprotected RW. The guards are secretmem pages that are never
-//     accessible. The kernel charges the whole mapping against
-//     RLIMIT_MEMLOCK, so each L4 buffer costs two extra pages of budget.
+//     then mprotected RW and every page of it is faulted in before the
+//     allocation is returned (populateSecretMem). The guards are secretmem
+//     pages that are never accessible and never faulted.
+//
+// ⚠ L4 MEMLOCK ACCOUNTING DIFFERS BY KERNEL, and the populate step is what
+// makes both behave the same to a caller:
+//
+//   - Before "mm/secretmem: properly account locked pages" (mainline
+//     97d34aa65c29, September 2026, backported to stable as a CVE fix): the
+//     mmap marks the VMA VM_LOCKED and charges the WHOLE mapping, guards
+//     included, to the process's locked_vm. Over budget, the mmap fails with
+//     EAGAIN. CAP_IPC_LOCK bypasses the limit.
+//   - With it: the mmap charges nothing and always succeeds. Each page is
+//     charged when it is first faulted, to the calling USER's locked total
+//     (shared by every process of that uid), against the faulting process's
+//     RLIMIT_MEMLOCK; CAP_IPC_LOCK does not bypass it; and a fault over the
+//     limit is a SIGBUS. The guards are never faulted and cost nothing.
+//
+// Left lazy, the second form would turn "over budget" from an error at the
+// constructor into a fatal signal at whichever later write first touches an
+// unfaulted page. Populating at allocation time moves that failure back to
+// where it can be returned, after which the allocation falls through to L3
+// like any other L4 refusal.
 //
 // L4 used to reserve an anonymous range and mmap the file MAP_FIXED over its
 // middle. That is not atomic on failure: when the MAP_FIXED mmap fails (for
@@ -42,6 +62,7 @@ import (
 	"fmt"
 	"math"
 	"runtime"
+	"unsafe"
 
 	"golang.org/x/sys/unix"
 )
@@ -97,10 +118,12 @@ func allocSecretMem(size int) (region secRegion, data []byte, info allocInfo, er
 		return secRegion{}, nil, allocInfo{}, fmt.Errorf("allocSecretMem: %w", err)
 	}
 
-	// L4: memfd_secret — pages are kernel-locked (never swapped) and invisible
-	// to core dumps by construction, so mlocked and noDump are inherently
-	// true. noFork is whatever MADV_DONTFORK actually achieved on the memfd
-	// mapping, reported and never assumed: the mapping is MAP_SHARED, so
+	// L4: memfd_secret — secretmem folios are unevictable (never swapped) and
+	// the VMA is VM_DONTDUMP by construction, so mlocked and noDump are
+	// inherently true, whether or not the kernel also marks the VMA VM_LOCKED
+	// (see the file header). noFork is whatever MADV_DONTFORK actually
+	// achieved on the memfd mapping, reported and never assumed: the mapping
+	// is MAP_SHARED, so
 	// without it a forked child does not merely inherit a copy-on-write
 	// snapshot, it shares the live secret pages.
 	if r, noFork, e := allocMemfdSecret(pageSize, rounded, total); e == nil {
@@ -242,6 +265,13 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 		return secRegion{}, false, fmt.Errorf("mprotect memfd_secret inner RW: %w", err)
 	}
 
+	// Fault in and charge every page now, while a refusal can still be
+	// returned. See populateSecretMem.
+	if err := populateSecretMem(inner, pageSize); err != nil {
+		unmapOnError(outer)
+		return secRegion{}, false, fmt.Errorf("populate memfd_secret: %w", err)
+	}
+
 	// Best-effort THP opt-out, as on the anon path. secretmem folios are not
 	// expected to be khugepaged candidates, but the call costs nothing and
 	// removes the assumption. (KSM is anon-only — not applicable here.)
@@ -257,6 +287,59 @@ func allocMemfdSecret(pageSize, rounded, total int) (region secRegion, noFork bo
 	noFork = unix.Madvise(outer, unix.MADV_DONTFORK) == nil
 
 	return secRegion{outer: outer, inner: inner}, noFork, nil
+}
+
+// populateSecretMem faults in every page of a memfd_secret secret area, so
+// that the memlock charge for it is taken, or refused, here and not at some
+// later access. On kernels that charge secretmem per fault (see the file
+// header) a first touch over the budget raises SIGBUS, which the Go runtime
+// turns into a fatal error no caller can recover.
+//
+// The touch is therefore made by the kernel, on this process's behalf:
+// getrandom(2) writes one byte into each page, and a fault taken inside a
+// syscall's copy to user memory is reported as EFAULT from the syscall, never
+// as a signal. The byte is zeroed again at once, so the area is returned
+// all-zero as a fresh mapping would be. The populate interfaces do not work
+// on this mapping: MADV_POPULATE_WRITE fails with EINVAL and mlock with
+// ENOMEM (measured on 6.18), faulting nothing in, because get_user_pages does
+// not accept secretmem VMAs.
+//
+// One syscall per page is noise next to the fault it triggers (a secretmem
+// fault allocates a folio and removes it from the kernel's direct map).
+// GRND_INSECURE never blocks; the byte's quality is irrelevant.
+//
+// ⚠ The call must be the raw syscall. unix.Getrandom, like every libc
+// getrandom, prefers the vDSO implementation, which fills the buffer from
+// user mode: the fault is then an ordinary user fault and the SIGBUS is back.
+//
+// Every page that was faulted before a failure stays charged until the caller
+// unmaps the region, which drops the last reference to the secretmem file.
+func populateSecretMem(inner []byte, pageSize int) error {
+	for off := 0; off < len(inner); off += pageSize {
+		for {
+			_, err := populateTouch(inner[off : off+1])
+			if err == nil {
+				break
+			}
+			if errors.Is(err, unix.EINTR) {
+				continue
+			}
+			return err
+		}
+		inner[off] = 0
+	}
+	return nil
+}
+
+// populateTouch is the kernel-side one-byte write populateSecretMem uses, a
+// package var so a test can refuse a page the way an over-budget fault does.
+var populateTouch = func(b []byte) (int, error) { //nolint:gochecknoglobals // test seam.
+	//nolint:gosec // G103: the syscall takes the address of the byte to write.
+	n, _, errno := unix.Syscall(unix.SYS_GETRANDOM, uintptr(unsafe.Pointer(&b[0])), 1, unix.GRND_INSECURE)
+	if errno != 0 {
+		return 0, errno
+	}
+	return int(n), nil
 }
 
 // allocMapAnon allocates the guarded L3 layout only — no memfd_secret
@@ -280,7 +363,7 @@ func freeSecretMem(region secRegion) error {
 	if region.outer == nil {
 		return nil
 	}
-	_ = unix.Munlock(region.inner) // best-effort: memfd_secret memory is not externally locked
+	_ = unix.Munlock(region.inner) // best-effort: a no-op on memfd_secret memory, whose lock is not mlock's
 	return unix.Munmap(region.outer)
 }
 
@@ -291,10 +374,12 @@ func freeSecretMem(region secRegion) error {
 // The area is still mlocked here — freeSecretMem does the munlock — and
 // madvise(2) refuses plain MADV_DONTNEED on a range with locked pages
 // (EINVAL), on both tiers: the anon tier via our own mlock, the memfd_secret
-// tier because secretmem marks its VMA VM_LOCKED itself. The advice therefore
-// has to be MADV_DONTNEED_LOCKED (Linux 5.18+), which discards without the
-// pages being unlocked first. Unlocking first is not an alternative: munlock
-// cannot clear VM_LOCKED on a secretmem VMA (mlock_fixup skips it), and on the
+// tier wherever secretmem marks its VMA VM_LOCKED itself (kernels before the
+// accounting change in the file header). The advice therefore has to be
+// MADV_DONTNEED_LOCKED (Linux 5.18+), which discards without the pages being
+// unlocked first, and is equally valid on a VMA that is not locked. Unlocking
+// first is not an alternative: munlock cannot clear VM_LOCKED on a secretmem
+// VMA (mlock_fixup skips it), and on the
 // anon tier it would leave the frames swappable for the instant before the
 // advice — harmless after a wipe, not on the release-unwiped path. On a kernel
 // older than 5.18 the advice is unknown, the call fails with EINVAL and the

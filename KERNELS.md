@@ -165,6 +165,19 @@ baseline after `Destroy`.
 > pages and the ceiling there is about `RLIMIT_MEMLOCK / (3 × pagesize)`. The
 > mmap+mlock figures are unchanged.
 
+> **Kernel-dependent since 2026-11.** "mm/secretmem: properly account locked
+> pages" (mainline 97d34aa65c29, backported to stable kernels as a security
+> fix) stops charging the mapping at mmap and charges each page when it is
+> first faulted, per user, with no `CAP_IPC_LOCK` exemption and `SIGBUS` on a
+> fault over the limit. The guards are never faulted, so on such a kernel a
+> one-page memfd_secret buffer costs one page again. The secretmem VMA is no
+> longer `VM_LOCKED` there either, so `lo` is absent from its `VmFlags`; the
+> folios stay unevictable. First observed on GitHub's `ubuntu-latest` runners
+> when they moved to Ubuntu 26.04 with 7.0.0-1019-azure: the 7.0.0-1010-azure
+> row above predates the backport. The allocator now faults every page in
+> before returning a memfd_secret allocation, which makes an over-budget
+> request an error on both kinds of kernel.
+
 Kernel-recorded VMA flags were checked against `Capabilities` on all three
 rather than trusting that `madvise` returned 0: `lo` (VM_LOCKED), `dd`
 (VM_DONTDUMP) and `dc` (VM_DONTCOPY) were present and matched every claim, on
