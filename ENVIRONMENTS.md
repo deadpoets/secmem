@@ -22,6 +22,9 @@ secmem reports exactly what it provides where it runs. At startup:
 
 ```go
 caps := secmem.Probe()
+if caps.ProbeErr != nil {
+    log.Fatal("secmem: no secure memory: ", caps.ProbeErr) // constructors will fail the same way
+}
 log.Print(caps.String())
 for _, w := range caps.Warnings() {
     log.Print("secmem: ", w)
