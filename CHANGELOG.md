@@ -13,6 +13,20 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Added
+
+- **`secmem-crypto`: Argon2 that can be cancelled.**
+  `Argon2Pool.DeriveContext`, `Argon2Workspace.DeriveContext` and
+  `Argon2IntoContext` take a `context.Context`. A call waiting for a busy
+  workspace or an empty pool returns as soon as the context ends, which is
+  where a login queue spends its time once the client has gone. A derivation
+  already running is abandoned at the next slice boundary, four per pass, so
+  at most 1/(4·Time) of its work later; a slice in progress is never
+  interrupted. On cancellation the error wraps the context's, the output
+  buffer is untouched, and the workspace is wiped exactly as after a
+  completed derivation. The existing functions are unchanged and derive the
+  same bytes.
+
 ### Changed
 
 - **`golang.org/x/sys` moves to v0.50.0**, in the core and in `secmem-crypto`.

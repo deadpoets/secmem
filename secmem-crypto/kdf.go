@@ -12,6 +12,7 @@
 package secmemcrypto
 
 import (
+	"context"
 	"crypto/hmac"
 	"crypto/sha256"
 	"errors"
@@ -228,9 +229,28 @@ func Argon2IDKeyInto(password, salt []byte, time, memory uint32, threads uint8, 
 // does not fit the address space. A Memory the host cannot actually
 // allocate is fatal, as it is in x/crypto.
 func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
+	return Argon2IntoContext(context.Background(), password, salt, p, out)
+}
+
+// Argon2IntoContext is [Argon2Into] that gives up when ctx ends. This
+// function has no queue to wait in, so ctx is looked at only between the
+// slices of the derivation, four per pass: the call returns at most one
+// slice, 1/(4·Time) of its work, after ctx ends, and a slice in progress is
+// never interrupted. The error then wraps ctx.Err(), out is exactly as it
+// was before the call, and the heap workspace has been wiped as usual. A nil
+// ctx is an error. To bound how many derivations run at once and let callers
+// stop waiting for a turn, use [Argon2Pool.DeriveContext].
+func Argon2IntoContext(ctx context.Context, password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
+	if ctx == nil {
+		return errors.New("secmemcrypto: argon2 derive: nil context")
+	}
 	mode, err := validateArgon2(password, salt, p, out)
 	if err != nil {
 		return err
+	}
+	// Before the allocation: an ended context should not cost 64 MiB.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("secmemcrypto: argon2 derive: %w", err)
 	}
 
 	// The workspace is allocated outside any Scrub window on purpose: under
@@ -240,7 +260,9 @@ func Argon2Into(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer)
 	ws := argon2.NewWorkspace(p.Memory, p.Threads)
 	defer ws.Wipe()
 	err = out.WithBytesErr(func(dst []byte) error {
-		argon2.Derive(dst, mode, password, salt, p.Secret, p.Data, p.Time, ws)
+		if !argon2.DeriveCancellable(dst, mode, password, salt, p.Secret, p.Data, p.Time, ws, ctx.Done()) {
+			return ctx.Err()
+		}
 		return nil
 	})
 	if err != nil {
