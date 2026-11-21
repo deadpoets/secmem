@@ -82,19 +82,54 @@ in force" — which `Probe` answers.
   `Probe` for `memfd_secret` and dump-exclusion status.
 
 - **Rootless containers** (rootless podman/docker): the process is unprivileged,
-  and `RLIMIT_MEMLOCK` is whatever the runtime sets — frequently low. A secret
-  larger than that budget will **fail closed**. This follows directly from the
-  measured non-root behavior above (a rootless container is exactly "unprivileged
-  process with a constrained memlock budget"), though it has not yet been run
-  inside a container runtime end-to-end. Remedies: raise the limit
-  (`--ulimit memlock=…`), call `EnsureMemlockLimit` early, or accept the loud
-  failure as the signal it is.
+  and `RLIMIT_MEMLOCK` is whatever the runtime sets. Allocations beyond that
+  budget **fail closed**, exactly as for a non-root process above. Measured in
+  rootless podman; the next section has the numbers. Remedies: raise the limit
+  on the container (`--ulimit memlock=…`), or accept the loud failure as the
+  signal it is. `EnsureMemlockLimit` raises the soft limit to the hard one and
+  no further: a container whose hard limit is the low one needs the runtime
+  flag.
 
-- **Seccomp**: `memfd_secret(2)` is an ordinary syscall that default Docker and
-  podman seccomp profiles generally permit, but a hardened profile could block
-  it. If blocked, secmem falls through to the `mmap`+`mlock` L3 path and reports
-  `memfd_secret = false` — no crash, honest downgrade. Confirm with `Probe` in
-  your actual container; this is a consideration, not yet a measured result.
+- **Seccomp**: `memfd_secret(2)` is an ordinary syscall. Podman's default
+  profile permits it (measured, next section); Docker's default profile is
+  expected to as well but has not been run here, and a hardened profile could
+  block it. If blocked, secmem falls through to the `mmap`+`mlock` L3 path and
+  reports `memfd_secret = false` — no crash, honest downgrade. That fall-through
+  under a blocking profile is reasoned, not measured. Confirm with `Probe` in
+  your actual container.
+
+### Rootless podman — measured
+
+Run on 2026-11-21 at commit `6de8fc3`: rootless podman 6.0.2 (a podman machine
+on WSL2, kernel 6.18.26.1-microsoft-standard-WSL2, which charges secretmem at
+`mmap`), image `golang:1.27.4-bookworm`, podman's default seccomp profile in
+filter mode, container uid 0 mapped to an ordinary host uid, no
+`CAP_IPC_LOCK` in the container's capability set. `Probe` inside it:
+
+```
+linux/amd64 [off-heap mlock memfd_secret no-dump no-fork wipe+flush frame-scrub preempt-suppress vector-clear gp-clear guard-pages destroy-quarantine] missing:[runtime-secret]
+```
+
+Each row sets the soft and hard limit to the same value, so nothing inside the
+container can raise it.
+
+| `RLIMIT_MEMLOCK` | 32-byte buffers that fit | The test suites |
+|---|---|---|
+| 64 MiB (what this podman gives a container by default) | 4096 allocated and the test stopped there, all on `memfd_secret` | core, `secmem-crypto` and `secmem-lint` pass, plain and under `-race`. One test skips for the budget: the 64 MiB Argon2 workspace needs slightly more than 64 MiB locked. |
+| 64 KiB (`--ulimit memlock=65536:65536`) | 6: five on `memfd_secret` at three pages each (this kernel charges the guard pages), one more on `mmap`+`mlock`, then the wrapped `mlock` error. 16 with `WithoutMemfdSecret`. Destroying them gives the whole budget back. | **Do not pass.** In the plain run 61 core tests and 209 `secmem-crypto` tests fail, subtests counted. Nearly all report a refused allocation directly; the dozen or so that report something else come after one in the same test and were not traced one by one. That is a statement about the tests, which hold more buffers at once than sixteen pages allow and mostly report a refusal as a failure where the convention is to skip. The library did what the table above says: it returned the error every time and placed nothing on unlocked pages. |
+
+What this does and does not show:
+
+- A rootless container with podman's default limit runs secmem with every
+  protection the kernel offers, `memfd_secret` included.
+- A 64 KiB budget is enough for a handful of keys and nothing else. A service
+  that holds a buffer per connection or session exhausts it at once;
+  [ADOPTION.md](ADOPTION.md) has the sizing formula.
+- `secmem-crypto` was tested against the released core it requires (v0.8.1),
+  the way a consumer builds it.
+- Not measured: a rootless container on a kernel that charges `memfd_secret`
+  per fault, where the guard pages are not charged and the counts in the second
+  row will differ; rootless Docker; arm64.
 
 ## Kernel configuration
 

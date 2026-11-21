@@ -19,6 +19,10 @@ mark the stability commitment.
 - **`secmem-crypto`: `golang.org/x/crypto` moves to v0.59.0.** Upstream did not
   change the forked packages between v0.58.0 and v0.59.0; `forks.json` records
   them unchanged through it.
+- **`ENVIRONMENTS.md`: rootless containers are measured, not reasoned.** The
+  suites were run in rootless podman at its default memlock limit, where
+  everything passes on `memfd_secret`, and at 64 KiB, where six small buffers
+  fit, the library fails closed after them, and the test suites do not pass.
 
 ## [1.0.0-rc.2] - 2026-11-14
 
