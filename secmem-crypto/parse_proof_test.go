@@ -1,4 +1,4 @@
-//go:build !race
+//go:build !race && !asan
 
 // Allocation-site attribution needs an exact memory profile, which the race
 // detector's instrumentation perturbs; the non-race CI job runs this.

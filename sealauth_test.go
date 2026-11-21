@@ -328,7 +328,7 @@ func TestSealComputeTag_KnownAnswer(t *testing.T) {
 	if hex.EncodeToString(got[:]) != pinned {
 		t.Fatalf("tag %x differs from the pinned vector; a changed construction needs a new label version", got)
 	}
-	if n := testing.AllocsPerRun(50, func() { sealComputeTag(&got, prekey, id, &nonce, data) }); n != 0 {
+	if n := testing.AllocsPerRun(50, func() { sealComputeTag(&got, prekey, id, &nonce, data) }); n != 0 && !asanEnabled {
 		t.Fatalf("sealComputeTag allocates %v times per call; the key must stay off the heap", n)
 	}
 }

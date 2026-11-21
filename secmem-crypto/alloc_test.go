@@ -1,4 +1,4 @@
-//go:build !race
+//go:build !race && !asan
 
 // Allocation counts are only meaningful without the race detector's
 // instrumentation, so this gate is excluded under -race. The non-race CI job
