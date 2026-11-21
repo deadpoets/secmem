@@ -151,6 +151,17 @@ type Capabilities struct {
 	// call. Like GuardPages it is a memory-safety bug-catcher, not a secrecy
 	// mechanism.
 	DestroyQuarantine bool
+
+	// ProbeErr is set only in a report from [Probe], and only when the
+	// allocation Probe makes was refused: it is the error a constructor
+	// called at that moment would have returned, typically the operating
+	// system declining to lock memory. Every per-allocation field above is
+	// then false because nothing was allocated, not because an allocation
+	// lacks the protection: the library placed no secret anywhere.
+	// [Capabilities.Warnings] and [Capabilities.String] say so instead of
+	// listing protections as missing. It is nil in every report about a
+	// buffer or arena that exists.
+	ProbeErr error
 }
 
 // allocInfo records which protections one specific allocation actually
@@ -213,19 +224,29 @@ func capsFromAlloc(info allocInfo) Capabilities {
 // succeeds on the Go heap and the report has Insecure set (the probe is a
 // report, not an opt-in to [WithInsecureFallback]).
 //
-// If the probe allocation fails, every per-allocation field (OffHeap,
-// Mlocked, MemfdSecret, NoDump, NoFork, GuardPages, DestroyQuarantine) is
-// false, while the process-wide fields (FlushedWipe, RuntimeSecret,
-// FrameScrub, AsyncPreemptSuppressed, VectorRegisterClear, GPRegisterClear)
-// are still reported. That is what a process that has used up its lock
-// budget gets, with every existing buffer still locked and guarded, and it
-// is indistinguishable from a platform whose allocator refuses outright:
-// probe at startup, before the budget is spent, and use
-// [SecureBuffer.Capabilities] for the truth about a buffer you hold.
+// If the probe allocation is refused, ProbeErr carries the error and every
+// per-allocation field (OffHeap, Mlocked, MemfdSecret, NoDump, NoFork,
+// GuardPages, DestroyQuarantine) is false, while the process-wide fields
+// (FlushedWipe, RuntimeSecret, FrameScrub, AsyncPreemptSuppressed,
+// VectorRegisterClear, GPRegisterClear) are still reported. That is what a
+// process started with no lock budget gets, and what one that has spent its
+// budget gets, with every existing buffer still locked and guarded. It does
+// not mean secrets are unprotected: a constructor returns the same error and
+// allocates nothing. Gate startup on ProbeErr before reading the other
+// fields, and use [SecureBuffer.Capabilities] for the truth about a buffer
+// you hold.
 func Probe() Capabilities {
-	region, _, info, err := allocSecretMem(1)
+	return probeWith(allocSecretMem)
+}
+
+// probeWith is Probe over a given allocator, so a test can refuse the
+// allocation without exhausting the host's lock budget.
+func probeWith(alloc func(int) (secRegion, []byte, allocInfo, error)) Capabilities {
+	region, _, info, err := alloc(1)
 	if err != nil {
-		return capsFromAlloc(allocInfo{})
+		c := capsFromAlloc(allocInfo{})
+		c.ProbeErr = err
+		return c
 	}
 	secureWipeSlice(region.inner)
 	_ = freeSecretMem(region)
@@ -241,24 +262,32 @@ func Probe() Capabilities {
 //	}
 func (c Capabilities) Warnings() []string {
 	var w []string
+	if c.ProbeErr != nil {
+		// Nothing was allocated, so there is no allocation to find wanting:
+		// say that, and below only what holds for the process as a whole.
+		w = append(w, "REFUSED: no secure memory could be allocated ("+c.ProbeErr.Error()+") — constructors return this error and place nothing on unprotected memory; on Linux raise RLIMIT_MEMLOCK, on Windows the working-set minimum")
+	}
+	alloc := c.ProbeErr == nil // the per-allocation fields describe something
 	if c.Insecure {
 		w = append(w, "INSECURE: plain heap fallback — no memory protection is in force at all")
 	}
-	if !c.OffHeap && !c.Insecure {
+	if alloc && !c.OffHeap && !c.Insecure {
 		w = append(w, "memory is on the Go heap — not locked, not excluded from dumps, and not wiped when the collector frees it")
 	}
-	if !c.Mlocked {
+	if !alloc {
+		// no pages to lock or leave unlocked
+	} else if !c.Mlocked {
 		w = append(w, "pages are not locked — secrets may be written to the swap device")
 	} else if c.GOOS == "windows" {
 		w = append(w, "VirtualLock pins pages into the working set only — when an idle process is outswapped, locked pages go to the pagefile with it")
 	}
-	if !c.MemfdSecret {
+	if alloc && !c.MemfdSecret {
 		w = append(w, "no kernel isolation (memfd_secret) — a sufficiently privileged process or debugger can read the memory")
 	}
-	if !c.NoDump {
+	if alloc && !c.NoDump {
 		w = append(w, "not excluded from core dumps")
 	}
-	if !c.NoFork && c.GOOS != "windows" {
+	if alloc && !c.NoFork && c.GOOS != "windows" {
 		// Windows has no fork: there is nothing to inherit and nothing to warn about.
 		w = append(w, "mapping is inherited by forked children (no MADV_DONTFORK)")
 	}
@@ -280,13 +309,13 @@ func (c Capabilities) Warnings() []string {
 	if !c.GPRegisterClear && !c.RuntimeSecret {
 		w = append(w, "general-purpose registers not cleared after a Scrub window — residue from scalar code and short copies survives on this architecture")
 	}
-	if !c.GuardPages {
+	if alloc && !c.GuardPages {
 		w = append(w, "no guard pages — buffer overflows are not trapped")
 	}
 	if c.UnauthenticatedSeal {
 		w = append(w, "seal is not authenticated (WithUnauthenticatedSeal) — a bit flipped while sealed is handed back as the secret")
 	}
-	if !c.DestroyQuarantine {
+	if alloc && !c.DestroyQuarantine {
 		w = append(w, "no destroy quarantine — a slice retained past Destroy can alias the next allocation")
 	}
 	return w
@@ -304,19 +333,26 @@ func (c Capabilities) String() string {
 			miss = append(miss, name)
 		}
 	}
-	flag("off-heap", c.OffHeap)
-	flag("mlock", c.Mlocked)
-	flag("memfd_secret", c.MemfdSecret)
-	flag("no-dump", c.NoDump)
-	flag("no-fork", c.NoFork)
+	// A refused probe allocated nothing: its per-allocation fields are
+	// neither in force nor missing, and are left out of both lists.
+	perAlloc := func(name string, on bool) {
+		if c.ProbeErr == nil {
+			flag(name, on)
+		}
+	}
+	perAlloc("off-heap", c.OffHeap)
+	perAlloc("mlock", c.Mlocked)
+	perAlloc("memfd_secret", c.MemfdSecret)
+	perAlloc("no-dump", c.NoDump)
+	perAlloc("no-fork", c.NoFork)
 	flag("wipe+flush", c.FlushedWipe)
 	flag("runtime-secret", c.RuntimeSecret)
 	flag("frame-scrub", c.FrameScrub)
 	flag("preempt-suppress", c.AsyncPreemptSuppressed)
 	flag("vector-clear", c.VectorRegisterClear)
 	flag("gp-clear", c.GPRegisterClear)
-	flag("guard-pages", c.GuardPages)
-	flag("destroy-quarantine", c.DestroyQuarantine)
+	perAlloc("guard-pages", c.GuardPages)
+	perAlloc("destroy-quarantine", c.DestroyQuarantine)
 	if c.ClosedAtRest { // an opt-in: listed when on, not counted missing when off
 		have = append(have, "closed-at-rest")
 	}
@@ -327,6 +363,11 @@ func (c Capabilities) String() string {
 	b.WriteString(c.GOARCH)
 	if c.Insecure {
 		b.WriteString(" INSECURE(heap)")
+	}
+	if c.ProbeErr != nil {
+		b.WriteString(" REFUSED(")
+		b.WriteString(c.ProbeErr.Error())
+		b.WriteByte(')')
 	}
 	if c.UnauthenticatedSeal {
 		b.WriteString(" unauthenticated-seal")

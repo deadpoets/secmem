@@ -27,6 +27,16 @@ mark the stability commitment.
   completed derivation. The existing functions are unchanged and derive the
   same bytes.
 
+- **`Capabilities.ProbeErr`: a refused probe says it was refused.** When the
+  allocation `Probe` makes is refused, at a zero `RLIMIT_MEMLOCK` or with the
+  lock budget spent, the report used to be an allocation with no protection,
+  and `Warnings` said the memory was on the Go heap and could reach swap. No
+  constructor does that: each returns the error and allocates nothing.
+  `ProbeErr` now carries that error, `Warnings` leads with the refusal and
+  keeps only the process-wide lines, and `String` prints `REFUSED(...)` in
+  place of a list of missing protections. Reports about a buffer or arena
+  are unchanged.
+
 ### Changed
 
 - **`golang.org/x/sys` moves to v0.50.0**, in the core and in `secmem-crypto`.
