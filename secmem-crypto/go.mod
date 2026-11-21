@@ -7,10 +7,10 @@ toolchain go1.27.4
 require (
 	filippo.io/edwards25519 v1.2.0
 	github.com/deadpoets/secmem v0.8.1
-	golang.org/x/crypto v0.58.0
+	golang.org/x/crypto v0.59.0
 )
 
-require golang.org/x/sys v0.49.0
+require golang.org/x/sys v0.50.0
 
 // The comment attached to a retract directive is shown to users by `go get`
 // and `go list -m -retracted`, so it is kept to one actionable line. Background

@@ -13,6 +13,13 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Changed
+
+- **`golang.org/x/sys` moves to v0.50.0**, in the core and in `secmem-crypto`.
+- **`secmem-crypto`: `golang.org/x/crypto` moves to v0.59.0.** Upstream did not
+  change the forked packages between v0.58.0 and v0.59.0; `forks.json` records
+  them unchanged through it.
+
 ## [1.0.0-rc.2] - 2026-11-14
 
 The second release candidate for 1.0: one fix on top of rc.1, for Linux
