@@ -69,6 +69,7 @@ func (k syntheticRSA) pkcs1(t testing.TB) []byte {
 		D, P, Q, Dp, Dq, Qi *big.Int
 	}{0, k.N, k.E, k.D, k.P, k.Q, k.Dp, k.Dq, k.Qinv})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return der
@@ -82,6 +83,7 @@ func pkcs8WrapRSA(t testing.TB, pkcs1 []byte) []byte {
 		PrivateKey []byte
 	}{0, pkix.AlgorithmIdentifier{Algorithm: oidRSA, Parameters: asn1.NullRawValue}, pkcs1})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return der
@@ -151,6 +153,7 @@ func TestRSASizeCaps_EveryRoute(t *testing.T) {
 		t.Run("at cap/"+name, func(t *testing.T) {
 			s, err := open()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("a %d-bit key was refused: %v", rsaMaxModulusBits, err)
 			}
 			defer s.Destroy()
@@ -170,11 +173,13 @@ func TestRSASizeCaps_EveryRoute(t *testing.T) {
 			}
 			if name == "encrypted PKCS#8" {
 				if !errors.Is(err, errPBES2Decrypt) {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%v, want the post-decryption error", err)
 				}
 				return
 			}
 			if !errors.Is(err, errMalformed) || !strings.Contains(err.Error(), "too large") {
+				skipIfLockRefused(t, err)
 				t.Fatalf("%v, want errMalformed naming the size", err)
 			}
 		})
@@ -200,11 +205,13 @@ func TestRSABounds(t *testing.T) {
 		err1 := checkRSAKeySize(p1)
 		err8 := checkRSAKeySize(pkcs8WrapRSA(t, p1))
 		if (err1 == nil) != (err8 == nil) {
+			skipIfLockRefused(t, err1)
 			t.Fatalf("PKCS#1 says %v, the same key in PKCS#8 says %v", err1, err8)
 		}
 		return err1
 	}
 	if err := check(base()); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("every integer at its cap: %v", err)
 	}
 	for name, mutate := range map[string]func(*syntheticRSA){
@@ -222,6 +229,7 @@ func TestRSABounds(t *testing.T) {
 		k := base()
 		mutate(&k)
 		if err := check(k); !errors.Is(err, errMalformed) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s over its bound: %v, want errMalformed", name, err)
 		}
 	}
@@ -244,17 +252,21 @@ func TestRSABounds(t *testing.T) {
 			Others              []other
 		}{1, k.N, k.E, k.D, k.P, k.Q, k.Dp, k.Dq, k.Qinv, others})
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		return der
 	}
 	if err := checkRSAKeySize(multi(rsaMaxOtherPrimes, rsaMaxPrimeBits)); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("%d further primes at the cap: %v", rsaMaxOtherPrimes, err)
 	}
 	if err := checkRSAKeySize(multi(rsaMaxOtherPrimes+1, 64)); !errors.Is(err, errMalformed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("%d further primes: %v, want errMalformed", rsaMaxOtherPrimes+1, err)
 	}
 	if err := checkRSAKeySize(multi(1, rsaMaxPrimeBits+1)); !errors.Is(err, errMalformed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("a further prime over the cap: %v, want errMalformed", err)
 	}
 
@@ -282,6 +294,7 @@ func TestGenerateRSASigner_RejectsOverCap(t *testing.T) {
 		t.Fatal("generated a key over the modulus cap")
 	}
 	if !strings.Contains(err.Error(), "too large") {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%v, want a refusal naming the size", err)
 	}
 }

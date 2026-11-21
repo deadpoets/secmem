@@ -28,18 +28,22 @@ func TestBufferOptions_NoSecureMemoryPlatform(t *testing.T) {
 	insecure := BufferOptions(secmem.WithInsecureFallback())
 
 	if _, err := GenerateEd25519Signer(); !errors.Is(err, secmem.ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer without the opt-in: %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := GenerateX25519Key(); !errors.Is(err, secmem.ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key without the opt-in: %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := GenerateDicewarePassphrase(4); !errors.Is(err, secmem.ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateDicewarePassphrase without the opt-in: %v, want ErrNoSecureMemory", err)
 	}
 
 	mustInsecure := func(name string, b *secmem.SecureBuffer, err error) {
 		t.Helper()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%s with the opt-in: %v", name, err)
 		}
 		defer b.Destroy()
@@ -49,6 +53,7 @@ func TestBufferOptions_NoSecureMemoryPlatform(t *testing.T) {
 	}
 	ed, err := GenerateEd25519Signer(insecure)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer with the opt-in: %v", err)
 	}
 	defer ed.Destroy()
@@ -57,6 +62,7 @@ func TestBufferOptions_NoSecureMemoryPlatform(t *testing.T) {
 
 	x, err := GenerateX25519Key(insecure)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key with the opt-in: %v", err)
 	}
 	defer x.Destroy()
@@ -69,20 +75,24 @@ func TestBufferOptions_NoSecureMemoryPlatform(t *testing.T) {
 	var pemKey []byte
 	plain, err := ed.MarshalOpenSSHPrivateKey("c")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if err := plain.WithBytesErr(func(b []byte) error {
 		pemKey = bytes.Clone(b) //nolint:secmem-lint // test egress of a throwaway test key, to feed it back to the parser
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	plain.Destroy()
 	if _, err := ParsePrivateKey(pemKey); !errors.Is(err, secmem.ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ParsePrivateKey without the opt-in: %v, want ErrNoSecureMemory", err)
 	}
 	s, err := ParsePrivateKey(pemKey, insecure)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ParsePrivateKey with the opt-in: %v", err)
 	}
 	s.Destroy()

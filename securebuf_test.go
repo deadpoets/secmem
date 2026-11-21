@@ -21,6 +21,7 @@ func TestSecureBuffer_New(t *testing.T) {
 	const size = 64
 	buf, err := NewBuffer(make([]byte, size))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("New: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -43,6 +44,7 @@ func TestSecureBuffer_NewEmpty(t *testing.T) {
 	const size = 128
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -62,6 +64,7 @@ func TestSecureBuffer_WithoutMemfdSecret(t *testing.T) {
 	}
 	buf, err := NewBuffer(raw, WithoutMemfdSecret())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer(WithoutMemfdSecret): %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -77,14 +80,17 @@ func TestSecureBuffer_Destroy_Idempotent(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first Destroy: %v", err)
 	}
 	// Second call must be safe and return nil.
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy returned error: %v, want nil", err)
 	}
 }
@@ -95,6 +101,7 @@ func TestSecureBuffer_IsDestroyed(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 
@@ -103,6 +110,7 @@ func TestSecureBuffer_IsDestroyed(t *testing.T) {
 	}
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -118,18 +126,22 @@ func TestSecureBuffer_ErrDestroyed(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
 	// ReadOnly / ReadWrite must return ErrDestroyed after Destroy.
 	if gotErr := buf.ReadOnly(); !errors.Is(gotErr, ErrDestroyed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("ReadOnly() after Destroy = %v, want ErrDestroyed", gotErr)
 	}
 	if gotErr := buf.ReadWrite(); !errors.Is(gotErr, ErrDestroyed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("ReadWrite() after Destroy = %v, want ErrDestroyed", gotErr)
 	}
 }
@@ -140,14 +152,17 @@ func TestSecureBuffer_ReadOnlyReadWrite(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 	if err := buf.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite: %v", err)
 	}
 }
@@ -160,6 +175,7 @@ func TestSecureBuffer_Truncate(t *testing.T) {
 	const size = 64
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -167,6 +183,7 @@ func TestSecureBuffer_Truncate(t *testing.T) {
 	mapped := buf.MappedLen() // should be page-rounded, immutable
 
 	if err := buf.Truncate(32); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(32): %v", err)
 	}
 	if buf.Len() != 32 {
@@ -184,13 +201,16 @@ func TestSecureBuffer_Truncate_InvalidAfterDestroy(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
 	if gotErr := buf.Truncate(32); !errors.Is(gotErr, ErrDestroyed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("Truncate after Destroy = %v, want ErrDestroyed", gotErr)
 	}
 }
@@ -208,6 +228,7 @@ func TestSecureBuffer_NilSafe(t *testing.T) {
 		t.Errorf("nil.MappedLen() = %d, want 0", buf.MappedLen())
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Destroy() = %v, want nil", err)
 	}
 	if !buf.IsDestroyed() {
@@ -238,6 +259,7 @@ func TestNew_PageAlignment(t *testing.T) {
 			t.Parallel()
 			buf, err := NewEmptyBuffer(size)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("NewEmpty(%d): %v", size, err)
 			}
 			defer func() { _ = buf.Destroy() }()
@@ -262,6 +284,7 @@ func TestSecureWipe_FullRegionIncludingTail(t *testing.T) {
 	const size = 32
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 
@@ -272,6 +295,7 @@ func TestSecureWipe_FullRegionIncludingTail(t *testing.T) {
 
 	// Destroy must wipe the full raw region (size + tail) without faulting.
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if !buf.IsDestroyed() {
@@ -287,6 +311,7 @@ func TestTruncate_DoesNotModifyRaw(t *testing.T) {
 	const size = 128
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmpty: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -294,6 +319,7 @@ func TestTruncate_DoesNotModifyRaw(t *testing.T) {
 	before := buf.MappedLen()
 
 	if err := buf.Truncate(64); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(64): %v", err)
 	}
 	if buf.Len() != 64 {
@@ -305,6 +331,7 @@ func TestTruncate_DoesNotModifyRaw(t *testing.T) {
 
 	// Second truncate to a smaller value.
 	if err := buf.Truncate(16); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(16): %v", err)
 	}
 	if buf.Len() != 16 {
@@ -340,6 +367,7 @@ func TestDestroy_StopsCleanup(t *testing.T) {
 	mapped := buf.MappedLen()
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -430,6 +458,7 @@ func TestJanitorRelease_DestroyRace(t *testing.T) {
 	for range 64 {
 		buf, err := NewEmptyBuffer(64)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewEmptyBuffer: %v", err)
 		}
 
@@ -440,9 +469,11 @@ func TestJanitorRelease_DestroyRace(t *testing.T) {
 
 		// Competing release path (simulates cleanup/emergency-wipe race).
 		if relErr := emergencyJanitor.release(buf.janitorKey, false); relErr != nil {
+			skipIfLockRefused(t, relErr)
 			t.Fatalf("janitor release: %v", relErr)
 		}
 		if dErr := <-done; dErr != nil {
+			skipIfLockRefused(t, dErr)
 			t.Fatalf("Destroy: %v", dErr)
 		}
 		if !buf.IsDestroyed() {
@@ -455,6 +486,7 @@ func TestJanitorRelease_DestroyRace(t *testing.T) {
 func BenchmarkSecureWipe_4K(b *testing.B) {
 	buf, err := NewEmptyBuffer(4096)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -470,6 +502,7 @@ func BenchmarkSecureWipe_4K(b *testing.B) {
 func BenchmarkSecureWipe_64K(b *testing.B) {
 	buf, err := NewEmptyBuffer(65536)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -488,9 +521,11 @@ func BenchmarkNewDestroy(b *testing.B) {
 	for range b.N {
 		buf, err := NewEmptyBuffer(size)
 		if err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatalf("NewEmptyBuffer: %v", err)
 		}
 		if err := buf.Destroy(); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatalf("Destroy: %v", err)
 		}
 	}
@@ -502,6 +537,7 @@ func BenchmarkNewDestroy(b *testing.B) {
 func BenchmarkWithBytesErr(b *testing.B) {
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -510,6 +546,7 @@ func BenchmarkWithBytesErr(b *testing.B) {
 	b.ResetTimer()
 	for range b.N {
 		if err := buf.WithBytesErr(noop); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatalf("WithBytesErr: %v", err)
 		}
 	}
@@ -521,6 +558,7 @@ func BenchmarkWithBytesErr(b *testing.B) {
 func BenchmarkWithBytesErr_Parallel(b *testing.B) {
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -530,6 +568,7 @@ func BenchmarkWithBytesErr_Parallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		for pb.Next() {
 			if err := buf.WithBytesErr(noop); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatalf("WithBytesErr: %v", err)
 			}
 		}

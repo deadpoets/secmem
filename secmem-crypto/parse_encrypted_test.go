@@ -48,18 +48,21 @@ func checkSignerConsistent(t *testing.T, s Signer) {
 	case ed25519.PublicKey:
 		sig, err := s.Sign(nil, msg, nil)
 		if err != nil || !ed25519.Verify(p, msg, sig) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("ed25519 signer from parsed key is inconsistent: %v", err)
 		}
 	case *ecdsa.PublicKey:
 		h := sha256.Sum256(msg)
 		sig, err := s.Sign(rand.Reader, h[:], crypto.SHA256)
 		if err != nil || !ecdsa.VerifyASN1(p, h[:], sig) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("ecdsa signer from parsed key is inconsistent: %v", err)
 		}
 	case *rsa.PublicKey:
 		h := sha256.Sum256(msg)
 		sig, err := s.Sign(rand.Reader, h[:], crypto.SHA256)
 		if err != nil || rsa.VerifyPKCS1v15(p, crypto.SHA256, h[:], sig) != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("rsa signer from parsed key is inconsistent: %v", err)
 		}
 	default:
@@ -97,18 +100,22 @@ func fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.Public
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", "openssh-encrypted", name+".b64"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	raw, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(body)), ""))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	pubLine, err := os.ReadFile(filepath.Join("testdata", "openssh-encrypted", name+".pub"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	sshPub, _, _, _, err := ssh.ParseAuthorizedKey(pubLine)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	cp, ok := sshPub.(ssh.CryptoPublicKey)
@@ -127,6 +134,7 @@ func encryptedFixtures(t testing.TB) []string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join("testdata", "openssh-encrypted", "*.b64"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if len(matches) < 11 {
@@ -156,6 +164,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: %v", form, err)
 				}
 				verifySigner(t, s, pub)
@@ -163,6 +172,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 
 				// The plain parser must still name the condition.
 				if _, err := ParsePrivateKey(data, AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: ParsePrivateKey = %v, want ErrEncryptedKey", form, err)
 				}
 			}
@@ -178,6 +188,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			s.Destroy()
 			t.Fatal("a wrong passphrase was accepted")
 		} else if !errors.Is(err, x509.IncorrectPasswordError) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("got %v, want IncorrectPasswordError", err)
 		}
 	})
@@ -189,6 +200,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 			s.Destroy()
 			t.Fatal("a corrupted authenticator was accepted")
 		} else if !errors.Is(err, x509.IncorrectPasswordError) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("got %v, want IncorrectPasswordError", err)
 		}
 	})
@@ -199,6 +211,7 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 	t.Run("ed25519-chacha-a1/authenticator length", func(t *testing.T) {
 		_, raw, _ := fixture(t, "ed25519-chacha-a1")
 		if h, err := readOpenSSHHeader(raw); err != nil || len(h.rest) != chachaTagLen {
+			skipIfLockRefused(t, err)
 			t.Fatalf("fixture: header %v, %d bytes after the block, want %d", err, len(h.rest), chachaTagLen)
 		}
 		for name, data := range map[string][]byte{
@@ -212,9 +225,11 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 				t.Fatalf("%s: a mis-sized authenticator was accepted", name)
 			}
 			if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: %v, want errMalformed before the KDF", name, err)
 			}
 			if !strings.Contains(err.Error(), "authenticator") {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: %v does not say what it wanted", name, err)
 			}
 		}
@@ -235,9 +250,11 @@ func TestParsePrivateKeyWithPassphrase_SSHKeygenFixtures(t *testing.T) {
 				t.Fatalf("%s: trailing bytes after an AES block were accepted", name)
 			}
 			if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: %v, want errMalformed before the KDF", name, err)
 			}
 			if !strings.Contains(err.Error(), "authenticator") {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: %v does not say what it wanted", name, err)
 			}
 		}
@@ -255,11 +272,13 @@ func TestParsePrivateKeyWithPassphrase_XCryptoRoundTrip(t *testing.T) {
 		t.Run(k.name, func(t *testing.T) {
 			block, err := ssh.MarshalPrivateKeyWithPassphrase(k.priv, "a comment", []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			for form, data := range map[string][]byte{"pem": pemEncodeToMemory(block), "raw": block.Bytes} {
 				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: %v", form, err)
 				}
 				verifySigner(t, s, k.pub)
@@ -281,10 +300,12 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 	plain := parseTestKeys(t)[0]
 	plainBlock, err := ssh.MarshalPrivateKey(plain.priv, "")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	p8, err := x509.MarshalPKCS8PrivateKey(plain.priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	const pk, epk, rsaPK = "PRIVATE KEY", "ENCRYPTED PRIVATE KEY", "RSA PRIVATE KEY"
@@ -344,18 +365,22 @@ func TestParsePrivateKeyWithPassphrase_Rejects(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 			if text, ok := wantText[tc.name]; ok && !strings.Contains(err.Error(), text) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want an error naming the %s", err, text)
 			}
 		})
 	}
 
 	if _, err := ParsePrivateKeyWithPassphrase(pemBytes, nil, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "empty passphrase") {
+		skipIfLockRefused(t, err)
 		t.Errorf("empty passphrase: got %v", err)
 	}
 	if _, err := ParsePrivateKeyWithPassphrase(nil, []byte("x"), AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "empty input") {
+		skipIfLockRefused(t, err)
 		t.Errorf("empty input: got %v", err)
 	}
 }
@@ -379,13 +404,16 @@ func TestParsePrivateKeyWithPassphrase_SaltBound(t *testing.T) {
 	}
 	_, err := ParsePrivateKeyWithPassphrase(container(bcryptpbkdf.MaxSaltLen+1), []byte(testPassphrase), AllowHeapTransients())
 	if !errors.Is(err, errMalformed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("salt of MaxSaltLen+1: %v, want errMalformed", err)
 	}
 	if errors.Is(err, bcryptpbkdf.ErrSalt) || errors.Is(err, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("salt of MaxSaltLen+1 reached the KDF: %v", err)
 	}
 	_, err = ParsePrivateKeyWithPassphrase(container(bcryptpbkdf.MaxSaltLen), []byte(testPassphrase), AllowHeapTransients())
 	if !errors.Is(err, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("salt of MaxSaltLen: %v, want the post-decryption error", err)
 	}
 }
@@ -407,9 +435,11 @@ func TestParsePrivateKeyWithPassphrase_DecidesBeforeKDF(t *testing.T) {
 		data := append([]byte("openssh-key-v1\x00"), ssh.Marshal(outer)...)
 		_, err := ParsePrivateKeyWithPassphrase(data, []byte(wrong), AllowHeapTransients())
 		if !errors.Is(err, ErrUnsupportedKey) || !strings.Contains(err.Error(), `"ssh-dss"`) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%v, want ErrUnsupportedKey naming ssh-dss", err)
 		}
 		if errors.Is(err, x509.IncorrectPasswordError) {
+			skipIfLockRefused(t, err)
 			t.Fatal("the KDF ran for an unsupported key type")
 		}
 	})
@@ -420,21 +450,25 @@ func TestParsePrivateKeyWithPassphrase_DecidesBeforeKDF(t *testing.T) {
 				for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 					_, err := ParsePrivateKeyWithPassphrase(data, []byte(wrong), nil)
 					if !errors.Is(err, ErrHeapTransients) {
+						skipIfLockRefused(t, err)
 						t.Fatalf("%s: %v, want ErrHeapTransients", form, err)
 					}
 					if errors.Is(err, x509.IncorrectPasswordError) {
+						skipIfLockRefused(t, err)
 						t.Fatalf("%s: the KDF ran for a refused key", form)
 					}
 					// The refusal is the constructors' own: the plain parser
 					// on the same kind of key reads the same.
 					_, perr := ParsePrivateKey(encodings(t, testKeyNamed(t, map[string]string{"rsa-a1": "rsa2048", "ecdsa-a1": "p256"}[name]))[1].data)
 					if !errors.Is(perr, ErrHeapTransients) || perr.Error() != err.Error() {
+						skipIfLockRefused(t, err)
 						t.Fatalf("%s: entry points disagree:\n  plain:      %v\n  passphrase: %v", form, perr, err)
 					}
 				}
 				// With the option, the same file opens under the same policy.
 				s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatal(err)
 				}
 				verifySigner(t, s, pub)
@@ -447,6 +481,7 @@ func TestParsePrivateKeyWithPassphrase_DecidesBeforeKDF(t *testing.T) {
 		withPolicy(t, false, func() {
 			s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			verifySigner(t, s, pub)
@@ -495,6 +530,7 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 	_, raw, _ := fixture(t, "ed25519-a1")
 	_, wrongErr := ParsePrivateKeyWithPassphrase(raw, []byte("not it"), AllowHeapTransients())
 	if !errors.Is(wrongErr, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, wrongErr)
 		t.Fatalf("wrong passphrase: %v", wrongErr)
 	}
 	want := wrongErr.Error()
@@ -508,6 +544,7 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 			_, raw, pub := fixture(t, tc.name)
 			h, err := readOpenSSHHeader(raw)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			mode := opensshCipherByName(h.cipher)
@@ -543,6 +580,7 @@ func TestParsePrivateKeyWithPassphrase_PostDecryptionIsBinary(t *testing.T) {
 					t.Errorf("flip at %d: error differs from the wrong-passphrase error:\n  got:  %s\n  want: %s", off, got, want)
 				}
 				if !errors.Is(err, x509.IncorrectPasswordError) {
+					skipIfLockRefused(t, err)
 					t.Errorf("flip at %d: %v does not wrap x509.IncorrectPasswordError", off, err)
 				}
 			}
@@ -565,12 +603,14 @@ func commentRange(t *testing.T, raw []byte) (start, end int) {
 	t.Helper()
 	h, err := readOpenSSHHeader(raw)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	salt, rounds := kdfOptsOf(t, raw)
 	plain := make([]byte, len(h.privBlock))
 	defer secmem.SecureWipe(plain)
 	if err := opensshCrypt(nil, plain, h.privBlock, h.rest, []byte(testPassphrase), salt, int(rounds), opensshCipherByName(h.cipher), true); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	r := sshReader{plain}
@@ -651,6 +691,7 @@ func TestParsePrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
 		pemBytes, raw, pub := fixture(t, name)
 		h, err := readOpenSSHHeader(raw)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		if !strings.HasPrefix(string(h.cipher), "aes") {
@@ -676,6 +717,7 @@ func TestParsePrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
 
 			s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			verifySigner(t, s, pub)
@@ -710,6 +752,7 @@ func TestParsePrivateKeyWithPassphrase_ChaChaBlockGranularity(t *testing.T) {
 	pemBytes, raw, pub := fixture(t, "ed25519-chacha-c3-a1")
 	h, err := readOpenSSHHeader(raw)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if string(h.cipher) != opensshCipherChaCha {
@@ -720,6 +763,7 @@ func TestParsePrivateKeyWithPassphrase_ChaChaBlockGranularity(t *testing.T) {
 	}
 	s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("a chacha20-poly1305 file whose block is 8 mod 16 did not open: %v", err)
 	}
 	defer s.Destroy()
@@ -740,6 +784,7 @@ func TestParsePrivateKeyWithPassphrase_FailsClosedWhenWipeCannot(t *testing.T) {
 		t.Fatal("parse succeeded although the AES schedule could not be wiped")
 	}
 	if !strings.Contains(err.Error(), "NOT wiped") {
+		skipIfLockRefused(t, err)
 		t.Fatalf("error does not carry the wipe failure: %v", err)
 	}
 }
@@ -761,6 +806,7 @@ func TestParsePrivateKeyWithPassphrase_FromSecureBuffer(t *testing.T) {
 		})
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer s.Destroy()

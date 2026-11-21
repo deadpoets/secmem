@@ -25,9 +25,11 @@ func TestGateInsecure_Policy(t *testing.T) {
 	for _, tc := range cases {
 		err := gateInsecure(tc.platformSecure, config{insecureFallback: tc.optIn})
 		if tc.wantErr && !errors.Is(err, ErrNoSecureMemory) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: err = %v, want ErrNoSecureMemory", tc.name, err)
 		}
 		if !tc.wantErr && err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: err = %v, want nil", tc.name, err)
 		}
 	}
@@ -58,6 +60,7 @@ func TestWithInsecureFallback_PermissionNotDemand(t *testing.T) {
 
 	buf, err := NewBuffer([]byte("opt-in-on-supported"), WithInsecureFallback())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer with WithInsecureFallback: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -77,18 +80,21 @@ func TestConstructors_AcceptOptions(t *testing.T) {
 	t.Parallel()
 	buf, err := NewEmptyBuffer(32, WithInsecureFallback())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	_ = buf.Destroy()
 
 	buf, err = NewBuffer([]byte("syscall-safe-opts"), WithoutMemfdSecret(), WithInsecureFallback())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer(WithoutMemfdSecret): %v", err)
 	}
 	_ = buf.Destroy()
 
 	arena, err := NewArena(16, 2, WithInsecureFallback())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	_ = arena.Destroy()

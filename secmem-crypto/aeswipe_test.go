@@ -34,18 +34,22 @@ func TestWipeAESBlock_Tripwire(t *testing.T) {
 			t.Parallel()
 			key := make([]byte, size)
 			if _, err := rand.Read(key); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			blk, err := aes.NewCipher(key)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			ref, err := aes.NewCipher(key)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			var in, want, got [16]byte
 			if _, err := rand.Read(in[:]); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			ref.Encrypt(want[:], in[:])
@@ -54,6 +58,7 @@ func TestWipeAESBlock_Tripwire(t *testing.T) {
 			for _, field := range aesRoundKeyFields {
 				keys, err := aesRoundKeys(blk, field)
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("crypto/aes round keys %q no longer resolve on this toolchain — update aesRoundKeyFields: %v", field, err)
 				}
 				if len(keys) != 60*4 {
@@ -66,6 +71,7 @@ func TestWipeAESBlock_Tripwire(t *testing.T) {
 			}
 
 			if err := wipeAESBlock(blk); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("wipeAESBlock: %v", err)
 			}
 			for i, keys := range views {
@@ -85,6 +91,7 @@ func TestWipeAESBlock_Tripwire(t *testing.T) {
 	}
 
 	if err := wipeAESBlock(nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeAESBlock(nil) = %v, want nil", err)
 	}
 }
@@ -103,6 +110,7 @@ func TestAESRoundKeys_ReportsUnresolvableField(t *testing.T) {
 	t.Parallel()
 	blk, err := aes.NewCipher(make([]byte, 32))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for _, tc := range []struct {
@@ -120,6 +128,7 @@ func TestAESRoundKeys_ReportsUnresolvableField(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(err.Error(), "NOT wiped") {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: error does not say the keys were not wiped: %v", tc.name, err)
 		}
 	}

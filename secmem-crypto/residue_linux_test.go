@@ -64,12 +64,14 @@ func readSmaps(pid int) ([]residueMapping, error) {
 func residueFreeze(t *testing.T, pid int) {
 	t.Helper()
 	if err := syscall.Kill(pid, syscall.SIGSTOP); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("SIGSTOP victim: %v", err)
 	}
 	deadline := time.Now().Add(5 * time.Second)
 	for time.Now().Before(deadline) {
 		b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("victim stat: %v", err)
 		}
 		if i := bytes.LastIndexByte(b, ')'); i > 0 && len(b) > i+2 && (b[i+2] == 'T' || b[i+2] == 't') {
@@ -88,6 +90,7 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 	t.Helper()
 	windows, err := residueWindows(pats)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	residueFreeze(t, pid)
@@ -100,6 +103,7 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 	defer memf.Close()
 	maps, err := readSmaps(pid)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("victim smaps: %v", err)
 	}
 

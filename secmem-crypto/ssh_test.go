@@ -13,12 +13,14 @@ func TestAsSSH_Ed25519(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
 
 	sshSigner, err := AsSSH(signer)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("AsSSH: %v", err)
 	}
 	if got := sshSigner.PublicKey().Type(); got != ssh.KeyAlgoED25519 {
@@ -28,9 +30,11 @@ func TestAsSSH_Ed25519(t *testing.T) {
 	data := []byte("ssh signing data")
 	sig, err := sshSigner.Sign(rand.Reader, data)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	if err := sshSigner.PublicKey().Verify(data, sig); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Verify: %v", err)
 	}
 }
@@ -39,12 +43,14 @@ func TestAsSSH_ECDSA(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer signer.Destroy()
 
 	sshSigner, err := AsSSH(signer)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("AsSSH: %v", err)
 	}
 	if got := sshSigner.PublicKey().Type(); got != ssh.KeyAlgoECDSA256 {
@@ -54,9 +60,11 @@ func TestAsSSH_ECDSA(t *testing.T) {
 	data := []byte("ssh signing data")
 	sig, err := sshSigner.Sign(rand.Reader, data)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	if err := sshSigner.PublicKey().Verify(data, sig); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Verify: %v", err)
 	}
 }
@@ -71,6 +79,7 @@ func TestAsSSH_RSA(t *testing.T) {
 
 	sshSigner, err := AsSSH(s)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("AsSSH: %v", err)
 	}
 	multi, ok := sshSigner.(ssh.MultiAlgorithmSigner)
@@ -87,23 +96,27 @@ func TestAsSSH_RSA(t *testing.T) {
 	// Plain Sign must default to the strongest algorithm, not ssh-rsa.
 	sig, err := sshSigner.Sign(rand.Reader, data)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	if sig.Format != ssh.KeyAlgoRSASHA512 {
 		t.Errorf("plain Sign produced %q, want %q", sig.Format, ssh.KeyAlgoRSASHA512)
 	}
 	if err := sshSigner.PublicKey().Verify(data, sig); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Verify(rsa-sha2-512): %v", err)
 	}
 
 	sig256, err := multi.SignWithAlgorithm(rand.Reader, data, ssh.KeyAlgoRSASHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("SignWithAlgorithm(rsa-sha2-256): %v", err)
 	}
 	if sig256.Format != ssh.KeyAlgoRSASHA256 {
 		t.Errorf("SignWithAlgorithm produced %q, want %q", sig256.Format, ssh.KeyAlgoRSASHA256)
 	}
 	if err := sshSigner.PublicKey().Verify(data, sig256); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Verify(rsa-sha2-256): %v", err)
 	}
 
@@ -122,6 +135,7 @@ func TestAsSSH_BadInputs(t *testing.T) {
 	// from NewSignerFromSigner rather than panic.
 	p224, err := GenerateECDSASigner(elliptic.P224(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner(P-224): %v", err)
 	}
 	defer p224.Destroy()

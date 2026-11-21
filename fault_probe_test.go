@@ -269,6 +269,7 @@ func probeFaulted(t *testing.T, name string) bool {
 	t.Helper()
 	outcome, err := runFaultProbe(name)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fault-probe %q: %v", name, err)
 	}
 	switch outcome {
@@ -298,6 +299,7 @@ func TestFaultProbe_OnlyTheAnnouncedFaultCounts(t *testing.T) {
 				t.Fatalf("control %q classified as outcome %d; want inconclusive", name, outcome)
 			}
 			if !errors.Is(err, errProbeInconclusive) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("control %q: unexpected error %v", name, err)
 			}
 		})

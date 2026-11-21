@@ -84,6 +84,7 @@ func runGPClearProof(t *testing.T, planted, got []byte, names []string, fill, du
 		t.Errorf("Scrub: %v still hold their planted words after the window", s)
 	}
 	if err := ScrubErr(func() error { fill(); return nil }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	dump()

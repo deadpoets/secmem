@@ -25,22 +25,26 @@ func TestSealCipher_ContentsAreCiphertextWhileSealed(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte(sealPlaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 
 	// Internal peek at the raw mapping — the moral equivalent of a memory
 	// dump reading through the kernel. Re-protect RW, snapshot, re-seal.
 	if err := mprotectSecretMem(buf.region, 3); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("test re-protect: %v", err)
 	}
 	snapshot := make([]byte, len(sealPlaintext))
 	copy(snapshot, buf.region.inner[:len(sealPlaintext)])
 	if err := mprotectSecretMem(buf.region, 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("test re-seal: %v", err)
 	}
 
@@ -53,6 +57,7 @@ func TestSealCipher_ContentsAreCiphertextWhileSealed(t *testing.T) {
 
 	// Round trip: Unseal must restore the exact secret.
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if err := buf.WithBytes(func(b []byte) {
@@ -60,6 +65,7 @@ func TestSealCipher_ContentsAreCiphertextWhileSealed(t *testing.T) {
 			t.Errorf("after unseal: %q, want %q — decryption did not restore the secret", b, sealPlaintext) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes after unseal: %v", err)
 	}
 }
@@ -71,17 +77,21 @@ func TestSealCipher_SealUnsealCycles(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte(sealPlaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	for i := 0; i < 5; i++ {
 		if err := buf.Seal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Seal #%d: %v", i, err)
 		}
 		if err := buf.Unseal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Unseal #%d: %v", i, err)
 		}
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after cycles: %v (canary must survive cipher round trips)", err)
 	}
 }
@@ -92,13 +102,17 @@ func TestSealCipher_DestroySealedBuffer(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte(sealPlaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		if errors.Is(err, ErrCanaryViolation) {
+			skipIfLockRefused(t, err)
 			t.Fatal("Destroy of a sealed buffer false-reported a canary violation — ciphertext was canary-checked")
 		}
 		t.Fatalf("Destroy of sealed buffer: %v", err)
@@ -114,6 +128,7 @@ func TestSealCipher_DestroySealedBuffer(t *testing.T) {
 func TestSealCipher_RealOverflowStillDetected(t *testing.T) {
 	buf, err := NewEmptyBuffer(100)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 
@@ -128,12 +143,15 @@ func TestSealCipher_RealOverflowStillDetected(t *testing.T) {
 	// Cycle the cipher: encrypts the corrupted slack, decrypts it back —
 	// the corruption must survive the round trip and still be detected.
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if err := buf.Destroy(); !errors.Is(err, ErrCanaryViolation) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy = %v, want ErrCanaryViolation (cipher round trip must not mask a real overflow)", err)
 	}
 }

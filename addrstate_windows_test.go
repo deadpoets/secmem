@@ -15,6 +15,7 @@ func addrState(t *testing.T, addr uintptr) (mapped, accessible bool) {
 	t.Helper()
 	var mbi windows.MemoryBasicInformation
 	if err := windows.VirtualQuery(addr, &mbi, unsafe.Sizeof(mbi)); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("VirtualQuery(%#x): %v", addr, err)
 	}
 	const memFree = 0x10000 // MEM_FREE

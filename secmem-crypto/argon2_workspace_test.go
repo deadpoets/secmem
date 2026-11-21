@@ -41,11 +41,13 @@ func TestArgon2Workspace_MatchesArgon2IntoAndXCrypto(t *testing.T) {
 	} {
 		out := newTestBuffer(t, 32)
 		if err := ws.Derive(password, salt, p, out); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("case %d: Derive: %v", i, err)
 		}
 		got := readBuf(t, out)
 		ref := newTestBuffer(t, 32)
 		if err := Argon2Into(password, salt, p, ref); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("case %d: Argon2Into: %v", i, err)
 		}
 		if want := readBuf(t, ref); !bytes.Equal(got, want) {
@@ -68,6 +70,7 @@ func TestArgon2Workspace_LockOrderBothWays(t *testing.T) {
 	p := Argon2Params{Time: 1, Memory: wsTestMemory, Threads: wsTestThreads}
 	for name, out := range map[string]*secmem.SecureBuffer{"before": before, "after": after} {
 		if err := ws.Derive([]byte("p"), []byte("0123456789abcdef"), p, out); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%s: %v", name, err)
 		}
 	}
@@ -92,10 +95,12 @@ func TestArgon2Workspace_Errors(t *testing.T) {
 		t.Error("threads=0: no error")
 	}
 	if err := ws.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	err := ws.Derive([]byte("p"), []byte("s"), Argon2Params{Time: 1, Memory: wsTestMemory, Threads: wsTestThreads}, out)
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Derive after Destroy: err = %v, want ErrDestroyed", err)
 	}
 }
@@ -111,6 +116,7 @@ func TestArgon2Workspace_WipedAfterDerive(t *testing.T) {
 	out := newTestBuffer(t, 32)
 	p := Argon2Params{Time: 1, Memory: wsTestMemory, Threads: wsTestThreads}
 	if err := ws.Derive([]byte("p"), []byte("0123456789abcdef"), p, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	var dirty bool
@@ -173,12 +179,15 @@ func TestArgon2Pool_ConcurrentDerivationsAgree(t *testing.T) {
 	}
 
 	if err := pool.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if err := pool.Derive(password, salt, p, newTestBuffer(t, 32)); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Derive after Destroy: %v, want ErrDestroyed", err)
 	}
 	if err := pool.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy: %v", err)
 	}
 }
@@ -208,6 +217,7 @@ func TestArgon2Workspace_FullProfile(t *testing.T) {
 	password, salt := []byte("password"), []byte("0123456789abcdef")
 	p := Argon2Params{Time: Argon2Time, Memory: Argon2Memory, Threads: Argon2Threads}
 	if err := ws.Derive(password, salt, p, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if want := xargon2.IDKey(password, salt, Argon2Time, Argon2Memory, Argon2Threads, 32); !bytes.Equal(readBuf(t, out), want) {
@@ -239,6 +249,7 @@ func BenchmarkArgon2_HeapVsWorkspace(b *testing.B) {
 	b.Run("heap/Argon2Into", func(b *testing.B) {
 		for i := 0; i < b.N; i++ {
 			if err := Argon2Into(password, salt, p, out); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 		}
@@ -252,6 +263,7 @@ func BenchmarkArgon2_HeapVsWorkspace(b *testing.B) {
 		b.ResetTimer()
 		for i := 0; i < b.N; i++ {
 			if err := ws.Derive(password, salt, p, out); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 		}
@@ -263,6 +275,7 @@ func BenchmarkArgon2_HeapVsWorkspace(b *testing.B) {
 				b.Skip(err)
 			}
 			if err := ws.Derive(password, salt, p, out); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 			_ = ws.Destroy()

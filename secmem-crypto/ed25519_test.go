@@ -23,15 +23,18 @@ func TestNewEd25519Signer_RoundTrip(t *testing.T) {
 	t.Parallel()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateKey: %v", err)
 	}
 
 	buf, err := secmem.NewBuffer(priv.Seed())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	signer, err := NewEd25519Signer(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -43,6 +46,7 @@ func TestNewEd25519Signer_RoundTrip(t *testing.T) {
 	msg := []byte("secmem-crypto round trip")
 	sig, err := signer.Sign(nil, msg, crypto.Hash(0))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	if !ed25519.Verify(pub, msg, sig) {
@@ -57,6 +61,7 @@ func TestGenerateEd25519Signer(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -69,6 +74,7 @@ func TestGenerateEd25519Signer(t *testing.T) {
 	msg := []byte("generated signer")
 	sig, err := signer.Sign(nil, msg, crypto.Hash(0))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	if !ed25519.Verify(pub, msg, sig) {
@@ -80,11 +86,13 @@ func TestGenerateEd25519Signer_ProducesDistinctKeys(t *testing.T) {
 	t.Parallel()
 	a, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer (a): %v", err)
 	}
 	defer a.Destroy()
 	b, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer (b): %v", err)
 	}
 	defer b.Destroy()
@@ -105,6 +113,7 @@ func TestNewEd25519Signer_WrongLengthSeed_OwnershipNotTransferred(t *testing.T) 
 	t.Parallel()
 	buf, err := secmem.NewEmptyBuffer(16) // not 32 bytes
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer buf.Destroy() // caller still owns buf; must not double-free
@@ -114,6 +123,7 @@ func TestNewEd25519Signer_WrongLengthSeed_OwnershipNotTransferred(t *testing.T) 
 		t.Fatal("expected error for wrong-length seed buffer")
 	}
 	if !errors.Is(err, ErrBadSeedLength) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error does not unwrap to ErrBadSeedLength: %v", err)
 	}
 	if buf.IsDestroyed() {
@@ -125,6 +135,7 @@ func TestNewEd25519Signer_DestroyedBuffer(t *testing.T) {
 	t.Parallel()
 	buf, err := secmem.NewEmptyBuffer(ed25519.SeedSize)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	_ = buf.Destroy()
@@ -134,6 +145,7 @@ func TestNewEd25519Signer_DestroyedBuffer(t *testing.T) {
 		t.Fatal("expected error for destroyed buffer")
 	}
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error does not unwrap to secmem.ErrDestroyed (got %v) — a destroyed buffer is not a length problem", err)
 	}
 }
@@ -142,10 +154,12 @@ func TestNewEd25519Signer_SealedBuffer_OwnershipNotTransferred(t *testing.T) {
 	t.Parallel()
 	buf, err := secmem.NewEmptyBuffer(ed25519.SeedSize)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer buf.Destroy()
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 
@@ -154,6 +168,7 @@ func TestNewEd25519Signer_SealedBuffer_OwnershipNotTransferred(t *testing.T) {
 		t.Fatal("expected error for sealed buffer")
 	}
 	if !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error does not unwrap to secmem.ErrSealed: %v", err)
 	}
 	if buf.IsDestroyed() {
@@ -161,9 +176,11 @@ func TestNewEd25519Signer_SealedBuffer_OwnershipNotTransferred(t *testing.T) {
 	}
 	// The buffer must still be fully usable after unsealing.
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if _, err := NewEd25519Signer(buf); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("construction after Unseal failed: %v", err)
 	}
 }
@@ -172,9 +189,11 @@ func TestEd25519Signer_Sign_AfterDestroy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -183,6 +202,7 @@ func TestEd25519Signer_Sign_AfterDestroy(t *testing.T) {
 		t.Fatal("expected error signing after Destroy")
 	}
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error does not unwrap to secmem.ErrDestroyed: %v", err)
 	}
 }
@@ -191,12 +211,15 @@ func TestEd25519Signer_DoubleDestroy_Idempotent(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first Destroy: %v", err)
 	}
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy not idempotent: %v", err)
 	}
 }
@@ -205,10 +228,12 @@ func TestEd25519Signer_Public_And_Equal_SurviveDestroy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	pub := signer.Public()
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -223,6 +248,7 @@ func TestEd25519Signer_Public_ReturnsDefensiveCopy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -247,6 +273,7 @@ func TestEd25519Signer_Sign_RejectsEd25519ph(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -265,6 +292,7 @@ func TestEd25519Signer_Sign_RejectsEd25519ctx(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -282,6 +310,7 @@ func TestEd25519Signer_Sign_AcceptsPureEd25519Options(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -295,6 +324,7 @@ func TestEd25519Signer_Sign_AcceptsPureEd25519Options(t *testing.T) {
 	} {
 		sig, err := signer.Sign(nil, msg, opts)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Sign with %v: %v", opts, err)
 		}
 		if !ed25519.Verify(pub, msg, sig) {
@@ -307,6 +337,7 @@ func TestEd25519Signer_SignMessage_MatchesSign(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -314,10 +345,12 @@ func TestEd25519Signer_SignMessage_MatchesSign(t *testing.T) {
 	msg := []byte("message signer parity")
 	viaSign, err := signer.Sign(nil, msg, crypto.Hash(0))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	viaSignMessage, err := signer.SignMessage(nil, msg, crypto.Hash(0))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("SignMessage: %v", err)
 	}
 	if !bytes.Equal(viaSign, viaSignMessage) {
@@ -329,14 +362,17 @@ func TestEd25519Signer_Sign_SealedSeed_ErrorsAndRecovers(t *testing.T) {
 	t.Parallel()
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	buf, err := secmem.NewBuffer(priv.Seed())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	signer, err := NewEd25519Signer(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -344,6 +380,7 @@ func TestEd25519Signer_Sign_SealedSeed_ErrorsAndRecovers(t *testing.T) {
 	// The caller retained the buffer pointer; sealing through it is the
 	// documented dormant-key pattern.
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	_, err = signer.Sign(nil, []byte("msg"), crypto.Hash(0))
@@ -351,13 +388,16 @@ func TestEd25519Signer_Sign_SealedSeed_ErrorsAndRecovers(t *testing.T) {
 		t.Fatal("expected error signing with a sealed seed buffer")
 	}
 	if !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error does not unwrap to secmem.ErrSealed: %v", err)
 	}
 
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if _, err := signer.Sign(nil, []byte("msg"), crypto.Hash(0)); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Sign after Unseal failed: %v", err)
 	}
 }
@@ -366,6 +406,7 @@ func TestEd25519Signer_WithSeed_RoundTrip(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -377,15 +418,18 @@ func TestEd25519Signer_WithSeed_RoundTrip(t *testing.T) {
 		copy(persisted, seed) //nolint:secmem-lint // test persists the seed to verify reload
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithSeed: %v", err)
 	}
 
 	buf, err := secmem.NewBuffer(persisted) // NewBuffer wipes `persisted` after copying
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	restored, err := NewEd25519Signer(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEd25519Signer (restored): %v", err)
 	}
 	defer restored.Destroy()
@@ -399,6 +443,7 @@ func TestEd25519Signer_WithSeed_AfterDestroy(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	_ = signer.Destroy()
@@ -408,6 +453,7 @@ func TestEd25519Signer_WithSeed_AfterDestroy(t *testing.T) {
 		t.Fatal("expected error from WithSeed after Destroy")
 	}
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error does not unwrap to secmem.ErrDestroyed: %v", err)
 	}
 }
@@ -416,12 +462,14 @@ func TestEd25519Signer_Equal_DifferentKeys(t *testing.T) {
 	t.Parallel()
 	a, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer a.Destroy()
 
 	otherPub, _, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	if a.Equal(otherPub) {
@@ -436,6 +484,7 @@ func TestEd25519Signer_Equal_NonKeyTypeComparesFalse(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -461,15 +510,19 @@ func TestEd25519Signer_NilReceiver_NeverPanics(t *testing.T) {
 		t.Error("nil.Equal(nil) = true, want false")
 	}
 	if _, err := s.Sign(nil, []byte("msg"), crypto.Hash(0)); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Sign error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 	if _, err := s.SignMessage(nil, []byte("msg"), crypto.Hash(0)); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.SignMessage error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 	if err := s.WithSeed(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.WithSeed error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Destroy() = %v, want nil", err)
 	}
 }
@@ -486,12 +539,15 @@ func TestEd25519Signer_ZeroValue_NeverPanics(t *testing.T) {
 		t.Error("zero.Equal(nil) = true, want false")
 	}
 	if _, err := s.Sign(nil, []byte("msg"), crypto.Hash(0)); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("zero.Sign error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 	if err := s.WithSeed(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("zero.WithSeed error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("zero.Destroy() = %v, want nil", err)
 	}
 }
@@ -503,6 +559,7 @@ func TestEd25519Signer_ConcurrentSign(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -546,6 +603,7 @@ func TestEd25519Signer_SignDuringDestroy(t *testing.T) {
 	for round := range 5 {
 		signer, err := GenerateEd25519Signer()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("GenerateEd25519Signer: %v", err)
 		}
 		pub := signer.Public().(ed25519.PublicKey)

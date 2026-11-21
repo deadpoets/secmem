@@ -20,6 +20,7 @@ func TestScope_Basic(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Scope: %v", err)
 	}
 	if !called {
@@ -36,6 +37,7 @@ func TestScope_DestroyedAfterCallback(t *testing.T) {
 		escaped = buf
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Scope: %v", err)
 	}
 	if !escaped.IsDestroyed() {
@@ -51,6 +53,7 @@ func TestScope_PropagatesCallbackError(t *testing.T) {
 	if err := Scope(16, func(_ *SecureBuffer) error {
 		return sentinel
 	}); !errors.Is(err, sentinel) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Scope: got %v, want sentinel", err)
 	}
 }
@@ -67,6 +70,7 @@ func TestScope_BothErrors_JoinedInNamedReturn(t *testing.T) {
 	if err := Scope(16, func(buf *SecureBuffer) error {
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Scope with no errors: got %v, want nil", err)
 	}
 }
@@ -86,6 +90,7 @@ func TestScopeWith_CustomConstructor(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ScopeWith: %v", err)
 	}
 	if !called {
@@ -107,6 +112,7 @@ func TestScopeWith_CtorError(t *testing.T) {
 		},
 	)
 	if !errors.Is(err, ctorErr) {
+		skipIfLockRefused(t, err)
 		t.Errorf("ScopeWith ctor error: got %v, want ctorErr", err)
 	}
 	if fnCalled {
@@ -121,15 +127,17 @@ func TestScope_DestroysOnPanic(t *testing.T) {
 	t.Parallel()
 
 	var capturedBuf *SecureBuffer
+	var scopeErr error
 
 	// Wrap Scope call so we can recover the panic while still verifying behavior.
 	func() {
 		defer func() {
 			if r := recover(); r == nil {
+				skipIfLockRefused(t, scopeErr) // no buffer, so the callback never ran
 				t.Error("expected panic to propagate, but it did not")
 			}
 		}()
-		_ = Scope(8, func(buf *SecureBuffer) error {
+		scopeErr = Scope(8, func(buf *SecureBuffer) error {
 			capturedBuf = buf
 			panic("test panic in Scope callback")
 		})

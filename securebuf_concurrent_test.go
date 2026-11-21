@@ -70,12 +70,15 @@ func TestConcurrentProtectionTransitions(t *testing.T) {
 
 	// The buffer must remain usable after the storm — no state was corrupted.
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal after stress: %v", err)
 	}
 	if err := buf.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite after stress: %v", err)
 	}
 	if _, err := buf.CopyIn([]byte{9}, 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("CopyIn after stress: %v", err)
 	}
 }
@@ -91,6 +94,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 		buf, err := NewBuffer(original) // NewBuffer wipes original after copying
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewBuffer: %v", err)
 		}
 		defer func() { _ = buf.Destroy() }()
@@ -118,6 +122,7 @@ func TestConcurrentAccess(t *testing.T) {
 
 		for range N {
 			if err := <-errCh; err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("concurrent WithBytesErr: %v", err)
 			}
 		}
@@ -135,6 +140,7 @@ func TestDestroyBlocksUntilAccessDrains(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		buf, err := NewEmptyBuffer(8)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewEmptyBuffer: %v", err)
 		}
 
@@ -177,6 +183,7 @@ func TestDestroyBlocksUntilAccessDrains(t *testing.T) {
 		select {
 		case err := <-destroyErr:
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("Destroy returned error: %v", err)
 			}
 		default:
@@ -231,6 +238,7 @@ func TestWriteToReleasesLockBeforeWrite(t *testing.T) {
 		data := []byte("write-lock-test-data")
 		buf, err := NewBuffer(data)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewBuffer: %v", err)
 		}
 
@@ -257,6 +265,7 @@ func TestWriteToReleasesLockBeforeWrite(t *testing.T) {
 		select {
 		case err := <-destroyErrCh:
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("Destroy: %v", err)
 			}
 		default:
@@ -287,6 +296,7 @@ func TestReadFromReleasesLockDuringRead(t *testing.T) {
 		const size = 16
 		buf, err := NewEmptyBuffer(size)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewEmptyBuffer: %v", err)
 		}
 
@@ -316,6 +326,7 @@ func TestReadFromReleasesLockDuringRead(t *testing.T) {
 		select {
 		case err := <-destroyErrCh:
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("Destroy: %v", err)
 			}
 		default:

@@ -189,6 +189,7 @@ func TestKeyResidue(t *testing.T) {
 	}
 	exe, err := os.Executable()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	t.Logf("runtimesecret=%v euid=%d core=%q", secmem.RuntimeSecretActive(), os.Geteuid(), coreReleaseVersion())
@@ -285,6 +286,7 @@ func (v *residueVictim) do(c byte) {
 		case strings.HasPrefix(s, "SKIP "):
 			residueEnvironmental(v.t, "%s", s[5:])
 		case strings.HasPrefix(s, "ERR "):
+			skipIfLockRefused(v.t, errors.New(s[4:])) // the victim reports its own refused allocation as text
 			v.t.Fatalf("victim %q: %s", c, s[4:])
 		}
 		// anything else is test-framework chatter; keep reading
@@ -313,15 +315,18 @@ func startResidueVictim(t *testing.T, exe string, sc residueScenario, secret, au
 	}
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	v := &residueVictim{t: t, cmd: cmd, stdin: stdin, out: bufio.NewReader(stdout), errb: new(bytes.Buffer)}
 	cmd.Stderr = v.errb
 	if err := cmd.Start(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	t.Cleanup(func() {
@@ -341,6 +346,7 @@ func startResidueVictim(t *testing.T, exe string, sc residueScenario, secret, au
 	binary.BigEndian.PutUint32(msg, uint32(len(secret)))
 	copy(msg[4:], secret)
 	if _, err := stdin.Write(msg); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("send secret: %v", err)
 	}
 	for {
@@ -354,6 +360,7 @@ func startResidueVictim(t *testing.T, exe string, sc residueScenario, secret, au
 		if pid, ok := strings.CutPrefix(s, "READY "); ok {
 			v.pid, err = strconv.Atoi(pid)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("parse %q: %v", s, err)
 			}
 			return v

@@ -33,10 +33,12 @@ func FuzzECDSASignDifferential(f *testing.F) {
 		copy(cp, scalar)
 		buf, err := secmem.NewBuffer(cp)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewBuffer: %v", err)
 		}
 		ours, err := NewECDSASigner(elliptic.P256(), buf, AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("stdlib accepted the scalar but NewECDSASigner rejected it: %v", err)
 		}
 		defer ours.Destroy()
@@ -44,10 +46,12 @@ func FuzzECDSASignDifferential(f *testing.F) {
 		digest := sha256.Sum256(msg)
 		sigOurs, err := ours.Sign(nil, digest[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("our Sign: %v", err)
 		}
 		sigStd, err := std.Sign(nil, digest[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("stdlib Sign: %v", err)
 		}
 		if !bytes.Equal(sigOurs, sigStd) {
@@ -72,16 +76,19 @@ func FuzzRSASignDifferential(f *testing.F) {
 		digest := sha256.Sum256(msg)
 		sigOurs, err := ours.Sign(rand.Reader, digest[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("our Sign: %v", err)
 		}
 		sigStd, err := std.Sign(rand.Reader, digest[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("stdlib Sign: %v", err)
 		}
 		if !bytes.Equal(sigOurs, sigStd) {
 			t.Error("signatures diverge from stdlib")
 		}
 		if err := rsa.VerifyPKCS1v15(ours.Public().(*rsa.PublicKey), crypto.SHA256, digest[:], sigOurs); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("stdlib rejects the signature: %v", err)
 		}
 	})

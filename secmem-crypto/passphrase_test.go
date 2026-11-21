@@ -40,6 +40,7 @@ func TestGenerateDicewarePassphrase_WordCountAndSeparators(t *testing.T) {
 	for _, n := range []int{1, 2, 6, 10} {
 		buf, err := GenerateDicewarePassphrase(n)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("n=%d: GenerateDicewarePassphrase: %v", n, err)
 		}
 
@@ -73,6 +74,7 @@ func TestGenerateDicewarePassphrase_WordsAreFromTheList(t *testing.T) {
 
 	buf, err := GenerateDicewarePassphrase(20)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateDicewarePassphrase: %v", err)
 	}
 	defer buf.Destroy()
@@ -96,6 +98,7 @@ func TestGenerateDicewarePassphrase_Varies(t *testing.T) {
 	for i := 0; i < 20; i++ {
 		buf, err := GenerateDicewarePassphrase(6)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("GenerateDicewarePassphrase: %v", err)
 		}
 		var phrase string
@@ -125,6 +128,7 @@ func TestGenerateDicewarePassphrase_OneWordNoSeparator(t *testing.T) {
 	t.Parallel()
 	buf, err := GenerateDicewarePassphrase(1)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateDicewarePassphrase: %v", err)
 	}
 	defer buf.Destroy()

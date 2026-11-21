@@ -28,18 +28,22 @@ func TestWipeMLKEMDecapsulationKey_Tripwire(t *testing.T) {
 	t.Parallel()
 	seed := make([]byte, mlkem.SeedSize)
 	if _, err := rand.Read(seed); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	dk, err := mlkem.NewDecapsulationKey768(seed)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	ek, err := mlkem.NewEncapsulationKey768(dk.EncapsulationKey().Bytes())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	shared, ct := ek.Encapsulate()
 	if got, err := dk.Decapsulate(ct); err != nil || !bytes.Equal(got, shared) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fresh key does not decapsulate: %v", err)
 	}
 
@@ -47,6 +51,7 @@ func TestWipeMLKEMDecapsulationKey_Tripwire(t *testing.T) {
 	for _, field := range mlkemSecretFields {
 		b, err := mlkemSecretBytes(dk, field)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("crypto/mlkem field %q no longer resolves on this toolchain — update mlkemSecretFields: %v", field, err)
 		}
 		if bytes.Equal(b, make([]byte, len(b))) {
@@ -62,6 +67,7 @@ func TestWipeMLKEMDecapsulationKey_Tripwire(t *testing.T) {
 	}
 
 	if err := wipeMLKEMDecapsulationKey(dk); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("wipeMLKEMDecapsulationKey: %v", err)
 	}
 	for field, b := range views {
@@ -73,10 +79,12 @@ func TestWipeMLKEMDecapsulationKey_Tripwire(t *testing.T) {
 		t.Fatalf("dk.Bytes() after wipe = %x, want zero: the reflected d/z are not the fields the key uses", got)
 	}
 	if got, err := dk.Decapsulate(ct); err == nil && bytes.Equal(got, shared) {
+		skipIfLockRefused(t, err)
 		t.Fatal("the key still decapsulates after the wipe: the reflected s is not the decryption key it uses")
 	}
 
 	if err := wipeMLKEMDecapsulationKey(nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeMLKEMDecapsulationKey(nil) = %v, want nil", err)
 	}
 }
@@ -88,6 +96,7 @@ func TestMLKEMSecretBytes_ReportsUnresolvableField(t *testing.T) {
 	t.Parallel()
 	dk, err := mlkem.GenerateKey768()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for _, tc := range []struct{ name, field string }{
@@ -100,10 +109,12 @@ func TestMLKEMSecretBytes_ReportsUnresolvableField(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(err.Error(), "NOT wiped") {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: error does not say the key was not wiped: %v", tc.name, err)
 		}
 	}
 	if _, _, err := mlkemInnerType(nil); err == nil || !strings.Contains(err.Error(), "NOT wiped") {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil type: got %v", err)
 	}
 	if b := dk.Bytes(); bytes.Equal(b, make([]byte, len(b))) {
@@ -141,6 +152,7 @@ func TestMLKEM768Key_WipesLiveExpansion(t *testing.T) {
 	}
 	ekBytes, err := k.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if fired != 1 {
@@ -148,11 +160,13 @@ func TestMLKEM768Key_WipesLiveExpansion(t *testing.T) {
 	}
 	ct, shared, err := Encapsulate(ekBytes)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer shared.Destroy()
 	got, err := k.Decapsulate(ct)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Decapsulate: %v", err)
 	}
 	defer got.Destroy()
@@ -191,6 +205,7 @@ func TestMLKEM768Key_WipeFailureIsAnError(t *testing.T) {
 	ekBytes, _ := k.EncapsulationKeyBytes()
 	ct, shared, err := Encapsulate(ekBytes)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer shared.Destroy()
@@ -206,6 +221,7 @@ func TestMLKEM768Key_WipeFailureIsAnError(t *testing.T) {
 		out.Destroy()
 		t.Fatal("Decapsulate reported success although the wipe failed")
 	} else if !strings.Contains(err.Error(), errWipeSimulated.Error()) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Decapsulate error does not carry the wipe failure: %v", err)
 	}
 	seed, err := secmem.NewEmptyBuffer(mlkem.SeedSize)

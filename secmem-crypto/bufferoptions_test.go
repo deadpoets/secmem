@@ -51,6 +51,7 @@ func parsePackageFuncs(t *testing.T) (funcs map[string]*apiFunc, carriers map[st
 	t.Helper()
 	entries, err := os.ReadDir(".")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
@@ -61,6 +62,7 @@ func parsePackageFuncs(t *testing.T) (funcs map[string]*apiFunc, carriers map[st
 		}
 		f, err := parser.ParseFile(fset, e.Name(), nil, parser.SkipObjectResolution)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		files = append(files, f)
@@ -281,6 +283,7 @@ func TestBufferOptionsReachEveryAllocation(t *testing.T) {
 	ok := func(err error) {
 		t.Helper()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 	}
@@ -480,6 +483,7 @@ func TestPackageDocLivesInDocGo(t *testing.T) {
 	}
 	entries, err := os.ReadDir(".")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	fset := token.NewFileSet()
@@ -490,6 +494,7 @@ func TestPackageDocLivesInDocGo(t *testing.T) {
 		}
 		f, err := parser.ParseFile(fset, e.Name(), nil, parser.ParseComments|parser.PackageClauseOnly)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		switch {

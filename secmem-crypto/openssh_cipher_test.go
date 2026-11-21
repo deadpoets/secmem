@@ -18,18 +18,22 @@ func TestCTRXOR_MatchesCryptoCipher(t *testing.T) {
 	key := make([]byte, 32)
 	iv := make([]byte, 16)
 	if _, err := rand.Read(key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	blk, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for _, n := range []int{0, 1, 15, 16, 17, 32, 48, 100, 1024} {
 		if _, err := rand.Read(iv); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		src := make([]byte, n)
 		if _, err := rand.Read(src); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		want := make([]byte, n)
@@ -59,6 +63,7 @@ func TestCTRXOR_CounterCarry(t *testing.T) {
 	t.Parallel()
 	blk, err := aes.NewCipher(make([]byte, 32))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	iv := bytes.Repeat([]byte{0xff}, 16)
@@ -77,18 +82,22 @@ func TestCBCDecrypt_MatchesCryptoCipher(t *testing.T) {
 	key := make([]byte, 32)
 	iv := make([]byte, 16)
 	if _, err := rand.Read(key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	blk, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for _, n := range []int{16, 32, 48, 1024} {
 		if _, err := rand.Read(iv); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		src := make([]byte, n)
 		if _, err := rand.Read(src); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		want := make([]byte, n)

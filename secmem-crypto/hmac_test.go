@@ -21,16 +21,19 @@ func TestHMACInto_RFC4231TestCase2(t *testing.T) {
 	const wantHex = "5bdcc146bf60754e6a042426089575c75a003f089d2739839dec58b964ec3843"
 	want, err := hex.DecodeString(wantHex)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("decode want: %v", err)
 	}
 
 	out, err := secmem.NewEmptyBuffer(sha256.Size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 
 	if err := HMACSHA256Into([]byte("Jefe"), []byte("what do ya want for nothing?"), out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HMACSHA256Into: %v", err)
 	}
 
@@ -41,6 +44,7 @@ func TestHMACInto_RFC4231TestCase2(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }
@@ -57,19 +61,23 @@ func TestHMACInto_DiffersFromHKDF(t *testing.T) {
 
 	hmacOut, err := secmem.NewEmptyBuffer(sha256.Size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer hmacOut.Destroy()
 	if err := HMACSHA256Into(secret, info, hmacOut); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HMACSHA256Into: %v", err)
 	}
 
 	hkdfOut, err := secmem.NewEmptyBuffer(sha256.Size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer hkdfOut.Destroy()
 	if err := HKDFSHA256Into(secret, nil, info, hkdfOut); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFSHA256Into: %v", err)
 	}
 
@@ -96,6 +104,7 @@ func TestHMACInto_WrongOutputSize(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(sha256.Size - 1) // one byte short
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -111,6 +120,7 @@ func TestHMACInto_NilChecks(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(sha256.Size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -129,12 +139,15 @@ func TestHMACInto_DestroyedOutput(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(sha256.Size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	if err := out.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if err := HMACSHA256Into([]byte("key"), []byte("info"), out); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("error = %v, want wrap of ErrDestroyed", err)
 	}
 }
@@ -146,12 +159,14 @@ func TestHMACInto_HashAgile(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(sha512.Size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 
 	secret, info := []byte("key"), []byte("info")
 	if err := HMACInto(sha512.New, secret, info, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HMACInto with sha512.New: %v", err)
 	}
 
@@ -166,6 +181,7 @@ func TestHMACInto_HashAgile(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }

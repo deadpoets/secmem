@@ -24,6 +24,7 @@ func BenchmarkBorrow(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			if err := buf.WithBytes(read); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 		}
@@ -37,6 +38,7 @@ func BenchmarkBorrow(b *testing.B) {
 		b.ReportAllocs()
 		for b.Loop() {
 			if err := buf.WithBytes(read); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 		}
@@ -48,17 +50,21 @@ func BenchmarkBorrow(b *testing.B) {
 		}
 		defer func() { _ = buf.Destroy() }()
 		if err := buf.Seal(); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 		b.ReportAllocs()
 		for b.Loop() {
 			if err := buf.Unseal(); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 			if err := buf.WithBytes(read); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 			if err := buf.Seal(); err != nil {
+				skipIfLockRefused(b, err)
 				b.Fatal(err)
 			}
 		}

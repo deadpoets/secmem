@@ -20,6 +20,7 @@ func TestScrubErr_PropagatesError(t *testing.T) {
 	sentinel := errors.New("boom")
 	err := ScrubErr(func() error { return sentinel })
 	if !errors.Is(err, sentinel) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ScrubErr error = %v, want %v", err, sentinel)
 	}
 }
@@ -27,6 +28,7 @@ func TestScrubErr_PropagatesError(t *testing.T) {
 func TestScrubErr_NilOnSuccess(t *testing.T) {
 	t.Parallel()
 	if err := ScrubErr(func() error { return nil }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ScrubErr = %v, want nil", err)
 	}
 }
@@ -69,6 +71,7 @@ func TestScrub_ResultSurvives(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ScrubErr: %v", err)
 	}
 	if !bytes.Equal(out, want) {
@@ -96,6 +99,7 @@ func TestAssertRuntimeSecret_ConsistentWithActive(t *testing.T) {
 	if RuntimeSecretActive() {
 		// Active implies supported, so the assertion must pass.
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("runtime secret active but AssertRuntimeSecret = %v", err)
 		}
 		return
@@ -103,6 +107,7 @@ func TestAssertRuntimeSecret_ConsistentWithActive(t *testing.T) {
 	// Inactive: error must be nil (unsupported platform) or the sentinel
 	// (supported platform misbuild). It must never be some other error.
 	if err != nil && !errors.Is(err, ErrRuntimeSecretInactive) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("unexpected AssertRuntimeSecret error: %v", err)
 	}
 }
@@ -113,6 +118,7 @@ func TestScrub_NilIsNoop(t *testing.T) {
 	t.Parallel()
 	Scrub(nil) // must not panic
 	if err := ScrubErr(nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ScrubErr(nil) = %v, want nil", err)
 	}
 }

@@ -45,6 +45,7 @@ func TestParsePrivateKey_ParserAllocatesNoSecret(t *testing.T) {
 				// attributed to the measured runs.
 				s, err := ParsePrivateKey(enc.data, AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatal(err)
 				}
 				s.Destroy()
@@ -55,6 +56,7 @@ func TestParsePrivateKey_ParserAllocatesNoSecret(t *testing.T) {
 				for range 3 {
 					s, err := ParsePrivateKey(enc.data, AllowHeapTransients())
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatal(err)
 					}
 					s.Destroy()

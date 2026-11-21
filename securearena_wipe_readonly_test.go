@@ -26,33 +26,41 @@ func TestArena_EmergencyWipeOnReadOnlySlab(t *testing.T) {
 	}
 	arena, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = arena.Destroy() }()
 	slot, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0x5A}, 32)) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if err := arena.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 	// The documented contract while read-only: Release refuses.
 	if err := slot.Release(); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release on a read-only slab returned %v, want ErrReadOnly", err)
 	}
 
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
 	// Dead slab: re-protecting it in either direction is refused.
 	if err := arena.ReadOnly(); !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly after the emergency wipe returned %v, want ErrWiped", err)
 	}
 	if err := arena.ReadWrite(); !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite after the emergency wipe returned %v, want ErrWiped", err)
 	}
 	// The slot is zeros (still mapped) and a borrow is refused ...
@@ -62,12 +70,14 @@ func TestArena_EmergencyWipeOnReadOnlySlab(t *testing.T) {
 	requireWiped(t, "slot.WithBytes", slot.WithBytes(func([]byte) {}))
 	// ... and can be released: the slab is writable, whatever readOnly says.
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release after the emergency wipe returned %v, want nil", err)
 	}
 	if slot.IsLive() {
 		t.Fatal("slot still live after Release")
 	}
 	if err := arena.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 }

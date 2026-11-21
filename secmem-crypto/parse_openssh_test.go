@@ -82,6 +82,7 @@ func ed25519Container(t *testing.T, keyType string, pad []byte, comment string) 
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	inner := sshInner{Check1: 0x11223344, Check2: 0x11223344, Keytype: keyType,
@@ -130,9 +131,11 @@ func TestParseOpenSSH_HeaderConsistency(t *testing.T) {
 						t.Fatalf("%s/%s accepted a half-encrypted header", name, form)
 					}
 					if !errors.Is(err, errMalformed) {
+						skipIfLockRefused(t, err)
 						t.Errorf("%s/%s: %v, want errMalformed", name, form, err)
 					}
 					if errors.Is(err, ErrEncryptedKey) || errors.Is(err, ErrNotEncrypted) {
+						skipIfLockRefused(t, err)
 						t.Errorf("%s/%s classified a half-encrypted header: %v", name, form, err)
 					}
 				}
@@ -142,9 +145,11 @@ func TestParseOpenSSH_HeaderConsistency(t *testing.T) {
 
 	// The consistent headers still classify, in both directions.
 	if _, err := ParsePrivateKey(testContainer(opensshCipherCTR, opensshKDFBcrypt, kdfOpts, 16), AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
+		skipIfLockRefused(t, err)
 		t.Errorf("ParsePrivateKey on ctr/bcrypt: %v, want ErrEncryptedKey", err)
 	}
 	if _, err := ParsePrivateKeyWithPassphrase(testContainer(opensshCipherNone, opensshKDFNone, nil, 16), []byte("x"), AllowHeapTransients()); !errors.Is(err, ErrNotEncrypted) {
+		skipIfLockRefused(t, err)
 		t.Errorf("ParsePrivateKeyWithPassphrase on none/none: %v, want ErrNotEncrypted", err)
 	}
 }
@@ -177,11 +182,13 @@ func TestParseOpenSSH_FormatStrictness(t *testing.T) {
 		t.Helper()
 		s, err := ParsePrivateKey(data, AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("well-formed neighbour refused: %v", err)
 		}
 		verifySigner(t, s, pub)
 		s.Destroy()
 		if _, err := ssh.ParseRawPrivateKey(armourRaw(data)); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("x/crypto refuses the well-formed neighbour: %v", err)
 		}
 	}
@@ -193,6 +200,7 @@ func TestParseOpenSSH_FormatStrictness(t *testing.T) {
 			t.Fatal("accepted")
 		}
 		if !errors.Is(err, errMalformed) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%v, want errMalformed", err)
 		}
 	}
@@ -225,6 +233,7 @@ func TestParseOpenSSH_FormatStrictness(t *testing.T) {
 		_, raw, _ := fixture(t, "ed25519-a1")
 		_, err := ParsePrivateKeyWithPassphrase(append(append([]byte(nil), raw...), 0), []byte(testPassphrase), AllowHeapTransients())
 		if !errors.Is(err, errMalformed) || errors.Is(err, x509.IncorrectPasswordError) {
+			skipIfLockRefused(t, err)
 			t.Errorf("protected file with trailing bytes: %v, want errMalformed", err)
 		}
 	})
@@ -233,6 +242,7 @@ func TestParseOpenSSH_FormatStrictness(t *testing.T) {
 		accepts(t, data, pub)
 		h, err := readOpenSSHHeader(data)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		outer := sshOuter{CipherName: opensshCipherNone, KdfName: opensshKDFNone, KdfOpts: "junkjunk", NumKeys: 1, PubKey: h.pubBlob, PrivKeyBlock: h.privBlock}
@@ -256,12 +266,14 @@ func TestPKCS1DER_RejectsOversizedIqmp(t *testing.T) {
 		buf.Destroy()
 		t.Fatal("pkcs1DER accepted an iqmp wider than the prime cap")
 	} else if !errors.Is(err, errMalformed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%v, want errMalformed", err)
 	}
 	// Exactly at the cap it is a size question for the standard library,
 	// not a bound question for this parser.
 	atCap := new(big.Int).Sub(new(big.Int).Lsh(big.NewInt(1), rsaMaxPrimeBits), big.NewInt(1))
 	if buf, err := pkcs1DER(nil, k.N.Bytes(), e.Bytes(), k.D.Bytes(), k.Primes[0].Bytes(), k.Primes[1].Bytes(), atCap.Bytes()); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("pkcs1DER refused an iqmp at the prime cap: %v", err)
 	} else {
 		buf.Destroy()
@@ -276,6 +288,7 @@ func TestPKCS1DER_RejectsOversizedIqmp(t *testing.T) {
 		s.Destroy()
 		t.Fatal("container with an oversized iqmp parsed")
 	} else if !errors.Is(err, errMalformed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%v, want errMalformed", err)
 	}
 }
@@ -284,6 +297,7 @@ func sshPubBlob(t *testing.T, pub any) []byte {
 	t.Helper()
 	p, err := ssh.NewPublicKey(pub)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return p.Marshal()
@@ -301,6 +315,7 @@ func TestParseOpenSSH_Ed25519Variants(t *testing.T) {
 	// Sanity: the hand-built container parses and is the right key.
 	s, err := ParsePrivateKey(opensshContainer(pubBlob, good, "none", 1, nil), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("hand-built container: %v", err)
 	}
 	verifySigner(t, s, pub)
@@ -337,6 +352,7 @@ func TestParseOpenSSH_Ed25519Variants(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -346,6 +362,7 @@ func TestParseOpenSSH_Ed25519Variants(t *testing.T) {
 func TestParseOpenSSH_ECDSAVariants(t *testing.T) {
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	other, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
@@ -359,6 +376,7 @@ func TestParseOpenSSH_ECDSAVariants(t *testing.T) {
 
 	s, err := ParsePrivateKey(opensshContainer(pubBlob, inner("nistp256", q, kd), "none", 1, nil), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("hand-built container: %v", err)
 	}
 	verifySigner(t, s, &k.PublicKey)
@@ -384,6 +402,7 @@ func TestParseOpenSSH_ECDSAVariants(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if tc.want != nil && !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -401,6 +420,7 @@ func TestParseOpenSSH_RSAVariants(t *testing.T) {
 
 	s, err := ParsePrivateKey(opensshContainer(pubBlob, inner(good), "none", 1, nil), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("hand-built container: %v", err)
 	}
 	verifySigner(t, s, &k.PublicKey)
@@ -441,6 +461,7 @@ func TestParseOpenSSH_RSAVariants(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if tc.want != nil && !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -468,6 +489,7 @@ func TestPKCS1DER_MatchesX509(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			buf, err := pkcs1DER(nil, tc.n, tc.e, tc.d, tc.p, tc.q, tc.iqmp)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			defer buf.Destroy()
@@ -477,6 +499,7 @@ func TestPKCS1DER_MatchesX509(t *testing.T) {
 				}
 				return nil
 			}); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 		})

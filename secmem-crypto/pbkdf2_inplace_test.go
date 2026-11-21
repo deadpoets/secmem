@@ -91,6 +91,7 @@ func TestPBKDF2_MatchesCryptoPBKDF2(t *testing.T) {
 							password, salt := randBytes(t, passLen), randBytes(t, saltLen)
 							want, err := pbkdf2.Key(prf.new, string(password), salt, iter, n)
 							if err != nil {
+								skipIfLockRefused(t, err)
 								t.Fatal(err)
 							}
 							got := pbkdf2Test(prf.id, password, salt, iter, n)

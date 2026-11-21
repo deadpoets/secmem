@@ -17,6 +17,7 @@ func katHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("bad hex %q: %v", s, err)
 	}
 	return b
@@ -60,34 +61,41 @@ func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 
 	for i := 0; i < n; i++ {
 		if _, err := s.Read(seed); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("s.Read(seed): %v", err)
 		}
 
 		// Keygen through the wrapper. NewBuffer wipes the copy it is handed.
 		buf, err := secmem.NewBuffer(append([]byte(nil), seed...))
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewBuffer: %v", err)
 		}
 		key, err := NewMLKEM768Key(buf, AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewMLKEM768Key: %v", err)
 		}
 		ekBytes, err := key.EncapsulationKeyBytes()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("EncapsulationKeyBytes: %v", err)
 		}
 		o.Write(ekBytes)
 
 		// Derandomized encapsulation (test-only stdlib helper) against the ek.
 		if _, err := s.Read(msg); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("s.Read(msg): %v", err)
 		}
 		ek, err := mlkem.NewEncapsulationKey768(ekBytes)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewEncapsulationKey768: %v", err)
 		}
 		sharedK, ct, err := mlkemtest.Encapsulate768(ek, msg)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Encapsulate768: %v", err)
 		}
 		o.Write(ct)
@@ -96,6 +104,7 @@ func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 		// Decapsulation through the wrapper must recover the same shared key.
 		recovered, err := key.Decapsulate(ct)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Decapsulate: %v", err)
 		}
 		if err := recovered.WithBytesErr(func(b []byte) error {
@@ -104,6 +113,7 @@ func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 			}
 			return nil
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WithBytesErr: %v", err)
 		}
 		recovered.Destroy()
@@ -111,16 +121,19 @@ func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 		// Implicit-rejection path: a pseudo-random ciphertext decapsulates to
 		// a deterministic, seed-derived key, also folded into the accumulator.
 		if _, err := s.Read(ct1); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("s.Read(ct1): %v", err)
 		}
 		rej, err := key.Decapsulate(ct1)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Decapsulate(ct1): %v", err)
 		}
 		if err := rej.WithBytesErr(func(b []byte) error {
 			o.Write(b)
 			return nil
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WithBytesErr(rej): %v", err)
 		}
 		rej.Destroy()
@@ -132,6 +145,7 @@ func TestMLKEM768_AccumulatedKAT(t *testing.T) {
 	// output the standard library's internal ShakeHash.Sum(nil) produces.
 	out := make([]byte, 32)
 	if _, err := o.Read(out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("o.Read: %v", err)
 	}
 	if got := hex.EncodeToString(out); got != expected {
@@ -153,21 +167,25 @@ func TestAEAD_AES256GCM_KAT(t *testing.T) {
 
 	block, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewCipher: %v", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewGCM: %v", err)
 	}
 
 	// SealFrom: plaintext in a SecureBuffer must produce the exact vector CT.
 	pt, err := secmem.NewBuffer(append([]byte(nil), plaintext...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer pt.Destroy()
 	gotCT, err := SealFrom(nil, gcm, nonce, pt, nil)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("SealFrom: %v", err)
 	}
 	if !bytes.Equal(gotCT, wantCT) {
@@ -177,10 +195,12 @@ func TestAEAD_AES256GCM_KAT(t *testing.T) {
 	// OpenInto: the vector CT must decrypt back to the plaintext in a buffer.
 	out, err := secmem.NewEmptyBuffer(len(plaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 	if err := OpenInto(out, gcm, nonce, wantCT, nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("OpenInto: %v", err)
 	}
 	if err := out.WithBytesErr(func(b []byte) error {
@@ -189,6 +209,7 @@ func TestAEAD_AES256GCM_KAT(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }

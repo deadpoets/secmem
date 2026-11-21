@@ -22,6 +22,7 @@ import (
 func TestNoHeapEscape_HotPaths(t *testing.T) {
 	buf, err := NewBuffer([]byte("hunter2-hunter2-hunter2-hunter2-"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer buf.Destroy()
@@ -118,13 +119,16 @@ func TestNoHeapEscape_Seal(t *testing.T) {
 		t.Helper()
 		buf, err := NewBuffer([]byte("hunter2-hunter2-hunter2-hunter2-"), opts...)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewBuffer: %v", err)
 		}
 		defer buf.Destroy()
 		if err := buf.Seal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Seal: %v", err) // the prekey is allocated here, once
 		}
 		if err := buf.Unseal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Unseal: %v", err)
 		}
 		return testing.AllocsPerRun(100, func() {

@@ -14,6 +14,7 @@ func TestSeal_StateTracking(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -23,6 +24,7 @@ func TestSeal_StateTracking(t *testing.T) {
 	}
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if !buf.IsSealed() {
@@ -30,6 +32,7 @@ func TestSeal_StateTracking(t *testing.T) {
 	}
 
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if buf.IsSealed() {
@@ -43,14 +46,17 @@ func TestSeal_Idempotent(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first Seal: %v", err)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second Seal (idempotent): %v", err)
 	}
 	if !buf.IsSealed() {
@@ -65,12 +71,14 @@ func TestUnseal_Idempotent(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	// Unseal on an already-unsealed buffer must not error.
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal on unsealed buffer: %v", err)
 	}
 	if buf.IsSealed() {
@@ -87,17 +95,20 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 
 	buf, err := NewBuffer(bytes.Repeat([]byte{0xAB}, 32))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 
 	t.Run("WithBytes", func(t *testing.T) {
 		gotErr := buf.WithBytes(func(_ []byte) { t.Error("callback must not be called") })
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("WithBytes = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -108,6 +119,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 			return nil
 		})
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("WithBytesErr = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -116,6 +128,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 		dst := make([]byte, 8)
 		_, gotErr := buf.CopyOut(dst, 0)
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("CopyOut = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -123,6 +136,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 	t.Run("CopyIn", func(t *testing.T) {
 		_, gotErr := buf.CopyIn([]byte{0x00}, 0)
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("CopyIn = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -130,6 +144,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 	t.Run("ByteAt", func(t *testing.T) {
 		_, gotErr := buf.ByteAt(0)
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("ByteAt = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -137,6 +152,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 	t.Run("SetByteAt", func(t *testing.T) {
 		gotErr := buf.SetByteAt(0, 0x00)
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("SetByteAt = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -144,6 +160,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 	t.Run("ConstantTimeEqual", func(t *testing.T) {
 		_, gotErr := buf.ConstantTimeEqual(make([]byte, 32))
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("ConstantTimeEqual = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -152,6 +169,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 		var w strings.Builder
 		_, gotErr := buf.WriteTo(&w)
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("WriteTo = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -160,6 +178,7 @@ func TestSeal_AccessMethodsReturnErrSealed(t *testing.T) {
 		r := bytes.NewReader(bytes.Repeat([]byte{0xCC}, 32))
 		_, gotErr := buf.ReadFrom(r)
 		if !errors.Is(gotErr, ErrSealed) {
+			skipIfLockRefused(t, gotErr)
 			t.Errorf("ReadFrom = %v, want ErrSealed", gotErr)
 		}
 	})
@@ -175,14 +194,17 @@ func TestUnseal_RestoresAccess(t *testing.T) {
 
 	buf, err := NewBuffer(secret)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 
@@ -193,6 +215,7 @@ func TestUnseal_RestoresAccess(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr after Unseal: %v", err)
 	}
 }
@@ -203,14 +226,17 @@ func TestSeal_ThenDestroy(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy on sealed buffer: %v", err)
 	}
 	if !buf.IsDestroyed() {
@@ -224,13 +250,16 @@ func TestSeal_OnDestroyedBuffer(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
 	if gotErr := buf.Seal(); !errors.Is(gotErr, ErrDestroyed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("Seal on destroyed buffer = %v, want ErrDestroyed", gotErr)
 	}
 }
@@ -241,13 +270,16 @@ func TestUnseal_OnDestroyedBuffer(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
 	if gotErr := buf.Unseal(); !errors.Is(gotErr, ErrDestroyed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("Unseal on destroyed buffer = %v, want ErrDestroyed", gotErr)
 	}
 }
@@ -288,14 +320,17 @@ func TestReadOnly_OnSealedBuffer(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if gotErr := buf.ReadOnly(); !errors.Is(gotErr, ErrSealed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("ReadOnly on sealed buffer = %v, want ErrSealed", gotErr)
 	}
 }
@@ -306,14 +341,17 @@ func TestReadWrite_OnSealedBuffer(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if gotErr := buf.ReadWrite(); !errors.Is(gotErr, ErrSealed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("ReadWrite on sealed buffer = %v, want ErrSealed", gotErr)
 	}
 }

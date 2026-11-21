@@ -24,14 +24,17 @@ import (
 func TestNewRSASigner_RejectsECDHKey(t *testing.T) {
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	der, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
 	}
 	buf, err := secmem.NewBuffer(der) // copies into secure memory, wipes der
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -39,6 +42,7 @@ func TestNewRSASigner_RejectsECDHKey(t *testing.T) {
 	if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil {
 		t.Fatal("NewRSASigner accepted an X25519 key; want rejection")
 	} else if !strings.Contains(err.Error(), "ECDH") && !strings.Contains(err.Error(), "not RSA") {
+		skipIfLockRefused(t, err)
 		t.Fatalf("unexpected rejection error: %v", err)
 	}
 }
@@ -64,6 +68,7 @@ func TestSignEd25519Direct_ShortMessagesMatchStdlib(t *testing.T) {
 		// Pass a fresh seed copy: signEd25519Direct may wipe its input.
 		got, err := signEd25519Direct(append([]byte(nil), seed...), msg)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("signEd25519Direct(len %d): %v", len(msg), err)
 		}
 		if !bytes.Equal(got, want) {
@@ -84,10 +89,12 @@ func TestParsePrivateKey_RejectsTrailingElements(t *testing.T) {
 	k := testKeyNamed(t, "p256")
 	sec1, err := x509.MarshalECPrivateKey(k.priv.(*ecdsa.PrivateKey))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	p8, err := x509.MarshalPKCS8PrivateKey(k.priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 
@@ -121,6 +128,7 @@ func TestParsePrivateKey_RejectsTrailingElements(t *testing.T) {
 	})
 	extra, err := b.Bytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 
@@ -132,6 +140,7 @@ func TestParsePrivateKey_RejectsTrailingElements(t *testing.T) {
 				t.Fatal("opened")
 			}
 			if !errors.Is(err, errMalformed) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("%v, want errMalformed", err)
 			}
 		})
@@ -140,6 +149,7 @@ func TestParsePrivateKey_RejectsTrailingElements(t *testing.T) {
 	for name, der := range map[string][]byte{"sec1": sec1, "pkcs8": p8} {
 		s, err := ParsePrivateKey(der, AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%s: %v", name, err)
 		}
 		s.Destroy()

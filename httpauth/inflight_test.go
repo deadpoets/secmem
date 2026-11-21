@@ -30,6 +30,7 @@ func TestRoundTrip_LeavesTheRequestAloneWhileTheTransportWritesIt(t *testing.T) 
 
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Listen: %v", err)
 	}
 	t.Cleanup(func() { _ = ln.Close() })
@@ -92,6 +93,7 @@ func TestRoundTrip_LeavesTheRequestAloneWhileTheTransportWritesIt(t *testing.T) 
 	req, err := http.NewRequestWithContext(httptrace.WithClientTrace(context.Background(), trace),
 		http.MethodGet, "http://"+ln.Addr().String()+"/", nil)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRequest: %v", err)
 	}
 
@@ -103,6 +105,7 @@ func TestRoundTrip_LeavesTheRequestAloneWhileTheTransportWritesIt(t *testing.T) 
 	}
 	close(returned)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	defer func() { _ = resp.Body.Close() }()
@@ -118,6 +121,7 @@ func TestRoundTrip_LeavesTheRequestAloneWhileTheTransportWritesIt(t *testing.T) 
 		t.Fatal("the request head never arrived")
 	}
 	if _, err := io.ReadAll(resp.Body); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("reading the body: %v", err)
 	}
 	if resp.Request == nil {

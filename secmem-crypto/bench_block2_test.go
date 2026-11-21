@@ -28,6 +28,7 @@ func BenchmarkOpenInto(b *testing.B) {
 	ct := gcm.Seal(nil, nonce, plaintext, nil)
 	out, err := secmem.NewEmptyBuffer(len(plaintext))
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	defer out.Destroy()
@@ -36,6 +37,7 @@ func BenchmarkOpenInto(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if err := OpenInto(out, gcm, nonce, ct, nil); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -44,11 +46,13 @@ func BenchmarkOpenInto(b *testing.B) {
 func BenchmarkX25519KeySharedSecret(b *testing.B) {
 	a, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	defer a.Destroy()
 	peer, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	defer peer.Destroy()
@@ -59,6 +63,7 @@ func BenchmarkX25519KeySharedSecret(b *testing.B) {
 	for b.Loop() {
 		shared, err := a.SharedSecret(peerPub)
 		if err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 		shared.Destroy()
@@ -68,15 +73,18 @@ func BenchmarkX25519KeySharedSecret(b *testing.B) {
 func BenchmarkMLKEM768Decapsulate(b *testing.B) {
 	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	defer k.Destroy()
 	ekBytes, err := k.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	ek, err := mlkem.NewEncapsulationKey768(ekBytes)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	_, ct := ek.Encapsulate()
@@ -86,6 +94,7 @@ func BenchmarkMLKEM768Decapsulate(b *testing.B) {
 	for b.Loop() {
 		shared, err := k.Decapsulate(ct)
 		if err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 		shared.Destroy()
