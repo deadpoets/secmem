@@ -8,7 +8,8 @@ name: go-current
 # version strings, and running a toolchain with published security fixes
 # missing is not a state this repository is allowed to sit in. The scheduled
 # run is what catches a release between PRs: it opens or updates ONE tracking
-# issue, the same way forks.yml does.
+# issue, the same way forks.yml does. A green run on main closes that issue
+# again, so an open one always means main is behind.
 on:
   push:
     branches: [main]
@@ -26,7 +27,9 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-      issues: write # scheduled runs only; see the last step
+      issues: write # the tracking issue; see the last two steps
+    env:
+      TITLE: "go-current: a newer Go release is out"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -40,7 +43,6 @@ jobs:
         if: failure() && github.event_name == 'schedule'
         env:
           GH_TOKEN: ${{ github.token }}
-          TITLE: "go-current: a newer Go release is out"
         run: |
           set -euo pipefail
           body="$RUNNER_TEMP/issue.md"
@@ -63,3 +65,17 @@ jobs:
             gh issue create --title "$TITLE" --body-file "$body" --label maintenance || \
               gh issue create --title "$TITLE" --body-file "$body"
           fi
+
+      # Not on pull requests: a green PR shows the fix exists, not that main
+      # carries it. The title is matched exactly and the author must be this
+      # workflow, because the search is fuzzy and must not close anything else.
+      - name: close the tracking issue
+        if: success() && github.event_name != 'pull_request' && github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          gh issue list --state open --author "app/github-actions" --search "$TITLE in:title"             --json number,title --jq '.[] | select(.title == env.TITLE) | .number' |
+            while read -r n; do
+              gh issue close "$n" --comment "The Go pins on main are current again: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}"
+            done
