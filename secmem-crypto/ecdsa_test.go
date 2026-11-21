@@ -29,6 +29,7 @@ func scalarBufFromHex(tb testing.TB, curve elliptic.Curve, hexStr string) *secme
 	d.FillBytes(raw)
 	buf, err := secmem.NewBuffer(raw)
 	if err != nil {
+		skipIfLockRefused(tb, err)
 		tb.Fatalf("NewBuffer: %v", err)
 	}
 	return buf
@@ -83,6 +84,7 @@ func TestECDSASigner_RFC6979(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, err := NewECDSASigner(tc.curve, scalarBufFromHex(t, tc.curve, tc.key), AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("NewECDSASigner: %v", err)
 			}
 			defer s.Destroy()
@@ -90,11 +92,13 @@ func TestECDSASigner_RFC6979(t *testing.T) {
 			digest := sha256.Sum256([]byte(tc.msg))
 			sig, err := s.Sign(nil, digest[:], crypto.SHA256)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Sign: %v", err)
 			}
 
 			var parsed struct{ R, S *big.Int }
 			if _, err := asn1.Unmarshal(sig, &parsed); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("signature is not ASN.1 SEQUENCE{r, s}: %v", err)
 			}
 			wantR, _ := new(big.Int).SetString(tc.r, 16)
@@ -116,6 +120,7 @@ func TestECDSASigner_SignVerifyAllCurves(t *testing.T) {
 		t.Run(curve.Params().Name, func(t *testing.T) {
 			s, err := GenerateECDSASigner(curve, AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("GenerateECDSASigner: %v", err)
 			}
 			defer s.Destroy()
@@ -131,10 +136,12 @@ func TestECDSASigner_SignVerifyAllCurves(t *testing.T) {
 			digest := sha256.Sum256([]byte("randomized signing"))
 			sig1, err := s.Sign(rand.Reader, digest[:], crypto.SHA256)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Sign: %v", err)
 			}
 			sig2, err := s.Sign(rand.Reader, digest[:], crypto.SHA256)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Sign: %v", err)
 			}
 			if !ecdsa.VerifyASN1(pub, digest[:], sig1) || !ecdsa.VerifyASN1(pub, digest[:], sig2) {
@@ -156,6 +163,7 @@ func TestECDSASigner_DifferentialVsStdlib(t *testing.T) {
 		t.Run(curve.Params().Name, func(t *testing.T) {
 			ours, err := GenerateECDSASigner(curve, AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("GenerateECDSASigner: %v", err)
 			}
 			defer ours.Destroy()
@@ -166,6 +174,7 @@ func TestECDSASigner_DifferentialVsStdlib(t *testing.T) {
 				std, perr = ecdsa.ParseRawPrivateKey(curve, scalar)
 				return perr
 			}); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("stdlib rejected our generated scalar: %v", err)
 			}
 
@@ -173,10 +182,12 @@ func TestECDSASigner_DifferentialVsStdlib(t *testing.T) {
 				digest := sha256.Sum256([]byte(msg))
 				sigOurs, err := ours.Sign(nil, digest[:], crypto.SHA256)
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("our Sign: %v", err)
 				}
 				sigStd, err := std.Sign(nil, digest[:], crypto.SHA256)
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("stdlib Sign: %v", err)
 				}
 				if !bytes.Equal(sigOurs, sigStd) {
@@ -191,14 +202,17 @@ func TestNewECDSASigner_BadInputs(t *testing.T) {
 	t.Parallel()
 
 	if _, err := NewECDSASigner(nil, nil, AllowHeapTransients()); !errors.Is(err, ErrUnsupportedCurve) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil curve: error = %v, want ErrUnsupportedCurve", err)
 	}
 	// A *CurveParams is a valid elliptic.Curve but not one of the four
 	// canonical instances ParseRawPrivateKey switches on.
 	if _, err := NewECDSASigner(elliptic.P256().Params(), nil, AllowHeapTransients()); !errors.Is(err, ErrUnsupportedCurve) {
+		skipIfLockRefused(t, err)
 		t.Errorf("non-canonical curve: error = %v, want ErrUnsupportedCurve", err)
 	}
 	if _, err := GenerateECDSASigner(elliptic.P256().Params(), AllowHeapTransients()); !errors.Is(err, ErrUnsupportedCurve) {
+		skipIfLockRefused(t, err)
 		t.Errorf("GenerateECDSASigner(non-canonical): error = %v, want ErrUnsupportedCurve", err)
 	}
 
@@ -206,15 +220,19 @@ func TestNewECDSASigner_BadInputs(t *testing.T) {
 		t.Error("expected error for nil buffer")
 	}
 
-	destroyed, _ := secmem.NewEmptyBuffer(32)
+	destroyed, allocErr := secmem.NewEmptyBuffer(32)
+	skipIfLockRefused(t, allocErr)
 	_ = destroyed.Destroy()
 	if _, err := NewECDSASigner(elliptic.P256(), destroyed, AllowHeapTransients()); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 
-	short, _ := secmem.NewEmptyBuffer(16)
+	short, allocErr := secmem.NewEmptyBuffer(16)
+	skipIfLockRefused(t, allocErr)
 	defer short.Destroy()
 	if _, err := NewECDSASigner(elliptic.P256(), short, AllowHeapTransients()); !errors.Is(err, ErrBadScalarLength) {
+		skipIfLockRefused(t, err)
 		t.Errorf("wrong-size scalar: error = %v, want wrap of ErrBadScalarLength", err)
 	}
 	if short.IsDestroyed() {
@@ -222,7 +240,8 @@ func TestNewECDSASigner_BadInputs(t *testing.T) {
 	}
 
 	// Out-of-range scalars: zero, and the group order itself.
-	zero, _ := secmem.NewEmptyBuffer(32)
+	zero, allocErr := secmem.NewEmptyBuffer(32)
+	skipIfLockRefused(t, allocErr)
 	defer zero.Destroy()
 	if _, err := NewECDSASigner(elliptic.P256(), zero, AllowHeapTransients()); err == nil {
 		t.Error("expected error for the zero scalar")
@@ -242,6 +261,7 @@ func TestECDSASigner_DeterministicNeedsOpts(t *testing.T) {
 	t.Parallel()
 	s, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer s.Destroy()
@@ -263,6 +283,7 @@ func TestECDSASigner_ConcurrentSign(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer signer.Destroy()
@@ -307,6 +328,7 @@ func TestECDSASigner_SignDuringDestroy(t *testing.T) {
 	for round := range 5 {
 		signer, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("GenerateECDSASigner: %v", err)
 		}
 		pub := signer.Public().(*ecdsa.PublicKey)
@@ -349,6 +371,7 @@ func TestECDSASigner_PublicAndEqual(t *testing.T) {
 	t.Parallel()
 	s, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer s.Destroy()
@@ -368,6 +391,7 @@ func TestECDSASigner_PublicAndEqual(t *testing.T) {
 
 	other, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer other.Destroy()
@@ -383,6 +407,7 @@ func TestECDSASigner_WithScalarRoundTrip(t *testing.T) {
 	t.Parallel()
 	s, err := GenerateECDSASigner(elliptic.P384(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer s.Destroy()
@@ -392,15 +417,18 @@ func TestECDSASigner_WithScalarRoundTrip(t *testing.T) {
 		copy(persisted, scalar) //nolint:secmem-lint // test persists the scalar to verify reload
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithScalar: %v", err)
 	}
 
 	buf, err := secmem.NewBuffer(persisted)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	restored, err := NewECDSASigner(elliptic.P384(), buf, AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewECDSASigner(restored): %v", err)
 	}
 	defer restored.Destroy()
@@ -411,10 +439,12 @@ func TestECDSASigner_WithScalarRoundTrip(t *testing.T) {
 	digest := sha256.Sum256([]byte("round trip"))
 	sig1, err := s.Sign(nil, digest[:], crypto.SHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	sig2, err := restored.Sign(nil, digest[:], crypto.SHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("restored Sign: %v", err)
 	}
 	if !bytes.Equal(sig1, sig2) {
@@ -426,9 +456,11 @@ func TestECDSASigner_NilAndDestroyed(t *testing.T) {
 	t.Parallel()
 	var s *ECDSASigner
 	if _, err := s.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Sign error = %v", err)
 	}
 	if err := s.WithScalar(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.WithScalar error = %v", err)
 	}
 	if s.Public() != nil {
@@ -438,23 +470,27 @@ func TestECDSASigner_NilAndDestroyed(t *testing.T) {
 		t.Error("nil.Equal = true")
 	}
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
 	live, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	pub := live.Public()
 	_ = live.Destroy()
 	digest := sha256.Sum256([]byte("y"))
 	if _, err := live.Sign(rand.Reader, digest[:], crypto.SHA256); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Sign after Destroy: error = %v, want wrap of ErrDestroyed", err)
 	}
 	if live.Public() == nil || !live.Equal(pub) {
 		t.Error("cached public key should survive Destroy")
 	}
 	if err := live.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("double Destroy not idempotent: %v", err)
 	}
 }

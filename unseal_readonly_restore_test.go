@@ -26,9 +26,11 @@ func TestUnseal_FailedReadOnlyRestoreStaysSealed(t *testing.T) {
 	}
 	defer func() { _ = buf.Destroy() }()
 	if err := buf.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	wasCipher := buf.sealCipher.Load()
@@ -41,6 +43,7 @@ func TestUnseal_FailedReadOnlyRestoreStaysSealed(t *testing.T) {
 	sealProtect = func(r secRegion) error { reprotected++; return origProtect(r) }
 
 	if err := buf.Unseal(); !errors.Is(err, refused) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal = %v, want the injected failure", err)
 	}
 	if !buf.IsSealed() {
@@ -58,6 +61,7 @@ func TestUnseal_FailedReadOnlyRestoreStaysSealed(t *testing.T) {
 	// the secret is intact and the buffer is read-only as it was.
 	unsealRestoreReadOnly, sealProtect = origRestore, origProtect
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second Unseal: %v", err)
 	}
 	if err := buf.WithBytes(func(b []byte) {
@@ -65,9 +69,11 @@ func TestUnseal_FailedReadOnlyRestoreStaysSealed(t *testing.T) {
 			t.Error("contents changed across the failed Unseal")
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 	if _, err := buf.CopyIn([]byte{1}, 0); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Errorf("CopyIn after the recovery = %v, want ErrReadOnly", err)
 	}
 }

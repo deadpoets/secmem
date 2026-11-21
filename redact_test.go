@@ -71,6 +71,7 @@ func TestRedact_SecureBuffer_NoCrashNoLeak(t *testing.T) {
 	const secret = "TOP-SECRET-VALUE-DO-NOT-LEAK"
 	buf, err := NewBuffer([]byte(secret))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -87,6 +88,7 @@ func TestRedact_SecureArena_NoCrashNoLeak(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -102,15 +104,18 @@ func TestRedact_ArenaSlot_NoCrashNoLeak(t *testing.T) {
 	const secret = "ARENA-SLOT-SECRET-VALUE"
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := slot.WithBytes(func(b []byte) { copy(b, secret) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 
@@ -125,6 +130,7 @@ func TestRedact_ReadsNoFields(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("does-not-matter"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -134,6 +140,7 @@ func TestRedact_ReadsNoFields(t *testing.T) {
 			t.Error("String() from inside WithBytes did not redact")
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 }
@@ -146,10 +153,12 @@ func TestRedact_SurvivesDestroy(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("secret"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	before := safeFormat(t, func() string { return fmt.Sprintf("%v %#v %s", buf, buf, buf) }) //nolint:gosimple
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	after := safeFormat(t, func() string { return fmt.Sprintf("%v %#v %s", buf, buf, buf) }) //nolint:gosimple

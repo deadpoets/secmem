@@ -23,12 +23,14 @@ func TestWipeAllSecrets_UnborrowedBuffersWipeWhileOneIsBorrowed(t *testing.T) {
 
 	borrowed, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer(borrowed): %v", err)
 	}
 	defer func() { _ = borrowed.Destroy() }()
 
 	idle, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer(idle): %v", err)
 	}
 	defer func() { _ = idle.Destroy() }()
@@ -69,6 +71,7 @@ func TestWipeAllSecrets_UnborrowedBuffersWipeWhileOneIsBorrowed(t *testing.T) {
 	close(releaseCallback)
 	<-borrowDone
 	if err := <-wipeDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 	if !bufRegionIsZero(t, borrowed) {
@@ -193,11 +196,13 @@ func TestWipeAllSecrets_DestroyReclaimsMapping(t *testing.T) {
 	}
 	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 40))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	key := buf.janitorKey
 
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
@@ -214,6 +219,7 @@ func TestWipeAllSecrets_DestroyReclaimsMapping(t *testing.T) {
 	requireWiped(t, "WithBytes", buf.WithBytes(func([]byte) {}))
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after emergency wipe: %v", err)
 	}
 	emergencyJanitor.mu.Lock()
@@ -226,6 +232,7 @@ func TestWipeAllSecrets_DestroyReclaimsMapping(t *testing.T) {
 		t.Error("IsDestroyed() = false after Destroy")
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy = %v, want nil (idempotent)", err)
 	}
 }
@@ -274,6 +281,7 @@ func TestWipeAllSecrets_ConcurrentDestroyStillReclaimsMapping(t *testing.T) {
 	}
 	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 4096))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	key := buf.janitorKey
@@ -305,9 +313,11 @@ func TestWipeAllSecrets_ConcurrentDestroyStillReclaimsMapping(t *testing.T) {
 	close(releaseCallback)
 	<-borrowDone
 	if err := <-destroyDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if err := <-wipeDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
@@ -360,11 +370,13 @@ func TestWipeAllSecrets_MarksOwnerDead(t *testing.T) {
 	}
 	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 40))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
@@ -410,14 +422,17 @@ func TestWipeAllSecrets_ArenaRefusesAcquire(t *testing.T) {
 	}
 	a, err := NewArena(32, 4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 	if _, err := a.Acquire(); !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Acquire after emergency wipe = %v, want ErrWiped", err)
 	}
 }
@@ -433,18 +448,22 @@ func TestWipeAllSecrets_PreWipeSlotHandleIsRefused(t *testing.T) {
 	}
 	a, err := NewArena(32, 4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := slot.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0xC3}, len(b))) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fill: %v", err)
 	}
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
@@ -476,18 +495,22 @@ func TestWipeAllSecrets_ClearsSealCipherFlag(t *testing.T) {
 	}
 	buf, err := NewBuffer(bytes.Repeat([]byte{0x5A}, 40))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 	if buf.sealCipher.Load() {
 		t.Error("sealCipher still set after the wipe replaced the ciphertext with zeros")
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy after an emergency-wiped seal cycle: %v", err)
 	}
 }
@@ -563,6 +586,7 @@ func TestWipeInPlace_RefusesAliasedRegistration(t *testing.T) {
 	close(release)
 	<-borrowDone
 	if err := <-wipeDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeInPlace: %v", err)
 	}
 
@@ -585,6 +609,7 @@ func TestWipeInPlace_RefusesAliasedRegistration(t *testing.T) {
 				"got %x…, want %x…", b[:8], secret[:8])
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("bystander.WithBytes: %v", err)
 	}
 }

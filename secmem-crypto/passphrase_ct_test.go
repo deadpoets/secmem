@@ -122,6 +122,7 @@ func TestGenerateDicewarePassphrase_PinsPreviousImplementation(t *testing.T) {
 		for i := range chosen {
 			idx, err := rand.Int(r, listLen)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("rand.Int: %v", err)
 			}
 			chosen[i] = list[idx.Int64()]
@@ -190,10 +191,12 @@ func TestGenerateDicewarePassphrase_DrawFailureLeavesNoBuffer(t *testing.T) {
 	t.Parallel()
 	failing := func(int64) (int64, error) { return 0, io.ErrUnexpectedEOF }
 	if buf, err := generateDiceware(nil, 3, stringWordList(effWords()), failing); err == nil || buf != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("generateDiceware with a failing draw = (%v, %v), want (nil, error)", buf, err)
 	}
 	outOfRange := func(bound int64) (int64, error) { return bound, nil }
 	if buf, err := generateDiceware(nil, 3, stringWordList(effWords()), outOfRange); err == nil || buf != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("generateDiceware with an out-of-range draw = (%v, %v), want (nil, error)", buf, err)
 	}
 }

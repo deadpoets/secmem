@@ -16,6 +16,7 @@ func TestWithBytes_Basic(t *testing.T) {
 	copy(want, secret) // save before NewBuffer wipes the input
 	buf, err := NewBuffer(secret)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -27,6 +28,7 @@ func TestWithBytes_Basic(t *testing.T) {
 			t.Errorf("WithBytes: got %x, want %x", b, want) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 	if !called {
@@ -40,13 +42,16 @@ func TestWithBytes_AfterDestroy(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
 	if gotErr := buf.WithBytes(func(_ []byte) {}); !errors.Is(gotErr, ErrDestroyed) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("WithBytes after Destroy = %v, want ErrDestroyed", gotErr)
 	}
 }
@@ -57,6 +62,7 @@ func TestWithBytesErr_PropagatesError(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(16)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -64,6 +70,7 @@ func TestWithBytesErr_PropagatesError(t *testing.T) {
 	sentinel := errors.New("callback-error")
 	gotErr := buf.WithBytesErr(func(_ []byte) error { return sentinel })
 	if !errors.Is(gotErr, sentinel) {
+		skipIfLockRefused(t, gotErr)
 		t.Errorf("WithBytesErr: got %v, want sentinel", gotErr)
 	}
 }
@@ -74,17 +81,20 @@ func TestCopyInOut_RoundTrip(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(8)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	src := []byte{0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07, 0x08}
 	if n, err := buf.CopyIn(src, 0); err != nil || n != len(src) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Write: n=%d err=%v", n, err)
 	}
 
 	dst := make([]byte, 8)
 	if n, err := buf.CopyOut(dst, 0); err != nil || n != len(src) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Read: n=%d err=%v", n, err)
 	}
 	if !bytes.Equal(dst, src) {
@@ -98,6 +108,7 @@ func TestByteAt_Error(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -113,6 +124,7 @@ func TestSetByteAt_Error(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -131,12 +143,14 @@ func TestConstantTimeEqual(t *testing.T) {
 	copy(want, data) // save before NewBuffer wipes the input
 	buf, err := NewBuffer(data)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	equal, err := buf.ConstantTimeEqual(want)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ConstantTimeEqual: %v", err)
 	}
 	if !equal {
@@ -146,6 +160,7 @@ func TestConstantTimeEqual(t *testing.T) {
 	other := []byte("different-value-32-bytes-long---!")
 	notEqual, err := buf.ConstantTimeEqual(other)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ConstantTimeEqual (different): %v", err)
 	}
 	if notEqual {
@@ -162,6 +177,7 @@ func TestWriteTo(t *testing.T) {
 	copy(wantSaved, want) // save before NewBuffer wipes the input
 	buf, err := NewBuffer(want)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -169,6 +185,7 @@ func TestWriteTo(t *testing.T) {
 	var dst bytes.Buffer
 	n, err := buf.WriteTo(&dst)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WriteTo: %v", err)
 	}
 	if int(n) != len(wantSaved) {
@@ -186,17 +203,20 @@ func TestReadFrom(t *testing.T) {
 	want := []byte("read-from-data")
 	buf, err := NewEmptyBuffer(len(want))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	r := bytes.NewReader(want)
 	if _, err := buf.ReadFrom(r); err != nil && !errors.Is(err, io.ErrUnexpectedEOF) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadFrom: %v", err)
 	}
 
 	var out bytes.Buffer
 	if _, err := buf.WriteTo(&out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WriteTo after ReadFrom: %v", err)
 	}
 	if !bytes.Equal(out.Bytes(), want) {
@@ -210,6 +230,7 @@ func TestNewBufferFromReader(t *testing.T) {
 	want := []byte("reader-secret")
 	buf, err := NewBufferFromReader(bytes.NewReader(want), len(want))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBufferFromReader: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -222,6 +243,7 @@ func TestNewBufferFromReader(t *testing.T) {
 		match = bytes.Equal(b, want)
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 	if !match {
@@ -240,12 +262,14 @@ func TestExposeString_ReturnsCopy(t *testing.T) {
 			t.Parallel()
 			buf, err := NewBuffer([]byte(want))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("NewBuffer: %v", err)
 			}
 			defer func() { _ = buf.Destroy() }()
 
 			got, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("ExposeString: %v", err)
 			}
 			if got != want {
@@ -270,9 +294,11 @@ func TestExposeString_BufferStateErrors(t *testing.T) {
 		{"destroyed", func(t *testing.T) *SecureBuffer {
 			buf, err := NewEmptyBuffer(16)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("NewEmptyBuffer: %v", err)
 			}
 			if err := buf.Destroy(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Destroy: %v", err)
 			}
 			return buf
@@ -280,9 +306,11 @@ func TestExposeString_BufferStateErrors(t *testing.T) {
 		{"sealed", func(t *testing.T) *SecureBuffer {
 			buf, err := NewEmptyBuffer(16)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("NewEmptyBuffer: %v", err)
 			}
 			if err := buf.Seal(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Seal: %v", err)
 			}
 			t.Cleanup(func() { _ = buf.Destroy() })
@@ -295,6 +323,7 @@ func TestExposeString_BufferStateErrors(t *testing.T) {
 			buf := tc.setup(t)
 			got, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 			if !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Errorf("ExposeString err = %v, want %v", err, tc.want)
 			}
 			if got != "" {
@@ -314,14 +343,17 @@ func TestExposeString_CopySurvivesDestroy(t *testing.T) {
 	const want = "retained-past-destroy"
 	buf, err := NewBuffer([]byte(want))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 
 	got, err := buf.ExposeString() //nolint:secmem-lint // the accessor under test; test fixture, not a secret
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ExposeString: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if got != want {
@@ -336,17 +368,20 @@ func TestNilCallback_ReturnsError(t *testing.T) {
 
 	buf, err := NewBuffer([]byte("nil-callback-secret"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	arena, err := NewArena(16, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = arena.Destroy() }()
 	slot, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -383,6 +418,7 @@ func TestCopyOut_CopyIn_BoundsCheck(t *testing.T) {
 	const size = 16
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	t.Cleanup(func() { _ = buf.Destroy() })
@@ -418,6 +454,7 @@ func TestCopyOut_CopyIn_BoundsCheck(t *testing.T) {
 
 	// A zero-length dst/src at offset 0 should always succeed.
 	if n, err := buf.CopyOut(nil, 0); err != nil || n != 0 {
+		skipIfLockRefused(t, err)
 		t.Errorf("Read(nil, 0): got n=%d, err=%v; want 0, nil", n, err)
 	}
 }

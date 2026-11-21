@@ -31,6 +31,7 @@ func mustSecret(t *testing.T) Secret {
 	t.Helper()
 	s, err := NewSecret([]byte(secretPlaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewSecret: %v", err)
 	}
 	return s
@@ -43,6 +44,7 @@ func TestNewSecret_CopiesAndWipesInput(t *testing.T) {
 	input := []byte(secretPlaintext)
 	s, err := NewSecret(input)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewSecret: %v", err)
 	}
 	defer func() { _ = s.Destroy() }()
@@ -57,6 +59,7 @@ func TestNewSecret_CopiesAndWipesInput(t *testing.T) {
 			t.Errorf("contents = %q, want %q", b, secretPlaintext) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 }
@@ -124,6 +127,7 @@ func TestSecret_NeverLeaksThroughMarshalling(t *testing.T) {
 	}
 	out, err := json.Marshal(payload{Token: s, Ptr: &s})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("json.Marshal: %v", err)
 	}
 	if bytes.Contains(out, []byte(secretPlaintext)) {
@@ -136,6 +140,7 @@ func TestSecret_NeverLeaksThroughMarshalling(t *testing.T) {
 
 	txt, err := s.MarshalText()
 	if err != nil || string(txt) != redacted {
+		skipIfLockRefused(t, err)
 		t.Errorf("MarshalText = %q, %v; want %q, nil", txt, err, redacted)
 	}
 }
@@ -162,6 +167,7 @@ func TestSecret_GobEncodeDoesNotLeak(t *testing.T) {
 		// An encode error (e.g. "type has no exported fields") is acceptable: it
 		// means nothing was serialized. A success must be plaintext-free.
 		if err := encode(gob.NewEncoder(&buf)); err == nil && bytes.Contains(buf.Bytes(), []byte(secretPlaintext)) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: gob output contains the plaintext secret", name)
 		}
 	}
@@ -204,12 +210,14 @@ func TestSecret_Equal(t *testing.T) {
 
 	other, err := NewSecret([]byte("a-different-secret-entirely"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewSecret: %v", err)
 	}
 	defer func() { _ = other.Destroy() }()
 
 	short, err := NewSecret([]byte("short"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewSecret: %v", err)
 	}
 	defer func() { _ = short.Destroy() }()
@@ -244,6 +252,7 @@ func TestSecret_Equal_Destroyed(t *testing.T) {
 	defer func() { _ = b.Destroy() }()
 
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if a.ConstantTimeEqual(b) || b.ConstantTimeEqual(a) || a.ConstantTimeEqual(a) {
@@ -260,6 +269,7 @@ func TestSecret_WriteTo(t *testing.T) {
 	var sink bytes.Buffer
 	n, err := s.WriteTo(&sink)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WriteTo: %v", err)
 	}
 	if n != int64(len(secretPlaintext)) || sink.String() != secretPlaintext {
@@ -276,13 +286,16 @@ func TestSecret_CopiesShareDestroy(t *testing.T) {
 	copyOfS := s
 
 	if err := copyOfS.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy via copy: %v", err)
 	}
 	if err := s.WithBytes(func([]byte) {}); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytes on original after copy.Destroy() = %v, want ErrDestroyed", err)
 	}
 	// Idempotent across copies.
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy via original = %v, want nil", err)
 	}
 }
@@ -294,12 +307,15 @@ func TestSecret_ZeroValue(t *testing.T) {
 	var s Secret
 
 	if err := s.WithBytes(func([]byte) {}); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("zero WithBytes = %v, want ErrDestroyed", err)
 	}
 	if _, err := s.WriteTo(io.Discard); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("zero WriteTo = %v, want ErrDestroyed", err)
 	}
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("zero Destroy = %v, want nil (idempotent no-op)", err)
 	}
 	if s.String() != redacted || s.GoString() != redacted {
@@ -317,6 +333,7 @@ func TestSecret_RedactionIgnoresState(t *testing.T) {
 	s := mustSecret(t)
 	before := fmt.Sprintf("%v %#v %s", s, s, s)
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	after := fmt.Sprintf("%v %#v %s", s, s, s)

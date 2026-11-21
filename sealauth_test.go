@@ -18,10 +18,12 @@ import (
 func flipSealedBit(t *testing.T, buf *SecureBuffer, off int, mask byte) {
 	t.Helper()
 	if err := mprotectSecretMem(buf.region, 3); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("mprotect RW: %v", err)
 	}
 	buf.region.inner[off] ^= mask
 	if err := mprotectSecretMem(buf.region, 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("mprotect NONE: %v", err)
 	}
 }
@@ -39,6 +41,7 @@ func newSealedBuffer(t *testing.T, n int, opts ...Option) (*SecureBuffer, []byte
 	}
 	t.Cleanup(func() { _ = buf.Destroy() })
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	return buf, want
@@ -48,6 +51,7 @@ func mustEqualContents(t *testing.T, buf *SecureBuffer, want []byte) {
 	t.Helper()
 	got := make([]byte, len(want))
 	if _, err := buf.CopyOut(got, 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("CopyOut: %v", err)
 	}
 	if !bytes.Equal(got, want) {
@@ -75,22 +79,26 @@ func TestSeal_FlipWhileSealedIsRefused(t *testing.T) {
 			flipSealedBit(t, buf, off, 0x01)
 			err := buf.Unseal()
 			if !errors.Is(err, ErrIntegrity) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Unseal after flip = %v, want ErrIntegrity", err)
 			}
 			if !buf.IsSealed() {
 				t.Fatal("buffer unsealed after an integrity failure")
 			}
 			if err := buf.WithBytes(func([]byte) {}); !errors.Is(err, ErrSealed) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("WithBytes = %v, want ErrSealed", err)
 			}
 			// Fail closed, not fail destroyed: undo the fault and the same
 			// sealed state verifies again.
 			flipSealedBit(t, buf, off, 0x01)
 			if err := buf.Unseal(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Unseal after restoring the bit: %v", err)
 			}
 			mustEqualContents(t, buf, want)
 			if err := buf.Seal(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Seal: %v", err)
 			}
 		})
@@ -100,10 +108,12 @@ func TestSeal_FlipWhileSealedIsRefused(t *testing.T) {
 		ctl, want := newSealedBuffer(t, n, WithUnauthenticatedSeal())
 		flipSealedBit(t, ctl, 0, 0x01)
 		if err := ctl.Unseal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Unseal: %v", err)
 		}
 		got := make([]byte, n)
 		if _, err := ctl.CopyOut(got, 0); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		// Off Windows the one bit comes back flipped; on Windows the seal
@@ -122,12 +132,14 @@ func TestSeal_DestroyReportsIntegrity(t *testing.T) {
 	flipSealedBit(t, buf, 5, 0x80)
 	err := buf.Destroy()
 	if !errors.Is(err, ErrIntegrity) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy = %v, want ErrIntegrity", err)
 	}
 	if !buf.IsDestroyed() {
 		t.Fatal("Destroy reported integrity but did not destroy")
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second Destroy = %v, want nil", err)
 	}
 }
@@ -143,10 +155,12 @@ func TestSeal_CorruptTagOrNonceIsRefused(t *testing.T) {
 			buf, _ := newSealedBuffer(t, 32)
 			flip(buf)
 			if err := buf.Unseal(); !errors.Is(err, ErrIntegrity) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Unseal = %v, want ErrIntegrity", err)
 			}
 			flip(buf)
 			if err := buf.Unseal(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Unseal after restoring: %v", err)
 			}
 		})
@@ -164,24 +178,29 @@ func TestSeal_PrekeyFlipIsRefused(t *testing.T) {
 	sealKeys.mu.Unlock()
 	flip := func() {
 		if err := mprotectSecretMem(region, 3); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		region.inner[sealPrekeyLen/2] ^= 0x10
 		if err := mprotectSecretMem(region, 1); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 	}
 	flip()
 	for _, buf := range []*SecureBuffer{a, b} {
 		if err := buf.Unseal(); !errors.Is(err, ErrIntegrity) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Unseal under a flipped prekey = %v, want ErrIntegrity", err)
 		}
 	}
 	flip()
 	if err := a.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if err := b.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	mustEqualContents(t, a, wantA)
@@ -194,9 +213,11 @@ func TestSeal_NonceIsFreshPerSeal(t *testing.T) {
 	buf, _ := newSealedBuffer(t, 32)
 	nonce1, tag1 := buf.sealNonce, buf.sealTag
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if buf.sealNonce == nonce1 {
@@ -232,6 +253,7 @@ func TestSeal_UnauthenticatedOptionIsReported(t *testing.T) {
 		t.Fatalf("String() does not show the opt-out: %q", caps.String())
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if buf.sealTagged {
@@ -257,6 +279,7 @@ func TestSeal_PrekeyRegeneratesAfterWipe(t *testing.T) {
 	old, _ := newSealedBuffer(t, 32)
 	oldGen := old.sealGen
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 	sealKeys.mu.Lock()
@@ -266,6 +289,7 @@ func TestSeal_PrekeyRegeneratesAfterWipe(t *testing.T) {
 		t.Fatal("prekey not flagged wiped by WipeAllSecrets")
 	}
 	if err := old.Unseal(); !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal of a wiped buffer = %v, want ErrWiped", err)
 	}
 
@@ -280,6 +304,7 @@ func TestSeal_PrekeyRegeneratesAfterWipe(t *testing.T) {
 		t.Fatal("new prekey is zeros")
 	}
 	if err := fresh.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	mustEqualContents(t, fresh, want)
@@ -289,6 +314,7 @@ func TestSeal_PrekeyRegeneratesAfterWipe(t *testing.T) {
 	stale, _ := newSealedBuffer(t, 32)
 	stale.sealGen = oldGen
 	if err := stale.Unseal(); !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal under a stale generation = %v, want ErrWiped", err)
 	}
 }

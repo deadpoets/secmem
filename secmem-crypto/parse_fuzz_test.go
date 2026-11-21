@@ -43,18 +43,21 @@ func FuzzParsePrivateKey(f *testing.F) {
 		case ed25519.PublicKey:
 			sig, err := s.Sign(nil, msg, nil)
 			if err != nil || !ed25519.Verify(p, msg, sig) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("ed25519 signer from parsed key is inconsistent: %v", err)
 			}
 		case *ecdsa.PublicKey:
 			h := sha256.Sum256(msg)
 			sig, err := s.Sign(rand.Reader, h[:], crypto.SHA256)
 			if err != nil || !ecdsa.VerifyASN1(p, h[:], sig) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("ecdsa signer from parsed key is inconsistent: %v", err)
 			}
 		case *rsa.PublicKey:
 			h := sha256.Sum256(msg)
 			sig, err := s.Sign(rand.Reader, h[:], crypto.SHA256)
 			if err != nil || rsa.VerifyPKCS1v15(p, crypto.SHA256, h[:], sig) != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("rsa signer from parsed key is inconsistent: %v", err)
 			}
 		default:

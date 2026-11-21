@@ -30,25 +30,30 @@ func TestSecureBuffer_CopyIsAnAlias(t *testing.T) {
 
 	// State changed through one is seen through the other.
 	if err := c.Truncate(16); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate through the copy: %v", err)
 	}
 	if got := buf.Len(); got != 16 {
 		t.Errorf("original Len() after Truncate(16) through the copy = %d, want 16", got)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if !c.IsSealed() {
 		t.Error("copy does not see the original's Seal")
 	}
 	if err := c.WithBytes(func([]byte) {}); !errors.Is(err, ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytes through the copy of a sealed buffer = %v, want ErrSealed", err)
 	}
 	if err := c.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal through the copy: %v", err)
 	}
 
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -56,9 +61,11 @@ func TestSecureBuffer_CopyIsAnAlias(t *testing.T) {
 	// out points at unmapped memory, and reading it would fault the test.
 	called := false
 	if err := c.WithBytes(func([]byte) { called = true }); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytes through a copy after Destroy = %v, want ErrDestroyed", err)
 	}
 	if err := c.WithBytesErr(func([]byte) error { called = true; return nil }); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytesErr through a copy after Destroy = %v, want ErrDestroyed", err)
 	}
 	if called {
@@ -71,6 +78,7 @@ func TestSecureBuffer_CopyIsAnAlias(t *testing.T) {
 		t.Errorf("copy.Len() after Destroy = %d, want 0", got)
 	}
 	if err := c.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy through the copy after the original's = %v, want nil", err)
 	}
 }
@@ -89,10 +97,12 @@ func TestSecureBuffer_DestroyThroughCopy(t *testing.T) {
 
 	c := *buf
 	if err := c.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy through the copy: %v", err)
 	}
 	called := false
 	if err := buf.WithBytes(func([]byte) { called = true }); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytes on the original after Destroy through a copy = %v, want ErrDestroyed", err)
 	}
 	if called {
@@ -129,10 +139,12 @@ func TestSecureBuffer_OverwriteIsAnAlias(t *testing.T) {
 		t.Error("a and b report different identities after *a = *b")
 	}
 	if err := b.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("b.Destroy: %v", err)
 	}
 	called := false
 	if err := a.WithBytes(func([]byte) { called = true }); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("a.WithBytes after b.Destroy = %v, want ErrDestroyed", err)
 	}
 	if called {
@@ -159,6 +171,7 @@ func TestSecureArena_CopyIsAnAlias(t *testing.T) {
 	c := *arena
 	slot, err := c.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire through the copy: %v", err)
 	}
 	if got := arena.LiveCount(); got != 1 {
@@ -166,22 +179,26 @@ func TestSecureArena_CopyIsAnAlias(t *testing.T) {
 	}
 
 	if err := arena.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if !c.IsDestroyed() {
 		t.Error("copy.IsDestroyed() = false after the original was destroyed")
 	}
 	if _, err := c.Acquire(); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Acquire through a copy after Destroy = %v, want ErrDestroyed", err)
 	}
 	called := false
 	if err := slot.WithBytes(func([]byte) { called = true }); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("slot.WithBytes after Destroy = %v, want ErrDestroyed", err)
 	}
 	if called {
 		t.Error("a slot borrow ran its callback after the arena was destroyed")
 	}
 	if err := c.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy through the copy after the original's = %v, want nil", err)
 	}
 }

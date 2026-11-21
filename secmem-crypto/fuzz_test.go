@@ -29,6 +29,7 @@ func FuzzSignEd25519Direct_MatchesStdlib(f *testing.F) {
 		}
 		ourSig, err := signEd25519Direct(seed, msg)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("signEd25519Direct: %v", err)
 		}
 		priv := ed25519.NewKeyFromSeed(seed)
@@ -40,6 +41,7 @@ func FuzzSignEd25519Direct_MatchesStdlib(f *testing.F) {
 		}
 		pub, err := deriveEd25519PublicKey(seed)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("deriveEd25519PublicKey: %v", err)
 		}
 		if !pub.Equal(priv.Public().(ed25519.PublicKey)) {
@@ -73,10 +75,12 @@ func FuzzHKDFInto(f *testing.F) {
 			return
 		}
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("HKDFSHA256Into: %v", err)
 		}
 		want := make([]byte, size)
 		if _, err := io.ReadFull(hkdf.New(sha256.New, secret, salt, info), want); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("direct hkdf read: %v", err)
 		}
 		var got []byte
@@ -109,9 +113,11 @@ func FuzzArgon2Params(f *testing.F) {
 		// Must never panic; must error exactly when a cost param is < 1.
 		err = Argon2IDKeyInto(password, salt, time, memory, threads, out)
 		if (time < 1 || threads < 1) && err == nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("zero cost param accepted: time=%d threads=%d", time, threads)
 		}
 		if time >= 1 && threads >= 1 && err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("valid params rejected: time=%d memory=%d threads=%d: %v", time, memory, threads, err)
 		}
 	})

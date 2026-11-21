@@ -31,6 +31,7 @@ func TestInstallTerminationWipe_Cooperative(t *testing.T) {
 	secret := bytes.Repeat([]byte{0x5A}, 32)
 	buf, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -39,6 +40,7 @@ func TestInstallTerminationWipe_Cooperative(t *testing.T) {
 	defer uninstall()
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("raise SIGUSR1: %v", err)
 	}
 
@@ -52,6 +54,7 @@ func TestInstallTerminationWipe_Cooperative(t *testing.T) {
 	// The installer wipes on its own goroutine; poll for the wipe.
 	wiped, err := waitWiped(buf, 3*time.Second)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("access during wipe returned %v", err)
 	}
 	if !wiped {

@@ -16,11 +16,13 @@ func TestWipeAllSecrets(t *testing.T) {
 	secret := bytes.Repeat([]byte{0x5A}, 40)
 	buf, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 

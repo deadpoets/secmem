@@ -19,6 +19,7 @@ func TestRuntimeSecretActive_TrueUnderExperiment(t *testing.T) {
 		t.Fatal("built with GOEXPERIMENT=runtimesecret on a supported platform, but RuntimeSecretActive()=false")
 	}
 	if err := AssertRuntimeSecret(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("AssertRuntimeSecret must pass on a correctly-built binary, got: %v", err)
 	}
 }

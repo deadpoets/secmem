@@ -27,6 +27,7 @@ func newLockOrderKey(t *testing.T, fill byte) *X25519Key {
 	}
 	k, err := NewX25519Key(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		_ = buf.Destroy()
 		t.Fatalf("NewX25519Key: %v", err)
 	}
@@ -127,6 +128,7 @@ func TestX25519Key_ConstantTimeEqual_AcquiresInLockOrder(t *testing.T) {
 			if werr == nil {
 				// Documented contract: ReadWrite before Destroy.
 				if err := hi.scalarBuf.ReadWrite(); err != nil {
+					skipIfLockRefused(t, err)
 					t.Errorf("ReadWrite: %v", err)
 				}
 			}

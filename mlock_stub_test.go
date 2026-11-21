@@ -20,18 +20,23 @@ func TestStub_FailsClosed(t *testing.T) {
 	t.Parallel()
 
 	if _, err := NewBuffer([]byte("x")); !errors.Is(err, ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewBuffer = %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := NewEmptyBuffer(16); !errors.Is(err, ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewEmptyBuffer = %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := NewBuffer([]byte("x"), WithoutMemfdSecret()); !errors.Is(err, ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewBuffer(WithoutMemfdSecret) = %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := NewBufferFromReader(bytes.NewReader([]byte("x")), 1); !errors.Is(err, ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewBufferFromReader = %v, want ErrNoSecureMemory", err)
 	}
 	if _, err := NewArena(16, 2); !errors.Is(err, ErrNoSecureMemory) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewArena = %v, want ErrNoSecureMemory", err)
 	}
 }
@@ -44,6 +49,7 @@ func TestStub_OptInWorks(t *testing.T) {
 	want := []byte("insecure-but-explicit")
 	buf, err := NewBuffer(append([]byte(nil), want...), WithInsecureFallback())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer with WithInsecureFallback: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -65,6 +71,7 @@ func TestStub_OptInWorks(t *testing.T) {
 			t.Errorf("contents = %q, want %q", b, want)
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 }

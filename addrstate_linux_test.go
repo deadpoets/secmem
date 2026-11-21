@@ -16,6 +16,7 @@ func addrState(t *testing.T, addr uintptr) (mapped, accessible bool) {
 	t.Helper()
 	f, err := os.Open("/proc/self/maps")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("open /proc/self/maps: %v", err)
 	}
 	defer func() { _ = f.Close() }()

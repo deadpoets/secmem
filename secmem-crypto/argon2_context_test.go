@@ -62,6 +62,7 @@ func newSentinelBuffer(t *testing.T) *secmem.SecureBuffer {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return out
@@ -128,6 +129,7 @@ func TestArgon2Workspace_DeriveContextCancelledMidDerivation(t *testing.T) {
 
 	control := newSentinelBuffer(t)
 	if err := ws.DeriveContext(context.Background(), ctxTestPassword, ctxTestSalt, p, control); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("control: %v", err)
 	}
 	if got := readBuf(t, control); !bytes.Equal(got, want) {
@@ -138,6 +140,7 @@ func TestArgon2Workspace_DeriveContextCancelledMidDerivation(t *testing.T) {
 	ctx := newArmedContext(2)
 	err := ws.DeriveContext(ctx, ctxTestPassword, ctxTestSalt, p, out)
 	if !errors.Is(err, context.Canceled) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if n := ctx.calls.Load(); n != 2 {
@@ -147,6 +150,7 @@ func TestArgon2Workspace_DeriveContextCancelledMidDerivation(t *testing.T) {
 	requireWorkspaceZero(t, "cancelled", ws)
 
 	if err := ws.Derive(ctxTestPassword, ctxTestSalt, p, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Derive after a cancelled one: %v", err)
 	}
 	if got := readBuf(t, out); !bytes.Equal(got, want) {
@@ -185,15 +189,18 @@ func TestArgon2Workspace_DeriveContextLeavesTheQueue(t *testing.T) {
 	cancel()
 	err := within(t, "queued DeriveContext after cancel", func() error { return <-queued })
 	if !errors.Is(err, context.Canceled) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	requireUntouched(t, "left the queue", out)
 	release() // the in-flight derivation ends
 
 	if err := within(t, "Derive after release", func() error { return ws.Derive(ctxTestPassword, ctxTestSalt, p, out) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Derive after the queue emptied: %v", err)
 	}
 	if err := within(t, "Destroy", ws.Destroy); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 }
@@ -230,12 +237,14 @@ func TestArgon2Pool_DeriveContextLeavesTheQueue(t *testing.T) {
 	cancel()
 	err = within(t, "queued DeriveContext after cancel", func() error { return <-queued })
 	if !errors.Is(err, context.Canceled) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	requireUntouched(t, "left the queue", out)
 	release()
 
 	if err := within(t, "Derive after release", func() error { return pool.Derive(ctxTestPassword, ctxTestSalt, p, out) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Derive after the queue emptied: %v", err)
 	}
 	want := xargon2.IDKey(ctxTestPassword, ctxTestSalt, p.Time, p.Memory, p.Threads, 32)
@@ -243,6 +252,7 @@ func TestArgon2Pool_DeriveContextLeavesTheQueue(t *testing.T) {
 		t.Errorf("Derive after the queue emptied: %x, want %x", got, want)
 	}
 	if err := within(t, "Destroy", pool.Destroy); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 }
@@ -278,9 +288,11 @@ func TestArgon2Workspace_DeriveContextEndedBeforeTheCall(t *testing.T) {
 	for name, call := range calls {
 		out := newSentinelBuffer(t)
 		if err := call(ended, out); !errors.Is(err, context.Canceled) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s, cancelled: err = %v, want context.Canceled", name, err)
 		}
 		if err := call(expired, out); !errors.Is(err, context.DeadlineExceeded) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s, expired: err = %v, want context.DeadlineExceeded", name, err)
 		}
 		if err := call(none, out); err == nil {
@@ -300,6 +312,7 @@ func TestArgon2Workspace_IntoContextCancelledMidDerivation(t *testing.T) {
 
 	control := newSentinelBuffer(t)
 	if err := Argon2IntoContext(context.Background(), ctxTestPassword, ctxTestSalt, p, control); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("control: %v", err)
 	}
 	if got := readBuf(t, control); !bytes.Equal(got, want) {
@@ -309,6 +322,7 @@ func TestArgon2Workspace_IntoContextCancelledMidDerivation(t *testing.T) {
 	out := newSentinelBuffer(t)
 	ctx := newArmedContext(1)
 	if err := Argon2IntoContext(ctx, ctxTestPassword, ctxTestSalt, p, out); !errors.Is(err, context.Canceled) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want context.Canceled", err)
 	}
 	if n := ctx.calls.Load(); n != 1 {

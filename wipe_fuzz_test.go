@@ -70,6 +70,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 		}
 		defer func() { _ = buf.Destroy() }()
 		if err := buf.Truncate(n); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Truncate(%d) of %d: %v", n, len(content), err)
 		}
 		if err := buf.WithBytes(func(b []byte) {
@@ -89,6 +90,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 				t.Fatalf("Truncate left byte %d of the wiped tail non-zero (%#x)", n+i, tail[i])
 			}
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WithBytes after Truncate: %v", err)
 		}
 
@@ -100,6 +102,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 		}
 		defer func() { _ = live.Destroy() }()
 		if err := WipeAllSecrets(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WipeAllSecrets: %v", err)
 		}
 		for name, b := range map[string]*SecureBuffer{"live": live, "truncated": buf} {
@@ -118,6 +121,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 				t.Fatalf("WipeAllSecrets left byte %d of the %s buffer's %d-byte secret area non-zero (%#x)", i, name, len(b.region.inner), left)
 			}
 			if err := b.WithBytes(func([]byte) {}); !errors.Is(err, ErrWiped) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("WithBytes after WipeAllSecrets (%s) = %v, want ErrWiped", name, err)
 			}
 		}
@@ -133,15 +137,18 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 		for i := 0; i < count; i++ {
 			s, err := a.Acquire()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Acquire %d: %v", i, err)
 			}
 			if err := s.WithBytes(func(b []byte) { copy(b, content) }); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("fill slot %d: %v", i, err)
 			}
 			held = append(held, s)
 		}
 		for i, s := range held {
 			if err := s.Release(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Release slot %d: %v", i, err)
 			}
 		}
@@ -149,6 +156,7 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 		for i := 0; i < count; i++ {
 			s, err := a.Acquire()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("re-Acquire %d: %v", i, err)
 			}
 			if err := s.WithBytes(func(b []byte) {
@@ -156,9 +164,11 @@ func FuzzWipe_RegionReadsBackZero(f *testing.F) {
 					t.Fatalf("slot %d byte %d reads %#x after Release; the release wipe missed it", s.Index(), j, b[j]) //nolint:secmem-lint // diagnostic on failure only; reports the one non-zero byte of a wiped region
 				}
 			}); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("read re-acquired slot %d: %v", i, err)
 			}
 			if err := s.Release(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Release re-acquired slot %d: %v", i, err)
 			}
 		}

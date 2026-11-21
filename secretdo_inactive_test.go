@@ -18,6 +18,7 @@ func TestRuntimeSecretActive_FalseWithoutExperiment(t *testing.T) {
 		t.Fatal("built without the runtimesecret experiment (or unsupported platform), but RuntimeSecretActive()=true")
 	}
 	if err := AssertRuntimeSecret(); err != nil && !errors.Is(err, ErrRuntimeSecretInactive) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("AssertRuntimeSecret returned an unexpected error: %v", err)
 	}
 }

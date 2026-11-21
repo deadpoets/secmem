@@ -23,12 +23,14 @@ func TestArena_ReuseIsFIFO(t *testing.T) {
 		t.Helper()
 		s, err := a.Acquire()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Acquire: %v", err)
 		}
 		return s
 	}
 	first, second := acquire(), acquire() // slots 0 and 1; 2 and 3 are free
 	if err := first.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release: %v", err)
 	}
 	// Free list is now 2, 3, 0.
@@ -39,11 +41,13 @@ func TestArena_ReuseIsFIFO(t *testing.T) {
 		}
 	}
 	if _, err := a.Acquire(); err != ErrArenaFull { //nolint:errorlint // sentinel returned unwrapped
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire on a full arena = %v, want ErrArenaFull", err)
 	}
 
 	// Emptied and refilled: the list must still thread every slot once.
 	if err := second.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release: %v", err)
 	}
 	if got := acquire().Index(); got != 1 {

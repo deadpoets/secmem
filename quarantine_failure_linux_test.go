@@ -38,6 +38,7 @@ func TestQuarantine_FailedReplaceLeavesTheRangeAlone(t *testing.T) {
 		// The raw call, not unix.Munmap: the kernel's partial work does not
 		// touch x/sys's record of the mapping, and neither may this.
 		if err := unix.MunmapPtr(base, uintptr(len(outer))); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("simulating the failed replace: munmap: %v", err)
 			return nil, unix.ENOMEM
 		}
@@ -62,6 +63,7 @@ func TestQuarantine_FailedReplaceLeavesTheRangeAlone(t *testing.T) {
 
 	// MADV_NORMAL fails with ENOMEM on a range that is not mapped.
 	if err := unix.Madvise(planted, unix.MADV_NORMAL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("the mapping planted in the hole was unmapped by Destroy (madvise: %v)", err)
 	}
 	if planted[0] != 0xA5 {

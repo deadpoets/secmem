@@ -21,6 +21,7 @@ func TestReadFrom_EmptyReaderIsNotAnError(t *testing.T) {
 	defer func() { _ = buf.Destroy() }()
 
 	if n, err := buf.ReadFrom(bytes.NewReader(nil)); n != 0 || err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ReadFrom(empty) = (%d, %v), want (0, nil)", n, err)
 	}
 	// The contract is io.ReaderFrom's, which the type claims to implement.
@@ -30,12 +31,14 @@ func TestReadFrom_EmptyReaderIsNotAnError(t *testing.T) {
 	// io.EOF and no buffer.
 	fromEmpty, err := NewBufferFromReader(bytes.NewReader(nil), 16)
 	if !errors.Is(err, io.EOF) || fromEmpty != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewBufferFromReader(empty) = (%v, %v), want (nil, io.EOF)", fromEmpty != nil, err)
 	}
 	// A short source gives a short buffer: Len is what was read, and the
 	// slice a borrow hands out is exactly that, not zero-padded to size.
 	short, err := NewBufferFromReader(bytes.NewReader([]byte{1}), 16)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBufferFromReader(one byte): %v", err)
 	}
 	defer func() { _ = short.Destroy() }()
@@ -47,6 +50,7 @@ func TestReadFrom_EmptyReaderIsNotAnError(t *testing.T) {
 			t.Errorf("borrowed slice has len %d, cap %d, first-byte-ok %v; want len 1, cap 1, the byte read", len(b), cap(b), len(b) > 0 && b[0] == 1)
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 }

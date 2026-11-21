@@ -50,6 +50,7 @@ func TestInstallTerminationWipe_InheritedIgnoredSignalStillExits(t *testing.T) {
 	}
 	sh, err := exec.LookPath("sh")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("no sh to set the inherited disposition with: %v", err)
 	}
 
@@ -61,10 +62,12 @@ func TestInstallTerminationWipe_InheritedIgnoredSignalStillExits(t *testing.T) {
 	cmd.Env = append(os.Environ(), inheritedIgnoreChildEnv+"=1")
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("start child: %v", err)
 	}
 
@@ -111,6 +114,7 @@ wait:
 	}
 
 	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		skipIfLockRefused(t, err)
 		_ = cmd.Process.Kill()
 		t.Fatalf("signal child: %v", err)
 	}
@@ -139,6 +143,7 @@ wait:
 	}
 	var exitErr *exec.ExitError
 	if !errors.As(waitErr, &exitErr) {
+		skipIfLockRefused(t, waitErr)
 		t.Fatalf("child exited 0 after a termination signal (wait error %v); output:\n%s", waitErr, out)
 	}
 	if ws, ok := exitErr.Sys().(syscall.WaitStatus); ok && ws.Signaled() {

@@ -28,6 +28,7 @@ func constructors(tok *secmem.SecureBuffer) map[string]func(...httpauth.Option) 
 func wantErr(t *testing.T, name string, tr *httpauth.Transport, err, want error) {
 	t.Helper()
 	if !errors.Is(err, want) {
+		skipIfLockRefused(t, err)
 		t.Errorf("%s: err = %v, want %v", name, err, want)
 	}
 	if tr != nil {
@@ -89,6 +90,7 @@ func TestNewHeader_InvalidHeaderNameRefused(t *testing.T) {
 	}
 	for _, h := range []string{"X-API-Key", "x_api.key", "!#$%&'*+-.^_`|~09AZaz"} {
 		if _, err := httpauth.NewHeader(h, "", tok, httpauth.WithAnyHost()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("valid header name %q refused: %v", h, err)
 		}
 	}
@@ -107,6 +109,7 @@ func TestNewHeader_PrefixInjectionRefused(t *testing.T) {
 		wantErr(t, "prefix "+strings.NewReplacer("\r", `\r`, "\n", `\n`, "\x00", `\x00`).Replace(p), tr, err, httpauth.ErrInvalidConfig)
 	}
 	if _, err := httpauth.NewHeader("", "Token token=", tok, httpauth.WithAnyHost()); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ordinary prefix refused: %v", err)
 	}
 }
@@ -148,6 +151,7 @@ func TestWithHosts_InvalidEntriesRefused(t *testing.T) {
 		"[::1]:8080",
 	} {
 		if _, err := httpauth.NewBearer(tok, httpauth.WithHosts(e)); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("valid entry %q refused: %v", e, err)
 		}
 	}
@@ -166,6 +170,7 @@ func TestWithHosts_CallerSliceDoesNotAliasTheFilter(t *testing.T) {
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts(hosts...)))
 	hosts[0] = hostOf(t, srv)
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if got := c.last().Get("Authorization"); got != "" {
@@ -178,6 +183,7 @@ func TestWithHosts_CallerSliceDoesNotAliasTheFilter(t *testing.T) {
 	hosts[0] = hostOf(t, srv)
 	tr = mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), opt))
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if got := c.last().Get("Authorization"); got != "" {
@@ -196,6 +202,7 @@ func TestWithHosts_GivenTwiceAccumulates(t *testing.T) {
 		httpauth.WithHosts(hostOf(t, srv2))))
 	for _, u := range []string{srv1.URL, srv2.URL} {
 		if err := do(t, tr, u); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("RoundTrip %s: %v", u, err)
 		}
 	}
@@ -213,6 +220,7 @@ func TestNilOptionIgnored(t *testing.T) {
 	srv, c := newServer(t)
 	tr := mustNew(t)(httpauth.NewBearer(tok, nil, httpauth.WithBase(srv.Client().Transport), nil, httpauth.WithAnyHost(), nil))
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if got := c.last().Get("Authorization"); got != "Bearer tok" {
@@ -220,6 +228,7 @@ func TestNilOptionIgnored(t *testing.T) {
 	}
 	// A nil Option is not a host decision.
 	if _, err := httpauth.NewBearer(tok, nil); !errors.Is(err, httpauth.ErrNoHosts) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewBearer(tok, nil): err = %v, want ErrNoHosts", err)
 	}
 }

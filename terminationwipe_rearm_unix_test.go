@@ -43,14 +43,17 @@ func TestInstallTerminationWipe_RearmsWhenReraiseImpossible(t *testing.T) {
 	secret := bytes.Repeat([]byte{0x5A}, 32)
 	first, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = first.Destroy() }()
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("raise SIGUSR1: %v", err)
 	}
 	if wiped, err := waitWiped(first, 3*time.Second); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("access during wipe returned %v", err)
 	} else if !wiped {
 		t.Fatal("first signal did not wipe")
@@ -59,6 +62,7 @@ func TestInstallTerminationWipe_RearmsWhenReraiseImpossible(t *testing.T) {
 	// Created AFTER the first wipe: the only thing a second wipe can catch.
 	second, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = second.Destroy() }()
@@ -72,9 +76,11 @@ func TestInstallTerminationWipe_RearmsWhenReraiseImpossible(t *testing.T) {
 	}
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("raise SIGUSR1: %v", err)
 	}
 	if wiped, err := waitWiped(second, 3*time.Second); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("access during wipe returned %v", err)
 	} else if !wiped {
 		t.Fatal("secret created after the first wipe survived the second signal")

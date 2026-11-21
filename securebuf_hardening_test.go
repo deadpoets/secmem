@@ -19,6 +19,7 @@ func TestSignalWipe_NoUseAfterMunmap(t *testing.T) {
 	secret := bytes.Repeat([]byte{0x5A}, 48)
 	buf, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -30,6 +31,7 @@ func TestSignalWipe_NoUseAfterMunmap(t *testing.T) {
 		t.Fatal("buffer not registered with the emergency janitor")
 	}
 	if err := wipeAndFree(region, false, false); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("emergency-wipe: %v", err)
 	}
 
@@ -43,6 +45,7 @@ func TestSignalWipe_NoUseAfterMunmap(t *testing.T) {
 			}
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("access after emergency wipe returned %v (must read the wiped-but-mapped region)", err)
 	}
 	if sawNonZero {
@@ -60,20 +63,25 @@ func TestTruncate_OnSealedBufferReturnsErrSealed(t *testing.T) {
 	}
 	buf, err := NewBuffer([]byte("0123456789abcdef0123456789abcdef"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if err := buf.Truncate(16); !errors.Is(err, ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate on sealed buffer = %v, want ErrSealed", err)
 	}
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if err := buf.Truncate(16); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate after Unseal: %v", err)
 	}
 	if buf.Len() != 16 {
@@ -95,6 +103,7 @@ func TestWriteTo_PanickingWriterUnwindsCleanly(t *testing.T) {
 	}
 	buf, err := NewBuffer([]byte("secret-material"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()

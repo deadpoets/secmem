@@ -16,14 +16,17 @@ func newGCM(t testing.TB) cipher.AEAD {
 	t.Helper()
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("key: %v", err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewCipher: %v", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewGCM: %v", err)
 	}
 	return gcm
@@ -34,6 +37,7 @@ func TestOpenInto_RoundTrip(t *testing.T) {
 	gcm := newGCM(t)
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("nonce: %v", err)
 	}
 	plaintext := []byte("the secret that must land only in protected memory")
@@ -42,11 +46,13 @@ func TestOpenInto_RoundTrip(t *testing.T) {
 
 	out, err := secmem.NewEmptyBuffer(len(plaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 
 	if err := OpenInto(out, gcm, nonce, ct, aad); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("OpenInto: %v", err)
 	}
 	if err := out.WithBytesErr(func(got []byte) error {
@@ -55,6 +61,7 @@ func TestOpenInto_RoundTrip(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }
@@ -72,6 +79,7 @@ func TestOpenInto_TamperedCiphertextLeavesBufferZeroed(t *testing.T) {
 
 	out, err := secmem.NewEmptyBuffer(len(plaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -86,6 +94,7 @@ func TestOpenInto_TamperedCiphertextLeavesBufferZeroed(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }
@@ -105,6 +114,7 @@ func TestOpenInto_RejectsWrongSizedBuffer(t *testing.T) {
 	for _, size := range []int{len(plaintext) - 1, len(plaintext) + 1} {
 		out, err := secmem.NewEmptyBuffer(size)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewEmptyBuffer(%d): %v", size, err)
 		}
 		if err := OpenInto(out, gcm, nonce, ct, nil); err == nil {
@@ -119,6 +129,7 @@ func TestOpenInto_BadInputs(t *testing.T) {
 	gcm := newGCM(t)
 	out, err := secmem.NewEmptyBuffer(16)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -138,9 +149,11 @@ func TestOpenInto_BadInputs(t *testing.T) {
 		t.Error("expected error for ciphertext shorter than overhead")
 	}
 
-	destroyed, _ := secmem.NewEmptyBuffer(16)
+	destroyed, allocErr := secmem.NewEmptyBuffer(16)
+	skipIfLockRefused(t, allocErr)
 	_ = destroyed.Destroy()
 	if err := OpenInto(destroyed, gcm, goodNonce, ct, nil); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 }
@@ -150,6 +163,7 @@ func TestSealFrom_RoundTripWithOpenInto(t *testing.T) {
 	gcm := newGCM(t)
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("nonce: %v", err)
 	}
 	secret := []byte("a secret held in protected memory, sealed without exposure")
@@ -157,18 +171,21 @@ func TestSealFrom_RoundTripWithOpenInto(t *testing.T) {
 
 	pt, err := secmem.NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer pt.Destroy()
 
 	ct, err := SealFrom(nil, gcm, nonce, pt, aad)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("SealFrom: %v", err)
 	}
 
 	// Decrypt it back with the standard library to prove interoperability.
 	got, err := gcm.Open(nil, nonce, ct, aad)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("stdlib Open of SealFrom output: %v", err)
 	}
 	if !bytes.Equal(got, secret) {
@@ -178,10 +195,12 @@ func TestSealFrom_RoundTripWithOpenInto(t *testing.T) {
 	// And round-trip fully through OpenInto.
 	out, err := secmem.NewEmptyBuffer(len(secret))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 	if err := OpenInto(out, gcm, nonce, ct, aad); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("OpenInto: %v", err)
 	}
 	if err := out.WithBytesErr(func(b []byte) error {
@@ -190,6 +209,7 @@ func TestSealFrom_RoundTripWithOpenInto(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }
@@ -199,6 +219,7 @@ func TestSealFrom_BadInputs(t *testing.T) {
 	gcm := newGCM(t)
 	pt, err := secmem.NewBuffer([]byte("secret"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer pt.Destroy()
@@ -214,9 +235,11 @@ func TestSealFrom_BadInputs(t *testing.T) {
 		t.Error("expected error for wrong nonce size (must not panic)")
 	}
 
-	destroyed, _ := secmem.NewBuffer([]byte("x"))
+	destroyed, allocErr := secmem.NewBuffer([]byte("x"))
+	skipIfLockRefused(t, allocErr)
 	_ = destroyed.Destroy()
 	if _, err := SealFrom(nil, gcm, goodNonce, destroyed, nil); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed plaintext: error = %v, want wrap of ErrDestroyed", err)
 	}
 }

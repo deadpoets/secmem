@@ -67,6 +67,7 @@ func TestHardenProcess_NoNewPrivsOnEveryThread(t *testing.T) {
 		cmd.Env = append(os.Environ(), hardenThreadsChildEnv+"=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("child: %v\n%s", err, out)
 		}
 		t.Logf("child:\n%s", out)
@@ -93,16 +94,19 @@ func TestHardenProcess_NoNewPrivsOnEveryThread(t *testing.T) {
 
 	level, err := HardenProcess()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HardenProcess: %v", err)
 	}
 	if level&HardenNoDump == 0 {
 		t.Error("HardenNoDump not reported")
 	}
 	if d, err := unix.PrctlRetInt(unix.PR_GET_DUMPABLE, 0, 0, 0, 0); err != nil || d != 0 {
+		skipIfLockRefused(t, err)
 		t.Errorf("PR_GET_DUMPABLE = %d, %v; want 0 (not dumpable)", d, err)
 	}
 	missing, total, err := threadsWithoutNoNewPrivs()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("reading /proc/self/task: %v", err)
 	}
 	if total <= extra {

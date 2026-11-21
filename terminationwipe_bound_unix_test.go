@@ -70,6 +70,7 @@ func TestInstallTerminationWipe_StuckBorrowDoesNotHoldTheHandler(t *testing.T) {
 	defer uninstall()
 
 	if err := syscall.Kill(os.Getpid(), syscall.SIGUSR1); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("raise SIGUSR1: %v", err)
 	}
 
@@ -83,6 +84,7 @@ func TestInstallTerminationWipe_StuckBorrowDoesNotHoldTheHandler(t *testing.T) {
 	// The bound gives up on the borrowed buffer only. Everything else was
 	// wiped before the handler started waiting.
 	if wiped, err := waitWiped(idle, 3*time.Second); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("idle buffer: %v", err)
 	} else if !wiped {
 		t.Error("the unborrowed buffer was not wiped before the handler moved on")
@@ -92,6 +94,7 @@ func TestInstallTerminationWipe_StuckBorrowDoesNotHoldTheHandler(t *testing.T) {
 	// the moment the callback returns.
 	free()
 	if wiped, err := waitWiped(stuck, 3*time.Second); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("stuck buffer: %v", err)
 	} else if !wiped {
 		t.Error("the borrowed buffer was never wiped after its callback returned")

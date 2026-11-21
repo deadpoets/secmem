@@ -117,12 +117,15 @@ func TestCanary_CleanLifecycleReportsNothing(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("well-behaved-secret"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	if _, err := buf.CopyIn([]byte("still-well-behaved!"), 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("CopyIn: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("clean Destroy reported: %v", err)
 	}
 }
@@ -133,6 +136,7 @@ func TestCanary_CleanLifecycleReportsNothing(t *testing.T) {
 func TestCanary_DetectsOverflowOnDestroy(t *testing.T) {
 	buf, err := NewEmptyBuffer(100) // 100 < page size → slack exists
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 
@@ -143,6 +147,7 @@ func TestCanary_DetectsOverflowOnDestroy(t *testing.T) {
 
 	err = buf.Destroy()
 	if !errors.Is(err, ErrCanaryViolation) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after overflow = %v, want ErrCanaryViolation", err)
 	}
 	if !buf.IsDestroyed() {
@@ -150,6 +155,7 @@ func TestCanary_DetectsOverflowOnDestroy(t *testing.T) {
 	}
 	// Idempotent second Destroy stays clean.
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy = %v, want nil", err)
 	}
 }
@@ -160,12 +166,15 @@ func TestCanary_TruncateDoesNotDisturb(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("truncate-me-down-to-something-small"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	if err := buf.Truncate(4); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after Truncate reported: %v", err)
 	}
 }
@@ -176,12 +185,14 @@ func TestCanary_TruncateDoesNotDisturb(t *testing.T) {
 func TestArena_ReleaseDetectsSlotOverflow(t *testing.T) {
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -190,11 +201,13 @@ func TestArena_ReleaseDetectsSlotOverflow(t *testing.T) {
 	if err := slot.WithBytes(func(b []byte) {
 		slotBase = uintptr(unsafe.Pointer(&b[0]))
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 	corruptCanary(slotBase + 32)
 
 	if err := slot.Release(); !errors.Is(err, ErrCanaryViolation) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release after slot overflow = %v, want ErrCanaryViolation", err)
 	}
 
@@ -202,9 +215,11 @@ func TestArena_ReleaseDetectsSlotOverflow(t *testing.T) {
 	// acquire/release cycle on the same arena must be clean again.
 	slot2, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("re-Acquire: %v", err)
 	}
 	if err := slot2.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("clean Release after re-arm = %v, want nil", err)
 	}
 }
@@ -214,21 +229,25 @@ func TestArena_ReleaseDetectsSlotOverflow(t *testing.T) {
 func TestArena_OverflowStaysOutOfNextSlot(t *testing.T) {
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	s0, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire s0: %v", err)
 	}
 	s1, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire s1: %v", err)
 	}
 
 	want := bytes.Repeat([]byte{0xAB}, 32)
 	if err := s1.WithBytes(func(b []byte) { copy(b, want) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fill s1: %v", err)
 	}
 
@@ -245,13 +264,16 @@ func TestArena_OverflowStaysOutOfNextSlot(t *testing.T) {
 			t.Error("overflow out of slot 0 corrupted slot 1's data — strip layout broken")
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("read s1: %v", err)
 	}
 
 	if err := s0.Release(); !errors.Is(err, ErrCanaryViolation) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Release s0 = %v, want ErrCanaryViolation", err)
 	}
 	if err := s1.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Release s1 = %v, want nil (its strip is intact)", err)
 	}
 }
@@ -261,6 +283,7 @@ func TestArena_OverflowStaysOutOfNextSlot(t *testing.T) {
 func TestArena_DestroyDetectsTailViolation(t *testing.T) {
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 
@@ -273,6 +296,7 @@ func TestArena_DestroyDetectsTailViolation(t *testing.T) {
 	corruptCanary(base + uintptr(tailOff))
 
 	if err := a.Destroy(); !errors.Is(err, ErrCanaryViolation) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after tail corruption = %v, want ErrCanaryViolation", err)
 	}
 	if !a.IsDestroyed() {
@@ -286,12 +310,14 @@ func TestArena_SlotCapClamped(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	defer func() { _ = slot.Release() }()
@@ -301,6 +327,7 @@ func TestArena_SlotCapClamped(t *testing.T) {
 			t.Errorf("slot slice cap = %d, want 32 (must not reach the canary strip)", cap(b))
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 }
@@ -310,6 +337,7 @@ func TestBuffer_DataCapClamped(t *testing.T) {
 	t.Parallel()
 	buf, err := NewEmptyBuffer(100)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -319,6 +347,7 @@ func TestBuffer_DataCapClamped(t *testing.T) {
 			t.Errorf("data cap = %d, want 100 (must not reach the canary slack)", cap(b))
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 }

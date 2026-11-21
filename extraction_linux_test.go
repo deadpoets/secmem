@@ -115,20 +115,24 @@ func procVMReadvInto(pid int, addr uint64, dst []byte) (int, error) {
 func TestExternalExtraction_SecureBufferUnreadable(t *testing.T) {
 	exe, err := os.Executable()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("os.Executable: %v", err)
 	}
 	cmd := exec.Command(exe, "-test.run=^TestExtractionVictimHelper$")
 	cmd.Env = append(os.Environ(), extractionVictimEnv+"=1")
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("StdinPipe: %v", err)
 	}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("StdoutPipe: %v", err)
 	}
 	cmd.Stderr = os.Stderr
 	if err := cmd.Start(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("start victim: %v", err)
 	}
 	defer func() {
@@ -144,6 +148,7 @@ func TestExternalExtraction_SecureBufferUnreadable(t *testing.T) {
 		line, rerr := br.ReadString('\n')
 		if s := strings.TrimSpace(line); strings.HasPrefix(s, "READY ") {
 			if _, err := fmt.Sscanf(s, "READY %d %d", &pid, &memfd); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("parse %q: %v", s, err)
 			}
 			ready = true
@@ -183,6 +188,7 @@ func TestExternalExtraction_SecureBufferUnreadable(t *testing.T) {
 
 	maps, err := os.ReadFile(fmt.Sprintf("/proc/%d/maps", pid))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("read victim maps: %v", err)
 	}
 

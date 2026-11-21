@@ -29,19 +29,23 @@ func aliasedPages(t *testing.T, pages int) (front, back []byte) {
 
 	f, err := os.Create(filepath.Join(t.TempDir(), "frames"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("create backing file: %v", err)
 	}
 	defer func() { _ = f.Close() }() // the mappings hold their own references
 	if err := f.Truncate(int64(size)); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("truncate backing file: %v", err)
 	}
 
 	front, err = unix.Mmap(int(f.Fd()), 0, size, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_SHARED)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("mmap front: %v", err)
 	}
 	back, err = unix.Mmap(int(f.Fd()), 0, size, unix.PROT_READ, unix.MAP_SHARED)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		_ = unix.Munmap(front)
 		t.Fatalf("mmap witness: %v", err)
 	}
@@ -90,12 +94,14 @@ func TestDarwin_FreeSecretMem_ZeroesWiredFrames(t *testing.T) {
 		t.Skipf("mlock refused: %v", err)
 	}
 	if err := adviseZeroWiredPages(front); err != nil {
+		skipIfLockRefused(t, err)
 		_ = unix.Munmap(front)
 		t.Fatalf("adviseZeroWiredPages on a writable, wired mapping: %v", err)
 	}
 
 	// No guards here, so outer and inner alias — as on the stub platforms.
 	if err := freeSecretMem(secRegion{outer: front, inner: front}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("freeSecretMem: %v", err)
 	}
 
@@ -136,14 +142,17 @@ func TestDarwin_MunlockClearsZeroWiredAdvice(t *testing.T) {
 		t.Skipf("mlock refused: %v", err)
 	}
 	if err := adviseZeroWiredPages(front); err != nil {
+		skipIfLockRefused(t, err)
 		_ = unix.Munmap(front)
 		t.Fatalf("adviseZeroWiredPages on a writable, wired mapping: %v", err)
 	}
 
 	if err := unix.Munlock(front); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("munlock: %v", err)
 	}
 	if err := unix.Munmap(front); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("munmap: %v", err)
 	}
 
