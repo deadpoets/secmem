@@ -39,6 +39,7 @@ func TestChaChaBlock_RFC8439Vector(t *testing.T) {
 			"d2826446079faa0914c2d705d98b02a2" +
 			"b5129cd1de164eb9cbd083e8a2503c4e")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if !bytes.Equal(got[:], want) {
@@ -83,6 +84,7 @@ func TestChaChaXOR_MatchesXCrypto(t *testing.T) {
 			ietfNonce = append(ietfNonce, nonce[:]...)
 			c, err := chacha20.NewUnauthenticatedCipher(key[:], ietfNonce)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			c.SetCounter(uint32(counter))
@@ -119,6 +121,7 @@ func TestChaChaXOR_CounterCarry(t *testing.T) {
 		ietfNonce = append(ietfNonce, nonce[:]...)
 		c, err := chacha20.NewUnauthenticatedCipher(key[:], ietfNonce)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		c.SetCounter(part.lo)
@@ -211,6 +214,7 @@ func chachaTagFor(t *testing.T, keyMaterial, ct []byte) []byte {
 func chachaRand(t *testing.T, b []byte) {
 	t.Helper()
 	if _, err := rand.Read(b); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 }

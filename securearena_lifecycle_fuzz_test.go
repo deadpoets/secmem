@@ -94,6 +94,7 @@ func FuzzArenaLifecycle(f *testing.F) {
 					// A canary violation would be a real overflow bug, not a
 					// lifecycle failure, so it is tolerated; the slot still frees.
 					if err != nil && !errors.Is(err, ErrCanaryViolation) {
+						skipIfLockRefused(t, err)
 						t.Fatalf("Release: unexpected error: %v", err)
 					}
 					live = append(live[:i], live[i+1:]...)
@@ -132,6 +133,7 @@ func FuzzArenaLifecycle(f *testing.F) {
 
 			case aoDestroy:
 				if err := a.Destroy(); err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("Destroy: %v", err)
 				}
 				destroyed = true

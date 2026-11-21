@@ -55,6 +55,7 @@ func sigBlkMaskAt(t *testing.T, path string) uint64 {
 		}
 		m, err := strconv.ParseUint(fields[1], 16, 64)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("parsing SigBlk %q: %v", fields[1], err)
 		}
 		return m

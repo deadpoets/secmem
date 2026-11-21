@@ -92,6 +92,7 @@ func TestBorrowPaths_ClearRegistersOnReturn(t *testing.T) {
 	defer arena.Destroy()
 	slot, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	src, dst := bytes.Repeat([]byte{0x24}, 64), make([]byte, 64)

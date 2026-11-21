@@ -199,6 +199,7 @@ var residueScenarios = []residueScenario{
 			seed := residueRandom(t, 32)
 			der, err := x509.MarshalPKCS8PrivateKey(ed25519.NewKeyFromSeed(seed))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			return pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: der}), nil, ed25519Patterns(seed)
@@ -226,6 +227,7 @@ var residueScenarios = []residueScenario{
 			salt, rounds := openSSHKDFOptions(t, file)
 			kiv := make([]byte, 48)
 			if err := bcryptpbkdf.Derive(kiv, pass, salt, rounds, bcryptpbkdf.NewWorkspace()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			pats := append(ed25519Patterns(seed), residuePattern{"passphrase", pass}, residuePattern{"bcrypt-key+iv", kiv})
@@ -262,6 +264,7 @@ var residueScenarios = []residueScenario{
 			salt, rounds := kdfOptsOf(t, pemBytes)
 			kiv := make([]byte, chachaOpenSSHKeyLen)
 			if err := bcryptpbkdf.Derive(kiv, pass, salt, int(rounds), bcryptpbkdf.NewWorkspace()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			var key [chachaKeyLen]byte
@@ -317,6 +320,7 @@ var residueScenarios = []residueScenario{
 			seed := chachaFixtureSeed(t, pemBytes, pass)
 			f, err := readPBES2(raw)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if f.prf != hashSHA256 || f.keyLen != 32 {
@@ -324,6 +328,7 @@ var residueScenarios = []residueScenario{
 			}
 			key, err := pbkdf2.Key(sha256.New, testPassphrase, f.salt, f.iter, f.keyLen)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			pats := append(ed25519Patterns(seed), residuePattern{"pbkdf2-key", key})
@@ -364,6 +369,7 @@ var residueScenarios = []residueScenario{
 			seed := chachaFixtureSeed(t, pemBytes, pass)
 			f, err := readPBES2(raw)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if !f.scrypt || f.keyLen != 32 {
@@ -371,15 +377,18 @@ var residueScenarios = []residueScenario{
 			}
 			b, err := pbkdf2.Key(sha256.New, testPassphrase, f.salt, 1, f.p*scrypt.BlockSize(f.r))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			mixed := slices.Clone(b)
 			scrypt.Mix(mixed, f.n, f.r, make([]byte, scrypt.WorkSize(f.n, f.r)))
 			key, err := pbkdf2.Key(sha256.New, testPassphrase, mixed, 1, f.keyLen)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if want, err := xscrypt.Key(pass, f.salt, f.n, f.r, f.p, f.keyLen); err != nil || !bytes.Equal(key, want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("the parent's intermediates are not scrypt's (err %v): the patterns would hunt for nothing", err)
 			}
 			pats := append(ed25519Patterns(seed),
@@ -483,6 +492,7 @@ var residueScenarios = []residueScenario{
 			pw, salt := residueRandom(t, 32), residueRandom(t, 16)
 			kiv := make([]byte, 48)
 			if err := bcryptpbkdf.Derive(kiv, pw, salt, 2, bcryptpbkdf.NewWorkspace()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			return pw, salt, []residuePattern{{"password", pw}, {"output", kiv}}
@@ -541,14 +551,17 @@ var residueScenarios = []residueScenario{
 			pats := append([]residuePattern{{"key", key}, {"plaintext", pt}}, aesSchedulePatterns(t, "aes256", key)...)
 			layout, err := aesGCMLayoutReady()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			blk, err := aes.NewCipher(key)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			g, err := cipher.NewGCM(blk)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			// The GHASH table is populated from its start and zero after, so
@@ -611,12 +624,14 @@ var residueScenarios = []residueScenario{
 			seed, ct, _, shared := mlkemMaterial(t)
 			dk, err := mlkem.NewDecapsulationKey768(seed)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			var pats []residuePattern
 			for _, f := range mlkemSecretFields {
 				v, err := mlkemSecretBytes(dk, f)
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatal(err)
 				}
 				pats = append(pats, residuePattern{"dk." + f, slices.Clone(v)})
@@ -661,6 +676,7 @@ var residueScenarios = []residueScenario{
 			seed, _, m, shared := mlkemMaterial(t)
 			dk, err := mlkem.NewDecapsulationKey768(seed)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			ek := dk.EncapsulationKey().Bytes()
@@ -706,10 +722,12 @@ var residueScenarios = []residueScenario{
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
 			k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			d, err := k.Bytes()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			return d, nil, beAndLE("d", d)
@@ -728,6 +746,7 @@ var residueScenarios = []residueScenario{
 		material: func(t *testing.T) ([]byte, []byte, []residuePattern) {
 			k, err := rsa.GenerateKey(rand.Reader, 2048)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			var pats []residuePattern
@@ -740,10 +759,12 @@ var residueScenarios = []residueScenario{
 			}
 			fips, err := rsaFIPSKey(k)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			views, err := rsaFIPSSecretViews(fips)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			for _, v := range views {
@@ -787,6 +808,7 @@ var residueScenarios = []residueScenario{
 			prk := hmacSHA256(salt, secret)
 			out := make([]byte, 32)
 			if _, err := io.ReadFull(hkdf.New(sha256.New, secret, salt, []byte(residueMessage)), out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			pats := append([]residuePattern{{"secret", secret}, {"output", out}}, hmacKeyPatterns(t, "prk", prk, "sha256")...)
@@ -838,6 +860,7 @@ var residueScenarios = []residueScenario{
 			prk := m.Sum(nil)
 			out := make([]byte, 64)
 			if _, err := io.ReadFull(hkdf.New(sha512.New, secret, salt, []byte(residueMessage)), out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			pats := append([]residuePattern{{"secret", secret}, {"output", out}}, hmacKeyPatterns(t, "prk", prk, "sha512")...)
@@ -894,10 +917,12 @@ func mlkemMaterial(t *testing.T) (seed, ct, m, shared []byte) {
 	seed, m = residueRandom(t, 64), residueRandom(t, 32)
 	dk, err := mlkem.NewDecapsulationKey768(seed)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	shared, ct, err = mlkemtest.Encapsulate768(dk.EncapsulationKey(), m)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return seed, ct, m, shared
@@ -1156,6 +1181,7 @@ func residueRandom(t *testing.T, n int) []byte {
 	t.Helper()
 	b := make([]byte, n)
 	if _, err := rand.Read(b); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return b
@@ -1237,6 +1263,7 @@ func hmacKeyPatterns(t *testing.T, label string, key []byte, alg string) []resid
 		h.Write(block)
 		st, err := h.(encoding.BinaryMarshaler).MarshalBinary()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		for _, p := range state(st) {
@@ -1261,6 +1288,7 @@ func sha3State(t *testing.T, d *sha3.SHAKE) []byte {
 	t.Helper()
 	st, err := d.MarshalBinary()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if len(st) != 4+1+200+2 {
@@ -1301,12 +1329,14 @@ func aesSchedulePatterns(t *testing.T, label string, key []byte) []residuePatter
 	t.Helper()
 	blk, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	var pats []residuePattern
 	for _, f := range aesRoundKeyFields {
 		v, err := aesRoundKeys(blk, f)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		// Only the populated words: (rounds+1)*4 of the array.
@@ -1341,14 +1371,17 @@ func argon2Material(t *testing.T) ([]byte, []byte, []residuePattern) {
 func x25519Material(t *testing.T) ([]byte, []byte, []residuePattern) {
 	priv, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	peer, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	shared, err := priv.ECDH(peer.PublicKey())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	scalar := priv.Bytes()
@@ -1365,6 +1398,7 @@ func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
 	t.Helper()
 	s, err := ParsePrivateKeyWithPassphrase(pemBytes, pass)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer s.Destroy()
@@ -1377,6 +1411,7 @@ func chachaFixtureSeed(t *testing.T, pemBytes, pass []byte) []byte {
 		seed = slices.Clone(b) //nolint:secmem-lint // the parent builds the scan's patterns from it
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return seed
@@ -1392,11 +1427,13 @@ func marshalEncryptedOpenSSH(t *testing.T, seed, pass []byte, rounds int) []byte
 	}
 	s, err := NewEd25519Signer(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer s.Destroy()
 	out, err := s.MarshalOpenSSHPrivateKeyWithPassphraseParams("residue", pass, OpenSSHPassphraseParams{Rounds: rounds})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer out.Destroy()
@@ -1405,6 +1442,7 @@ func marshalEncryptedOpenSSH(t *testing.T, seed, pass []byte, rounds int) []byte
 		file = slices.Clone(p) //nolint:secmem-lint // parent side: the scan needs the file it hunts the victim's memory for
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return file

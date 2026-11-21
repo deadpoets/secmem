@@ -25,18 +25,22 @@ func TestEmergencyWipe_WriteAccessNotRestored_DoesNotFlagWiped(t *testing.T) {
 	}
 	arena, err := NewArena(32, 1)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = arena.Destroy() }()
 	slot, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	secret := bytes.Repeat([]byte{0x5A}, 32)
 	if err := slot.WithBytes(func(b []byte) { copy(b, secret) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if err := arena.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 
@@ -54,6 +58,7 @@ func TestEmergencyWipe_WriteAccessNotRestored_DoesNotFlagWiped(t *testing.T) {
 	restoreWriteAccess = saved
 
 	if !errors.Is(wipeErr, errWipeSkipped) || !errors.Is(wipeErr, refused) {
+		skipIfLockRefused(t, wipeErr)
 		t.Fatalf("WipeAllSecrets returned %v, want an error wrapping errWipeSkipped and the mprotect failure", wipeErr)
 	}
 	if arena.wiped.Load() {
@@ -80,6 +85,7 @@ func TestEmergencyWipe_WriteAccessNotRestored_DoesNotFlagWiped(t *testing.T) {
 	// Honest state: the secret is still there ...
 	intact := false
 	if err := slot.WithBytes(func(b []byte) { intact = bytes.Equal(b, secret) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("read: %v", err)
 	}
 	if !intact {
@@ -88,17 +94,21 @@ func TestEmergencyWipe_WriteAccessNotRestored_DoesNotFlagWiped(t *testing.T) {
 	// ... the slab is still PROT_READ, and Release still refuses rather than
 	// writing to it (this line is a SIGSEGV if the flag had been set).
 	if err := slot.Release(); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release on the still-read-only slab returned %v, want ErrReadOnly", err)
 	}
 	// Recovery is the ordinary one, since the arena is not dead: ReadWrite,
 	// Release, and Destroy (whose own wipe now finds write access restorable).
 	if err := arena.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite: %v", err)
 	}
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release after ReadWrite: %v", err)
 	}
 	if err := arena.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 }

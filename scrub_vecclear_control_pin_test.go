@@ -74,6 +74,7 @@ func funcBody(t *testing.T, fset *token.FileSet, file, name string) *ast.BlockSt
 	t.Helper()
 	f, err := parser.ParseFile(fset, file, nil, parser.SkipObjectResolution)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("parse %s: %v", file, err)
 	}
 	for _, d := range f.Decls {
@@ -129,6 +130,7 @@ func printStmts(t *testing.T, fset *token.FileSet, stmts []ast.Stmt) string {
 	for _, st := range stmts {
 		var b bytes.Buffer
 		if err := printer.Fprint(&b, fset, st); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("print: %v", err)
 		}
 		out.WriteString(strings.TrimSpace(b.String()))

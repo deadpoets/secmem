@@ -20,6 +20,7 @@ func BenchmarkNewBuffer(b *testing.B) {
 	for _, sz := range sizes {
 		raw := make([]byte, sz)
 		if _, err := rand.Read(raw); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatalf("rand.Read: %v", err)
 		}
 		b.Run(sizeName(sz), func(b *testing.B) {
@@ -30,6 +31,7 @@ func BenchmarkNewBuffer(b *testing.B) {
 				copy(tmp, raw)
 				buf, err := NewBuffer(tmp)
 				if err != nil {
+					skipIfLockRefused(b, err)
 					b.Fatalf("NewBuffer: %v", err)
 				}
 				_ = buf.Destroy()
@@ -47,6 +49,7 @@ func BenchmarkNewEmptyBuffer(b *testing.B) {
 			for b.Loop() {
 				buf, err := NewEmptyBuffer(sz)
 				if err != nil {
+					skipIfLockRefused(b, err)
 					b.Fatalf("NewEmptyBuffer: %v", err)
 				}
 				_ = buf.Destroy()
@@ -65,6 +68,7 @@ func BenchmarkDestroy(b *testing.B) {
 			for b.Loop() {
 				buf, err := NewEmptyBuffer(sz)
 				if err != nil {
+					skipIfLockRefused(b, err)
 					b.Fatalf("NewEmptyBuffer: %v", err)
 				}
 				_ = buf.Destroy()
@@ -353,10 +357,12 @@ func mustBuffer(b *testing.B, size int) *SecureBuffer {
 	runtime.GC()
 	raw := make([]byte, size)
 	if _, err := rand.Read(raw); err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("rand.Read: %v", err)
 	}
 	buf, err := NewBuffer(raw)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewBuffer(%d): %v", size, err)
 	}
 	return buf
@@ -366,6 +372,7 @@ func mustBuffer(b *testing.B, size int) *SecureBuffer {
 func destroyBuffer(b *testing.B, buf *SecureBuffer) {
 	b.Helper()
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(b, err)
 		b.Errorf("Destroy: %v", err)
 	}
 }

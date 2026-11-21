@@ -25,18 +25,22 @@ import (
 func TestNoHeapEscape_OpenInto(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("read key: %v", err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewCipher: %v", err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewGCM: %v", err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("read nonce: %v", err)
 	}
 	plaintext := make([]byte, 1024)
@@ -44,12 +48,14 @@ func TestNoHeapEscape_OpenInto(t *testing.T) {
 
 	out, err := secmem.NewEmptyBuffer(len(plaintext))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 
 	// Confirm it actually decrypts before trusting the measurement.
 	if err := OpenInto(out, gcm, nonce, ct, nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("OpenInto: %v", err)
 	}
 

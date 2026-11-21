@@ -19,19 +19,23 @@ func TestArena_IsLiveRejectsStaleHandle(t *testing.T) {
 	}
 	a, err := NewArena(32, 1)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	stale, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if relErr := stale.Release(); relErr != nil {
+		skipIfLockRefused(t, relErr)
 		t.Fatalf("Release: %v", relErr)
 	}
 	fresh, err := a.Acquire() // same index, new generation
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("re-Acquire: %v", err)
 	}
 	defer func() { _ = fresh.Release() }()
@@ -47,6 +51,7 @@ func TestArena_IsLiveRejectsStaleHandle(t *testing.T) {
 	}
 	// IsLive must agree with what the access path actually does.
 	if wErr := stale.WithBytes(func([]byte) {}); !errors.Is(wErr, ErrSlotReleased) {
+		skipIfLockRefused(t, wErr)
 		t.Errorf("stale handle WithBytes = %v, want ErrSlotReleased — IsLive and WithBytes disagree", wErr)
 	}
 }
@@ -109,6 +114,7 @@ func TestArena_FreeListIntegrityAcrossChurn(t *testing.T) {
 	const count = 16
 	a, err := NewArena(24, count)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -131,6 +137,7 @@ func TestArena_FreeListIntegrityAcrossChurn(t *testing.T) {
 		for i, s := range held {
 			if i%2 == 0 {
 				if relErr := s.Release(); relErr != nil {
+					skipIfLockRefused(t, relErr)
 					t.Fatalf("Release: %v", relErr)
 				}
 				checkFreeList(t, a)
@@ -143,6 +150,7 @@ func TestArena_FreeListIntegrityAcrossChurn(t *testing.T) {
 
 	for _, s := range held {
 		if relErr := s.Release(); relErr != nil {
+			skipIfLockRefused(t, relErr)
 			t.Fatalf("final Release: %v", relErr)
 		}
 		checkFreeList(t, a)
@@ -153,6 +161,7 @@ func TestArena_FreeListIntegrityAcrossChurn(t *testing.T) {
 	// Every slot must be reachable again.
 	for i := 0; i < count; i++ {
 		if _, acqErr := a.Acquire(); acqErr != nil {
+			skipIfLockRefused(t, acqErr)
 			t.Fatalf("re-Acquire %d after full unwind: %v — the list lost a slot", i, acqErr)
 		}
 	}
@@ -172,6 +181,7 @@ func TestArena_FreeListNoDuplicateSlot(t *testing.T) {
 	const count = 4
 	a, err := NewArena(32, count)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -179,6 +189,7 @@ func TestArena_FreeListNoDuplicateSlot(t *testing.T) {
 	for round := 0; round < 50; round++ {
 		slot, acqErr := a.Acquire()
 		if acqErr != nil {
+			skipIfLockRefused(t, acqErr)
 			t.Fatalf("round %d: Acquire: %v", round, acqErr)
 		}
 		// All releasers are held at a barrier and let go at once. The bug needs
@@ -238,6 +249,7 @@ func TestArena_FreeListNoDuplicateSlot(t *testing.T) {
 		}
 		for _, s := range live {
 			if relErr := s.Release(); relErr != nil {
+				skipIfLockRefused(t, relErr)
 				t.Fatalf("round %d: Release: %v", round, relErr)
 			}
 		}
@@ -254,6 +266,7 @@ func TestArena_LiveCountTracksFreeList(t *testing.T) {
 	const count = 8
 	a, err := NewArena(16, count)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -266,6 +279,7 @@ func TestArena_LiveCountTracksFreeList(t *testing.T) {
 	for i := 0; i < count; i++ {
 		s, acqErr := a.Acquire()
 		if acqErr != nil {
+			skipIfLockRefused(t, acqErr)
 			t.Fatalf("Acquire %d: %v", i, acqErr)
 		}
 		slots = append(slots, s)
@@ -279,9 +293,11 @@ func TestArena_LiveCountTracksFreeList(t *testing.T) {
 
 	for i, s := range slots {
 		if relErr := s.Release(); relErr != nil {
+			skipIfLockRefused(t, relErr)
 			t.Fatalf("Release %d: %v", i, relErr)
 		}
 		if relErr := s.Release(); relErr != nil { // idempotent — must not double-count
+			skipIfLockRefused(t, relErr)
 			t.Fatalf("second Release %d: %v", i, relErr)
 		}
 		if want := count - i - 1; a.LiveCount() != want {
@@ -293,6 +309,7 @@ func TestArena_LiveCountTracksFreeList(t *testing.T) {
 	for i := 0; i < count; i++ {
 		s, acqErr := a.Acquire()
 		if acqErr != nil {
+			skipIfLockRefused(t, acqErr)
 			t.Fatalf("re-Acquire %d after full drain: %v", i, acqErr)
 		}
 		defer func() { _ = s.Release() }()
@@ -307,6 +324,7 @@ func TestArena_AcquireOrderIsAscendingOnFreshArena(t *testing.T) {
 	}
 	a, err := NewArena(16, 5)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -314,6 +332,7 @@ func TestArena_AcquireOrderIsAscendingOnFreshArena(t *testing.T) {
 	for want := 0; want < 5; want++ {
 		s, acqErr := a.Acquire()
 		if acqErr != nil {
+			skipIfLockRefused(t, acqErr)
 			t.Fatalf("Acquire: %v", acqErr)
 		}
 		defer func() { _ = s.Release() }()
@@ -359,6 +378,7 @@ func BenchmarkArenaAcquireRelease(b *testing.B) {
 		for i := 0; i < count-1; i++ {
 			s, acqErr := a.Acquire()
 			if acqErr != nil {
+				skipIfLockRefused(b, acqErr)
 				b.Fatalf("prefill Acquire: %v", acqErr)
 			}
 			held = append(held, s)
@@ -368,9 +388,11 @@ func BenchmarkArenaAcquireRelease(b *testing.B) {
 			for i := 0; i < b.N; i++ {
 				s, acqErr := a.Acquire()
 				if acqErr != nil {
+					skipIfLockRefused(b, acqErr)
 					b.Fatalf("Acquire: %v", acqErr)
 				}
 				if relErr := s.Release(); relErr != nil {
+					skipIfLockRefused(b, relErr)
 					b.Fatalf("Release: %v", relErr)
 				}
 			}

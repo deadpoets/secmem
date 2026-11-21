@@ -24,6 +24,7 @@ func bufferBytes(t testing.TB, b *secmem.SecureBuffer) []byte {
 	t.Helper()
 	var out []byte
 	if err := b.WithBytesErr(func(x []byte) error { out = append([]byte(nil), x...); return nil }); err != nil { //nolint:secmem-lint // test reads the output out to parse it with x/crypto/ssh
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return out
@@ -37,6 +38,7 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_RoundTrip(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
@@ -44,6 +46,7 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_RoundTrip(t *testing.T) {
 
 	buf, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("a comment", []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer buf.Destroy()
@@ -51,6 +54,7 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_RoundTrip(t *testing.T) {
 
 	key, err := ssh.ParseRawPrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("x/crypto cannot open the file: %v", err)
 	}
 	priv, ok := key.(*ed25519.PrivateKey)
@@ -67,20 +71,24 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_RoundTrip(t *testing.T) {
 	}
 
 	if _, err := ssh.ParseRawPrivateKeyWithPassphrase(pemBytes, []byte("wrong")); !errors.Is(err, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, err)
 		t.Errorf("x/crypto with the wrong passphrase: %v, want IncorrectPasswordError", err)
 	}
 	var missing *ssh.PassphraseMissingError
 	if _, err := ssh.ParseRawPrivateKey(pemBytes); !errors.As(err, &missing) {
+		skipIfLockRefused(t, err)
 		t.Errorf("x/crypto without a passphrase: %v, want PassphraseMissingError", err)
 	}
 
 	ours, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("own parser: %v", err)
 	}
 	defer ours.Destroy()
 	verifySigner(t, ours, pub)
 	if _, err := ParsePrivateKey(pemBytes, AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
+		skipIfLockRefused(t, err)
 		t.Errorf("own plain parser: %v, want ErrEncryptedKey", err)
 	}
 }
@@ -94,21 +102,25 @@ func TestMarshalOpenSSHPrivateKey_ContainerLayout(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
 	sshPub, err := ssh.NewPublicKey(signer.Public())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 
 	plain, err := signer.MarshalOpenSSHPrivateKey("c")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer plain.Destroy()
 	enc, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("c", []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer enc.Destroy()
@@ -120,6 +132,7 @@ func TestMarshalOpenSSHPrivateKey_ContainerLayout(t *testing.T) {
 		}
 		h, err := readOpenSSHHeader(block.Bytes)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		return h
@@ -149,6 +162,7 @@ func TestMarshalOpenSSHPrivateKey_ContainerLayout(t *testing.T) {
 	// Two encrypted files of the same key differ: fresh salt and check.
 	enc2, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("c", []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer enc2.Destroy()
@@ -164,6 +178,7 @@ func TestMarshalOpenSSHPrivateKey_PEMMatchesEncodingPEM(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
@@ -172,6 +187,7 @@ func TestMarshalOpenSSHPrivateKey_PEMMatchesEncodingPEM(t *testing.T) {
 	for _, comment := range []string{"", "x", strings.Repeat("y", 47), strings.Repeat("z", 48), strings.Repeat("w", 200)} {
 		buf, err := signer.MarshalOpenSSHPrivateKey(comment)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		ours := bufferBytes(t, buf)
@@ -195,19 +211,24 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_Refusals(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if _, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("c", nil); err == nil || !strings.Contains(err.Error(), "empty passphrase") {
+		skipIfLockRefused(t, err)
 		t.Errorf("empty passphrase: %v", err)
 	}
 	var nilSigner *Ed25519Signer
 	if _, err := nilSigner.MarshalOpenSSHPrivateKeyWithPassphrase("c", []byte("p")); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil signer: %v, want ErrDestroyed", err)
 	}
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if _, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("c", []byte("p")); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed signer: %v, want ErrDestroyed", err)
 	}
 }
@@ -219,6 +240,7 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_Refusals(t *testing.T) {
 func TestMarshalOpenSSHPrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
@@ -236,6 +258,7 @@ func TestMarshalOpenSSHPrivateKeyWithPassphrase_WipesAESBlock(t *testing.T) {
 	buf, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("c", []byte(testPassphrase))
 	wipeAESBlock = orig
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	buf.Destroy()
@@ -266,10 +289,12 @@ func sshKeygenPublicKey(t *testing.T, pemBytes []byte, passphrase string) string
 	}
 	path := filepath.Join(t.TempDir(), "key")
 	if err := os.WriteFile(path, pemBytes, 0o600); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	out, err := exec.Command(bin, "-y", "-P", passphrase, "-f", path).CombinedOutput()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ssh-keygen -y: %v\n%s", err, out)
 	}
 	fields := strings.Fields(string(out))
@@ -285,17 +310,20 @@ func sshKeygenPublicKey(t *testing.T, pemBytes []byte, passphrase string) string
 func TestMarshalOpenSSHPrivateKey_SSHKeygenOpensBothForms(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
 	sshPub, err := ssh.NewPublicKey(signer.Public())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	want := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
 
 	plain, err := signer.MarshalOpenSSHPrivateKey("interop")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer plain.Destroy()
@@ -305,6 +333,7 @@ func TestMarshalOpenSSHPrivateKey_SSHKeygenOpensBothForms(t *testing.T) {
 
 	enc, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("interop", []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer enc.Destroy()

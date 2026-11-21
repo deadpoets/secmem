@@ -50,6 +50,7 @@ func parseTestKeys(t testing.TB) []parseTestKey {
 	t.Helper()
 	edPub, edPriv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	keys := []parseTestKey{{name: "ed25519", priv: edPriv, pub: edPub, openssh: true}}
@@ -60,6 +61,7 @@ func parseTestKeys(t testing.TB) []parseTestKey {
 	}{{"p224", elliptic.P224(), false}, {"p256", elliptic.P256(), true}, {"p384", elliptic.P384(), true}, {"p521", elliptic.P521(), true}} {
 		k, err := ecdsa.GenerateKey(c.curve, rand.Reader)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		keys = append(keys, parseTestKey{name: c.name, priv: k, pub: &k.PublicKey, openssh: c.ssh, sec1: true})
@@ -88,18 +90,21 @@ func encodings(t testing.TB, k parseTestKey) []parseEncoding {
 	if k.openssh {
 		block, err := ssh.MarshalPrivateKey(k.priv, "a comment")
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		add("openssh", block)
 	}
 	p8, err := x509.MarshalPKCS8PrivateKey(k.priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	add("pkcs8", &pem.Block{Type: "PRIVATE KEY", Bytes: p8})
 	if k.sec1 {
 		s1, err := x509.MarshalECPrivateKey(k.priv.(*ecdsa.PrivateKey))
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		add("sec1", &pem.Block{Type: "EC PRIVATE KEY", Bytes: s1})
@@ -136,6 +141,7 @@ func verifySigner(t *testing.T, s Signer, pub crypto.PublicKey) {
 		}
 		sig, err := s.Sign(nil, msg, nil)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		if !ed25519.Verify(p, msg, sig) {
@@ -151,6 +157,7 @@ func verifySigner(t *testing.T, s Signer, pub crypto.PublicKey) {
 		h := sha256.Sum256(msg)
 		sig, err := s.Sign(rand.Reader, h[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		if !ecdsa.VerifyASN1(p, h[:], sig) {
@@ -166,9 +173,11 @@ func verifySigner(t *testing.T, s Signer, pub crypto.PublicKey) {
 		h := sha256.Sum256(msg)
 		sig, err := s.Sign(rand.Reader, h[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		if err := rsa.VerifyPKCS1v15(p, crypto.SHA256, h[:], sig); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 	default:
@@ -182,10 +191,12 @@ func TestParsePrivateKey_RoundTrip(t *testing.T) {
 			t.Run(k.name+"/"+enc.name, func(t *testing.T) {
 				s, err := ParsePrivateKey(enc.data, AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("ParsePrivateKey: %v", err)
 				}
 				verifySigner(t, s, k.pub)
 				if err := s.Destroy(); err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatal(err)
 				}
 				if _, err := s.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); err == nil {
@@ -204,10 +215,12 @@ func TestParsePrivateKey_FromSecureBuffer(t *testing.T) {
 	data := encodings(t, k)[0].data
 	buf, err := secmem.NewEmptyBuffer(len(data))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer buf.Destroy()
 	if _, err := buf.ReadFrom(bytes.NewReader(data)); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	var s Signer
@@ -217,6 +230,7 @@ func TestParsePrivateKey_FromSecureBuffer(t *testing.T) {
 		return perr
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer s.Destroy()
@@ -238,6 +252,7 @@ func TestParsePrivateKey_PEMVariants(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			s, err := ParsePrivateKey(v, AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("ParsePrivateKey: %v", err)
 			}
 			defer s.Destroy()
@@ -251,14 +266,17 @@ func TestParsePrivateKey_Rejects(t *testing.T) {
 	_ = edPub
 	x25519, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	x25519DER, err := x509.MarshalPKCS8PrivateKey(x25519)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	encBlock, err := ssh.MarshalPrivateKeyWithPassphrase(edPriv, "c", []byte("hunter2"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	b64 := base64.StdEncoding.EncodeToString([]byte("not a key"))
@@ -301,9 +319,11 @@ func TestParsePrivateKey_Rejects(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if tc.want != nil && !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 			if !strings.HasPrefix(err.Error(), "secmemcrypto: parse private key: ") {
+				skipIfLockRefused(t, err)
 				t.Fatalf("error not prefixed: %q", err)
 			}
 		})
@@ -362,6 +382,7 @@ func TestParsePrivateKey_ErrorsBoundQuotedLabels(t *testing.T) {
 					t.Fatalf("%s: a key labelled %q parsed", name, label[:8])
 				}
 				if !errors.Is(err, ErrUnsupportedKey) {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: %v, want ErrUnsupportedKey", name, err)
 				}
 				msg := err.Error()
@@ -387,6 +408,7 @@ func TestParsePrivateKey_ErrorsBoundQuotedLabels(t *testing.T) {
 				t.Fatal("unknown label parsed")
 			}
 			if !strings.Contains(err.Error(), `"x-unknown-label"`) {
+				skipIfLockRefused(t, err)
 				t.Errorf("short printable label not quoted: %v", err)
 			}
 		})
@@ -459,6 +481,7 @@ func TestParsePrivateKey_ErrorsBoundOIDs(t *testing.T) {
 
 	_, err := ParsePrivateKey(pkcs8With(huge))
 	if !errors.Is(err, ErrUnsupportedKey) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("PKCS#8 with an unknown algorithm: %v, want ErrUnsupportedKey", err)
 	}
 	if n := len(err.Error()); n > bound {
@@ -467,6 +490,7 @@ func TestParsePrivateKey_ErrorsBoundOIDs(t *testing.T) {
 	// A real unknown OID is still named, so the error stays useful.
 	_, err = ParsePrivateKey(pkcs8With(asn1.ObjectIdentifier{1, 3, 101, 113}))
 	if err == nil || !strings.Contains(err.Error(), "1.3.101.113") {
+		skipIfLockRefused(t, err)
 		t.Errorf("a short unknown OID is no longer named: %v", err)
 	}
 
@@ -489,10 +513,12 @@ func TestParsePrivateKey_ErrorsBoundOIDs(t *testing.T) {
 func TestParsePrivateKey_BareDERThatIsNotAKey(t *testing.T) {
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	spki, err := x509.MarshalPKIXPublicKey(pub)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	// A certificate-shaped structure: SEQUENCE { SEQUENCE { [0] … }, … }.
@@ -510,9 +536,11 @@ func TestParsePrivateKey_BareDERThatIsNotAKey(t *testing.T) {
 			t.Fatalf("%s parsed as a private key", name)
 		}
 		if errors.Is(err, ErrEncryptedKey) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s was reported as a passphrase-protected private key: %v", name, err)
 		}
 		if !errors.Is(err, ErrUnsupportedKey) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: %v, want ErrUnsupportedKey", name, err)
 		}
 	}
@@ -520,9 +548,11 @@ func TestParsePrivateKey_BareDERThatIsNotAKey(t *testing.T) {
 	// Control: a real EncryptedPrivateKeyInfo in bare DER is still named.
 	p8, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if _, err := ParsePrivateKey(encryptPKCS8(t, p8, pbes2Spec{})); !errors.Is(err, ErrEncryptedKey) {
+		skipIfLockRefused(t, err)
 		t.Errorf("an EncryptedPrivateKeyInfo in bare DER: %v, want ErrEncryptedKey", err)
 	}
 }

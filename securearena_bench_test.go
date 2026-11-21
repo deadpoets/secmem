@@ -65,12 +65,14 @@ func BenchmarkArenaChurnParallel(b *testing.B) {
 		for pb.Next() {
 			s, err := a.Acquire()
 			if err != nil {
+				skipIfLockRefused(b, err)
 				// b.Error, not b.Fatal: Fatal calls Goexit, which from a
 				// RunParallel body kills one worker and hangs the rest.
 				b.Error("Acquire:", err)
 				return
 			}
 			if err := s.Release(); err != nil {
+				skipIfLockRefused(b, err)
 				b.Error("Release:", err)
 				return
 			}
@@ -95,12 +97,14 @@ func BenchmarkArenaBorrowParallel(b *testing.B) {
 	b.RunParallel(func(pb *testing.PB) {
 		s, err := a.Acquire()
 		if err != nil {
+			skipIfLockRefused(b, err)
 			b.Error("Acquire:", err)
 			return
 		}
 		defer func() { _ = s.Release() }()
 		for pb.Next() {
 			if err := s.WithBytes(func(p []byte) { p[0]++ }); err != nil {
+				skipIfLockRefused(b, err)
 				b.Error("WithBytes:", err)
 				return
 			}
@@ -114,6 +118,7 @@ func BenchmarkArenaBorrowSerial(b *testing.B) {
 	a := benchArena(b, 32, 4096)
 	s, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("Acquire: %v", err)
 	}
 	defer func() { _ = s.Release() }()
@@ -121,6 +126,7 @@ func BenchmarkArenaBorrowSerial(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if err := s.WithBytes(func(p []byte) { p[0]++ }); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatalf("WithBytes: %v", err)
 		}
 	}

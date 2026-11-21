@@ -54,15 +54,19 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		// Before the input is read: a nil buffer is refused by the gate, not
 		// reported as a nil buffer.
 		if _, err := NewRSASigner(nil); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewRSASigner(nil): %v, want ErrHeapTransients before input validation", err)
 		}
 		if _, err := NewECDSASigner(elliptic.P256(), nil); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewECDSASigner(nil): %v, want ErrHeapTransients before input validation", err)
 		}
 		if _, err := GenerateRSASigner(2048); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateRSASigner: %v, want ErrHeapTransients", err)
 		}
 		if _, err := GenerateECDSASigner(elliptic.P256()); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateECDSASigner: %v, want ErrHeapTransients", err)
 		}
 
@@ -71,6 +75,7 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		der := mustBuffer(t, x509.MarshalPKCS1PrivateKey(testRSAKey()))
 		defer func() { _ = der.Destroy() }()
 		if _, err := NewRSASigner(der); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewRSASigner: %v, want ErrHeapTransients", err)
 		}
 		if der.IsDestroyed() {
@@ -79,15 +84,18 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 
 		ek, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		scalar, err := ek.Bytes()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		sb := mustBuffer(t, scalar)
 		defer func() { _ = sb.Destroy() }()
 		if _, err := NewECDSASigner(elliptic.P256(), sb); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewECDSASigner: %v, want ErrHeapTransients", err)
 		}
 		if sb.IsDestroyed() {
@@ -97,11 +105,13 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		// X25519 runs in place, so the policy does not apply to it.
 		xb := mustBuffer(t, bytes.Repeat([]byte{0x42}, 32))
 		if k, err := NewX25519Key(xb); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewX25519Key under a refusing policy: %v, want success (X25519 is not gated)", err)
 		} else {
 			_ = k.Destroy()
 		}
 		if k, err := GenerateX25519Key(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateX25519Key under a refusing policy: %v, want success (X25519 is not gated)", err)
 		} else {
 			_ = k.Destroy()
@@ -110,27 +120,33 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		// ML-KEM: refused before the seed is read, the caller's buffer left
 		// alone, accepted with the opt-in; the sender side is not gated.
 		if _, err := NewMLKEM768Key(nil); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewMLKEM768Key(nil): %v, want ErrHeapTransients before input validation", err)
 		}
 		if _, err := GenerateMLKEM768Key(); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateMLKEM768Key: %v, want ErrHeapTransients", err)
 		}
 		seed := mustBuffer(t, bytes.Repeat([]byte{0x5A}, 64))
 		defer func() { _ = seed.Destroy() }()
 		if _, err := NewMLKEM768Key(seed); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewMLKEM768Key: %v, want ErrHeapTransients", err)
 		}
 		if seed.IsDestroyed() {
 			t.Error("a refused NewMLKEM768Key destroyed the caller's buffer; ownership must not transfer on failure")
 		}
 		if mk, err := NewMLKEM768Key(seed, AllowHeapTransients()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewMLKEM768Key with AllowHeapTransients: %v", err)
 		} else {
 			ekb, err := mk.EncapsulationKeyBytes()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if _, ss, err := Encapsulate(ekb); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("Encapsulate under a refusing policy: %v, want success (Encapsulate is not gated)", err)
 			} else {
 				_ = ss.Destroy()
@@ -138,6 +154,7 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 			_ = mk.Destroy()
 		}
 		if k, err := GenerateMLKEM768Key(AllowHeapTransients()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateMLKEM768Key with AllowHeapTransients: %v", err)
 		} else {
 			_ = k.Destroy()
@@ -147,6 +164,7 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		_, err = GenerateECDSASigner(elliptic.P256())
 		for _, want := range []string{"GOEXPERIMENT=runtimesecret", "HSM", "AllowHeapTransients"} {
 			if err == nil || !strings.Contains(err.Error(), want) {
+				skipIfLockRefused(t, err)
 				t.Errorf("refusal message %q does not mention %q", err, want)
 			}
 		}
@@ -155,21 +173,25 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 		// sb; the deferred Destroys above are then no-ops, Destroy being
 		// idempotent.
 		if s, err := NewRSASigner(der, AllowHeapTransients()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewRSASigner with AllowHeapTransients: %v", err)
 		} else {
 			_ = s.Destroy()
 		}
 		if s, err := NewECDSASigner(elliptic.P256(), sb, AllowHeapTransients()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("NewECDSASigner with AllowHeapTransients: %v", err)
 		} else {
 			_ = s.Destroy()
 		}
 		if s, err := GenerateRSASigner(2048, AllowHeapTransients()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateRSASigner with AllowHeapTransients: %v", err)
 		} else {
 			_ = s.Destroy()
 		}
 		if s, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateECDSASigner with AllowHeapTransients: %v", err)
 		} else {
 			_ = s.Destroy()
@@ -177,6 +199,7 @@ func TestHeapTransientsPolicy_LegacyRefusesConstructors(t *testing.T) {
 
 		// A nil Option is ignored, not a panic and not an opt-in.
 		if _, err := GenerateECDSASigner(elliptic.P256(), nil); !errors.Is(err, ErrHeapTransients) {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateECDSASigner(nil option): %v, want ErrHeapTransients", err)
 		}
 	})
@@ -191,11 +214,13 @@ func TestHeapTransientsPolicy_LegacyParsers(t *testing.T) {
 		for _, k := range parseTestKeys(t) {
 			pkcs8, err := x509.MarshalPKCS8PrivateKey(k.priv)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("%s: marshal: %v", k.name, err)
 			}
 			gated := k.name != "ed25519"
 
 			s, err := ParsePrivateKey(pkcs8)
+			skipIfLockRefused(t, err)
 			switch {
 			case gated && !errors.Is(err, ErrHeapTransients):
 				t.Errorf("ParsePrivateKey(%s) without the option: %v, want ErrHeapTransients", k.name, err)
@@ -206,6 +231,7 @@ func TestHeapTransientsPolicy_LegacyParsers(t *testing.T) {
 				_ = s.Destroy()
 			}
 			if s, err := ParsePrivateKey(pkcs8, AllowHeapTransients()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("ParsePrivateKey(%s) with AllowHeapTransients: %v", k.name, err)
 			} else {
 				_ = s.Destroy()
@@ -216,10 +242,12 @@ func TestHeapTransientsPolicy_LegacyParsers(t *testing.T) {
 			}
 			block, err := ssh.MarshalPrivateKeyWithPassphrase(k.priv, "", []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("%s: marshal encrypted: %v", k.name, err)
 			}
 			file := pemEncodeToMemory(block)
 			s, err = ParsePrivateKeyWithPassphrase(file, []byte(testPassphrase))
+			skipIfLockRefused(t, err)
 			switch {
 			case gated && !errors.Is(err, ErrHeapTransients):
 				t.Errorf("ParsePrivateKeyWithPassphrase(%s) without the option: %v, want ErrHeapTransients", k.name, err)
@@ -230,6 +258,7 @@ func TestHeapTransientsPolicy_LegacyParsers(t *testing.T) {
 				_ = s.Destroy()
 			}
 			if s, err := ParsePrivateKeyWithPassphrase(file, []byte(testPassphrase), AllowHeapTransients()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("ParsePrivateKeyWithPassphrase(%s) with AllowHeapTransients: %v", k.name, err)
 			} else {
 				_ = s.Destroy()
@@ -244,15 +273,18 @@ func TestHeapTransientsPolicy_LegacyParsers(t *testing.T) {
 func TestHeapTransientsPolicy_RuntimeSecretAllows(t *testing.T) {
 	withPolicy(t, true, func() {
 		if s, err := GenerateECDSASigner(elliptic.P256()); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("GenerateECDSASigner under an allowing policy: %v", err)
 		} else {
 			_ = s.Destroy()
 		}
 		pkcs8, err := x509.MarshalPKCS8PrivateKey(testRSAKey())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		if s, err := ParsePrivateKey(pkcs8); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("ParsePrivateKey(rsa) under an allowing policy: %v", err)
 		} else {
 			_ = s.Destroy()

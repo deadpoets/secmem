@@ -13,6 +13,7 @@ import (
 func TestSealCipherLen(t *testing.T) {
 	for _, n := range []int{16, 4096, 1 << 20} {
 		if got, err := sealCipherLen(n); err != nil || int(got) != n {
+			skipIfLockRefused(t, err)
 			t.Errorf("sealCipherLen(%d) = (%d, %v), want (%d, nil)", n, got, err, n)
 		}
 	}

@@ -85,6 +85,7 @@ func randBytes(t *testing.T, n int) []byte {
 	t.Helper()
 	b := make([]byte, n)
 	if _, err := io.ReadFull(rand.Reader, b); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return b
@@ -97,6 +98,7 @@ func readOut(t *testing.T, b *secmem.SecureBuffer) []byte {
 		out = append([]byte(nil), p...) //nolint:secmem-lint // test oracle: the derived bytes are compared with the reference implementation's
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return out
@@ -125,6 +127,7 @@ func TestHMACInto_InPlaceMatchesCryptoHMAC(t *testing.T) {
 						t.Skipf("NewEmptyBuffer: %v", err)
 					}
 					if err := HMACInto(h.new, key, info, out); err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("key %d, info %d: %v", keyLen, infoLen, err)
 					}
 					m := hmac.New(h.new, key)
@@ -159,10 +162,12 @@ func TestHKDFInto_InPlaceMatchesXCrypto(t *testing.T) {
 								t.Skipf("NewEmptyBuffer: %v", err)
 							}
 							if err := HKDFInto(h.new, secret, salt, info, out); err != nil {
+								skipIfLockRefused(t, err)
 								t.Fatalf("secret %d salt %d info %d out %d: %v", secretLen, saltLen, infoLen, outLen, err)
 							}
 							want := make([]byte, outLen)
 							if _, err := io.ReadFull(hkdf.New(h.new, secret, salt, info), want); err != nil {
+								skipIfLockRefused(t, err)
 								t.Fatal(err)
 							}
 							if got := readOut(t, out); !bytes.Equal(got, want) {
@@ -181,10 +186,12 @@ func TestHKDFInto_InPlaceMatchesXCrypto(t *testing.T) {
 			}
 			defer out.Destroy()
 			if err := HKDFInto(h.new, secret, nil, []byte("max"), out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			want := make([]byte, 255*size)
 			if _, err := io.ReadFull(hkdf.New(h.new, secret, nil, []byte("max")), want); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if !bytes.Equal(readOut(t, out), want) {
@@ -208,12 +215,15 @@ func TestHMACHKDF_HeapHashGate(t *testing.T) {
 			key, info := randBytes(t, 32), []byte("info")
 			err = HMACInto(h.new, key, info, out)
 			if !errors.Is(err, ErrHeapTransients) || !strings.Contains(err.Error(), "SHA-2 or SHA-3") {
+				skipIfLockRefused(t, err)
 				t.Errorf("HMACInto(%s) under a refusing policy: %v, want ErrHeapTransients naming SHA-2 or SHA-3", h.name, err)
 			}
 			if err := HKDFInto(h.new, key, nil, info, out); !errors.Is(err, ErrHeapTransients) {
+				skipIfLockRefused(t, err)
 				t.Errorf("HKDFInto(%s) under a refusing policy: %v, want ErrHeapTransients", h.name, err)
 			}
 			if err := HMACInto(h.new, key, info, out, AllowHeapTransients()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("HMACInto(%s) with AllowHeapTransients: %v", h.name, err)
 			}
 			m := hmac.New(h.new, key)
@@ -222,6 +232,7 @@ func TestHMACHKDF_HeapHashGate(t *testing.T) {
 				t.Errorf("HMACInto(%s) heap path: wrong output", h.name)
 			}
 			if err := HKDFInto(h.new, key, nil, info, out, AllowHeapTransients()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("HKDFInto(%s) with AllowHeapTransients: %v", h.name, err)
 			}
 			_ = out.Destroy()
@@ -232,9 +243,11 @@ func TestHMACHKDF_HeapHashGate(t *testing.T) {
 				t.Skipf("NewEmptyBuffer: %v", err)
 			}
 			if err := HMACInto(h.new, []byte("k"), []byte("i"), out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("HMACInto(%s) under a refusing policy: %v, want success (in place)", h.name, err)
 			}
 			if err := HKDFInto(h.new, []byte("k"), nil, []byte("i"), out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("HKDFInto(%s) under a refusing policy: %v, want success (in place)", h.name, err)
 			}
 			_ = out.Destroy()

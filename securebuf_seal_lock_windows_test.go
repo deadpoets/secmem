@@ -48,9 +48,11 @@ func TestSeal_UnsealRestoresVirtualLock(t *testing.T) {
 	}
 	for cycle := 1; cycle <= 2; cycle++ {
 		if err := buf.Seal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Seal: %v", err)
 		}
 		if err := buf.Unseal(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Unseal: %v", err)
 		}
 		// Queried before any access: the contents must not be readable
@@ -64,6 +66,7 @@ func TestSeal_UnsealRestoresVirtualLock(t *testing.T) {
 			t.Error("contents changed across the seal cycles")
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 }

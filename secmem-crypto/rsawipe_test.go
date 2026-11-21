@@ -25,6 +25,7 @@ func rsaFIPSViews(t *testing.T, key *rsa.PrivateKey) [][]byte {
 	t.Helper()
 	fips, err := rsaFIPSKey(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("rsa.PrecomputedValues.%s no longer resolves on this toolchain — update rsawipe.go: %v", rsaFIPSField, err)
 	}
 	if !fips.IsValid() {
@@ -32,6 +33,7 @@ func rsaFIPSViews(t *testing.T, key *rsa.PrivateKey) [][]byte {
 	}
 	views, err := rsaFIPSSecretViews(fips)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("the FIPS-form key's fields no longer resolve on this toolchain — update rsaFIPSSecretFields: %v", err)
 	}
 	return views
@@ -49,6 +51,7 @@ func TestWipeRSAFIPSKey_Tripwire(t *testing.T) {
 	t.Parallel()
 	key := stdlibRSAKey(t)
 	if err := key.Validate(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fresh key does not validate: %v", err)
 	}
 	views := rsaFIPSViews(t, key)
@@ -69,6 +72,7 @@ func TestWipeRSAFIPSKey_Tripwire(t *testing.T) {
 	}
 
 	if err := wipeRSAFIPSKey(key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("wipeRSAFIPSKey: %v", err)
 	}
 	for i, v := range views {
@@ -84,9 +88,11 @@ func TestWipeRSAFIPSKey_Tripwire(t *testing.T) {
 	}
 
 	if err := wipeRSAFIPSKey(nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeRSAFIPSKey(nil) = %v, want nil", err)
 	}
 	if err := wipeRSAFIPSKey(&rsa.PrivateKey{}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeRSAFIPSKey on a key without a FIPS form = %v, want nil", err)
 	}
 }
@@ -100,10 +106,12 @@ func TestWipeRSAFIPSKey_GeneratedAndMultiPrime(t *testing.T) {
 	t.Parallel()
 	gen, err := rsa.GenerateKey(rand.Reader, 1024)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	views := rsaFIPSViews(t, gen)
 	if err := wipeRSAFIPSKey(gen); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("generated key: %v", err)
 	}
 	for i, v := range views {
@@ -121,6 +129,7 @@ func TestWipeRSAFIPSKey_GeneratedAndMultiPrime(t *testing.T) {
 	multi.Precompute()
 	fips, err := rsaFIPSKey(multi)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if !fips.IsValid() {
@@ -128,12 +137,14 @@ func TestWipeRSAFIPSKey_GeneratedAndMultiPrime(t *testing.T) {
 	}
 	mviews, err := rsaFIPSSecretViews(fips)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("multi-prime key: %v", err)
 	}
 	if len(mviews) != 1 {
 		t.Fatalf("multi-prime key resolved %d views, want 1 (d only; no CRT fields)", len(mviews))
 	}
 	if err := wipeRSAFIPSKey(multi); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("multi-prime key: %v", err)
 	}
 	if !bytes.Equal(mviews[0], make([]byte, len(mviews[0]))) {
@@ -167,6 +178,7 @@ func TestRSAFIPSSecretViews_ReportsUnresolvableLayout(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(err.Error(), "NOT wiped") || len(views) != 0 {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: error does not say the key was not wiped, or views were returned: %v", name, err)
 		}
 	}
@@ -180,6 +192,7 @@ func TestRSAFIPSSecretViews_ReportsUnresolvableLayout(t *testing.T) {
 func TestRSASigner_SignWipesLiveFIPSKey(t *testing.T) {
 	signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRSASigner: %v", err)
 	}
 	defer signer.Destroy()
@@ -199,6 +212,7 @@ func TestRSASigner_SignWipesLiveFIPSKey(t *testing.T) {
 	digest := sha256.Sum256([]byte("wipe me"))
 	sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	if len(aliased) != 10 {
@@ -211,6 +225,7 @@ func TestRSASigner_SignWipesLiveFIPSKey(t *testing.T) {
 	}
 	pub, _ := signer.Public().(*rsa.PublicKey)
 	if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("signature produced before the wipe does not verify: %v", err)
 	}
 }
@@ -221,6 +236,7 @@ func TestRSASigner_SignWipesLiveFIPSKey(t *testing.T) {
 func TestRSASigner_WipeFailureIsAnError(t *testing.T) {
 	signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRSASigner: %v", err)
 	}
 	defer signer.Destroy()
@@ -236,6 +252,7 @@ func TestRSASigner_WipeFailureIsAnError(t *testing.T) {
 	if sig, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256); err == nil {
 		t.Fatalf("Sign reported success (%d-byte signature) although the wipe failed", len(sig))
 	} else if !strings.Contains(err.Error(), errWipeSimulated.Error()) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign error does not carry the wipe failure: %v", err)
 	}
 	der := cloneRSADER(t)

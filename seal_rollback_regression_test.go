@@ -87,6 +87,7 @@ func newRollbackFixture(t *testing.T) (*SecureBuffer, []byte) {
 	failSealOnce(t)
 
 	if err := buf.Seal(); !errors.Is(err, errInjectedProtect) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal with protect and rollback both refused = %v, want the injected protect error", err)
 	}
 	return buf, want
@@ -105,11 +106,13 @@ func TestSeal_RollbackDecryptFailure_FailsClosed(t *testing.T) {
 	handedOutCiphertext := false
 	err := buf.WithBytes(func(b []byte) { handedOutCiphertext = !bytes.Equal(b, want) })
 	if !errors.Is(err, ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes after a failed rollback = %v, want ErrSealed (handed out bytes differing from the secret: %v)",
 			err, handedOutCiphertext)
 	}
 
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal after a failed rollback: %v", err)
 	}
 	if err := buf.WithBytesErr(func(b []byte) error {
@@ -118,9 +121,11 @@ func TestSeal_RollbackDecryptFailure_FailsClosed(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr after recovery: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy after recovery: %v", err)
 	}
 }
@@ -134,9 +139,11 @@ func TestSeal_RetryAfterRollbackFailure_DoesNotDoubleEncrypt(t *testing.T) {
 	buf, want := newRollbackFixture(t)
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal retried after a failed rollback: %v", err)
 	}
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal after the retried Seal: %v", err)
 	}
 	if err := buf.WithBytesErr(func(b []byte) error {
@@ -145,9 +152,11 @@ func TestSeal_RetryAfterRollbackFailure_DoesNotDoubleEncrypt(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr after retried Seal + Unseal: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy after retried Seal + Unseal: %v", err)
 	}
 }
@@ -193,6 +202,7 @@ func TestSeal_RefusesToEncryptCiphertext(t *testing.T) {
 	buf.sealCipher.Store(false)
 	buf.sealed = false
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy: %v", err)
 	}
 }

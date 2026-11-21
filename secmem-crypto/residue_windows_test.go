@@ -86,6 +86,7 @@ func residueFreeze(t *testing.T, pid int) {
 	for pass := 0; pass < 16; pass++ {
 		ids, err := residueThreadIDs(pid)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("thread snapshot for victim %d: %v", pid, err)
 		}
 		fresh := 0
@@ -208,6 +209,7 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 	t.Helper()
 	windows, err := residueWindows(pats)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	proc, err := win.OpenProcess(win.PROCESS_QUERY_INFORMATION|win.PROCESS_VM_READ, false, uint32(pid))
@@ -265,6 +267,7 @@ func scanResidue(t *testing.T, pid int, pats []residuePattern) residueScan {
 		read += int64(got)
 		locked, attrs, err := residueLockedPages(proc, mbi.BaseAddress, size, pageSize)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			// Neither an environment to skip nor a finding to count: the
 			// region has been read, and nothing says which of its pages are
 			// locked, so every hit in it would be a guess.
@@ -303,6 +306,7 @@ func TestResidueLockedPages_Detected(t *testing.T) {
 		bufPage = uintptr(unsafe.Pointer(&b[0])) //nolint:secmem-lint // the address is not the secret
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	heap := make([]byte, os.Getpagesize())
@@ -313,6 +317,7 @@ func TestResidueLockedPages_Detected(t *testing.T) {
 	pageSize := os.Getpagesize()
 	locked, attrs, err := residueLockedPages(proc, bufPage&^uintptr(pageSize-1), pageSize, pageSize)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("QueryWorkingSetEx: %v", err)
 	}
 	if !locked[0] {
@@ -320,6 +325,7 @@ func TestResidueLockedPages_Detected(t *testing.T) {
 	}
 	locked, attrs, err = residueLockedPages(proc, heapPage&^uintptr(pageSize-1), pageSize, pageSize)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("QueryWorkingSetEx: %v", err)
 	}
 	if locked[0] {
@@ -346,6 +352,7 @@ func TestResidueLockedPages_SurvivesStackMove(t *testing.T) {
 	}
 	exe, err := os.Executable()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for depth := 0; depth <= 60; depth++ {
@@ -353,6 +360,7 @@ func TestResidueLockedPages_SurvivesStackMove(t *testing.T) {
 		cmd.Env = append(os.Environ(), residueStackMoveEnv+"="+strconv.Itoa(depth))
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("depth %d: %v\n%s", depth, err, out)
 		}
 		switch {

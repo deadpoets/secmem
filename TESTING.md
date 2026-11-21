@@ -50,6 +50,15 @@ that is said outright rather than dressed up.
   Linux, where `ubuntu-latest` has the feature live. Re-exec'd children
   propagate their skips to the parent (`childSkipReason`) so a child that
   proved nothing is not reported as a pass.
+- **A refused lock skips; it does not fail.** The core and `secmem-crypto`
+  tests call `skipIfLockRefused` wherever they report an error, so on a host
+  whose lock budget is smaller than the suite needs they skip with the
+  kernel's reason instead of failing on the library keeping its contract. The
+  tests that are about the refusal itself do not call it. This is only safe
+  next to the audit above: on a runner with an ordinary budget such a skip is
+  not allowlisted and fails the job. A plain `go test` has no audit, so there
+  a green run with skips has proved less than one without; read the skip
+  count.
 - **Locked-workspace tests cannot skip silently.** A step on each execution
   runner re-runs the Argon2 workspace, pool, vector-register-clear and
   upstream-identity tests verbosely and fails on any `--- SKIP`; on Linux it

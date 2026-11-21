@@ -29,6 +29,7 @@ func TestReduceMod_MatchesMathBig(t *testing.T) {
 	randInt := func(bits int) *big.Int {
 		n, err := rand.Int(rand.Reader, new(big.Int).Lsh(big.NewInt(1), uint(bits)))
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		return n

@@ -23,6 +23,7 @@ func BenchmarkSignEd25519Direct(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := signEd25519Direct(seed, msg); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -41,6 +42,7 @@ func BenchmarkSignStdlib(b *testing.B) {
 func BenchmarkSignerSign(b *testing.B) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -49,6 +51,7 @@ func BenchmarkSignerSign(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := signer.Sign(nil, msg, crypto.Hash(0)); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -57,6 +60,7 @@ func BenchmarkSignerSign(b *testing.B) {
 func BenchmarkHKDFSHA256Into(b *testing.B) {
 	out, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -67,6 +71,7 @@ func BenchmarkHKDFSHA256Into(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if err := HKDFSHA256Into(secret, salt, info, out); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -75,6 +80,7 @@ func BenchmarkHKDFSHA256Into(b *testing.B) {
 func BenchmarkArgon2IDKeyInto(b *testing.B) {
 	out, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -84,6 +90,7 @@ func BenchmarkArgon2IDKeyInto(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if err := Argon2IDKeyInto([]byte("password"), []byte("somesalt"), 1, 64, 1, out); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}

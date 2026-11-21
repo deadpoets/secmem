@@ -35,14 +35,17 @@ import (
 func TestClassification_Contained_SealFrom(t *testing.T) {
 	key := make([]byte, 32)
 	if _, err := io.ReadFull(rand.Reader, key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	gcm, err := cipher.NewGCM(block)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	nonce := make([]byte, gcm.NonceSize())
@@ -53,6 +56,7 @@ func TestClassification_Contained_SealFrom(t *testing.T) {
 	defer pt.Destroy()
 	dst := make([]byte, 0, 1024+gcm.Overhead())
 	if _, err := SealFrom(dst, gcm, nonce, pt, nil); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	got := testing.AllocsPerRun(200, func() {
@@ -84,6 +88,7 @@ func TestClassification_Contained_Ed25519Sign(t *testing.T) {
 		{"over the stack limit", make([]byte, ed25519NonceStackBytes+1), 2},
 	} {
 		if _, err := s.Sign(nil, tc.msg, nil); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		got := testing.AllocsPerRun(100, func() {
@@ -115,10 +120,12 @@ func TestClassification_Transient(t *testing.T) {
 	defer mk.Destroy()
 	ek, err := mk.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	ct, ss, err := Encapsulate(ek)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	ss.Destroy()
@@ -149,6 +156,7 @@ func TestClassification_Contained_X25519(t *testing.T) {
 	defer x.Destroy()
 	peer, err := x.PublicKey()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if got := testing.AllocsPerRun(100, func() { _, _ = x.PublicKey() }); got != 0 {

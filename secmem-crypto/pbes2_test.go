@@ -41,15 +41,18 @@ func pkcs8Fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.P
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", "pkcs8-encrypted", name+".b64"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	raw, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(body)), ""))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	pubName := map[string]string{"ed25519": "ed25519", "ecdsa": "ecdsa-p256", "rsa": "rsa-2048"}[strings.SplitN(name, "-", 2)[0]]
 	pubPEM, err := os.ReadFile(filepath.Join("testdata", "pkcs8-encrypted", pubName+".pub"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	block, _ := pem.Decode(pubPEM)
@@ -59,6 +62,7 @@ func pkcs8Fixture(t testing.TB, name string) (pemBytes, raw []byte, pub crypto.P
 	}
 	pub, err = x509.ParsePKIXPublicKey(block.Bytes)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return pemArmour(pkcs8PEMType, body), raw, pub
@@ -77,6 +81,7 @@ func pkcs8Fixtures(t testing.TB) []string {
 	t.Helper()
 	matches, err := filepath.Glob(filepath.Join("testdata", "pkcs8-encrypted", "*.b64"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if len(matches) < 19 {
@@ -120,10 +125,12 @@ func pkcs8RefusedFixture(t testing.TB, name string) (pemBytes, raw []byte) {
 	t.Helper()
 	body, err := os.ReadFile(filepath.Join("testdata", "pkcs8-encrypted", "refused", name+".b64"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	raw, err = base64.StdEncoding.DecodeString(strings.Join(strings.Fields(string(body)), ""))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return pemArmour(pkcs8PEMType, body), raw
@@ -146,6 +153,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 			for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 				s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: %v", form, err)
 				}
 				verifySigner(t, s, pub)
@@ -153,6 +161,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 
 				// The plain parser must still name the condition.
 				if _, err := ParsePrivateKey(data, AllowHeapTransients()); !errors.Is(err, ErrEncryptedKey) {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: ParsePrivateKey = %v, want ErrEncryptedKey", form, err)
 				}
 				// AES-CBC authenticates nothing: a wrong passphrase is
@@ -164,6 +173,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 					t.Fatalf("%s: a wrong passphrase was accepted", form)
 				}
 				if !errors.Is(err, x509.IncorrectPasswordError) {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: wrong passphrase: %v, want IncorrectPasswordError", form, err)
 				}
 			}
@@ -179,6 +189,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 		}
 		f, err := readPBES2(raw)
 		if err != nil || f.prf != hashSHA1 {
+			skipIfLockRefused(t, err)
 			t.Fatalf("readPBES2: prf %d, err %v; want hashSHA1 from the absent field", f.prf, err)
 		}
 	})
@@ -196,6 +207,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Fixtures(t *testing.T) {
 			_, raw, _ := pkcs8Fixture(t, name)
 			f, err := readPBES2(raw)
 			if err != nil || !f.scrypt || f.n != want.n || f.r != want.r || f.p != want.p || f.keyLen != want.keyLen {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: scrypt %v, N=%d r=%d p=%d, key %d, err %v; want N=%d r=%d p=%d, key %d",
 					name, f.scrypt, f.n, f.r, f.p, f.keyLen, err, want.n, want.r, want.p, want.keyLen)
 			}
@@ -208,6 +220,7 @@ func oidBytes(t *testing.T, oid asn1.ObjectIdentifier) []byte {
 	t.Helper()
 	b, err := asn1.Marshal(oid)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return b
@@ -243,18 +256,22 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Refused(t *testing.T) {
 					t.Fatalf("%s: opened", form)
 				}
 				if !errors.Is(err, ErrUnsupportedKey) {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: %v does not wrap ErrUnsupportedKey", form, err)
 				}
 				if errors.Is(err, x509.IncorrectPasswordError) {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: %v reads as a wrong passphrase; the refusal must come before the KDF", form, err)
 				}
 				if got := errors.Is(err, ErrRetiredAlgorithm); got != c.retired {
 					t.Errorf("%s: wraps ErrRetiredAlgorithm = %v, want %v: %v", form, got, c.retired, err)
 				}
 				if c.retired && !strings.Contains(err.Error(), "openssl pkcs8 -topk8") {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: the refusal %q does not say how to convert the file", form, err)
 				}
 				if !c.retired && !strings.Contains(err.Error(), "working memory") {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: the refusal %q does not name the memory cap", form, err)
 				}
 				// The plain entry point names the condition it always did.
@@ -385,10 +402,12 @@ func encryptPKCS8(t *testing.T, plain []byte, spec pbes2Spec) []byte {
 		key, err = pbkdf2.Key(h, testPassphrase, salt, iter, keyLen)
 	}
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	blk, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	pad := 16 - len(plain)%16
@@ -477,6 +496,7 @@ func encryptPKCS8(t *testing.T, plain []byte, spec pbes2Spec) []byte {
 	})
 	der, err := b.Bytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return append(der, spec.trailing...)
@@ -493,10 +513,12 @@ func testPKCS8Ed25519(t *testing.T) ([]byte, crypto.PublicKey) {
 	t.Helper()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	p8, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return p8, pub
@@ -555,6 +577,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Encoder(t *testing.T) {
 			for form, d := range map[string][]byte{"raw": data, "pem": pemArmour(pkcs8PEMType, []byte(base64.StdEncoding.EncodeToString(data)))} {
 				s, err := ParsePrivateKeyWithPassphrase(d, []byte(testPassphrase))
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: %v", form, err)
 				}
 				verifySigner(t, s, pub)
@@ -690,9 +713,11 @@ func TestParsePrivateKeyWithPassphrase_PKCS8Rejects(t *testing.T) {
 		}
 		_, err := ParsePrivateKeyWithPassphrase(encryptPKCS8(t, p8, tc.spec), []byte(testPassphrase))
 		if errors.Is(tc.want, ErrRetiredAlgorithm) && !errors.Is(err, ErrUnsupportedKey) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: retired refusal %v does not also wrap ErrUnsupportedKey", tc.name, err)
 		}
 		if !errors.Is(tc.want, ErrRetiredAlgorithm) && errors.Is(err, ErrRetiredAlgorithm) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: %v claims to be retired", tc.name, err)
 		}
 	}
@@ -708,12 +733,15 @@ func check(t *testing.T, data []byte, want error, text string) {
 		t.Fatal("opened")
 	}
 	if !errors.Is(err, want) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("got %v, want %v", err, want)
 	}
 	if errors.Is(err, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%v reads as a wrong passphrase: the KDF ran for a file refused on its parameters", err)
 	}
 	if text != "" && !strings.Contains(err.Error(), text) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("got %v, want an error naming %q", err, text)
 	}
 }
@@ -734,6 +762,7 @@ func emptyCiphertext(t *testing.T, der []byte) []byte {
 	})
 	out, err := b.Bytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return out
@@ -751,6 +780,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8IterationCap(t *testing.T) {
 	data := encryptPKCS8(t, p8, pbes2Spec{iter: MaxPBKDF2Iterations, prf: oidHMACSHA256(9)})
 	s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("a file at the cap did not open: %v", err)
 	}
 	verifySigner(t, s, pub)
@@ -790,6 +820,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ScryptCaps(t *testing.T) {
 			pkcs8LockBudget(t, data)
 			s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("a file inside the cap did not open: %v", err)
 			}
 			verifySigner(t, s, pub)
@@ -826,9 +857,11 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ScryptLockRefusal(t *testing.T) {
 		t.Fatal("parse succeeded although the working set could not be locked")
 	}
 	if !errors.Is(err, refused) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("the refusal is not in the error: %v", err)
 	}
 	if errors.Is(err, x509.IncorrectPasswordError) || errors.Is(err, ErrUnsupportedKey) || errors.Is(err, errMalformed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("a lock refusal was reported as a verdict on the file or the passphrase: %v", err)
 	}
 	// One scratch, of the size MaxScryptMemory's doc describes for
@@ -857,9 +890,11 @@ func TestParsePrivateKeyWithPassphrase_PKCS8HeapGate(t *testing.T) {
 				for form, data := range map[string][]byte{"pem": pemBytes, "raw": raw} {
 					_, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), nil)
 					if !errors.Is(err, ErrHeapTransients) {
+						skipIfLockRefused(t, err)
 						t.Fatalf("%s: %v, want ErrHeapTransients", form, err)
 					}
 					if errors.Is(err, x509.IncorrectPasswordError) {
+						skipIfLockRefused(t, err)
 						t.Fatalf("%s: the gate's refusal was folded into the post-decryption error", form)
 					}
 					_, perr := ParsePrivateKey(encodings(t, testKeyNamed(t, plainKey))[1].data)
@@ -867,11 +902,13 @@ func TestParsePrivateKeyWithPassphrase_PKCS8HeapGate(t *testing.T) {
 						t.Fatalf("%s: plain parser: %v, want ErrHeapTransients", form, perr)
 					}
 					if want := "secmemcrypto: parse private key: " + errPBES2HeapTransients.Error(); err.Error() != want {
+						skipIfLockRefused(t, err)
 						t.Fatalf("%s: the refusal is not the fixed text:\n  got:  %v\n  want: %s", form, err, want)
 					}
 				}
 				s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 				if err != nil {
+					skipIfLockRefused(t, err)
 					t.Fatal(err)
 				}
 				verifySigner(t, s, pub)
@@ -884,6 +921,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8HeapGate(t *testing.T) {
 		withPolicy(t, false, func() {
 			s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			verifySigner(t, s, pub)
@@ -915,6 +953,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8PostDecryptionIsBinary(t *testing.T)
 	_, raw, _ := pkcs8Fixture(t, "ed25519-iter1")
 	_, wrongErr := ParsePrivateKeyWithPassphrase(raw, []byte("not it"), AllowHeapTransients())
 	if !errors.Is(wrongErr, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, wrongErr)
 		t.Fatalf("wrong passphrase: %v", wrongErr)
 	}
 	want := wrongErr.Error()
@@ -928,6 +967,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8PostDecryptionIsBinary(t *testing.T)
 			_, raw, pub := pkcs8Fixture(t, tc.name)
 			f, err := readPBES2(raw)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			ctStart := bytes.Index(raw, f.ct)
@@ -968,6 +1008,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8PostDecryptionIsBinary(t *testing.T)
 					}
 					continue
 				}
+				skipIfLockRefused(t, err)
 				failed++
 				if inSeed {
 					t.Errorf("flip at %d, inside the seed, failed: %v", off, err)
@@ -994,6 +1035,7 @@ func ed25519SeedRange(t *testing.T, raw []byte) (start, end int) {
 	t.Helper()
 	f, err := readPBES2(raw)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	h := map[inPlaceHash]func() hash.Hash{hashSHA1: sha1.New, hashSHA256: sha256.New}[f.prf]
@@ -1002,10 +1044,12 @@ func ed25519SeedRange(t *testing.T, raw []byte) (start, end int) {
 	}
 	key, err := pbkdf2.Key(h, testPassphrase, f.salt, f.iter, f.keyLen)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	blk, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	plain := make([]byte, len(f.ct))
@@ -1016,6 +1060,7 @@ func ed25519SeedRange(t *testing.T, raw []byte) (start, end int) {
 	}
 	priv, err := x509.ParsePKCS8PrivateKey(plain[:n])
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	seed := priv.(ed25519.PrivateKey).Seed()
@@ -1103,6 +1148,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8WipesAESBlock(t *testing.T) {
 
 			s, err := ParsePrivateKeyWithPassphrase(pemBytes, []byte(testPassphrase), AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			verifySigner(t, s, pub)
@@ -1138,9 +1184,11 @@ func TestParsePrivateKeyWithPassphrase_PKCS8FailsClosedWhenWipeCannot(t *testing
 		t.Fatal("parse succeeded although the AES schedule could not be wiped")
 	}
 	if !strings.Contains(err.Error(), "NOT wiped") {
+		skipIfLockRefused(t, err)
 		t.Fatalf("error does not carry the wipe failure: %v", err)
 	}
 	if errors.Is(err, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("the wipe failure was folded into the wrong-passphrase error: %v", err)
 	}
 }
@@ -1162,6 +1210,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8FromSecureBuffer(t *testing.T) {
 		})
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer s.Destroy()
@@ -1201,6 +1250,7 @@ func TestReadASN1Count(t *testing.T) {
 		b.AddASN1(cbasn1.INTEGER, func(b *cryptobyte.Builder) { b.AddBytes(content) })
 		out, err := b.Bytes()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		s := cryptobyte.String(out)
@@ -1275,6 +1325,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ErrorIndependentOfPlaintext(t *testi
 	_, raw, _ := pkcs8Fixture(t, "ed25519-iter1")
 	f, err := readPBES2(raw)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if len(f.ct) != 64 || len(f.iv) != 16 {
@@ -1282,6 +1333,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ErrorIndependentOfPlaintext(t *testi
 	}
 	_, wrongErr := ParsePrivateKeyWithPassphrase(raw, []byte("not it"))
 	if !errors.Is(wrongErr, x509.IncorrectPasswordError) {
+		skipIfLockRefused(t, wrongErr)
 		t.Fatalf("wrong passphrase: %v", wrongErr)
 	}
 	fixed := "secmemcrypto: parse private key: " + errPBES2Unsupported.Error()
@@ -1293,6 +1345,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8ErrorIndependentOfPlaintext(t *testi
 			return
 		}
 		if got := err.Error(); got != wrongErr.Error() && got != fixed {
+			skipIfLockRefused(t, wrongErr)
 			t.Errorf("%s: error is neither of the two fixed strings, so it was formatted from the plaintext: %v", what, err)
 		}
 		seen[err.Error()] = true

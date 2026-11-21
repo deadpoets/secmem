@@ -26,36 +26,45 @@ func TestReadOnly_MutatorsRefuseInsteadOfFaulting(t *testing.T) {
 	defer func() { _ = buf.Destroy() }()
 
 	if _, err := buf.CopyIn([]byte{1, 2, 3, 4}, 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("CopyIn while writable: %v", err)
 	}
 	if err := buf.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 
 	// Every mutator must now refuse with ErrReadOnly rather than fault.
 	if _, err := buf.CopyIn([]byte{9}, 0); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Errorf("CopyIn after ReadOnly = %v, want ErrReadOnly", err)
 	}
 	if err := buf.SetByteAt(0, 0xFF); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Errorf("SetByteAt after ReadOnly = %v, want ErrReadOnly", err)
 	}
 	if err := buf.Truncate(2); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Truncate after ReadOnly = %v, want ErrReadOnly", err)
 	}
 	if _, err := buf.ReadFrom(bytes.NewReader([]byte("XXXXXXXX"))); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Errorf("ReadFrom after ReadOnly = %v, want ErrReadOnly", err)
 	}
 
 	// Reads still work while read-only.
 	if _, err := buf.ByteAt(0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ByteAt while read-only should succeed, got %v", err)
 	}
 
 	// ReadWrite lifts the restriction.
 	if err := buf.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite: %v", err)
 	}
 	if err := buf.SetByteAt(0, 0xAB); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("SetByteAt after ReadWrite = %v, want nil", err)
 	}
 }
@@ -79,21 +88,26 @@ func TestReadOnly_SurvivesSealUnseal(t *testing.T) {
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal of a read-only buffer: %v", err)
 	}
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 
 	// Still read-only after the cycle: a mutator refuses (flag intact) ...
 	if err := buf.SetByteAt(0, 1); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Errorf("SetByteAt after seal/unseal of a read-only buffer = %v, want ErrReadOnly", err)
 	}
 	// ... and a read still works, confirming the page is PROT_READ, not PROT_NONE.
 	if _, err := buf.ByteAt(0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ByteAt after seal/unseal of a read-only buffer = %v, want nil", err)
 	}
 }

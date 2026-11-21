@@ -47,6 +47,7 @@ func TestOpenInto_RejectsAEADThatDoesNotWriteInPlace(t *testing.T) {
 	gcm := newGCM(t)
 	nonce := make([]byte, gcm.NonceSize())
 	if _, err := io.ReadFull(rand.Reader, nonce); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("nonce: %v", err)
 	}
 	plaintext := []byte("plaintext that must never be reported as delivered")
@@ -66,6 +67,7 @@ func TestOpenInto_RejectsAEADThatDoesNotWriteInPlace(t *testing.T) {
 			t.Fatal("OpenInto reported success for an AEAD that returned a fresh allocation instead of writing into the buffer")
 		}
 		if !strings.Contains(err.Error(), "did not decrypt in place") {
+			skipIfLockRefused(t, err)
 			t.Errorf("error does not name the violation: %v", err)
 		}
 		if err := out.WithBytesErr(func(got []byte) error {
@@ -74,6 +76,7 @@ func TestOpenInto_RejectsAEADThatDoesNotWriteInPlace(t *testing.T) {
 			}
 			return nil
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WithBytesErr: %v", err)
 		}
 		if len(bad.returned) != len(plaintext) {
@@ -116,14 +119,17 @@ func TestOpenInto_EmptyPlaintextConforming(t *testing.T) {
 	}
 	defer out.Destroy()
 	if err := out.Truncate(0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(0): %v", err)
 	}
 
 	if err := OpenInto(out, gcm, nonce, ct, []byte("aad only")); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("OpenInto on an empty plaintext: %v", err)
 	}
 	// An allocating AEAD returns a non-nil empty slice here; still fine.
 	if err := OpenInto(out, &allocatingAEAD{AEAD: gcm}, nonce, ct, []byte("aad only")); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("OpenInto on an empty plaintext with a non-aliasing empty return: %v", err)
 	}
 }

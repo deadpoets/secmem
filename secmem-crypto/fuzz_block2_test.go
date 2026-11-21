@@ -48,6 +48,7 @@ func FuzzOpenInto_RoundTrip(f *testing.F) {
 		defer out.Destroy()
 
 		if err := OpenInto(out, gcm, nonce, ct, aad); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("OpenInto of a valid ciphertext failed: %v", err)
 		}
 		_ = out.WithBytesErr(func(got []byte) error {
@@ -75,16 +76,19 @@ func FuzzX25519Key_PublicKeyMatchesStdlib(f *testing.F) {
 		}
 		k, err := NewX25519Key(buf)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewX25519Key: %v", err)
 		}
 		defer k.Destroy()
 
 		got, err := k.PublicKey()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("PublicKey: %v", err)
 		}
 		want, err := curve25519.X25519(scalar, curve25519.Basepoint)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("stdlib X25519: %v", err)
 		}
 		if !bytes.Equal(got[:], want) {

@@ -20,12 +20,14 @@ func TestMarshalOpenSSHPrivateKey_RoundTrip(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
 
 	buf, err := signer.MarshalOpenSSHPrivateKey("test-comment")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalOpenSSHPrivateKey: %v", err)
 	}
 	defer buf.Destroy()
@@ -35,6 +37,7 @@ func TestMarshalOpenSSHPrivateKey_RoundTrip(t *testing.T) {
 		pemBytes = append([]byte(nil), b...) //nolint:secmem-lint // test reads the PEM out to parse it with x/crypto/ssh, which needs a plain []byte
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 
@@ -44,11 +47,13 @@ func TestMarshalOpenSSHPrivateKey_RoundTrip(t *testing.T) {
 
 	parsed, err := ssh.ParsePrivateKey(pemBytes)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ssh.ParsePrivateKey on marshaled output: %v", err)
 	}
 
 	sshSigner, err := AsSSH(signer)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("AsSSH: %v", err)
 	}
 	if !bytes.Equal(parsed.PublicKey().Marshal(), sshSigner.PublicKey().Marshal()) {
@@ -58,9 +63,11 @@ func TestMarshalOpenSSHPrivateKey_RoundTrip(t *testing.T) {
 	data := []byte("round-trip signing data")
 	sig, err := parsed.Sign(rand.Reader, data)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign with the reconstructed key: %v", err)
 	}
 	if err := sshSigner.PublicKey().Verify(data, sig); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("original public key does not verify a signature from the reconstructed key: %v", err)
 	}
 }
@@ -76,6 +83,7 @@ func TestMarshalOpenSSHPrivateKey_CommentReachesOutput(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
@@ -83,6 +91,7 @@ func TestMarshalOpenSSHPrivateKey_CommentReachesOutput(t *testing.T) {
 	const comment = "distinctive-test-comment-xyz"
 	buf, err := signer.MarshalOpenSSHPrivateKey(comment)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalOpenSSHPrivateKey: %v", err)
 	}
 	defer buf.Destroy()
@@ -95,6 +104,7 @@ func TestMarshalOpenSSHPrivateKey_CommentReachesOutput(t *testing.T) {
 	// which is the observable, testable half of "the comment is included."
 	other, err := signer.MarshalOpenSSHPrivateKey("a-completely-different-comment")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second MarshalOpenSSHPrivateKey: %v", err)
 	}
 	defer other.Destroy()
@@ -113,17 +123,21 @@ func TestMarshalOpenSSHPrivateKey_NilAndDestroyed(t *testing.T) {
 	t.Parallel()
 	var nilSigner *Ed25519Signer
 	if _, err := nilSigner.MarshalOpenSSHPrivateKey("x"); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil signer error = %v, want wrap of ErrDestroyed", err)
 	}
 
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if _, err := signer.MarshalOpenSSHPrivateKey("x"); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed signer error = %v, want wrap of ErrDestroyed", err)
 	}
 }
@@ -135,12 +149,14 @@ func TestMarshalOpenSSHPrivateKey_EmptyComment(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer signer.Destroy()
 
 	buf, err := signer.MarshalOpenSSHPrivateKey("")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalOpenSSHPrivateKey with empty comment: %v", err)
 	}
 	defer buf.Destroy()
@@ -148,6 +164,7 @@ func TestMarshalOpenSSHPrivateKey_EmptyComment(t *testing.T) {
 	var pemBytes []byte
 	_ = buf.WithBytesErr(func(b []byte) error { pemBytes = append([]byte(nil), b...); return nil }) //nolint:secmem-lint // test reads the PEM out to parse it with x/crypto/ssh
 	if _, err := ssh.ParsePrivateKey(pemBytes); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ParsePrivateKey on empty-comment output: %v", err)
 	}
 }
@@ -159,20 +176,24 @@ func TestMarshalOpenSSHPrivateKey_OwnershipIndependent(t *testing.T) {
 	t.Parallel()
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	buf, err := signer.MarshalOpenSSHPrivateKey("x")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalOpenSSHPrivateKey: %v", err)
 	}
 	defer buf.Destroy()
 
 	if err := signer.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy signer: %v", err)
 	}
 
 	var pemBytes []byte
 	if err := buf.WithBytesErr(func(b []byte) error { pemBytes = append([]byte(nil), b...); return nil }); err != nil { //nolint:secmem-lint // test reads the content out to check its prefix
+		skipIfLockRefused(t, err)
 		t.Fatalf("buffer unusable after source signer Destroy: %v", err)
 	}
 	if !strings.HasPrefix(string(pemBytes), "-----BEGIN OPENSSH PRIVATE KEY-----") {

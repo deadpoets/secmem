@@ -35,15 +35,18 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 
 	parked, err := arena.Acquire() // slot 0: keeps a reader on the lock
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire(parked): %v", err)
 	}
 	defer func() { _ = parked.Release() }()
 	subject, err := arena.Acquire() // slot 1: the handle that goes stale
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire(subject): %v", err)
 	}
 	first := bytes.Repeat([]byte{0x11}, 32)
 	if err := subject.WithBytes(func(b []byte) { copy(b, first) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("subject.WithBytes: %v", err)
 	}
 
@@ -99,6 +102,7 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 	close(releaseCallback)
 	<-callbackDone
 	if err := <-writerDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite: %v", err)
 	}
 	<-borrowerEnrolled
@@ -106,10 +110,12 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 	// 4. With the borrower holding the lock but not yet past its check, the
 	//    slot is released and handed to a new owner, who writes a new secret.
 	if err := subject.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release: %v", err)
 	}
 	next, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire(next): %v", err)
 	}
 	defer func() { _ = next.Release() }()
@@ -118,6 +124,7 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 	}
 	second := bytes.Repeat([]byte{0x22}, 32)
 	if err := next.WithBytes(func(b []byte) { copy(b, second) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("next.WithBytes: %v", err)
 	}
 
@@ -131,6 +138,7 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 	default:
 	}
 	if !errors.Is(err, ErrSlotReleased) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("stale borrow returned %v, want ErrSlotReleased", err)
 	}
 
@@ -140,6 +148,7 @@ func TestArenaSlot_StaleHandleRefusedUnderLock(t *testing.T) {
 			t.Errorf("next tenant's slot = %x…, want %x…", b[:4], second[:4]) //nolint:secmem-lint // diagnostic on failure only; test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("next.WithBytes: %v", err)
 	}
 }

@@ -129,6 +129,7 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	}
 
 	if err := ScrubErr(func() error { fill(); return nil }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	dump()

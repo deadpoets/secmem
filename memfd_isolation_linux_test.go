@@ -23,6 +23,7 @@ import (
 func TestMemfdIsolation_HoldsOnSecretMapping(t *testing.T) {
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -35,11 +36,13 @@ func TestMemfdIsolation_HoldsOnSecretMapping(t *testing.T) {
 	// unambiguous.
 	pattern := bytes.Repeat([]byte{0x5A}, 64)
 	if err := buf.WithBytes(func(b []byte) { copy(b, pattern) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 
 	mem, err := os.Open("/proc/self/mem")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("open /proc/self/mem: %v", err)
 	}
 	defer func() { _ = mem.Close() }()
@@ -62,6 +65,7 @@ func TestMemfdIsolation_HoldsOnSecretMapping(t *testing.T) {
 	addr := int64(uintptr(unsafe.Pointer(&buf.region.inner[0])))
 	n, err := mem.ReadAt(leak, addr)
 	if err == nil && n > 0 {
+		skipIfLockRefused(t, err)
 		t.Fatalf("read %d bytes of a memfd_secret mapping via /proc/self/mem — kernel isolation is NOT in force after MAP_FIXED", n)
 	}
 	if bytes.Contains(leak[:n], pattern[:8]) {

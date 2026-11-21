@@ -28,6 +28,7 @@ func TestHelpersIsolated(t *testing.T) {
 			cmd.Env = append(os.Environ(), "SECMEM_ISOLATED_CASE="+name)
 			out, err := cmd.CombinedOutput()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("isolated child %q failed: %v\n%s", name, err, out)
 			}
 		})

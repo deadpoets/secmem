@@ -17,6 +17,7 @@ import (
 func BenchmarkECDSASignerSignP256(b *testing.B) {
 	s, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	defer s.Destroy()
@@ -26,6 +27,7 @@ func BenchmarkECDSASignerSignP256(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -34,6 +36,7 @@ func BenchmarkECDSASignerSignP256(b *testing.B) {
 func BenchmarkECDSAStdlibSignP256(b *testing.B) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
+		skipIfLockRefused(b, err)
 		b.Fatal(err)
 	}
 	digest := sha256.Sum256([]byte("bench"))
@@ -42,6 +45,7 @@ func BenchmarkECDSAStdlibSignP256(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := key.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -55,6 +59,7 @@ func BenchmarkRSASignerSign2048(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}
@@ -68,6 +73,7 @@ func BenchmarkRSAStdlibSign2048(b *testing.B) {
 	b.ResetTimer()
 	for b.Loop() {
 		if _, err := key.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+			skipIfLockRefused(b, err)
 			b.Fatal(err)
 		}
 	}

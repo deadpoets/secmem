@@ -32,6 +32,7 @@ func TestOpensshCrypt_RefusesEncryptionModes(t *testing.T) {
 				t.Skipf("no secure memory on this host: %v", err)
 			}
 			if !errors.Is(err, ErrUnsupportedKey) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("encrypting with %s: got %v, want ErrUnsupportedKey", tc.name, err)
 			}
 		})

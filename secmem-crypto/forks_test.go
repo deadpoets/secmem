@@ -27,6 +27,7 @@ func loadForks(t *testing.T) *forks.Manifest {
 	t.Helper()
 	m, err := forks.Load(forks.Name)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return m
@@ -39,15 +40,18 @@ func TestForks_PathsExist(t *testing.T) {
 	t.Parallel()
 	for _, f := range loadForks(t).Forks {
 		if _, err := os.Stat(f.Path); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: path %s: %v", f.ID, f.Path, err)
 		}
 		for _, id := range f.Identity {
 			if _, err := os.Stat(id.Ours); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: identity claim on %s: %v", f.ID, id.Ours, err)
 			}
 		}
 		for _, c := range f.Claims {
 			if _, err := os.Stat(c); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: claims file %s: %v", f.ID, c, err)
 			}
 		}
@@ -66,6 +70,7 @@ func TestForks_ClaimsStateTheForkPoint(t *testing.T) {
 		for _, c := range f.Claims {
 			b, err := os.ReadFile(c)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s: %v", f.ID, err)
 				continue
 			}
@@ -106,6 +111,7 @@ func TestForks_NoOtherUpstreamVersionInForkDir(t *testing.T) {
 			return nil
 		})
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: %v", f.ID, err)
 		}
 	}
@@ -123,6 +129,7 @@ func TestForks_EveryCopiedDirectoryIsRegistered(t *testing.T) {
 	}
 	entries, err := os.ReadDir("internal")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for _, e := range entries {
@@ -146,6 +153,7 @@ func TestForks_NoticeSectionsMatchTheManifest(t *testing.T) {
 	t.Parallel()
 	b, err := os.ReadFile("NOTICE")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	// A section heading is a line followed by a line of dashes.
@@ -189,6 +197,7 @@ func TestForks_EmbeddedFileHashes(t *testing.T) {
 		}
 		got, err := forks.SHA256File(f.Path)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: %v", f.ID, err)
 			continue
 		}
@@ -242,6 +251,7 @@ func TestForks_EntriesAreUsable(t *testing.T) {
 				}
 				minor, err := strconv.Atoi(m[1])
 				if err != nil || minor < floor {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: %s is %q, below this module's own go directive (go1.%d); a provenance line the module cannot be built with is a typo", f.ID, field, v, floor)
 				}
 			}
@@ -277,6 +287,7 @@ func goDirectiveMinor(t *testing.T) int {
 	t.Helper()
 	b, err := os.ReadFile("go.mod")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	m := regexp.MustCompile(`(?m)^go 1\.(\d+)`).FindSubmatch(b)
@@ -285,6 +296,7 @@ func goDirectiveMinor(t *testing.T) int {
 	}
 	minor, err := strconv.Atoi(string(m[1]))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return minor

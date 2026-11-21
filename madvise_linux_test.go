@@ -86,6 +86,7 @@ func requireSecretmemLock(t *testing.T, buf *SecureBuffer) {
 	addr := secretAreaAddr(buf)
 	flags, err := vmFlagsFor(addr)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("reading smaps: %v", err)
 	}
 	if hasVMFlag(flags, "lo") {
@@ -94,6 +95,7 @@ func requireSecretmemLock(t *testing.T, buf *SecureBuffer) {
 	}
 	header, err := smapsHeaderFor(addr)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("reading smaps: %v", err)
 	}
 	if !strings.Contains(header, "secretmem") {
@@ -137,6 +139,7 @@ func requireVMFlag(t *testing.T, buf *SecureBuffer, flag, what string, claimed b
 	t.Helper()
 	flags, err := vmFlagsFor(secretAreaAddr(buf))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("reading smaps: %v", err)
 	}
 	if hasVMFlag(flags, flag) {
@@ -152,6 +155,7 @@ func requireVMFlag(t *testing.T, buf *SecureBuffer, flag, what string, claimed b
 	}
 	after, err := vmFlagsFor(secretAreaAddr(buf))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("re-reading smaps: %v", err)
 	}
 	if hasVMFlag(after, flag) {
@@ -230,6 +234,7 @@ func TestMadvise_MemfdSecretTierFlagsInForce(t *testing.T) {
 	// visible in the log, not asserted as a proof of an advice.
 	flags, err := vmFlagsFor(secretAreaAddr(buf))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if hasVMFlag(flags, "mg") {
@@ -268,6 +273,7 @@ func TestMadvise_UnmergeableInForce(t *testing.T) {
 		t.Skipf("child skipped: %s", reason)
 	}
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("child failed: %v", err)
 	}
 }
@@ -289,11 +295,13 @@ func ksmMergeAnyChild(t *testing.T) {
 	// or the flag is unobservable and the subject's clean record is vacuous.
 	ctrl, err := unix.Mmap(-1, 0, page, unix.PROT_READ|unix.PROT_WRITE, unix.MAP_ANON|unix.MAP_PRIVATE)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("control mmap: %v", err)
 	}
 	defer func() { _ = unix.Munmap(ctrl) }()
 	ctrlFlags, err := vmFlagsFor(uintptr(unsafe.Pointer(&ctrl[0])))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if !hasVMFlag(ctrlFlags, "mg") {
@@ -309,6 +317,7 @@ func ksmMergeAnyChild(t *testing.T) {
 	defer func() { _ = buf.Destroy() }()
 	flags, err := vmFlagsFor(secretAreaAddr(buf))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if hasVMFlag(flags, "mg") {

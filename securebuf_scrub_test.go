@@ -28,6 +28,7 @@ func TestScrub_WithBytesErr_Integration(t *testing.T) {
 
 	buf, err := NewBuffer(input) // wipes input after copying
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -47,6 +48,7 @@ func TestScrub_WithBytesErr_Integration(t *testing.T) {
 			return nil
 		})
 		if accessErr != nil {
+			skipIfLockRefused(t, accessErr)
 			t.Errorf("WithBytesErr inside secret.Do: %v", accessErr)
 		}
 	})

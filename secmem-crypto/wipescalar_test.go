@@ -14,6 +14,7 @@ func TestWipeEd25519Scalar_ZeroesValue(t *testing.T) {
 	}
 	s, err := edwards25519.NewScalar().SetUniformBytes(nonZero)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("SetUniformBytes: %v", err)
 	}
 	zeroScalar := edwards25519.NewScalar()

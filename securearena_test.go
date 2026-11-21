@@ -20,6 +20,7 @@ func TestNewArena_Basic(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 8)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -70,12 +71,14 @@ func TestArena_AcquireReleaseCycle(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if !slot.IsLive() {
@@ -86,6 +89,7 @@ func TestArena_AcquireReleaseCycle(t *testing.T) {
 	}
 
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release: %v", err)
 	}
 	if slot.IsLive() {
@@ -100,19 +104,23 @@ func TestArena_ReleaseIdempotent(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(16, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first Release: %v", err)
 	}
 	// Second Release must be a no-op — not an error.
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Release (idempotent) returned error: %v", err)
 	}
 }
@@ -122,6 +130,7 @@ func TestArena_AcquireFull(t *testing.T) {
 	const maxCap = 4
 	a, err := NewArena(32, maxCap)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -130,6 +139,7 @@ func TestArena_AcquireFull(t *testing.T) {
 	for i := range maxCap {
 		s, acqErr := a.Acquire()
 		if acqErr != nil {
+			skipIfLockRefused(t, acqErr)
 			t.Fatalf("Acquire %d: %v", i, acqErr)
 		}
 		slots[i] = s
@@ -138,15 +148,18 @@ func TestArena_AcquireFull(t *testing.T) {
 	// One more must fail with ErrArenaFull.
 	_, err = a.Acquire()
 	if !errors.Is(err, ErrArenaFull) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Acquire on full arena = %v, want ErrArenaFull", err)
 	}
 
 	// Release one → Acquire succeeds again.
 	if relErr := slots[0].Release(); relErr != nil {
+		skipIfLockRefused(t, relErr)
 		t.Fatalf("Release: %v", relErr)
 	}
 	s, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire after release: %v", err)
 	}
 	_ = s.Release()
@@ -159,6 +172,7 @@ func TestArena_SlotIndexStable(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 3)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -183,6 +197,7 @@ func TestArena_WithBytesRoundTrip(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(16, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -200,6 +215,7 @@ func TestArena_WithBytesRoundTrip(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr write: %v", err)
 	}
 
@@ -209,6 +225,7 @@ func TestArena_WithBytesRoundTrip(t *testing.T) {
 		return nil
 	})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr read: %v", err)
 	}
 
@@ -221,6 +238,7 @@ func TestArena_WithBytesAfterRelease(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -230,6 +248,7 @@ func TestArena_WithBytesAfterRelease(t *testing.T) {
 
 	err = slot.WithBytesErr(func([]byte) error { return nil })
 	if !errors.Is(err, ErrSlotReleased) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytesErr on released slot = %v, want ErrSlotReleased", err)
 	}
 }
@@ -238,6 +257,7 @@ func TestArena_WithBytesErrorPropagated(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -248,6 +268,7 @@ func TestArena_WithBytesErrorPropagated(t *testing.T) {
 
 	err = slot.WithBytesErr(func([]byte) error { return sentinel })
 	if !errors.Is(err, sentinel) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytesErr = %v, want sentinel", err)
 	}
 }
@@ -256,6 +277,7 @@ func TestArena_WithBytesSlotSizeEnforced(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(8, 3)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -300,6 +322,7 @@ func TestArena_ReleaseWipesSlot(t *testing.T) {
 	const slotSize = 32
 	a, err := NewArena(slotSize, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -320,11 +343,13 @@ func TestArena_ReleaseWipesSlot(t *testing.T) {
 	// that was never used comes back first and the released one after it.
 	other, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	defer func() { _ = other.Release() }()
 	slot2, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("re-Acquire: %v", err)
 	}
 	if slot2.Index() != idx {
@@ -350,16 +375,19 @@ func TestArena_DestroyIdempotent(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first Destroy: %v", err)
 	}
 	if !a.IsDestroyed() {
 		t.Error("IsDestroyed = false after Destroy")
 	}
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("second Destroy (idempotent) returned error: %v", err)
 	}
 }
@@ -368,12 +396,14 @@ func TestArena_AcquireAfterDestroy(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	_ = a.Destroy()
 
 	_, err = a.Acquire()
 	if !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Acquire after Destroy = %v, want ErrDestroyed", err)
 	}
 }
@@ -382,6 +412,7 @@ func TestArena_WithBytesAfterDestroy(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 
@@ -390,6 +421,7 @@ func TestArena_WithBytesAfterDestroy(t *testing.T) {
 
 	err = slot.WithBytesErr(func([]byte) error { return nil })
 	if !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytesErr after Destroy = %v, want ErrDestroyed", err)
 	}
 }
@@ -403,6 +435,7 @@ func TestArena_NilReceiverSafe(t *testing.T) {
 	var a *SecureArena
 
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil Destroy: %v", err)
 	}
 	if !a.IsDestroyed() {
@@ -419,6 +452,7 @@ func TestArena_NilReceiverSafe(t *testing.T) {
 	}
 	_, err := a.Acquire()
 	if !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil Acquire = %v, want ErrDestroyed", err)
 	}
 }
@@ -434,9 +468,11 @@ func TestArenaSlot_NilReceiverSafe(t *testing.T) {
 		t.Errorf("nil ArenaSlot.Index() = %d, want -1", s.Index())
 	}
 	if err := s.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil ArenaSlot.Release() = %v, want nil", err)
 	}
 	if err := s.WithBytes(func([]byte) {}); !errors.Is(err, ErrSlotReleased) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil ArenaSlot.WithBytes() = %v, want ErrSlotReleased", err)
 	}
 }
@@ -455,6 +491,7 @@ func TestArena_ConcurrentAcquireRelease(t *testing.T) {
 		)
 		a, err := NewArena(slotSize, maxCap)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewArena: %v", err)
 		}
 		defer func() { _ = a.Destroy() }()
@@ -505,15 +542,18 @@ func TestArena_DestroyRacesRelease(t *testing.T) {
 	synctest.Test(t, func(t *testing.T) {
 		a, err := NewArena(32, 4)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewArena: %v", err)
 		}
 
 		slot, err := a.Acquire()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Acquire: %v", err)
 		}
 		released, err := a.Acquire()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Acquire: %v", err)
 		}
 
@@ -553,6 +593,7 @@ func TestArena_DestroyRacesRelease(t *testing.T) {
 			t.Error("IsDestroyed = false after Destroy")
 		}
 		if err := <-releaseDone; err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("Release that lost the race to Destroy = %v, want nil", err)
 		}
 	})
@@ -629,6 +670,7 @@ func TestArena_MappedLenIsPageAligned(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(1, 1) // minimal: 1-byte slot, 1 slot
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -648,23 +690,28 @@ func TestArena_ReadOnlyReadWrite(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	if err := a.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ReadOnly on live arena: %v", err)
 	}
 	if err := a.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ReadWrite on live arena: %v", err)
 	}
 
 	_ = a.Destroy()
 
 	if err := a.ReadOnly(); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("ReadOnly after Destroy = %v, want ErrDestroyed", err)
 	}
 	if err := a.ReadWrite(); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("ReadWrite after Destroy = %v, want ErrDestroyed", err)
 	}
 }
@@ -690,25 +737,30 @@ func TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
 
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := slot.WithBytes(func(b []byte) { b[0] = 0xAB }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes while writable: %v", err)
 	}
 
 	if err := a.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 
 	// Release must refuse rather than fault, and must NOT return the slot to
 	// the pool (it was not wiped).
 	if err := slot.Release(); !errors.Is(err, ErrReadOnly) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release while read-only = %v, want ErrReadOnly", err)
 	}
 	if !slot.IsLive() {
@@ -723,14 +775,17 @@ func TestArena_ReleaseWhileReadOnlyRefusesInsteadOfFaulting(t *testing.T) {
 			t.Errorf("slot contents = %#x, want 0xAB", b[0]) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytes while read-only should succeed, got %v", err)
 	}
 
 	// ReadWrite lifts the restriction; the slot then releases cleanly.
 	if err := a.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite: %v", err)
 	}
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Release after ReadWrite = %v, want nil", err)
 	}
 	if got := a.LiveCount(); got != 0 {
@@ -745,15 +800,19 @@ func TestArena_DestroyWhileReadOnly(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	if _, err := a.Acquire(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := a.ReadOnly(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadOnly: %v", err)
 	}
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy of a read-only arena: %v", err)
 	}
 	if !a.IsDestroyed() {
@@ -857,10 +916,12 @@ func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
 	// retryable, never a lost slot. Draining them makes the occupancy
 	// deterministic regardless of how the storm was scheduled.
 	if err := a.ReadWrite(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite after stress: %v", err)
 	}
 	for _, s := range refused {
 		if err := s.Release(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Release of a slot refused during a read-only window: %v", err)
 		}
 	}
@@ -869,9 +930,11 @@ func TestArena_ConcurrentReadOnlyRelease(t *testing.T) {
 	}
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire after stress: %v", err)
 	}
 	if err := slot.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release after stress: %v", err)
 	}
 }
@@ -889,6 +952,7 @@ func TestArenaSlot_GenerationGuard(t *testing.T) {
 	t.Parallel()
 	a, err := NewArena(32, 1) // single slot — ensures same index is re-used
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = a.Destroy() }()
@@ -896,15 +960,18 @@ func TestArenaSlot_GenerationGuard(t *testing.T) {
 	// Acquire, then release the slot.
 	old, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first Acquire: %v", err)
 	}
 	if releaseErr := old.Release(); releaseErr != nil {
+		skipIfLockRefused(t, releaseErr)
 		t.Fatalf("Release: %v", releaseErr)
 	}
 
 	// Re-acquire the same slot — new owner.
 	newSlot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second Acquire: %v", err)
 	}
 	defer func() { _ = newSlot.Release() }()
@@ -913,6 +980,7 @@ func TestArenaSlot_GenerationGuard(t *testing.T) {
 	// owner's data.
 	err = old.WithBytesErr(func([]byte) error { return nil })
 	if !errors.Is(err, ErrSlotReleased) {
+		skipIfLockRefused(t, err)
 		t.Errorf("stale slot WithBytesErr = %v, want ErrSlotReleased (generation guard)", err)
 	}
 }
