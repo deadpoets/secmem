@@ -53,6 +53,10 @@
 //     reaches what this package's windows leave.
 //   - The secret-key (K) and associated-data (X) inputs deriveKey already
 //     took are exposed, so RFC 9106 §5 vectors run as-is.
+//   - A derivation can be abandoned ([DeriveCancellable]). The parent looks
+//     at a channel between slices, when no worker is running, and skips the
+//     extraction; a derivation that is not cancelled executes exactly what
+//     [Derive] always did.
 //
 // The block-processing core (blamka, indexAlpha, phi, the segment schedule)
 // is unchanged; blamka_amd64.s is byte-identical to upstream and

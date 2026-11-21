@@ -28,7 +28,8 @@
 // Derivation into a buffer: [HKDFInto] and [HMACInto] (in place over SHA-2
 // and SHA-3; any other hash is gated like RSA and ECDSA), and Argon2 on an
 // in-tree fork of golang.org/x/crypto/argon2 that wipes its working state
-// ([Argon2Into], [Argon2Workspace], [Argon2Pool]).
+// ([Argon2Into], [Argon2Workspace], [Argon2Pool]); each has a context form
+// that sheds a derivation nobody is waiting for ([Argon2Pool.DeriveContext]).
 //
 // AEAD: [OpenInto] and [SealFrom] keep the plaintext in locked memory, and
 // [WithAESGCM] lends AES-GCM whose key schedule is wiped when the callback

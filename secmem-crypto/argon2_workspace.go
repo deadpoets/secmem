@@ -23,6 +23,7 @@
 package secmemcrypto
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"math"
@@ -35,7 +36,9 @@ import (
 // Argon2Workspace is a locked, reusable working set for one Argon2 cost
 // profile. Create one with [NewArgon2Workspace], derive with
 // [Argon2Workspace.Derive] as many times as needed, and
-// [Argon2Workspace.Destroy] it when done. One derivation runs at a time; concurrent Derive calls queue.
+// [Argon2Workspace.Destroy] it when done. One derivation runs at a time;
+// concurrent Derive calls queue, and [Argon2Workspace.DeriveContext] can
+// leave the queue.
 //
 // Between derivations the region holds zeros: every Derive ends with
 // secmem's cache-flushing wipe over the whole region, whether or not it
@@ -45,7 +48,10 @@ type Argon2Workspace struct {
 	mem     *secmem.SecureBuffer
 	memory  uint32
 	threads uint8
-	mu      sync.Mutex
+	// busy is a one-slot semaphore, held for a derivation and for Destroy.
+	// A channel and not a sync.Mutex so that a queued DeriveContext can
+	// stop waiting when its context ends.
+	busy chan struct{}
 }
 
 // NewArgon2Workspace allocates a locked workspace for the given cost
@@ -64,7 +70,7 @@ func NewArgon2Workspace(memory uint32, threads uint8, opts ...Option) (*Argon2Wo
 	if err != nil {
 		return nil, fmt.Errorf("secmemcrypto: argon2 workspace: %w", err)
 	}
-	return &Argon2Workspace{mem: buf, memory: memory, threads: threads}, nil
+	return &Argon2Workspace{mem: buf, memory: memory, threads: threads, busy: make(chan struct{}, 1)}, nil
 }
 
 // Size is the number of locked bytes the workspace holds.
@@ -83,6 +89,27 @@ func (w *Argon2Workspace) Size() int { return w.mem.Len() }
 // borrowed from a third SecureBuffer, that outer borrow is the caller's,
 // and must come first in LockOrder.
 func (w *Argon2Workspace) Derive(password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
+	return w.DeriveContext(context.Background(), password, salt, p, out)
+}
+
+// DeriveContext is [Argon2Workspace.Derive] that gives up when ctx ends.
+//
+// ctx is honoured in two places: while the call waits for another
+// derivation on this workspace to finish, and between the slices of its own
+// derivation. Argon2 runs four slices per pass, so a derivation that has
+// started returns at most one slice, 1/(4·Time) of its work, after ctx ends;
+// a slice in progress is never interrupted. That is a few milliseconds at
+// the package defaults on a desktop and proportionally more at higher costs,
+// so use it to shed work nobody is waiting for, not as a deadline with a
+// tight bound.
+//
+// When ctx ends first the error wraps ctx.Err(), out is exactly as it was
+// before the call, and the workspace has been wiped just as after a
+// completed derivation and is ready for the next one. A nil ctx is an error.
+func (w *Argon2Workspace) DeriveContext(ctx context.Context, password, salt []byte, p Argon2Params, out *secmem.SecureBuffer) error {
+	if ctx == nil {
+		return errors.New("secmemcrypto: argon2 derive: nil context")
+	}
 	mode, err := validateArgon2(password, salt, p, out)
 	if err != nil {
 		return err
@@ -92,8 +119,17 @@ func (w *Argon2Workspace) Derive(password, salt []byte, p Argon2Params, out *sec
 			p.Memory, p.Threads, w.memory, w.threads)
 	}
 
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	// Checked before the select so that a context which has already ended
+	// never starts a derivation: select picks at random among ready cases.
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("secmemcrypto: argon2 derive: %w", err)
+	}
+	select {
+	case w.busy <- struct{}{}:
+	case <-ctx.Done():
+		return fmt.Errorf("secmemcrypto: argon2 derive: %w", ctx.Err())
+	}
+	defer func() { <-w.busy }()
 
 	first, second := w.mem, out
 	if first.LockOrder() > second.LockOrder() {
@@ -107,7 +143,9 @@ func (w *Argon2Workspace) Derive(password, salt []byte, p Argon2Params, out *sec
 			}
 			ws := argon2.Bind(region, w.memory, w.threads)
 			defer ws.Wipe()
-			argon2.Derive(dst, mode, password, salt, p.Secret, p.Data, p.Time, ws)
+			if !argon2.DeriveCancellable(dst, mode, password, salt, p.Secret, p.Data, p.Time, ws, ctx.Done()) {
+				return ctx.Err()
+			}
 			return nil
 		})
 	})
@@ -121,8 +159,8 @@ func (w *Argon2Workspace) Derive(password, salt []byte, p Argon2Params, out *sec
 // derivation to finish. Derive after Destroy returns an error wrapping
 // [secmem.ErrDestroyed].
 func (w *Argon2Workspace) Destroy() error {
-	w.mu.Lock()
-	defer w.mu.Unlock()
+	w.busy <- struct{}{}
+	defer func() { <-w.busy }()
 	return w.mem.Destroy()
 }
 
@@ -167,18 +205,39 @@ func (p *Argon2Pool) Len() int { return len(p.all) }
 // Derive runs [Argon2Workspace.Derive] on the first free workspace, waiting
 // for one if all are busy.
 func (p *Argon2Pool) Derive(password, salt []byte, params Argon2Params, out *secmem.SecureBuffer) error {
+	return p.DeriveContext(context.Background(), password, salt, params, out)
+}
+
+// DeriveContext is [Argon2Pool.Derive] that gives up when ctx ends: while
+// it waits for a free workspace, which is where a caller behind a busy pool
+// spends its time, and then as [Argon2Workspace.DeriveContext] describes. A
+// call that stops waiting never took a workspace, so the pool is as it was.
+// The error wraps ctx.Err() and out is untouched. A nil ctx is an error.
+func (p *Argon2Pool) DeriveContext(ctx context.Context, password, salt []byte, params Argon2Params, out *secmem.SecureBuffer) error {
+	if ctx == nil {
+		return errors.New("secmemcrypto: argon2 pool: nil context")
+	}
 	p.mu.Lock()
 	done := p.done
 	p.mu.Unlock()
 	if done {
 		return fmt.Errorf("secmemcrypto: argon2 pool: %w", secmem.ErrDestroyed)
 	}
-	ws, ok := <-p.free
-	if !ok {
-		return fmt.Errorf("secmemcrypto: argon2 pool: %w", secmem.ErrDestroyed)
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("secmemcrypto: argon2 pool: %w", err)
+	}
+	var ws *Argon2Workspace
+	select {
+	case w, ok := <-p.free:
+		if !ok {
+			return fmt.Errorf("secmemcrypto: argon2 pool: %w", secmem.ErrDestroyed)
+		}
+		ws = w
+	case <-ctx.Done():
+		return fmt.Errorf("secmemcrypto: argon2 pool: %w", ctx.Err())
 	}
 	defer func() { p.free <- ws }()
-	return ws.Derive(password, salt, params, out)
+	return ws.DeriveContext(ctx, password, salt, params, out)
 }
 
 // Destroy waits for in-flight derivations, then destroys every workspace.
