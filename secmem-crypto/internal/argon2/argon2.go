@@ -179,6 +179,24 @@ func (ws *Workspace) Wipe() {
 // On return every working value has been overwritten except what is in ws,
 // which the caller wipes. The output equals upstream's for the same inputs.
 func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uint32, ws *Workspace) {
+	DeriveCancellable(out, mode, password, salt, secret, data, time, ws, nil)
+}
+
+// DeriveCancellable is [Derive] that gives up when done is closed, and
+// reports whether it completed. A nil done never fires, and then this is
+// Derive exactly.
+//
+// secmem: upstream has no cancellation. done is looked at in one place, in
+// the parent, before each slice's workers are started (see processBlocks),
+// so a cancellation takes effect at the next slice boundary: up to one slice,
+// 1/(4·time) of the block work, after done closes. A slice that has started
+// always finishes.
+//
+// When it returns false out has not been written (only the last phase
+// writes it, and that phase is skipped) and ws holds a partly filled matrix,
+// which the caller wipes exactly as after a completed call; a wiped
+// Workspace is ready for the next derivation either way.
+func DeriveCancellable(out []byte, mode Mode, password, salt, secret, data []byte, time uint32, ws *Workspace, done <-chan struct{}) (completed bool) {
 	if time < 1 {
 		panic("argon2: number of rounds too small")
 	}
@@ -209,11 +227,14 @@ func Derive(out []byte, mode Mode, password, salt, secret, data []byte, time uin
 		ws.initBlocks()
 	})
 
-	ws.processBlocks(mode, time)
+	if !ws.processBlocks(mode, time, done) {
+		return false
+	}
 
 	secmem.Scrub(func() {
 		ws.extractKey(out)
 	})
+	return true
 }
 
 // initHash computes H0 into ws.h0[:64]: BLAKE2b-512 of params ‖
@@ -314,7 +335,15 @@ func (ws *Workspace) initBlocks() {
 	}
 }
 
-func (ws *Workspace) processBlocks(mode Mode, time uint32) {
+// processBlocks runs the passes and reports whether it ran them all.
+//
+// secmem: done is checked here, between slices, and nowhere else. At this
+// point no worker goroutine exists, so stopping leaves no stack, register or
+// Scrub window in flight: the only state is the matrix and lane scratch in
+// ws, which the caller wipes. A check inside processSegment would put a
+// branch in the block loop and an early way out of a worker's window, for a
+// finer grain nobody needs.
+func (ws *Workspace) processBlocks(mode Mode, time uint32, done <-chan struct{}) bool {
 	memory, threads := ws.memory, ws.threads
 	lanes := memory / threads
 	segments := lanes / syncPoints
@@ -322,6 +351,11 @@ func (ws *Workspace) processBlocks(mode Mode, time uint32) {
 	var wg sync.WaitGroup // secmem: one for the derivation; reuse after Wait is legal
 	for n := uint32(0); n < time; n++ {
 		for slice := uint32(0); slice < syncPoints; slice++ {
+			select {
+			case <-done:
+				return false
+			default:
+			}
 			for lane := uint32(0); lane < threads; lane++ {
 				wg.Add(1)
 				go ws.runSegment(mode, n, slice, lane, time, lanes, segments, &ws.lanes[lane], &wg)
@@ -329,6 +363,7 @@ func (ws *Workspace) processBlocks(mode Mode, time uint32) {
 			wg.Wait()
 		}
 	}
+	return true
 }
 
 // runSegment is the worker goroutine's body: processSegment inside a Scrub
