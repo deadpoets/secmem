@@ -39,6 +39,13 @@ mark the stability commitment.
 
 ### Changed
 
+- **`kernel-gauntlet.sh`: the run a `KERNELS.md` row records is now a
+  script.** Its first run, on Ubuntu 26.04's 7.0.0-44-generic, found two
+  things in the tests and nothing in the library: the KSM opt-out test looked
+  its control mapping up by start address, which fails when the kernel merges
+  that mapping into a neighbour, and the allocation-count proofs ran under
+  `-asan`, where they count the sanitizer's allocations. Both are fixed; no
+  CI lane runs `-asan`.
 - **`golang.org/x/sys` moves to v0.50.0**, in the core and in `secmem-crypto`.
 - **`secmem-crypto`: `golang.org/x/crypto` moves to v0.59.0.** Upstream did not
   change the forked packages between v0.58.0 and v0.59.0; `forks.json` records
