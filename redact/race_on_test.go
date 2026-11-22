@@ -1,7 +1,7 @@
-//go:build race
+//go:build race || asan
 
 package redact_test
 
-// raceEnabled reports whether the test binary was built with -race, under
+// raceEnabled reports whether the test binary was built with -race or -asan, under
 // which absolute timing bounds are not meaningful.
 const raceEnabled = true
