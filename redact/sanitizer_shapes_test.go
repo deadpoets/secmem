@@ -253,7 +253,7 @@ func TestSanitize_LinearScaling(t *testing.T) {
 	t.Logf("40 KB: %v, 400 KB: %v", time40, time400)
 
 	// The proof is the ratio: linear is 10x, the old quadratic path was 100x.
-	// Allow noise. Under the race detector regexp runs an order of magnitude
+	// Allow noise. Under the race detector (and -asan) regexp runs an order of magnitude
 	// slower and CI runners are shared, so the absolute bound is asserted only
 	// on a plain build; the ratio holds on both.
 	if time400 > 40*time40 && time40 > time.Millisecond {

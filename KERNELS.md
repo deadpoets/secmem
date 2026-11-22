@@ -237,6 +237,19 @@ above, including the v0.1.0 rows.
 
 ## Reproducing a run
 
+The whole gauntlet, on the box under test, from a checkout:
+
+```sh
+bash .github/scripts/kernel-gauntlet.sh
+```
+
+It runs each stage a row is defined by the way CI runs it, through the same
+skip audit, and prints a stage table and a draft row. It needs the pinned Go,
+a C compiler, and passwordless sudo for the root lane and for lifting
+`RLIMIT_MEMLOCK` where CI lifts it; a stage it could not run is reported as
+not run, never as passed. For the counted proofs alone, with no toolchain on
+the target:
+
 The suite compiles to one self-contained binary; the target machine needs no
 Go toolchain:
 

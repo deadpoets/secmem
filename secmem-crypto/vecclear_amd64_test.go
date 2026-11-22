@@ -30,6 +30,15 @@ import (
 // zero. The goroutine is pinned for the whole sequence so each dump reads
 // the thread that ran the code before it. See secmem's
 // scrub_vecclear_test.go for the proof of the clear itself.
+//
+// One thing can write to the registers between the window's clear and the
+// dump: the runtime copying the goroutine's stack, a memmove through the
+// vector registers that leaves stack words in them (see regprobe.StackMark).
+// Residue is therefore excused, and the subject repeated, if and only if the
+// stack is shown to have moved while it ran. Residue with the stack in place
+// fails at once, and so does the last attempt's wherever the stack is: a
+// clear that does not reach this path fails every attempt, and the stack
+// does not move in every one.
 func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -62,19 +71,28 @@ func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 	}
 
 	// Subject: the window both callers use.
-	err = secmem.ScrubErr(func() error {
-		return opensshCrypt(nil, dst, src, nil, passphrase, salt, 1, cipherAES256CTR, false)
-	})
-	regprobe.DumpXMM(&got)
-	if errors.Is(err, secmem.ErrNoSecureMemory) {
-		t.Skipf("opensshCrypt: %v", err) // its one failure outside the arguments is the locked scratch allocation
-	}
-	if err != nil {
-		skipIfLockRefused(t, err)
-		t.Fatal(err)
-	}
-	if !allZero(got[:]) {
-		t.Fatalf("vector registers hold residue after the passphrase path's ScrubErr window: %x", got)
+	const attempts = 5
+	for attempt := 1; ; attempt++ {
+		mark := regprobe.StackMark()
+		err = secmem.ScrubErr(func() error {
+			return opensshCrypt(nil, dst, src, nil, passphrase, salt, 1, cipherAES256CTR, false)
+		})
+		regprobe.DumpXMM(&got)
+		now := regprobe.StackMark()
+		if errors.Is(err, secmem.ErrNoSecureMemory) {
+			t.Skipf("opensshCrypt: %v", err) // its one failure outside the arguments is the locked scratch allocation
+		}
+		if err != nil {
+			skipIfLockRefused(t, err)
+			t.Fatal(err)
+		}
+		if allZero(got[:]) {
+			return
+		}
+		if now == mark || attempt == attempts {
+			t.Fatalf("vector registers hold residue after the passphrase path's ScrubErr window (attempt %d, stack mark %#x then %#x): %x", attempt, mark, now, got)
+		}
+		t.Logf("attempt %d discarded: the stack was copied during the window (mark %#x, then %#x); the dump showed %x", attempt, mark, now, got)
 	}
 }
 
