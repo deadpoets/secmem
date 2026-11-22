@@ -18,5 +18,6 @@ import "unsafe"
 //go:noinline
 func StackMark() uintptr {
 	var x byte
+	//nolint:gosec // G103: the address is only compared, never dereferenced.
 	return uintptr(unsafe.Pointer(&x))
 }
