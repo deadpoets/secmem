@@ -50,6 +50,7 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 				t.Fatal("a legacy encrypted PEM was parsed")
 			}
 			if !errors.Is(err, ErrEncryptedKey) {
+				skipIfLockRefused(t, err)
 				t.Errorf("ParsePrivateKey: %v does not wrap ErrEncryptedKey", err)
 			}
 			plainErr := err
@@ -63,6 +64,7 @@ func TestLegacyPEMEncryption_RefusedAsPolicy(t *testing.T) {
 				t.Fatal("a legacy encrypted PEM was decrypted")
 			}
 			if !errors.Is(err, ErrUnsupportedKey) {
+				skipIfLockRefused(t, err)
 				t.Errorf("ParsePrivateKeyWithPassphrase: %v does not wrap ErrUnsupportedKey", err)
 			}
 
@@ -98,10 +100,12 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 	// Any key will do for the unencrypted PKCS#8 case; it only has to parse.
 	_, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	p8, err := x509.MarshalPKCS8PrivateKey(priv)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	scryptPEM, scryptRaw := pkcs8RefusedFixture(t, "scrypt-rfc7914")
@@ -129,6 +133,7 @@ func TestErrRetiredAlgorithm_NotUsedForUnimplemented(t *testing.T) {
 				t.Fatal("want an error, got nil")
 			}
 			if errors.Is(err, ErrRetiredAlgorithm) {
+				skipIfLockRefused(t, err)
 				t.Errorf("%q claims to be retired, but it is unimplemented and may yet be supported", err)
 			}
 		})
@@ -155,6 +160,7 @@ func TestPKCS8LegacyPBE_RefusedAsPolicy(t *testing.T) {
 					t.Fatalf("%s: a retired PBE file was parsed", form)
 				}
 				if !errors.Is(err, ErrEncryptedKey) {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: ParsePrivateKey: %v does not wrap ErrEncryptedKey", form, err)
 				}
 				plainErr := err
@@ -165,6 +171,7 @@ func TestPKCS8LegacyPBE_RefusedAsPolicy(t *testing.T) {
 					t.Fatalf("%s: a retired PBE file was decrypted", form)
 				}
 				if !errors.Is(err, ErrUnsupportedKey) {
+					skipIfLockRefused(t, err)
 					t.Errorf("%s: ParsePrivateKeyWithPassphrase: %v does not wrap ErrUnsupportedKey", form, err)
 				}
 				refusals := map[string]error{"ParsePrivateKey": plainErr, "ParsePrivateKeyWithPassphrase": err}

@@ -25,13 +25,16 @@ func TestNewBuffer_RegisteredBeforeFilled_RefusesAfterEmergencyWipe(t *testing.T
 	}
 	region, data, info, err := allocSecretMem(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("allocSecretMem: %v", err)
 	}
 	if err := fillCanary(region.inner[len(data):]); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fillCanary: %v", err)
 	}
 	sb, err := newSecureBuffer(region, data, info, config{})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("newSecureBuffer: %v", err)
 	}
 	if _, ok := emergencyJanitor.peekAny(sb.janitorKey); !ok {
@@ -40,12 +43,14 @@ func TestNewBuffer_RegisteredBeforeFilled_RefusesAfterEmergencyWipe(t *testing.T
 
 	// The emergency wipe lands between registration and the fill.
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
 	secret := bytes.Repeat([]byte{0x5A}, 32)
 	err = sb.fillInitial(secret)
 	if !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fillInitial after the emergency wipe returned %v, want ErrWiped", err)
 	}
 	if !sb.IsDestroyed() {
@@ -59,6 +64,7 @@ func TestNewBuffer_RegisteredBeforeFilled_RefusesAfterEmergencyWipe(t *testing.T
 	src := bytes.Repeat([]byte{0x33}, 40)
 	buf, err := NewBuffer(src)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -66,6 +72,7 @@ func TestNewBuffer_RegisteredBeforeFilled_RefusesAfterEmergencyWipe(t *testing.T
 	if err := buf.WithBytes(func(b []byte) {
 		filled = bytes.Equal(b, bytes.Repeat([]byte{0x33}, 40))
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if !filled {
@@ -85,10 +92,12 @@ func TestTruncate_ClampsCapacity(t *testing.T) {
 	}
 	buf, err := NewBuffer(bytes.Repeat([]byte{0x77}, 64))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 	if err := buf.Truncate(10); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate: %v", err)
 	}
 	if err := buf.WithBytes(func(b []byte) {
@@ -96,10 +105,12 @@ func TestTruncate_ClampsCapacity(t *testing.T) {
 			t.Errorf("borrowed slice len=%d cap=%d after Truncate(10), want 10/10", len(b), cap(b))
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	// The tail was wiped and Destroy still verifies the untouched canary.
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after Truncate: %v", err)
 	}
 }

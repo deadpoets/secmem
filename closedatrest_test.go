@@ -51,6 +51,7 @@ func TestClosedAtRest_OpenOnlyDuringABorrow(t *testing.T) {
 			t.Error("callback did not see the secret")
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytes: %v", err)
 	}
 	requireClosed(t, buf, "after a borrow")
@@ -76,6 +77,7 @@ func TestClosedAtRest_OpenOnlyDuringABorrow(t *testing.T) {
 	<-secondIn
 	close(firstOut)
 	if err := <-done; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("first borrow: %v", err)
 	}
 	if _, accessible := addrState(t, innerAddr(buf)); !accessible {
@@ -83,6 +85,7 @@ func TestClosedAtRest_OpenOnlyDuringABorrow(t *testing.T) {
 	}
 	close(secondOut)
 	if err := <-done; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second borrow: %v", err)
 	}
 	requireClosed(t, buf, "after the last concurrent borrow")
@@ -178,6 +181,7 @@ func TestClosedAtRest_EveryMethodOpensAndCloses(t *testing.T) {
 	}
 	for _, st := range steps {
 		if err := st.run(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%s: %v", st.name, err)
 		}
 		requireClosed(t, buf, "after "+st.name)
@@ -198,6 +202,7 @@ func TestClosedAtRest_ClosedAfterAPanickingCallback(t *testing.T) {
 		}()
 		requireClosed(t, buf, "after a panic in "+name)
 		if err := buf.WithBytes(func([]byte) {}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("borrow after a panic in %s: %v", name, err)
 		}
 		requireClosed(t, buf, "after the borrow that followed a panic in "+name)
@@ -219,18 +224,22 @@ func TestClosedAtRest_RetainedSliceFaults(t *testing.T) {
 func TestClosedAtRest_Lifecycle(t *testing.T) {
 	buf := newClosed(t, bytes.Repeat([]byte{0x5A}, 16))
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 	requireWiped(t, "WithBytes", buf.WithBytes(func([]byte) {}))
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy after the emergency wipe: %v", err)
 	}
 
 	other := newClosed(t, bytes.Repeat([]byte{0x5A}, 16))
 	if err := other.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy from the closed state: %v", err)
 	}
 	if err := other.WithBytes(func([]byte) {}); !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("WithBytes after Destroy = %v, want ErrDestroyed", err)
 	}
 

@@ -57,6 +57,7 @@ func TestWipeAllSecretsBounded_GivesUpOnAStuckBorrow(t *testing.T) {
 
 	free()
 	if wiped, err := waitWiped(stuck, 3*time.Second); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("stuck buffer: %v", err)
 	} else if !wiped {
 		t.Error("the borrowed buffer was never wiped after its callback returned")

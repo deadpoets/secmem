@@ -51,6 +51,7 @@ func TestWipeECDSAPrivateKey(t *testing.T) {
 		priv, perr = ecdsa.ParseRawPrivateKey(elliptic.P256(), scalar)
 		return perr
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ParseRawPrivateKey: %v", err)
 	}
 
@@ -86,6 +87,7 @@ func TestWipeRSAPrivateKey(t *testing.T) {
 	}
 
 	if err := wipeRSAPrivateKey(key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("wipeRSAPrivateKey: %v", err)
 	}
 	for name, limbs := range captured {
@@ -96,6 +98,7 @@ func TestWipeRSAPrivateKey(t *testing.T) {
 	}
 
 	if err := wipeRSAPrivateKey(nil); err != nil { // must not panic
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeRSAPrivateKey(nil) = %v", err)
 	}
 
@@ -103,6 +106,7 @@ func TestWipeRSAPrivateKey(t *testing.T) {
 	// panic, and has nothing to report.
 	bare := &rsa.PrivateKey{}
 	if err := wipeRSAPrivateKey(bare); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("wipeRSAPrivateKey(bare) = %v", err)
 	}
 }
@@ -123,6 +127,7 @@ func TestWipeRSAPrivateKey_CRTValues(t *testing.T) {
 	exp, coeff, r := crt[0].Exp.Bits(), crt[0].Coeff.Bits(), crt[0].R.Bits()
 
 	if err := wipeRSAPrivateKey(key); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("wipeRSAPrivateKey: %v", err)
 	}
 	assertLimbsZero(t, "CRTValues.Exp", exp)

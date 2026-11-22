@@ -30,6 +30,14 @@ func TestProbe_SupportedPlatform(t *testing.T) {
 	}
 	c := Probe()
 	if !c.OffHeap {
+		// Probe reports a refused allocation as no protection at all, so with
+		// the lock budget spent it reads like a stub platform. Tell the two
+		// apart by asking for a buffer directly.
+		if b, err := NewEmptyBuffer(1); err != nil {
+			skipIfLockRefused(t, err)
+		} else {
+			_ = b.Destroy()
+		}
 		t.Error("Probe().OffHeap = false on a supported platform")
 	}
 	if !c.Mlocked {
@@ -53,6 +61,7 @@ func TestBufferCapabilities_MatchesAllocation(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("capability-probe-secret"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -61,6 +70,16 @@ func TestBufferCapabilities_MatchesAllocation(t *testing.T) {
 	p := Probe()
 	if c.GOOS != p.GOOS || c.GOARCH != p.GOARCH {
 		t.Errorf("buffer identity %s/%s != probe identity %s/%s", c.GOOS, c.GOARCH, p.GOOS, p.GOARCH)
+	}
+	if c.OffHeap && !p.OffHeap {
+		// Probe makes an allocation of its own and reports a refusal as no
+		// protection. With this buffer holding the last of the lock budget
+		// that is the budget speaking, not a disagreement about the backing.
+		if probe, err := NewEmptyBuffer(1); err != nil {
+			skipIfLockRefused(t, err)
+		} else {
+			_ = probe.Destroy()
+		}
 	}
 	if c.OffHeap != p.OffHeap || c.Mlocked != p.Mlocked || c.Insecure != p.Insecure {
 		t.Errorf("buffer backing (offheap=%v mlock=%v insecure=%v) diverges from probe (offheap=%v mlock=%v insecure=%v)",
@@ -77,10 +96,12 @@ func TestBufferCapabilities_SurvivesDestroy(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("destroyed-caps"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	before := buf.Capabilities()
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if after := buf.Capabilities(); after != before {
@@ -113,16 +134,19 @@ func TestWithoutMemfdSecret_NeverMemfd(t *testing.T) {
 	}
 	buf, err := NewBuffer([]byte("syscall-safe"), WithoutMemfdSecret())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 	empty, err := NewEmptyBuffer(32, WithoutMemfdSecret())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = empty.Destroy() }()
 	arena, err := NewArena(32, 4, WithoutMemfdSecret())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = arena.Destroy() }()
@@ -141,6 +165,7 @@ func TestArenaCapabilities_MatchesBuffer(t *testing.T) {
 	t.Parallel()
 	arena, err := NewArena(64, 4)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	defer func() { _ = arena.Destroy() }()

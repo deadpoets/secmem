@@ -33,6 +33,7 @@ func TestKeysRefuseAfterWipeAllSecrets(t *testing.T) {
 		cmd.Env = append(os.Environ(), wipedKeysChildEnv+"=1")
 		out, err := cmd.CombinedOutput()
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("child: %v\n%s", err, out)
 		}
 		// A child that skipped proved nothing; say so rather than pass.
@@ -52,41 +53,49 @@ func TestKeysRefuseAfterWipeAllSecrets(t *testing.T) {
 			b[i] = byte(i + 1)
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fill AES key: %v", err)
 	}
 
 	x, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer func() { _ = x.Destroy() }()
 	peer, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key(peer): %v", err)
 	}
 	defer func() { _ = peer.Destroy() }()
 	peerPub, err := peer.PublicKey()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("peer.PublicKey: %v", err)
 	}
 
 	kem, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer func() { _ = kem.Destroy() }()
 	ekBytes, err := kem.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("EncapsulationKeyBytes: %v", err)
 	}
 	ek, err := mlkem.NewEncapsulationKey768(ekBytes)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEncapsulationKey768: %v", err)
 	}
 	_, kemCT := ek.Encapsulate()
 
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateEd25519Signer: %v", err)
 	}
 	defer func() { _ = signer.Destroy() }()
@@ -139,17 +148,20 @@ func TestKeysRefuseAfterWipeAllSecrets(t *testing.T) {
 
 	for _, op := range ops {
 		if produced, err := op.run(); err != nil || !produced {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%s before the wipe: produced=%v err=%v", op.name, produced, err)
 		}
 	}
 
 	if err := secmem.WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
 	for _, op := range ops {
 		produced, err := op.run()
 		if !errors.Is(err, secmem.ErrWiped) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s after WipeAllSecrets: err = %v, want secmem.ErrWiped", op.name, err)
 		}
 		if produced {

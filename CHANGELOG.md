@@ -27,6 +27,16 @@ mark the stability commitment.
   completed derivation. The existing functions are unchanged and derive the
   same bytes.
 
+- **`Capabilities.ProbeErr`: a refused probe says it was refused.** When the
+  allocation `Probe` makes is refused, at a zero `RLIMIT_MEMLOCK` or with the
+  lock budget spent, the report used to be an allocation with no protection,
+  and `Warnings` said the memory was on the Go heap and could reach swap. No
+  constructor does that: each returns the error and allocates nothing.
+  `ProbeErr` now carries that error, `Warnings` leads with the refusal and
+  keeps only the process-wide lines, and `String` prints `REFUSED(...)` in
+  place of a list of missing protections. Reports about a buffer or arena
+  are unchanged.
+
 ### Changed
 
 - **`kernel-gauntlet.sh`: the run a `KERNELS.md` row records is now a
@@ -44,6 +54,12 @@ mark the stability commitment.
   suites were run in rootless podman at its default memlock limit, where
   everything passes on `memfd_secret`, and at 64 KiB, where six small buffers
   fit, the library fails closed after them, and the test suites do not pass.
+- **Tests skip on a refused lock instead of failing.** The core and
+  `secmem-crypto` tests now skip when the OS refuses to lock memory, so a
+  host with a small lock budget reports skips with the kernel's reason and
+  not failures. CI is
+  unchanged: its lanes fail on any skip that is not allowlisted. Runnable
+  examples cannot skip and still exit on a refusal. Tests only.
 
 ## [1.0.0-rc.2] - 2026-11-14
 

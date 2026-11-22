@@ -32,6 +32,7 @@ func TestResolveAESGCMLayout_RefusesUnknownFields(t *testing.T) {
 		productTable       [256]byte //nolint:unused // reflected shape only
 	}
 	if l, err := resolveAESGCMLayout(reflect.TypeOf(&current{})); err != nil || len(l.regions) != 3 {
+		skipIfLockRefused(t, err)
 		t.Fatalf("control failed: today's layout resolves to %+v, %v; want three regions", l, err)
 	}
 
@@ -77,6 +78,7 @@ func TestResolveAESGCMLayout_RefusesUnknownFields(t *testing.T) {
 			continue
 		}
 		if !strings.Contains(err.Error(), c.field) {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: the refusal does not name %q: %v", name, c.field, err)
 		}
 	}
@@ -102,10 +104,12 @@ func TestWipeRSAFIPSKey_RefusesMissingFIPSKey(t *testing.T) {
 		t.Fatal("a private key with no FIPS form was reported wiped")
 	}
 	if !strings.Contains(err.Error(), "NOT wiped") {
+		skipIfLockRefused(t, err)
 		t.Fatalf("the error does not say the key was not wiped: %v", err)
 	}
 	// A key with no private part has nothing to wipe, FIPS form or not.
 	if err := wipeRSAFIPSKey(&rsa.PrivateKey{}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("an empty key: %v", err)
 	}
 }
@@ -132,6 +136,7 @@ func TestRSAFIPSSecretViews_RefusesUnknownFields(t *testing.T) {
 	mod := func() *modulus { return &modulus{nat: one(), rr: one(), m0inv: 1, odd: true} }
 	good := &current{d: one(), p: mod(), q: mod(), dP: []byte{1}, dQ: []byte{1}, qInv: one()}
 	if views, err := rsaFIPSSecretViews(reflect.ValueOf(good).Elem()); err != nil || len(views) != 10 {
+		skipIfLockRefused(t, err)
 		t.Fatalf("control failed: today's layout gives %d views, %v; want 10", len(views), err)
 	}
 
@@ -173,6 +178,7 @@ func TestRSAFIPSSecretViews_RefusesUnknownFields(t *testing.T) {
 			continue
 		}
 		if len(views) != 0 || !strings.Contains(err.Error(), c.field) || !strings.Contains(err.Error(), "NOT wiped") {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: want no views and a refusal naming %q: %d views, %v", name, c.field, len(views), err)
 		}
 	}

@@ -21,6 +21,7 @@ func TestECDSASigner_SealedBuffer(t *testing.T) {
 		"C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721")
 	s, err := NewECDSASigner(elliptic.P256(), buf, AllowHeapTransients()) // s owns buf; ref retained only to seal it
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewECDSASigner: %v", err)
 	}
 	defer s.Destroy()
@@ -29,12 +30,15 @@ func TestECDSASigner_SealedBuffer(t *testing.T) {
 	digest := sha256.Sum256([]byte("sealed"))
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("sealed Sign: error = %v, want ErrSealed", err)
 	}
 	if err := s.WithScalar(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("sealed WithScalar: error = %v, want ErrSealed", err)
 	}
 	// The cached public key is not secret and stays available.
@@ -43,10 +47,12 @@ func TestECDSASigner_SealedBuffer(t *testing.T) {
 	}
 
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	sig, err := s.Sign(nil, digest[:], crypto.SHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign after Unseal: %v", err)
 	}
 	if !ecdsa.VerifyASN1(s.Public().(*ecdsa.PublicKey), digest[:], sig) {
@@ -60,12 +66,14 @@ func TestNewECDSASigner_SealedBuffer(t *testing.T) {
 		"C9AFA9D845BA75166B5C215767B1D6934E50C3DB36E89B127B8A622B120F6721")
 	defer buf.Destroy()
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	// NewECDSASigner reads the scalar to validate it and derive the public
 	// key, so a sealed buffer must fail with ErrSealed, without taking
 	// ownership.
 	if _, err := NewECDSASigner(elliptic.P256(), buf, AllowHeapTransients()); !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewECDSASigner(sealed): error = %v, want ErrSealed", err)
 	}
 	if buf.IsDestroyed() {
@@ -79,6 +87,7 @@ func TestRSASigner_SealedBuffer(t *testing.T) {
 	buf := cloneRSADER(t)
 	s, err := NewRSASigner(buf, AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRSASigner: %v", err)
 	}
 	defer s.Destroy()
@@ -87,12 +96,15 @@ func TestRSASigner_SealedBuffer(t *testing.T) {
 	digest := sha256.Sum256([]byte("sealed"))
 
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("sealed Sign: error = %v, want ErrSealed", err)
 	}
 	if err := s.WithDER(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("sealed WithDER: error = %v, want ErrSealed", err)
 	}
 	if s.Public() == nil || !s.Equal(pub) {
@@ -100,9 +112,11 @@ func TestRSASigner_SealedBuffer(t *testing.T) {
 	}
 
 	if err := buf.Unseal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Unseal: %v", err)
 	}
 	if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Sign after Unseal failed: %v", err)
 	}
 }
@@ -112,9 +126,11 @@ func TestNewRSASigner_SealedBuffer(t *testing.T) {
 	buf := cloneRSADER(t)
 	defer buf.Destroy()
 	if err := buf.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	if _, err := NewRSASigner(buf, AllowHeapTransients()); !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("NewRSASigner(sealed): error = %v, want ErrSealed", err)
 	}
 	if buf.IsDestroyed() {

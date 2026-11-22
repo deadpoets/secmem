@@ -47,10 +47,12 @@ func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 	// secmem call.
 	kiv := make([]byte, aes256KeyIVLen)
 	if err := bcryptpbkdf.Derive(kiv, passphrase, salt, 1, bcryptpbkdf.NewWorkspace()); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	blk, err := aes.NewCipher(kiv[:32])
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	ctrXOR(blk, kiv[32:], dst, src, make([]byte, cipherScratch))
@@ -68,6 +70,7 @@ func TestOpensshCrypt_ScrubClearsVectorRegs(t *testing.T) {
 		t.Skipf("opensshCrypt: %v", err) // its one failure outside the arguments is the locked scratch allocation
 	}
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if !allZero(got[:]) {

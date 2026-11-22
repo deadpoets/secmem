@@ -26,10 +26,12 @@ func TestArenaSlot_StaleReleaseDoesNotWipeNextTenant(t *testing.T) {
 	defer func() { _ = arena.Destroy() }()
 	parked, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	subject, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 
@@ -61,15 +63,18 @@ func TestArenaSlot_StaleReleaseDoesNotWipeNextTenant(t *testing.T) {
 	close(relCb)
 	<-cbDone
 	if err := <-writerDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ReadWrite: %v", err)
 	}
 	<-enrolled // the first Release holds the region lock and has not yet claimed
 
 	if err := subject.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("second Release: %v", err)
 	}
 	next, err := arena.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if next.Index() != subject.Index() {
@@ -77,11 +82,13 @@ func TestArenaSlot_StaleReleaseDoesNotWipeNextTenant(t *testing.T) {
 	}
 	want := bytes.Repeat([]byte{0x22}, 32)
 	if err := next.WithBytes(func(b []byte) { copy(b, want) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 
 	close(resume)
 	if err := <-first; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("stale Release: %v", err)
 	}
 	if err := next.WithBytes(func(b []byte) {
@@ -89,6 +96,7 @@ func TestArenaSlot_StaleReleaseDoesNotWipeNextTenant(t *testing.T) {
 			t.Errorf("a stale Release wiped the next owner's slot: % x", b[:8]) //nolint:secmem-lint // diagnostic on failure only; the contents are a test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if !next.IsLive() || arena.LiveCount() != 2 {

@@ -40,11 +40,13 @@ func FuzzSignerLifecycle(f *testing.F) {
 			t.Skipf("NewEmptyBuffer: %v", err)
 		}
 		if _, err := seedBuf.CopyIn(seed, 0); err != nil {
+			skipIfLockRefused(t, err)
 			_ = seedBuf.Destroy()
 			t.Fatalf("CopyIn seed: %v", err)
 		}
 		signer, err := NewEd25519Signer(seedBuf) // takes ownership of seedBuf
 		if err != nil {
+			skipIfLockRefused(t, err)
 			_ = seedBuf.Destroy()
 			t.Fatalf("NewEd25519Signer: %v", err)
 		}
@@ -73,6 +75,7 @@ func FuzzSignerLifecycle(f *testing.F) {
 					// verify. A write-into-the-seed regression would fault here
 					// under a preceding ReadOnly.
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("Sign: unexpected error: %v", err)
 					}
 					if !ed25519.Verify(pub, msg, sig) {
@@ -94,6 +97,7 @@ func FuzzSignerLifecycle(f *testing.F) {
 					mustWrap(t, "WithSeed", err, secmem.ErrSealed)
 				default:
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("WithSeed: unexpected error: %v", err)
 					}
 				}
@@ -104,6 +108,7 @@ func FuzzSignerLifecycle(f *testing.F) {
 					mustWrap(t, "Seal", err, secmem.ErrDestroyed)
 				} else {
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("Seal: unexpected error: %v", err)
 					}
 					sealed = true
@@ -115,6 +120,7 @@ func FuzzSignerLifecycle(f *testing.F) {
 					mustWrap(t, "Unseal", err, secmem.ErrDestroyed)
 				} else {
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("Unseal: unexpected error: %v", err)
 					}
 					sealed = false
@@ -129,6 +135,7 @@ func FuzzSignerLifecycle(f *testing.F) {
 					mustWrap(t, "ReadOnly", err, secmem.ErrSealed)
 				default:
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("ReadOnly: unexpected error: %v", err)
 					}
 				}
@@ -142,6 +149,7 @@ func FuzzSignerLifecycle(f *testing.F) {
 					mustWrap(t, "ReadWrite", err, secmem.ErrSealed)
 				default:
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatalf("ReadWrite: unexpected error: %v", err)
 					}
 				}
@@ -169,6 +177,7 @@ const (
 func mustWrap(t *testing.T, op string, err, want error) {
 	t.Helper()
 	if !errors.Is(err, want) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%s: error = %v, want it to wrap %v", op, err, want)
 	}
 }

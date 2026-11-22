@@ -88,6 +88,7 @@ func TestParsePKCS8_Ed25519V2(t *testing.T) {
 
 	s, err := ParsePrivateKey(pkcs8Ed25519(1, seed, pub), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("v2 with matching public key: %v", err)
 	}
 	verifySigner(t, s, pub)
@@ -116,6 +117,7 @@ func TestParsePKCS8_Ed25519V2(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})
@@ -125,6 +127,7 @@ func TestParsePKCS8_Ed25519V2(t *testing.T) {
 func TestParseSEC1_Variants(t *testing.T) {
 	k, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	d := must(k.Bytes())                      // fixed-width scalar
@@ -153,6 +156,7 @@ func TestParseSEC1_Variants(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			s, err := ParsePrivateKey(tc.data, AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("ParsePrivateKey: %v", err)
 			}
 			defer s.Destroy()
@@ -183,6 +187,7 @@ func TestParseSEC1_Variants(t *testing.T) {
 				t.Fatal("expected an error")
 			}
 			if !errors.Is(err, tc.want) {
+				skipIfLockRefused(t, err)
 				t.Fatalf("got %v, want %v", err, tc.want)
 			}
 		})

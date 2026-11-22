@@ -89,6 +89,7 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 		}
 		block, err := ssh.MarshalPrivateKeyWithPassphrase(k.priv, "a comment", []byte(testPassphrase))
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		for form, data := range map[string][]byte{"pem": pemEncodeToMemory(block), "raw": block.Bytes} {
@@ -96,6 +97,7 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 				proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
 					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatal(err)
 					}
 					s.Destroy()
@@ -113,6 +115,7 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 		pemBytes, raw, _ := fixture(t, name)
 		h, err := readOpenSSHHeader(raw)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		allowed := passphrasePathAllowed
@@ -124,6 +127,7 @@ func TestParsePrivateKeyWithPassphrase_AllocatesOnlyTheAESBlock(t *testing.T) {
 				proveNoOwnedAllocations(t, passphrasePathFiles, allowed, func() {
 					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatal(err)
 					}
 					s.Destroy()
@@ -154,6 +158,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8AllocatesOnlyTheAESBlock(t *testing.
 				proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
 					s, err := ParsePrivateKeyWithPassphrase(data, []byte(testPassphrase), AllowHeapTransients())
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatal(err)
 					}
 					s.Destroy()
@@ -166,6 +171,7 @@ func TestParsePrivateKeyWithPassphrase_PKCS8AllocatesOnlyTheAESBlock(t *testing.
 func TestMarshalOpenSSHPrivateKey_AllocatesOnlyTheAESBlock(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
@@ -173,6 +179,7 @@ func TestMarshalOpenSSHPrivateKey_AllocatesOnlyTheAESBlock(t *testing.T) {
 		proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
 			buf, err := signer.MarshalOpenSSHPrivateKey("a comment")
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			buf.Destroy()
@@ -182,6 +189,7 @@ func TestMarshalOpenSSHPrivateKey_AllocatesOnlyTheAESBlock(t *testing.T) {
 		proveNoOwnedAllocations(t, passphrasePathFiles, passphrasePathAllowed, func() {
 			buf, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("a comment", []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			buf.Destroy()
@@ -206,6 +214,7 @@ func TestBcryptPBKDFInto_AllocatesNothing(t *testing.T) {
 	allowed := []string{"github.com/deadpoets/secmem."} // SecureBuffer bookkeeping; the contents are off-heap
 	proveNoOwnedAllocations(t, files, allowed, func() {
 		if err := BcryptPBKDFInto(password, salt, 1, out); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 	})

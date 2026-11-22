@@ -30,6 +30,7 @@ func TestInsecure_BareHostEntryRefusesHTTP(t *testing.T) {
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts(hostOf(t, srv))))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, httpauth.ErrInsecureScheme) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
 	if n := c.count(); n != 0 {
@@ -45,6 +46,7 @@ func TestInsecure_AnyHostRefusesHTTP(t *testing.T) {
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	err := do(t, tr, srv.URL)
 	if !errors.Is(err, httpauth.ErrInsecureScheme) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
 	if n := c.count(); n != 0 {
@@ -57,12 +59,14 @@ func TestInsecure_RefusedRequestDoesNotTouchToken(t *testing.T) {
 	tok := newToken(t, []byte("tok"))
 	srv, _ := newPlainServer(t)
 	if err := tok.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	// A destroyed token would report ErrDestroyed if it were read; the scheme
 	// rule must come first.
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithAnyHost()))
 	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
 }
@@ -74,6 +78,7 @@ func TestInsecure_WithInsecureHTTPOptsIn(t *testing.T) {
 
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts(hostOf(t, srv)), httpauth.WithInsecureHTTP()))
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if got := c.last().Get("Authorization"); got != "Bearer tok" {
@@ -88,6 +93,7 @@ func TestInsecure_HTTPEntryOptsInPerHost(t *testing.T) {
 
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("http://"+hostOf(t, srv))))
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if got := c.last().Get("Authorization"); got != "Bearer tok" {
@@ -102,6 +108,7 @@ func TestInsecure_HTTPSEntryRefusesHTTP(t *testing.T) {
 
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("https://"+hostOf(t, srv)+"/")))
 	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
 	if n := c.count(); n != 0 {
@@ -118,6 +125,7 @@ func TestInsecure_WithInsecureHTTPDoesNotOverrideHTTPSEntry(t *testing.T) {
 
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("https://"+hostOf(t, srv)), httpauth.WithInsecureHTTP()))
 	if err := do(t, tr, srv.URL); !errors.Is(err, httpauth.ErrInsecureScheme) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("err = %v, want ErrInsecureScheme", err)
 	}
 	if n := c.count(); n != 0 {
@@ -132,6 +140,7 @@ func TestInsecure_HTTPSEntryAdmitsHTTPS(t *testing.T) {
 
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("HTTPS://"+hostOf(t, srv))))
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip: %v", err)
 	}
 	if got := c.last().Get("Authorization"); got != "Bearer tok" {
@@ -146,6 +155,7 @@ func TestInsecure_UnlistedHostForwardedRegardlessOfScheme(t *testing.T) {
 
 	tr := mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(srv.Client().Transport), httpauth.WithHosts("other.example.invalid")))
 	if err := do(t, tr, srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip to an unlisted host: %v", err)
 	}
 	if c.count() != 1 {
@@ -172,6 +182,7 @@ func TestRedirect_HTTPSToHTTPIsRefused(t *testing.T) {
 		_ = resp.Body.Close()
 	}
 	if !errors.Is(err, httpauth.ErrInsecureScheme) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("client.Get err = %v, want ErrInsecureScheme", err)
 	}
 	if got := c1.last().Get("Authorization"); got != "Bearer tok" {
@@ -213,10 +224,12 @@ func TestForceHTTP1_RequestIsHTTP11(t *testing.T) {
 
 	// Control: the server does speak h2 to a willing client.
 	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(base), httpauth.WithAnyHost())), srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip (h2): %v", err)
 	}
 	// Recipe: the same base, forced to HTTP/1.1.
 	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(httpauth.ForceHTTP1(base)), httpauth.WithAnyHost())), srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip (forced h1): %v", err)
 	}
 
@@ -276,11 +289,13 @@ func TestForceHTTP1_OverridesProtocols(t *testing.T) {
 
 	// Control: this base does negotiate h2.
 	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(base), httpauth.WithAnyHost())), srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip (h2): %v", err)
 	}
 	forced := httpauth.ForceHTTP1(base)
 	t.Cleanup(forced.CloseIdleConnections)
 	if err := do(t, mustNew(t)(httpauth.NewBearer(tok, httpauth.WithBase(forced), httpauth.WithAnyHost())), srv.URL); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("RoundTrip (forced h1): %v", err)
 	}
 

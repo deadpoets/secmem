@@ -34,6 +34,7 @@ func testRSASigner(tb testing.TB) *RSASigner {
 	tb.Helper()
 	rsaFixtureOnce.Do(func() { rsaFixture, rsaFixtureErr = GenerateRSASigner(2048, AllowHeapTransients()) })
 	if rsaFixtureErr != nil {
+		skipIfLockRefused(tb, rsaFixtureErr)
 		tb.Fatalf("GenerateRSASigner(2048): %v", rsaFixtureErr)
 	}
 	return rsaFixture
@@ -52,6 +53,7 @@ func cloneRSADER(tb testing.TB) *secmem.SecureBuffer {
 		buf, berr = secmem.NewBuffer(cp) // NewBuffer wipes cp
 		return berr
 	}); err != nil {
+		skipIfLockRefused(tb, err)
 		tb.Fatalf("WithDER: %v", err)
 	}
 	return buf
@@ -68,6 +70,7 @@ func stdlibRSAKey(tb testing.TB) *rsa.PrivateKey {
 		key = k
 		return perr
 	}); err != nil {
+		skipIfLockRefused(tb, err)
 		tb.Fatalf("materialize stdlib key: %v", err)
 	}
 	return key
@@ -86,13 +89,16 @@ func TestRSASigner_PKCS1v15(t *testing.T) {
 		digest := sha256.Sum256([]byte(msg))
 		sig, err := s.Sign(rand.Reader, digest[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Sign: %v", err)
 		}
 		if err := rsa.VerifyPKCS1v15(pub, crypto.SHA256, digest[:], sig); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("msg %q: stdlib rejects the signature: %v", msg, err)
 		}
 		sigStd, err := std.Sign(rand.Reader, digest[:], crypto.SHA256)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("stdlib Sign: %v", err)
 		}
 		if !bytes.Equal(sig, sigStd) {
@@ -110,9 +116,11 @@ func TestRSASigner_PSS(t *testing.T) {
 	opts := &rsa.PSSOptions{SaltLength: rsa.PSSSaltLengthEqualsHash, Hash: crypto.SHA256}
 	sig, err := s.Sign(rand.Reader, digest[:], opts)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign(PSS): %v", err)
 	}
 	if err := rsa.VerifyPSS(pub, crypto.SHA256, digest[:], sig, opts); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("stdlib rejects the PSS signature: %v", err)
 	}
 }
@@ -125,6 +133,7 @@ func TestRSASigner_PKCS8(t *testing.T) {
 	std := stdlibRSAKey(t)
 	p8, err := x509.MarshalPKCS8PrivateKey(std)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalPKCS8PrivateKey: %v", err)
 	}
 	p8Copy := make([]byte, len(p8))
@@ -132,10 +141,12 @@ func TestRSASigner_PKCS8(t *testing.T) {
 
 	buf, err := secmem.NewBuffer(p8)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	s, err := NewRSASigner(buf, AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRSASigner(PKCS#8): %v", err)
 	}
 	defer s.Destroy()
@@ -143,10 +154,12 @@ func TestRSASigner_PKCS8(t *testing.T) {
 	digest := sha256.Sum256([]byte("pkcs8"))
 	sig, err := s.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 	sigStd, err := std.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("stdlib Sign: %v", err)
 	}
 	if !bytes.Equal(sig, sigStd) {
@@ -159,6 +172,7 @@ func TestRSASigner_PKCS8(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithDER: %v", err)
 	}
 }
@@ -170,19 +184,23 @@ func TestNewRSASigner_BadInputs(t *testing.T) {
 		t.Error("expected error for nil buffer")
 	}
 
-	destroyed, _ := secmem.NewEmptyBuffer(64)
+	destroyed, allocErr := secmem.NewEmptyBuffer(64)
+	skipIfLockRefused(t, allocErr)
 	_ = destroyed.Destroy()
 	if _, err := NewRSASigner(destroyed, AllowHeapTransients()); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 
-	garbage, _ := secmem.NewBuffer([]byte("not DER at all, not even close"))
+	garbage, allocErr := secmem.NewBuffer([]byte("not DER at all, not even close"))
+	skipIfLockRefused(t, allocErr)
 	defer garbage.Destroy()
 	_, err := NewRSASigner(garbage, AllowHeapTransients())
 	if err == nil {
 		t.Fatal("expected error for garbage DER")
 	}
 	if !strings.Contains(err.Error(), "PKCS#1") || !strings.Contains(err.Error(), "PKCS#8") {
+		skipIfLockRefused(t, err)
 		t.Errorf("garbage-DER error should mention both encodings tried, got: %v", err)
 	}
 	if garbage.IsDestroyed() {
@@ -198,29 +216,37 @@ func TestNewRSASigner_RejectsNonRSA(t *testing.T) {
 
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ecdsa.GenerateKey: %v", err)
 	}
 	ecDER, err := x509.MarshalPKCS8PrivateKey(ecKey)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalPKCS8PrivateKey(EC): %v", err)
 	}
-	ecBuf, _ := secmem.NewBuffer(ecDER)
+	ecBuf, allocErr := secmem.NewBuffer(ecDER)
+	skipIfLockRefused(t, allocErr)
 	defer ecBuf.Destroy()
 	if _, err := NewRSASigner(ecBuf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "ECDSA") {
+		skipIfLockRefused(t, err)
 		t.Errorf("PKCS#8 ECDSA key: error = %v, want mention of ECDSA", err)
 	}
 
 	_, edKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("ed25519.GenerateKey: %v", err)
 	}
 	edDER, err := x509.MarshalPKCS8PrivateKey(edKey)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("MarshalPKCS8PrivateKey(Ed25519): %v", err)
 	}
-	edBuf, _ := secmem.NewBuffer(edDER)
+	edBuf, allocErr := secmem.NewBuffer(edDER)
+	skipIfLockRefused(t, allocErr)
 	defer edBuf.Destroy()
 	if _, err := NewRSASigner(edBuf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "Ed25519") {
+		skipIfLockRefused(t, err)
 		t.Errorf("PKCS#8 Ed25519 key: error = %v, want mention of Ed25519", err)
 	}
 }
@@ -286,6 +312,7 @@ func TestRSASigner_SignDuringDestroy(t *testing.T) {
 	for round := range 3 {
 		signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewRSASigner: %v", err)
 		}
 		pub := signer.Public().(*rsa.PublicKey)
@@ -347,9 +374,11 @@ func TestRSASigner_NilAndDestroyed(t *testing.T) {
 	t.Parallel()
 	var s *RSASigner
 	if _, err := s.Sign(rand.Reader, make([]byte, 32), crypto.SHA256); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Sign error = %v", err)
 	}
 	if err := s.WithDER(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.WithDER error = %v", err)
 	}
 	if s.Public() != nil {
@@ -359,23 +388,27 @@ func TestRSASigner_NilAndDestroyed(t *testing.T) {
 		t.Error("nil.Equal = true")
 	}
 	if err := s.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
 	live, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRSASigner: %v", err)
 	}
 	pub := live.Public()
 	_ = live.Destroy()
 	digest := sha256.Sum256([]byte("y"))
 	if _, err := live.Sign(rand.Reader, digest[:], crypto.SHA256); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Sign after Destroy: error = %v, want wrap of ErrDestroyed", err)
 	}
 	if live.Public() == nil || !live.Equal(pub) {
 		t.Error("cached public key should survive Destroy")
 	}
 	if err := live.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("double Destroy not idempotent: %v", err)
 	}
 }
@@ -401,6 +434,7 @@ func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
 	p1 := x509.MarshalPKCS1PrivateKey(std)
 	p8, err := x509.MarshalPKCS8PrivateKey(std)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	build := func(der []byte) (*secmem.SecureBuffer, *RSASigner) {
@@ -410,6 +444,7 @@ func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
 		}
 		s, err := NewRSASigner(buf, AllowHeapTransients())
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		return buf, s
@@ -423,6 +458,7 @@ func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
 	sign := func(s *RSASigner) func() {
 		return func() {
 			if _, err := s.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 		}
@@ -445,6 +481,7 @@ func TestRSASigner_PKCS8ParsesInPlace(t *testing.T) {
 	construct := func(buf *secmem.SecureBuffer) func() {
 		return func() {
 			if _, err := NewRSASigner(buf, AllowHeapTransients()); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 		}
@@ -472,14 +509,17 @@ func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
 
 	ecKey, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	xKey, err := ecdh.X25519().GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	_, edKey, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for _, c := range []struct {
@@ -493,6 +533,7 @@ func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
 	} {
 		der, err := x509.MarshalPKCS8PrivateKey(c.key)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		buf, err := secmem.NewBuffer(der)
@@ -502,6 +543,7 @@ func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
 		refuse := func() float64 {
 			return testing.AllocsPerRun(10, func() {
 				if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), c.want) {
+					skipIfLockRefused(t, err)
 					t.Fatalf("%s: error = %v, want mention of %s", c.name, err, c.want)
 				}
 			})
@@ -536,6 +578,7 @@ func TestNewRSASigner_RejectsNonRSAWithoutParsing(t *testing.T) {
 	}
 	defer buf.Destroy()
 	if _, err := NewRSASigner(buf, AllowHeapTransients()); err == nil || !strings.Contains(err.Error(), "not RSA") {
+		skipIfLockRefused(t, err)
 		t.Fatalf("unknown algorithm: %v, want a refusal saying it is not RSA", err)
 	}
 }

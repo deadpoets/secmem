@@ -263,6 +263,8 @@ Before the first secret exists:
    advance which capabilities your deployment requires and refuse to start
    without them, rather than discovering at incident time that
    `memfd_secret` was never available on that kernel.
+   Check `ProbeErr` first: when it is set the probe allocation was refused,
+   no constructor will succeed either, and the other fields describe nothing.
 4. `InstallTerminationWipe`, so a signal wipes every registered buffer on
    the way out.
 

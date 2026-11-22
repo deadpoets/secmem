@@ -43,6 +43,7 @@ func containerOf(t *testing.T, buf *secmem.SecureBuffer) []byte {
 func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
@@ -54,6 +55,7 @@ func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 			file, err := signer.MarshalOpenSSHPrivateKeyWithPassphraseParams(
 				"a comment", []byte(testPassphrase), OpenSSHPassphraseParams{Rounds: rounds})
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			defer func() { _ = file.Destroy() }()
@@ -65,6 +67,7 @@ func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 
 			loaded, err := ParsePrivateKeyWithPassphrase(container, []byte(testPassphrase), AllowHeapTransients())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			defer loaded.Destroy()
@@ -76,6 +79,7 @@ func TestMarshalWithPassphraseParams_RoundsAreWrittenAndHonoured(t *testing.T) {
 			// same cost, or the file is only readable by us.
 			key, err := ssh.ParseRawPrivateKeyWithPassphrase(bufferBytes(t, file), []byte(testPassphrase))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("x/crypto/ssh could not open a %d-round file: %v", rounds, err)
 			}
 			priv, ok := key.(*ed25519.PrivateKey)
@@ -98,6 +102,7 @@ func oddLengthBlock(t *testing.T, container []byte) []byte {
 	t.Helper()
 	h, err := readOpenSSHHeader(container)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	head := container[:len(container)-len(h.privBlock)-4]
@@ -128,12 +133,14 @@ func oddLengthBlock(t *testing.T, container []byte) []byte {
 func TestOpenSSHKDFRounds_CapMatchesXCrypto(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
 	file, err := signer.MarshalOpenSSHPrivateKeyWithPassphraseParams(
 		"a comment", []byte(testPassphrase), OpenSSHPassphraseParams{Rounds: 1})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Destroy() }()
@@ -141,6 +148,7 @@ func TestOpenSSHKDFRounds_CapMatchesXCrypto(t *testing.T) {
 	container := containerOf(t, file)
 	h, err := readOpenSSHHeader(container)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	// Far above any cap either side would plausibly choose, so the refusal
@@ -190,12 +198,14 @@ var xcryptoMaxRounds = regexp.MustCompile(`exceed(?:s)? maximum (\d+)`)
 func TestOpenSSHKDFRounds_ReadCapIsWhereTheWriteCapStops(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
 	file, err := signer.MarshalOpenSSHPrivateKeyWithPassphraseParams(
 		"a comment", []byte(testPassphrase), OpenSSHPassphraseParams{Rounds: 1})
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Destroy() }()
@@ -203,6 +213,7 @@ func TestOpenSSHKDFRounds_ReadCapIsWhereTheWriteCapStops(t *testing.T) {
 
 	h, err := readOpenSSHHeader(probe)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	opts := h.kdfOpts // aliases probe, so writing through it patches the file
@@ -225,11 +236,13 @@ func TestOpenSSHKDFRounds_ReadCapIsWhereTheWriteCapStops(t *testing.T) {
 	// way that never reached the gate at all.
 	binary.BigEndian.PutUint32(opts[len(opts)-4:], MaxOpenSSHKDFRounds)
 	if err := parse(); !errors.Is(err, errMalformed) || errors.Is(err, ErrUnsupportedKey) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("at exactly %d rounds the parse gave %v, want the block-length error that follows the rounds gate", MaxOpenSSHKDFRounds, err)
 	}
 
 	binary.BigEndian.PutUint32(opts[len(opts)-4:], MaxOpenSSHKDFRounds+1)
 	if err := parse(); !errors.Is(err, ErrUnsupportedKey) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("at %d rounds the parse gave %v, want ErrUnsupportedKey", MaxOpenSSHKDFRounds+1, err)
 	}
 }
@@ -237,6 +250,7 @@ func TestOpenSSHKDFRounds_ReadCapIsWhereTheWriteCapStops(t *testing.T) {
 func TestMarshalWithPassphraseParams_Errors(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
@@ -265,6 +279,7 @@ func TestMarshalWithPassphraseParams_Errors(t *testing.T) {
 				t.Error("a rejected call returned a buffer")
 			}
 			if !strings.Contains(err.Error(), c.want) {
+				skipIfLockRefused(t, err)
 				t.Errorf("error %q does not mention %q", err, c.want)
 			}
 		})
@@ -276,11 +291,13 @@ func TestMarshalWithPassphraseParams_Errors(t *testing.T) {
 func TestMarshalWithPassphrase_UsesTheDocumentedDefault(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
 	file, err := signer.MarshalOpenSSHPrivateKeyWithPassphrase("a comment", []byte(testPassphrase))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer func() { _ = file.Destroy() }()
@@ -299,11 +316,13 @@ func TestMarshalWithPassphrase_UsesTheDocumentedDefault(t *testing.T) {
 func TestMarshalWithPassphraseParams_SSHKeygenOpensNonDefaultRounds(t *testing.T) {
 	signer, err := GenerateEd25519Signer()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer signer.Destroy()
 	sshPub, err := ssh.NewPublicKey(signer.Public())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	want := strings.TrimSpace(string(ssh.MarshalAuthorizedKey(sshPub)))
@@ -313,6 +332,7 @@ func TestMarshalWithPassphraseParams_SSHKeygenOpensNonDefaultRounds(t *testing.T
 			file, err := signer.MarshalOpenSSHPrivateKeyWithPassphraseParams(
 				"interop", []byte(testPassphrase), OpenSSHPassphraseParams{Rounds: rounds})
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			defer func() { _ = file.Destroy() }()

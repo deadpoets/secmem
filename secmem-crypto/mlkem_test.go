@@ -18,12 +18,14 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 	t.Parallel()
 	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer k.Destroy()
 
 	ekBytes, err := k.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("EncapsulationKeyBytes: %v", err)
 	}
 	if len(ekBytes) != mlkem.EncapsulationKeySize768 {
@@ -33,6 +35,7 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 	// Sender side: Encapsulate keeps the sender's shared secret hardened.
 	ct, senderShared, err := Encapsulate(ekBytes)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Encapsulate: %v", err)
 	}
 	defer senderShared.Destroy()
@@ -40,6 +43,7 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 	// Receiver side: Decapsulate must recover the identical shared secret.
 	got, err := k.Decapsulate(ct)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Decapsulate: %v", err)
 	}
 	defer got.Destroy()
@@ -54,6 +58,7 @@ func TestMLKEM768_RoundTrip(t *testing.T) {
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 }
@@ -71,12 +76,14 @@ func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 	t.Parallel()
 	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer k.Destroy()
 
 	ek1, err := k.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("EncapsulationKeyBytes: %v", err)
 	}
 
@@ -85,20 +92,24 @@ func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 		copy(persisted, s) //nolint:secmem-lint // test persists the seed to verify reload
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithSeed: %v", err)
 	}
 	buf, err := secmem.NewBuffer(persisted)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	restored, err := NewMLKEM768Key(buf, AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewMLKEM768Key: %v", err)
 	}
 	defer restored.Destroy()
 
 	ek2, err := restored.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("EncapsulationKeyBytes (restored): %v", err)
 	}
 	if !bytes.Equal(ek1, ek2) {
@@ -111,6 +122,7 @@ func TestMLKEM768_DeterministicFromSeed(t *testing.T) {
 	peerShared, ct := ek.Encapsulate()
 	got, err := restored.Decapsulate(ct)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("restored Decapsulate: %v", err)
 	}
 	defer got.Destroy()
@@ -126,11 +138,13 @@ func TestMLKEM768_DistinctKeys(t *testing.T) {
 	t.Parallel()
 	a, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer a.Destroy()
 	b, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer b.Destroy()
@@ -146,6 +160,7 @@ func TestMLKEM768_Decapsulate_InvalidCiphertext(t *testing.T) {
 	t.Parallel()
 	k, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	defer k.Destroy()
@@ -162,25 +177,30 @@ func TestMLKEM768_Decapsulate_InvalidCiphertext(t *testing.T) {
 	// callers not to read a nil error as.
 	ek, err := k.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	ct, sent, err := Encapsulate(ek)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer sent.Destroy()
 	ct[0] ^= 1
 	got, err := k.Decapsulate(ct)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("a tampered ciphertext of the right length errored (%v); the doc says it does not", err)
 	}
 	defer got.Destroy()
 	if err := sent.WithBytesErr(func(want []byte) error {
 		if equal, err := got.ConstantTimeEqual(want); err != nil || equal {
+			skipIfLockRefused(t, err)
 			t.Errorf("a tampered ciphertext decapsulated to the sender's key (equal=%v, err=%v)", equal, err)
 		}
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 }
@@ -193,20 +213,24 @@ func TestNewMLKEM768Key_BadInputs(t *testing.T) {
 
 	short, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer short.Destroy()
 	_, err = NewMLKEM768Key(short, AllowHeapTransients())
 	if !errors.Is(err, ErrBadSeedLength) {
+		skipIfLockRefused(t, err)
 		t.Errorf("wrong-size seed: error = %v, want wrap of ErrBadSeedLength", err)
 	}
 	if short.IsDestroyed() {
 		t.Error("ownership transferred on failure")
 	}
 
-	destroyed, _ := secmem.NewEmptyBuffer(mlkem.SeedSize)
+	destroyed, allocErr := secmem.NewEmptyBuffer(mlkem.SeedSize)
+	skipIfLockRefused(t, allocErr)
 	_ = destroyed.Destroy()
 	if _, err := NewMLKEM768Key(destroyed, AllowHeapTransients()); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 }
@@ -215,24 +239,30 @@ func TestMLKEM768_NilAndDestroyed(t *testing.T) {
 	t.Parallel()
 	var k *MLKEM768Key
 	if _, err := k.EncapsulationKeyBytes(); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.EncapsulationKeyBytes error = %v", err)
 	}
 	if _, err := k.Decapsulate(make([]byte, mlkem.CiphertextSize768)); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Decapsulate error = %v", err)
 	}
 	if err := k.WithSeed(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.WithSeed error = %v", err)
 	}
 	if err := k.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
 	live, err := GenerateMLKEM768Key(AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateMLKEM768Key: %v", err)
 	}
 	before, err := live.EncapsulationKeyBytes()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("EncapsulationKeyBytes: %v", err)
 	}
 	_ = live.Destroy()
@@ -240,6 +270,7 @@ func TestMLKEM768_NilAndDestroyed(t *testing.T) {
 	// survives Destroy like Ed25519Signer.Public — and does not re-expand.
 	after, err := live.EncapsulationKeyBytes()
 	if err != nil || !bytes.Equal(before, after) {
+		skipIfLockRefused(t, err)
 		t.Errorf("EncapsulationKeyBytes after Destroy = %v, want the cached key", err)
 	}
 	after[0] ^= 1
@@ -247,9 +278,11 @@ func TestMLKEM768_NilAndDestroyed(t *testing.T) {
 		t.Error("EncapsulationKeyBytes returned an alias of its cache")
 	}
 	if _, err := live.Decapsulate(make([]byte, mlkem.CiphertextSize768)); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Decapsulate after Destroy error = %v", err)
 	}
 	if err := live.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("double Destroy not idempotent: %v", err)
 	}
 }
@@ -268,6 +301,7 @@ func TestEncapsulateInto_WipesToCapacity(t *testing.T) {
 			t.Skipf("%s: %v", name, err)
 		}
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%s: %v", name, err)
 		}
 		defer ss.Destroy()
@@ -277,6 +311,7 @@ func TestEncapsulateInto_WipesToCapacity(t *testing.T) {
 			}
 			return nil
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		if !bytes.Equal(wantWiped, make([]byte, len(wantWiped))) {
@@ -303,6 +338,7 @@ func TestEncapsulateInto_WipesToCapacity(t *testing.T) {
 	// A kem error surfaces, and nothing is returned.
 	boom := errors.New("boom")
 	if c, ss, err := encapsulateInto(nil, func() ([]byte, []byte, error) { return nil, nil, boom }); !errors.Is(err, boom) || c != nil || ss != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("kem error: got (%v, %v, %v), want (nil, nil, boom)", c, ss, err)
 	}
 }

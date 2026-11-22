@@ -50,6 +50,7 @@ func TestScrub_UnbalancedUnlockOSThreadFailsLoudly(t *testing.T) {
 		t.Skip("child could not set the scenario up; see its output")
 	}
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("child failed: %v", err)
 	}
 }

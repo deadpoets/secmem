@@ -21,6 +21,7 @@ func readBuf(t *testing.T, b *secmem.SecureBuffer) []byte {
 		out = append([]byte(nil), p...) //nolint:secmem-lint // test helper reads contents out for comparison
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithBytesErr: %v", err)
 	}
 	return out
@@ -30,10 +31,12 @@ func deriveHKDF(t *testing.T, secret, salt, info []byte, size int) []byte {
 	t.Helper()
 	out, err := secmem.NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 	if err := HKDFSHA256Into(secret, salt, info, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFSHA256Into: %v", err)
 	}
 	return readBuf(t, out)
@@ -91,19 +94,23 @@ func TestHKDFInto_HashAgility(t *testing.T) {
 
 	out256, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out256.Destroy()
 	out512, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out512.Destroy()
 
 	if err := HKDFInto(sha256.New, secret, salt, info, out256); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFInto(sha256): %v", err)
 	}
 	if err := HKDFInto(sha512.New, secret, salt, info, out512); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFInto(sha512): %v", err)
 	}
 
@@ -117,6 +124,7 @@ func TestHKDFInto_HashAgility(t *testing.T) {
 	// is against the engine this wrapper builds on.
 	want := make([]byte, 32)
 	if _, err := io.ReadFull(hkdf.New(sha512.New, secret, salt, info), want); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("direct hkdf read: %v", err)
 	}
 	if !bytes.Equal(got512, want) {
@@ -130,19 +138,23 @@ func TestHKDFSHA256Into_ConvenienceMatchesFullForm(t *testing.T) {
 
 	a, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer a.Destroy()
 	b, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer b.Destroy()
 
 	if err := HKDFSHA256Into(secret, salt, info, a); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFSHA256Into: %v", err)
 	}
 	if err := HKDFInto(sha256.New, secret, salt, info, b); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFInto: %v", err)
 	}
 	if !bytes.Equal(readBuf(t, a), readBuf(t, b)) {
@@ -177,14 +189,17 @@ func TestHKDFInto_EmptyIKMPin(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 	if err := HKDFSHA256Into(nil, []byte("salt"), nil, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HKDFSHA256Into with empty IKM: %v", err)
 	}
 	want := make([]byte, 32)
 	if _, err := io.ReadFull(hkdf.New(sha256.New, nil, []byte("salt"), nil), want); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("direct hkdf read: %v", err)
 	}
 	if !bytes.Equal(readBuf(t, out), want) {
@@ -201,15 +216,18 @@ func TestHKDFInto_OutputCeiling(t *testing.T) {
 
 	ok, err := secmem.NewEmptyBuffer(maxOut)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer(%d): %v", maxOut, err)
 	}
 	defer ok.Destroy()
 	if err := HKDFSHA256Into([]byte("k"), nil, nil, ok); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("HKDFSHA256Into at the exact 255*HashLen limit failed: %v", err)
 	}
 
 	over, err := secmem.NewEmptyBuffer(maxOut + 1)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer(%d): %v", maxOut+1, err)
 	}
 	defer over.Destroy()
@@ -225,6 +243,7 @@ func TestHKDFInto_NilHashAndBadBuffers(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -241,24 +260,29 @@ func TestHKDFInto_DestroyedAndSealedOut(t *testing.T) {
 	t.Parallel()
 	destroyed, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	_ = destroyed.Destroy()
 	err = HKDFSHA256Into([]byte("k"), nil, nil, destroyed)
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed out: error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 
 	sealed, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer sealed.Destroy()
 	if err := sealed.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	err = HKDFSHA256Into([]byte("k"), nil, nil, sealed)
 	if !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("sealed out: error = %v, want wrap of secmem.ErrSealed", err)
 	}
 }
@@ -275,11 +299,13 @@ func TestArgon2IDKeyInto_KnownVector(t *testing.T) {
 
 	out, err := secmem.NewEmptyBuffer(len(wantHash))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 
 	if err := Argon2IDKeyInto([]byte("password"), []byte("somesalt"), 1, 64, 1, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Argon2IDKeyInto: %v", err)
 	}
 	if got := readBuf(t, out); !bytes.Equal(got, wantHash) {
@@ -294,6 +320,7 @@ func TestArgon2IDKeyInto_ZeroCostParams_ErrorNotPanic(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
@@ -307,6 +334,7 @@ func TestArgon2IDKeyInto_ZeroCostParams_ErrorNotPanic(t *testing.T) {
 	// memory=0 is raised to the algorithm minimum by x/crypto itself — it
 	// must derive successfully, not error or panic.
 	if err := Argon2IDKeyInto([]byte("p"), []byte("s"), 1, 0, 1, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("memory=0 should clamp and succeed, got: %v", err)
 	}
 }
@@ -317,19 +345,23 @@ func TestArgon2IDKeyInto_DifferentSaltDiffers(t *testing.T) {
 
 	a, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer a.Destroy()
 	b, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer b.Destroy()
 
 	if err := Argon2IDKeyInto(password, []byte("salt-a-16-bytes!"), 1, 64, 1, a); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Argon2IDKeyInto a: %v", err)
 	}
 	if err := Argon2IDKeyInto(password, []byte("salt-b-16-bytes!"), 1, 64, 1, b); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Argon2IDKeyInto b: %v", err)
 	}
 	if bytes.Equal(readBuf(t, a), readBuf(t, b)) {
@@ -345,24 +377,29 @@ func TestArgon2IDKeyInto_NilAndBadBuffers(t *testing.T) {
 
 	destroyed, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	_ = destroyed.Destroy()
 	err = Argon2IDKeyInto([]byte("p"), []byte("s"), 1, 64, 1, destroyed)
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed out: error = %v, want wrap of secmem.ErrDestroyed", err)
 	}
 
 	sealed, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer sealed.Destroy()
 	if err := sealed.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Seal: %v", err)
 	}
 	err = Argon2IDKeyInto([]byte("p"), []byte("s"), 1, 64, 1, sealed)
 	if !errors.Is(err, secmem.ErrSealed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("sealed out: error = %v, want wrap of secmem.ErrSealed", err)
 	}
 }
@@ -371,20 +408,24 @@ func TestArgon2DeriveInto_UsesPackageDefaults(t *testing.T) {
 	t.Parallel()
 	out, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer out.Destroy()
 
 	if err := Argon2DeriveInto([]byte("password"), []byte("some 16 byte sal"), out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Argon2DeriveInto: %v", err)
 	}
 
 	want, err := secmem.NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer want.Destroy()
 	if err := Argon2IDKeyInto([]byte("password"), []byte("some 16 byte sal"), Argon2Time, Argon2Memory, Argon2Threads, want); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Argon2IDKeyInto: %v", err)
 	}
 

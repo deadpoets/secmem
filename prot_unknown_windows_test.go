@@ -22,6 +22,7 @@ func TestMprotectSecretMem_RefusesUnknownProtection(t *testing.T) {
 	}
 	for _, prot := range []int{1, 3} {
 		if err := mprotectSecretMem(buf.region, prot); err != nil {
+			skipIfLockRefused(t, err)
 			t.Errorf("mprotectSecretMem(prot=%d) = %v, want nil", prot, err)
 		}
 	}

@@ -147,6 +147,11 @@ func run(socketPath string, allowHeapTransients bool, logger *slog.Logger) error
 	// Honesty at boot: print what this platform actually guarantees.
 	// A reviewer or operator should never have to guess.
 	caps := secmem.Probe()
+	if caps.ProbeErr != nil {
+		// No key could be held: every constructor would fail the same way.
+		logger.Error("no secure memory", "error", caps.ProbeErr)
+		os.Exit(1)
+	}
 	logger.Info("secure memory capabilities", "report", caps.String())
 	for _, w := range caps.Warnings() {
 		logger.Warn("capability warning", "warning", w)

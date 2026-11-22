@@ -37,6 +37,7 @@ func TestArgon2Into_RFC9106Vectors(t *testing.T) {
 			out := newTestBuffer(t, 32)
 			p.Mode = tc.mode
 			if err := Argon2Into(password, salt, p, out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("Argon2Into: %v", err)
 			}
 			if got := readBuf(t, out); !bytes.Equal(got, want) {
@@ -55,12 +56,14 @@ func TestArgon2Into_MatchesXCrypto(t *testing.T) {
 	for _, size := range []int{32, 40, 64, 100} {
 		out := newTestBuffer(t, size)
 		if err := Argon2IDKeyInto(password, salt, 2, 256, 3, out); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Argon2IDKeyInto: %v", err)
 		}
 		if got, want := readBuf(t, out), argon2.IDKey(password, salt, 2, 256, 3, uint32(size)); !bytes.Equal(got, want) {
 			t.Errorf("size %d: Argon2IDKeyInto %x != IDKey %x", size, got, want)
 		}
 		if err := Argon2Into(password, salt, Argon2Params{Mode: Argon2i, Time: 2, Memory: 256, Threads: 3}, out); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Argon2Into: %v", err)
 		}
 		if got, want := readBuf(t, out), argon2.Key(password, salt, 2, 256, 3, uint32(size)); !bytes.Equal(got, want) {
@@ -87,17 +90,20 @@ func TestArgon2Into_Errors(t *testing.T) {
 		if err == nil {
 			t.Errorf("%s: no error", name)
 		} else if !strings.Contains(err.Error(), "argon2") {
+			skipIfLockRefused(t, err)
 			t.Errorf("%s: error does not name argon2: %v", name, err)
 		}
 	}
 	// memory=0 is not an error: it is raised to the minimum, as upstream does.
 	if err := Argon2Into([]byte("p"), []byte("s"), Argon2Params{Time: 1, Memory: 0, Threads: 1}, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("memory=0: %v", err)
 	}
 
 	destroyed := newTestBuffer(t, 32)
 	destroyed.Destroy()
 	if err := Argon2Into([]byte("p"), []byte("s"), good, destroyed); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed out: err = %v, want ErrDestroyed", err)
 	}
 }
@@ -109,6 +115,7 @@ func TestArgon2Into_SecretAndDataChangeOutput(t *testing.T) {
 	derive := func(p Argon2Params) []byte {
 		out := newTestBuffer(t, 32)
 		if err := Argon2Into([]byte("p"), []byte("0123456789abcdef"), p, out); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		return readBuf(t, out)

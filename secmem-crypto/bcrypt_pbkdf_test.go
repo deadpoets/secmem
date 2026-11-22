@@ -66,6 +66,7 @@ func TestBcryptPBKDFInto_Golden(t *testing.T) {
 		t.Run(g.name, func(t *testing.T) {
 			out := newTestBuffer(t, len(g.result))
 			if err := BcryptPBKDFInto(g.password, g.salt, g.rounds, out); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if got := bufferBytes(t, out); !bytes.Equal(got, g.result) {
@@ -91,6 +92,7 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			_, raw, _ := fixture(t, name)
 			h, err := readOpenSSHHeader(raw)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if !bytes.Equal(h.cipher, []byte("aes256-ctr")) {
@@ -100,12 +102,14 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 
 			kiv := newTestBuffer(t, aes256KeyIVLen)
 			if err := BcryptPBKDFInto([]byte(testPassphrase), salt, int(rounds), kiv); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 
 			derived := bufferBytes(t, kiv)
 			blk, err := aes.NewCipher(derived[:32])
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			plain := make([]byte, len(h.privBlock))
@@ -120,6 +124,7 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			// anything.
 			other := newTestBuffer(t, aes256KeyIVLen)
 			if err := BcryptPBKDFInto([]byte(testPassphrase), salt, int(rounds)+1, other); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			od := bufferBytes(t, other)
@@ -128,6 +133,7 @@ func TestBcryptPBKDFInto_ReproducesSSHKeygenKeyAndIV(t *testing.T) {
 			}
 			blk2, err := aes.NewCipher(od[:32])
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			wrong := make([]byte, len(h.privBlock))
@@ -181,10 +187,12 @@ func TestBcryptPBKDFInto_OutputLengthIsAnInput(t *testing.T) {
 func TestBcryptPBKDFInto_Errors(t *testing.T) {
 	destroyed := newTestBuffer(t, 32)
 	if err := destroyed.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	sealed := newTestBuffer(t, 32)
 	if err := sealed.Seal(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	tooLong := newTestBuffer(t, MaxBcryptPBKDFKeyLen+1)
@@ -214,9 +222,11 @@ func TestBcryptPBKDFInto_Errors(t *testing.T) {
 				t.Fatal("want an error, got nil")
 			}
 			if !strings.Contains(err.Error(), c.want) {
+				skipIfLockRefused(t, err)
 				t.Errorf("error %q does not mention %q", err, c.want)
 			}
 			if !strings.HasPrefix(err.Error(), "secmemcrypto: ") {
+				skipIfLockRefused(t, err)
 				t.Errorf("error %q is not prefixed by the package name", err)
 			}
 		})
@@ -229,6 +239,7 @@ func TestBcryptPBKDFInto_Errors(t *testing.T) {
 func TestBcryptPBKDFInto_LeavesOutputIntactOnError(t *testing.T) {
 	out := newTestBuffer(t, 32)
 	if _, err := out.CopyIn(bytes.Repeat([]byte{0xAB}, 32), 0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if err := BcryptPBKDFInto(nil, []byte("salt"), 4, out); err == nil {
@@ -245,6 +256,7 @@ func deriveBcrypt(t *testing.T, password, salt []byte, rounds, n int) []byte {
 	t.Helper()
 	out := newTestBuffer(t, n)
 	if err := BcryptPBKDFInto(password, salt, rounds, out); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	return bufferBytes(t, out)

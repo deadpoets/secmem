@@ -48,6 +48,7 @@ func TestQuarantine_DestroyedRangeIsNotReused(t *testing.T) {
 	lo, hi := outerRange(buf)
 	inner := uintptr(unsafe.Pointer(&buf.region.inner[0]))
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -99,6 +100,7 @@ func TestQuarantine_FIFOAndLimits(t *testing.T) {
 		}
 		lo, _ = outerRange(b)
 		if err := b.Destroy(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Destroy: %v", err)
 		}
 		return lo
@@ -165,9 +167,11 @@ func TestQuarantine_HoldsNoLockBudget(t *testing.T) {
 	for i := 0; i < rounds; i++ {
 		b, err := NewEmptyBuffer(64)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("allocation %d of %d failed with %d reservations held: %v", i, rounds, len(quarantineHeld()), err)
 		}
 		if err := b.Destroy(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Destroy %d: %v", i, err)
 		}
 	}

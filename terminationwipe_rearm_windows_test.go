@@ -52,11 +52,13 @@ func TestInstallTerminationWipeNoExit_RearmsAfterCtrlBreak(t *testing.T) {
 	cmd.SysProcAttr = &syscall.SysProcAttr{CreationFlags: windows.CREATE_NEW_PROCESS_GROUP}
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("StdoutPipe: %v", err)
 	}
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Start(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("start child: %v", err)
 	}
 
@@ -131,6 +133,7 @@ func TestInstallTerminationWipeNoExit_RearmsAfterCtrlBreak(t *testing.T) {
 		fail("second GenerateConsoleCtrlEvent: %v", err)
 	}
 	if err := finish(); err != nil {
+		skipIfLockRefused(t, err)
 		var ee *exec.ExitError
 		status := ""
 		if errors.As(err, &ee) && uint32(ee.ExitCode()) == 0xC000013A {

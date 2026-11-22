@@ -57,10 +57,12 @@ func TestWithAESGCM_MatchesStandardLibrary(t *testing.T) {
 		pt, ad := randBytes(t, 1000), randBytes(t, 33)
 		blk, err := aes.NewCipher(key)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		ref, err := cipher.NewGCM(blk)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		want := ref.Seal(nil, nonce, pt, ad)
@@ -73,6 +75,7 @@ func TestWithAESGCM_MatchesStandardLibrary(t *testing.T) {
 				t.Errorf("AES-%d: Seal differs from crypto/cipher", size*8)
 			}
 			if got, err := a.Open(nil, nonce, want, ad); err != nil || !bytes.Equal(got, pt) {
+				skipIfLockRefused(t, err)
 				t.Errorf("AES-%d: Open of a crypto/cipher ciphertext: %v", size*8, err)
 			}
 			bad := bytes.Clone(want)
@@ -83,6 +86,7 @@ func TestWithAESGCM_MatchesStandardLibrary(t *testing.T) {
 			return nil
 		})
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("AES-%d: %v", size*8, err)
 		}
 	}
@@ -106,9 +110,11 @@ func TestWithAESGCM_WithSealFromOpenInto(t *testing.T) {
 		}
 		return OpenInto(back, a, nonce, ct, nil)
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	if ok, err := back.ConstantTimeEqual(plain); err != nil || !ok {
+		skipIfLockRefused(t, err)
 		t.Fatalf("round trip through SealFrom/OpenInto: equal=%v err=%v", ok, err)
 	}
 }
@@ -123,6 +129,7 @@ func TestWithAESGCM_WithSealFromOpenInto(t *testing.T) {
 func TestWithAESGCM_WipesEverySchedule(t *testing.T) {
 	layout, err := aesGCMLayoutReady()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("layout does not resolve on %s: %v", runtime.Version(), err)
 	}
 	names := map[string]bool{}
@@ -139,10 +146,12 @@ func TestWithAESGCM_WipesEverySchedule(t *testing.T) {
 	key, nonce, pt := randBytes(t, 32), randBytes(t, 12), randBytes(t, 40)
 	blk, err := aes.NewCipher(key)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	ref, err := cipher.NewGCM(blk)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	want := ref.Seal(nil, nonce, pt, nil)
@@ -183,10 +192,12 @@ func TestWithAESGCM_WipesEverySchedule(t *testing.T) {
 			switch exit {
 			case "return":
 				if err != nil || panicked != nil {
+					skipIfLockRefused(t, err)
 					t.Fatalf("err %v, panic %v", err, panicked)
 				}
 			case "error":
 				if !errors.Is(err, sentinel) {
+					skipIfLockRefused(t, err)
 					t.Errorf("callback error not propagated: %v", err)
 				}
 			case "panic":
@@ -226,6 +237,7 @@ func TestWithAESGCM_WipesEverySchedule(t *testing.T) {
 func TestWithAESGCM_RetainedAEADPanics(t *testing.T) {
 	var kept cipher.AEAD
 	if err := WithAESGCM(mustKeyBuffer(t, randBytes(t, 32)), func(a cipher.AEAD) error { kept = a; return nil }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for name, f := range map[string]func(){
@@ -257,6 +269,7 @@ func TestWithAESGCM_BadInputs(t *testing.T) {
 	called := false
 	err := WithAESGCM(mustKeyBuffer(t, randBytes(t, 20)), func(cipher.AEAD) error { called = true; return nil })
 	if err == nil || !strings.Contains(err.Error(), "20 bytes") {
+		skipIfLockRefused(t, err)
 		t.Errorf("20-byte key: %v, want a size error", err)
 	}
 	if called {
@@ -294,6 +307,7 @@ func TestResolveAESGCMLayout_RefusesUnexpectedShapes(t *testing.T) {
 		}
 	}
 	if l, err := resolveAESGCMLayout(reflect.TypeOf(&portable{})); err != nil || len(l.regions) != 2 {
+		skipIfLockRefused(t, err)
 		t.Errorf("a GCM without a GHASH table (the portable build): %+v, %v; want the two round-key arrays", l, err)
 	}
 }
@@ -308,6 +322,7 @@ func TestWithAESGCM_DestroyedKey(t *testing.T) {
 	key.Destroy()
 	err = WithAESGCM(key, func(cipher.AEAD) error { return nil })
 	if !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithAESGCM on a destroyed key: %v, want an error wrapping secmem.ErrDestroyed", err)
 	}
 }
@@ -358,6 +373,7 @@ func TestScopedAEAD_CloseWaitsForInFlightCalls(t *testing.T) {
 	<-closed
 	defer func() {
 		if err, _ := recover().(error); !errors.Is(err, ErrAEADOutOfScope) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Seal after the scope closed: recovered %v, want ErrAEADOutOfScope", err)
 		}
 	}()

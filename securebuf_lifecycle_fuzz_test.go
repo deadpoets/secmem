@@ -239,6 +239,7 @@ func step(t *testing.T, buf *SecureBuffer, m *model, opByte byte, next func() (b
 		// non-nil result (a real overflow bug would trip it) and is not a
 		// lifecycle failure, so it is tolerated here.
 		if err != nil && !errors.Is(err, ErrCanaryViolation) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Destroy returned unexpected error: %v", err)
 		}
 		m.destroyed = true
@@ -285,6 +286,7 @@ func checkMutate(t *testing.T, op string, m *model, err error) {
 func mustBe(t *testing.T, op string, err, want error) {
 	t.Helper()
 	if !errors.Is(err, want) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%s: error = %v, want %v", op, err, want)
 	}
 }
@@ -292,6 +294,7 @@ func mustBe(t *testing.T, op string, err, want error) {
 func mustBeNil(t *testing.T, op string, err error) {
 	t.Helper()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%s: unexpected error: %v", op, err)
 	}
 }

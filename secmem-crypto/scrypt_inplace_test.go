@@ -53,6 +53,7 @@ func TestScrypt_RFC7914(t *testing.T) {
 		t.Run(fmt.Sprintf("N=%d,r=%d,p=%d", v.n, v.r, v.p), func(t *testing.T) {
 			want, err := hex.DecodeString(strings.Join(strings.Fields(v.want), ""))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatal(err)
 			}
 			if got := scryptKey(t, []byte(v.password), []byte(v.salt), v.n, v.r, v.p, len(want)); !bytes.Equal(got, want) {
@@ -81,6 +82,7 @@ func TestScrypt_MatchesXCrypto(t *testing.T) {
 					i++
 					want, err := xscrypt.Key(password, salt, n, r, p, keyLen)
 					if err != nil {
+						skipIfLockRefused(t, err)
 						t.Fatal(err)
 					}
 					if got := scryptKey(t, password, salt, n, r, p, keyLen); !bytes.Equal(got, want) {
@@ -155,9 +157,11 @@ func TestScryptBothCaps_AreAtBothCaps(t *testing.T) {
 	}
 	f, err := readPBES2(file(p))
 	if err != nil || f.n != n || f.r != r || f.p != p {
+		skipIfLockRefused(t, err)
 		t.Fatalf("readPBES2 read N=%d r=%d p=%d, %v: the parser does not run the parameters", f.n, f.r, f.p, err)
 	}
 	if _, err := readPBES2(file(p + 1)); !errors.Is(err, ErrUnsupportedKey) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("one more p: %v, want ErrUnsupportedKey", err)
 	}
 }

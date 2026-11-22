@@ -14,6 +14,7 @@ func TestEnsureMemlockLimit_NeverLowers(t *testing.T) {
 	case "linux", "darwin", "windows":
 	default:
 		if _, err := EnsureMemlockLimit(1 << 20); !errors.Is(err, errors.ErrUnsupported) {
+			skipIfLockRefused(t, err)
 			t.Errorf("stub EnsureMemlockLimit err = %v, want ErrUnsupported", err)
 		}
 		return
@@ -41,6 +42,7 @@ func TestEnsureMemlockLimit_NeverLowers(t *testing.T) {
 	// Now ask for far less — must not lower what we just achieved.
 	after, err := EnsureMemlockLimit(4096)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("EnsureMemlockLimit(4096): %v", err)
 	}
 	if after < got {
@@ -57,6 +59,7 @@ func TestDisableCoreDumps_Unsupported(t *testing.T) {
 		t.Skip("supported here — verified out-of-process in TestHelpersIsolated")
 	}
 	if err := DisableCoreDumps(); !errors.Is(err, errors.ErrUnsupported) {
+		skipIfLockRefused(t, err)
 		t.Errorf("DisableCoreDumps on %s = %v, want ErrUnsupported", runtime.GOOS, err)
 	}
 }

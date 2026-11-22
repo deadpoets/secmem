@@ -54,6 +54,7 @@ func TestJanitorRegister_RefusesKeyCollision(t *testing.T) {
 		t.Fatal("NewBuffer succeeded with a colliding janitor key")
 	}
 	if !errors.Is(err, errJanitorKeyCollision) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer error = %v, want errJanitorKeyCollision", err)
 	}
 
@@ -73,6 +74,7 @@ func TestJanitorRegister_RefusesKeyCollision(t *testing.T) {
 			t.Errorf("live buffer = %x…, want %x…", b[:4], secret[:4]) //nolint:secmem-lint // diagnostic on failure only; test fixture, not a secret
 		}
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("live.WithBytes: %v", err)
 	}
 
@@ -80,6 +82,7 @@ func TestJanitorRegister_RefusesKeyCollision(t *testing.T) {
 	// fresh key, above every key handed out so far.
 	fresh, err := NewBuffer(append([]byte(nil), secret...))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer(fresh): %v", err)
 	}
 	defer func() { _ = fresh.Destroy() }()
@@ -107,6 +110,7 @@ func TestJanitorRegister_RefusesZeroKey(t *testing.T) {
 		t.Fatal("NewBuffer succeeded with janitor key 0")
 	}
 	if !errors.Is(err, errJanitorKeyCollision) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer error = %v, want errJanitorKeyCollision", err)
 	}
 }

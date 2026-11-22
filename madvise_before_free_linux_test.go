@@ -27,6 +27,7 @@ func rssKBFor(t *testing.T, addr uintptr) int {
 	t.Helper()
 	line, err := smapsLineFor(addr, "Rss:")
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("reading smaps: %v", err)
 	}
 	fields := strings.Fields(line) // "Rss:", "16", "kB"
@@ -35,6 +36,7 @@ func rssKBFor(t *testing.T, addr uintptr) int {
 	}
 	kb, err := strconv.Atoi(fields[1])
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("parsing %q: %v", line, err)
 	}
 	return kb

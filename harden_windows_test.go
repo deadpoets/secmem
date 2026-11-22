@@ -53,6 +53,7 @@ func TestWERExclusion_Reported(t *testing.T) {
 	t.Parallel()
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -77,6 +78,7 @@ func TestWERExclusion_RegisteredWithWER(t *testing.T) {
 	// Control: a committed page nobody registered.
 	ctrl, err := windows.VirtualAlloc(0, page, windows.MEM_COMMIT|windows.MEM_RESERVE, windows.PAGE_READWRITE)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("VirtualAlloc control: %v", err)
 	}
 	defer func() { _ = windows.VirtualFree(ctrl, 0, windows.MEM_RELEASE) }()
@@ -88,6 +90,7 @@ func TestWERExclusion_RegisteredWithWER(t *testing.T) {
 
 	buf, err := NewEmptyBuffer(64)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -131,6 +134,7 @@ func TestHardenProcess_Windows(t *testing.T) {
 		t.Skip("mitigations were already in force before HardenProcess ran (image or system policy) — the readback cannot attribute them to HardenProcess here")
 	}
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("HardenProcess child failed: %v", err)
 	}
 }

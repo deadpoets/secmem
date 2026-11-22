@@ -18,6 +18,7 @@ func TestArena_IsDestroyedWaitsForTheWipe(t *testing.T) {
 	}
 	slot, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 
@@ -43,6 +44,7 @@ func TestArena_IsDestroyedWaitsForTheWipe(t *testing.T) {
 	close(release)
 	<-borrowDone
 	if err := <-destroyDone; err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	if !a.IsDestroyed() {

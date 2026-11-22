@@ -43,6 +43,7 @@ func TestClosedAtRest_LockedWhileOpen(t *testing.T) {
 				t.Errorf("borrow %d: after the callback read the page it is valid=%v locked=%v, want both", i, valid, locked)
 			}
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WithBytes: %v", err)
 		}
 		// The Locked bit means something only for a page that is in the

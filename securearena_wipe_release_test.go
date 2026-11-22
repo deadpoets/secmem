@@ -30,24 +30,30 @@ func TestArena_ReleaseAfterWipeAllSecretsIsClean(t *testing.T) {
 
 	untouched, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire untouched: %v", err)
 	}
 	written, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire written: %v", err)
 	}
 	if err := untouched.WithBytes(func(b []byte) { copy(b, bytes.Repeat([]byte{0x5A}, len(b))) }); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("fill untouched: %v", err)
 	}
 
 	if err := WipeAllSecrets(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WipeAllSecrets: %v", err)
 	}
 
 	// The slot holds zeros and its strip holds zeros. Release must not read
 	// the zeroed strip as an overflow.
 	if err := untouched.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		if errors.Is(err, ErrCanaryViolation) {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Release after emergency wipe reported a canary violation for an overflow that never happened: %v", err)
 		}
 		t.Fatalf("Release after emergency wipe = %v, want nil", err)
@@ -71,6 +77,7 @@ func TestArena_ReleaseAfterWipeAllSecretsIsClean(t *testing.T) {
 	copy(a.region.inner[start:end], bytes.Repeat([]byte{0xC3}, a.slotSize))
 	a.mu.rUnlock()
 	if err := written.Release(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Release of a slot written after the wipe = %v, want nil", err)
 	}
 	a.mu.rLock()
@@ -87,9 +94,11 @@ func TestArena_ReleaseAfterWipeAllSecretsIsClean(t *testing.T) {
 	// them — and its teardown stays clean: the janitor's layout was cleared by
 	// the wipe, so Destroy has no stale pattern to fail against either.
 	if _, err := a.Acquire(); !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Errorf("Acquire after Release of a wiped slot = %v, want ErrWiped", err)
 	}
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("Destroy after emergency wipe and Release = %v, want nil", err)
 	}
 }

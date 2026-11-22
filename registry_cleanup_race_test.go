@@ -96,9 +96,11 @@ func TestJanitorRelease_ConcurrentWithWipePass_ReclaimsMapping(t *testing.T) {
 
 			close(resume)
 			if err := <-passDone; err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("wipe pass: %v", err)
 			}
 			if err := <-relDone; err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("release: %v", err)
 			}
 
@@ -116,6 +118,7 @@ func TestJanitorRelease_ConcurrentWithWipePass_ReclaimsMapping(t *testing.T) {
 			}
 			// The mapping is gone; Destroy must be an idempotent no-op now.
 			if err := buf.Destroy(); err != nil {
+				skipIfLockRefused(t, err)
 				t.Errorf("Destroy after cleanup: %v", err)
 			}
 		})

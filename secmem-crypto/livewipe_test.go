@@ -26,6 +26,7 @@ import (
 func TestECDSASigner_SignWipesLiveTransient(t *testing.T) {
 	signer, err := GenerateECDSASigner(elliptic.P256(), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateECDSASigner: %v", err)
 	}
 	defer signer.Destroy()
@@ -50,6 +51,7 @@ func TestECDSASigner_SignWipesLiveTransient(t *testing.T) {
 
 	digest := sha256.Sum256([]byte("wipe me"))
 	if _, err := signer.Sign(nil, digest[:], crypto.SHA256); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 
@@ -65,6 +67,7 @@ func TestECDSASigner_SignWipesLiveTransient(t *testing.T) {
 func TestRSASigner_SignWipesLiveTransient(t *testing.T) {
 	signer, err := NewRSASigner(cloneRSADER(t), AllowHeapTransients())
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewRSASigner: %v", err)
 	}
 	defer signer.Destroy()
@@ -89,6 +92,7 @@ func TestRSASigner_SignWipesLiveTransient(t *testing.T) {
 
 	digest := sha256.Sum256([]byte("wipe me"))
 	if _, err := signer.Sign(rand.Reader, digest[:], crypto.SHA256); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Sign: %v", err)
 	}
 

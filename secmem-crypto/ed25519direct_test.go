@@ -138,6 +138,7 @@ func TestSignEd25519Direct_RFC8032Vectors(t *testing.T) {
 
 			sig, err := signEd25519Direct(seed, msg)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("signEd25519Direct: %v", err)
 			}
 			if !bytes.Equal(sig, wantSig) {
@@ -157,12 +158,14 @@ func TestSignEd25519Direct_ByteIdenticalToStdlib(t *testing.T) {
 			t.Parallel()
 			pub, priv, err := ed25519.GenerateKey(rand.Reader)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("GenerateKey: %v", err)
 			}
 			msg := []byte("secmem-crypto attestation payload " + strconv.Itoa(i))
 
 			ourSig, err := signEd25519Direct(priv.Seed(), msg)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("signEd25519Direct: %v", err)
 			}
 			stdlibSig := ed25519.Sign(priv, msg)
@@ -185,15 +188,18 @@ func TestSignEd25519Direct_LongMessagesMatchStdlib(t *testing.T) {
 	t.Parallel()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	for _, n := range []int{ed25519NonceStackBytes - 1, ed25519NonceStackBytes, ed25519NonceStackBytes + 1, 2*ed25519NonceStackBytes + 17, 64 << 10} {
 		msg := make([]byte, n)
 		if _, err := rand.Read(msg); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatal(err)
 		}
 		ourSig, err := signEd25519Direct(priv.Seed(), msg)
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("%d bytes: signEd25519Direct: %v", n, err)
 		}
 		if stdlibSig := ed25519.Sign(priv, msg); !bytes.Equal(ourSig, stdlibSig) {
@@ -215,6 +221,7 @@ func TestDeriveEd25519PublicKey_MatchesStdlib(t *testing.T) {
 
 			gotPub, err := deriveEd25519PublicKey(seed)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("deriveEd25519PublicKey: %v", err)
 			}
 			if !bytes.Equal(gotPub, wantPub) {
@@ -235,10 +242,12 @@ func TestDeriveEd25519PublicKey_RandomKeysMatchStdlib(t *testing.T) {
 			t.Parallel()
 			pub, priv, err := ed25519.GenerateKey(rand.Reader)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("GenerateKey: %v", err)
 			}
 			gotPub, err := deriveEd25519PublicKey(priv.Seed())
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("deriveEd25519PublicKey: %v", err)
 			}
 			if !bytes.Equal(gotPub, pub) {
@@ -283,10 +292,12 @@ func TestSignEd25519Direct_EmptyMessage(t *testing.T) {
 	t.Parallel()
 	pub, priv, err := ed25519.GenerateKey(rand.Reader)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateKey: %v", err)
 	}
 	sig, err := signEd25519Direct(priv.Seed(), nil)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("signEd25519Direct: %v", err)
 	}
 	if !ed25519.Verify(pub, nil, sig) {
@@ -310,10 +321,12 @@ func TestSignEd25519Direct_SScalarIsReduced(t *testing.T) {
 			t.Parallel()
 			_, priv, err := ed25519.GenerateKey(rand.Reader)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("GenerateKey: %v", err)
 			}
 			sig, err := signEd25519Direct(priv.Seed(), []byte("malleability check "+strconv.Itoa(i)))
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("sign: %v", err)
 			}
 			if S := sig[32:]; !isLessThanLE(S, lBytes) {
@@ -331,10 +344,12 @@ func TestSignEd25519Direct_Deterministic(t *testing.T) {
 
 	sig1, err := signEd25519Direct(seed, msg)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("sign 1: %v", err)
 	}
 	sig2, err := signEd25519Direct(seed, msg)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("sign 2: %v", err)
 	}
 	if !bytes.Equal(sig1, sig2) {
@@ -348,6 +363,7 @@ func TestSignEd25519Direct_SeedReadOnly(t *testing.T) {
 	seedCopy := append([]byte(nil), seed...)
 
 	if _, err := signEd25519Direct(seed, []byte("wipe test")); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("sign: %v", err)
 	}
 	if !bytes.Equal(seed, seedCopy) {
@@ -359,6 +375,7 @@ func mustDecodeHex(t *testing.T, s string) []byte {
 	t.Helper()
 	b, err := hex.DecodeString(s)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("hex decode: %v", err)
 	}
 	return b

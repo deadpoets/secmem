@@ -15,10 +15,12 @@ func x25519KeyFromHex(t *testing.T, hexScalar string) *X25519Key {
 	t.Helper()
 	buf, err := secmem.NewBuffer(mustDecodeHex(t, hexScalar))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	k, err := NewX25519Key(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewX25519Key: %v", err)
 	}
 	return k
@@ -39,6 +41,7 @@ func TestX25519Key_RFC7748PublicKey(t *testing.T) {
 			defer k.Destroy()
 			pub, err := k.PublicKey()
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("PublicKey: %v", err)
 			}
 			want := mustDecodeHex(t, c.pub)
@@ -76,6 +79,7 @@ func TestX25519Key_RFC7748SharedSecret(t *testing.T) {
 			// subtests run.
 			shared, err := tc.self.SharedSecret(tc.peer)
 			if err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("SharedSecret: %v", err)
 			}
 			defer shared.Destroy()
@@ -85,6 +89,7 @@ func TestX25519Key_RFC7748SharedSecret(t *testing.T) {
 				}
 				return nil
 			}); err != nil {
+				skipIfLockRefused(t, err)
 				t.Fatalf("WithBytesErr: %v", err)
 			}
 		})
@@ -95,11 +100,13 @@ func TestX25519Key_GenerateAndAgree(t *testing.T) {
 	t.Parallel()
 	a, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer a.Destroy()
 	b, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer b.Destroy()
@@ -109,11 +116,13 @@ func TestX25519Key_GenerateAndAgree(t *testing.T) {
 
 	sa, err := a.SharedSecret(bPub)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("a.SharedSecret: %v", err)
 	}
 	defer sa.Destroy()
 	sb, err := b.SharedSecret(aPub)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("b.SharedSecret: %v", err)
 	}
 	defer sb.Destroy()
@@ -133,6 +142,7 @@ func TestX25519Key_SharedSecret_LowOrderPointRejected(t *testing.T) {
 	t.Parallel()
 	k, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer k.Destroy()
@@ -153,20 +163,24 @@ func TestNewX25519Key_BadInputs(t *testing.T) {
 
 	short, err := secmem.NewEmptyBuffer(16)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer short.Destroy()
 	_, err = NewX25519Key(short)
 	if !errors.Is(err, ErrBadScalarLength) {
+		skipIfLockRefused(t, err)
 		t.Errorf("wrong-length scalar: error = %v, want wrap of ErrBadScalarLength", err)
 	}
 	if short.IsDestroyed() {
 		t.Error("ownership transferred on failure")
 	}
 
-	destroyed, _ := secmem.NewEmptyBuffer(curve25519.ScalarSize)
+	destroyed, allocErr := secmem.NewEmptyBuffer(curve25519.ScalarSize)
+	skipIfLockRefused(t, allocErr)
 	_ = destroyed.Destroy()
 	if _, err := NewX25519Key(destroyed); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("destroyed buffer: error = %v, want wrap of ErrDestroyed", err)
 	}
 }
@@ -175,6 +189,7 @@ func TestX25519Key_WithScalar_Persist(t *testing.T) {
 	t.Parallel()
 	k, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	defer k.Destroy()
@@ -184,15 +199,18 @@ func TestX25519Key_WithScalar_Persist(t *testing.T) {
 		copy(persisted, s) //nolint:secmem-lint // test persists the scalar to verify reload
 		return nil
 	}); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("WithScalar: %v", err)
 	}
 
 	buf, err := secmem.NewBuffer(persisted)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	restored, err := NewX25519Key(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewX25519Key: %v", err)
 	}
 	defer restored.Destroy()
@@ -205,23 +223,28 @@ func TestX25519Key_NilAndDestroyed(t *testing.T) {
 	t.Parallel()
 	var k *X25519Key
 	if _, err := k.PublicKey(); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.PublicKey error = %v", err)
 	}
 	if _, err := k.SharedSecret([32]byte{}); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.SharedSecret error = %v", err)
 	}
 	if err := k.WithScalar(func([]byte) error { return nil }); !errors.Is(err, secmem.ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.WithScalar error = %v", err)
 	}
 	if k.ConstantTimeEqual(nil) {
 		t.Error("nil.ConstantTimeEqual(nil) = true")
 	}
 	if err := k.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("nil.Destroy() = %v", err)
 	}
 
 	live, err := GenerateX25519Key()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("GenerateX25519Key: %v", err)
 	}
 	_ = live.Destroy()
@@ -229,6 +252,7 @@ func TestX25519Key_NilAndDestroyed(t *testing.T) {
 		t.Error("PublicKey after Destroy should error")
 	}
 	if err := live.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("double Destroy not idempotent: %v", err)
 	}
 }
@@ -244,10 +268,12 @@ func TestX25519Key_TruncatedBuffer(t *testing.T) {
 	}
 	k, err := NewX25519Key(buf)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	defer k.Destroy()
 	if err := buf.Truncate(16); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatal(err)
 	}
 	for name, use := range map[string]func() error{
@@ -267,6 +293,7 @@ func TestX25519Key_TruncatedBuffer(t *testing.T) {
 				}
 			}()
 			if err := use(); !errors.Is(err, ErrBadScalarLength) {
+				skipIfLockRefused(t, err)
 				t.Errorf("%s on a truncated key: %v, want ErrBadScalarLength", name, err)
 			}
 		}()
@@ -288,6 +315,7 @@ func TestX25519Key_LowOrderPointIsASentinel(t *testing.T) {
 		t.Fatal("a low-order peer key produced a shared secret")
 	}
 	if !errors.Is(err, ErrLowOrderPoint) {
+		skipIfLockRefused(t, err)
 		t.Fatalf("%v, want an error wrapping ErrLowOrderPoint", err)
 	}
 }

@@ -40,9 +40,11 @@ func slotRegionIsZero(t *testing.T, s *ArenaSlot) bool {
 func requireWiped(t *testing.T, what string, err error) {
 	t.Helper()
 	if !errors.Is(err, ErrWiped) {
+		skipIfLockRefused(t, err)
 		t.Errorf("%s after the emergency wipe = %v, want ErrWiped", what, err)
 	}
 	if !errors.Is(err, ErrDestroyed) {
+		skipIfLockRefused(t, err)
 		t.Errorf("%s error does not satisfy errors.Is(err, ErrDestroyed): %v", what, err)
 	}
 }

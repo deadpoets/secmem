@@ -106,9 +106,11 @@ func TestBuffer_NeverPanicsAfterDestroy(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("to-be-destroyed"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	if err := buf.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 
@@ -184,13 +186,16 @@ func TestArenaAndSlot_NilAndDestroyed(t *testing.T) {
 
 	a, err := NewArena(32, 2)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewArena: %v", err)
 	}
 	s, err := a.Acquire()
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Acquire: %v", err)
 	}
 	if err := a.Destroy(); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Destroy: %v", err)
 	}
 	mustNotPanic(t, "destroyed arena/slot sweep", func() {
@@ -219,6 +224,7 @@ func TestSecret_RedactionNeverLeaks_Table(t *testing.T) {
 	for _, in := range inputs {
 		s, err := NewSecret(append([]byte(nil), in...))
 		if err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("NewSecret: %v", err)
 		}
 		for name, out := range map[string]string{
@@ -272,9 +278,11 @@ func FuzzNewBuffer_RoundTrip(f *testing.F) {
 				t.Fatal("round-trip mismatch")
 			}
 		}); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("WithBytes: %v", err)
 		}
 		if err := buf.Destroy(); err != nil {
+			skipIfLockRefused(t, err)
 			t.Fatalf("Destroy reported: %v", err)
 		}
 	})

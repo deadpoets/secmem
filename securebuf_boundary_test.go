@@ -14,11 +14,13 @@ func TestTruncate_ToZero(t *testing.T) {
 	const size = 32
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Truncate(0); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(0): %v", err)
 	}
 	if buf.Len() != 0 {
@@ -35,11 +37,13 @@ func TestTruncate_ToExactLen(t *testing.T) {
 	const size = 32
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Truncate(size); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(%d): %v", size, err)
 	}
 	if buf.Len() != size {
@@ -54,6 +58,7 @@ func TestTruncate_Negative(t *testing.T) {
 	t.Parallel()
 	buf, err := NewEmptyBuffer(32)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -71,6 +76,7 @@ func TestTruncate_PastEnd(t *testing.T) {
 	const size = 32
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -88,11 +94,13 @@ func TestTruncate_EmptyTail_NoWipeNeeded(t *testing.T) {
 	const size = 16
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.Truncate(size); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(%d) with empty tail: %v", size, err)
 	}
 	if buf.Len() != size {
@@ -107,18 +115,21 @@ func TestTruncate_NonEmptyTail_Wiped(t *testing.T) {
 	t.Parallel()
 	buf, err := NewBuffer([]byte("AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")) // 32 'A's
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	// Truncate to 16 — the tail [16:32] should be zeroed.
 	if err := buf.Truncate(16); err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Truncate(16): %v", err)
 	}
 
 	// Read the first 16 bytes — should still be 'A'.
 	head := make([]byte, 16)
 	if n, err := buf.CopyOut(head, 0); err != nil || n != 16 {
+		skipIfLockRefused(t, err)
 		t.Fatalf("Read head: n=%d, err=%v", n, err)
 	}
 	for i, b := range head {
@@ -152,6 +163,7 @@ func TestNewEmptyBuffer_SizeOne(t *testing.T) {
 	t.Parallel()
 	buf, err := NewEmptyBuffer(1)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer(1): %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -170,12 +182,14 @@ func TestByteAt_ExactLastIndex(t *testing.T) {
 	const size = 8
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	// Last valid index must succeed.
 	if _, err := buf.ByteAt(size - 1); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("ByteAt(%d): %v", size-1, err)
 	}
 	// Exact-len must fail.
@@ -190,11 +204,13 @@ func TestSetByteAt_ExactLastIndex(t *testing.T) {
 	const size = 8
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
 
 	if err := buf.SetByteAt(size-1, 0xFF); err != nil {
+		skipIfLockRefused(t, err)
 		t.Errorf("SetByteAt(%d, 0xFF): %v", size-1, err)
 	}
 	if err := buf.SetByteAt(size, 0xFF); err == nil {
@@ -209,6 +225,7 @@ func TestCopyOut_ExactLastValidOffset(t *testing.T) {
 	const size = 8
 	buf, err := NewBuffer([]byte("ABCDEFGH"))
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -218,6 +235,7 @@ func TestCopyOut_ExactLastValidOffset(t *testing.T) {
 	// offset = size-1: reads 1 byte from position 7.
 	n, err := buf.CopyOut(dst, size-1)
 	if err != nil || n != 1 {
+		skipIfLockRefused(t, err)
 		t.Errorf("Read(offset=%d): got n=%d, err=%v; want n=1, nil", size-1, n, err)
 	}
 
@@ -233,6 +251,7 @@ func TestCopyIn_ExactLastValidOffset(t *testing.T) {
 	const size = 8
 	buf, err := NewEmptyBuffer(size)
 	if err != nil {
+		skipIfLockRefused(t, err)
 		t.Fatalf("NewEmptyBuffer: %v", err)
 	}
 	defer func() { _ = buf.Destroy() }()
@@ -242,6 +261,7 @@ func TestCopyIn_ExactLastValidOffset(t *testing.T) {
 	// offset = size-1: writes 1 byte (only 1 byte available from position 7).
 	n, err := buf.CopyIn(src, size-1)
 	if err != nil || n != 1 {
+		skipIfLockRefused(t, err)
 		t.Errorf("Write(offset=%d): got n=%d, err=%v; want n=1, nil", size-1, n, err)
 	}
 

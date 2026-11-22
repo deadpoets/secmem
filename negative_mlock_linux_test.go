@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strings"
 	"testing"
 
 	"golang.org/x/sys/unix"
@@ -99,6 +100,25 @@ func init() {
 		_ = buf.Destroy()
 		os.Stderr.WriteString("NewBuffer succeeded under RLIMIT_MEMLOCK=0 — expected an error\n")
 		os.Exit(1)
+	}
+
+	// Probe in the same state must say the allocation was refused. It used
+	// to report an allocation with no protection, and warn that secrets
+	// were on the Go heap, in a process that can hold no secret at all.
+	c := Probe()
+	if c.ProbeErr == nil {
+		os.Stderr.WriteString("Probe under RLIMIT_MEMLOCK=0 has no ProbeErr: " + c.String() + "\n")
+		os.Exit(1)
+	}
+	for i, w := range c.Warnings() {
+		if i == 0 && !strings.HasPrefix(w, "REFUSED") {
+			os.Stderr.WriteString("Probe under RLIMIT_MEMLOCK=0 does not lead with the refusal: " + w + "\n")
+			os.Exit(1)
+		}
+		if strings.Contains(w, "Go heap") || strings.Contains(w, "swap") {
+			os.Stderr.WriteString("Probe under RLIMIT_MEMLOCK=0 warns about an allocation that was never made: " + w + "\n")
+			os.Exit(1)
+		}
 	}
 
 	// Reaching here means both returned errors and the process is still
