@@ -54,6 +54,17 @@ mark the stability commitment.
   unchanged: its lanes fail on any skip that is not allowlisted. Runnable
   examples cannot skip and still exit on a refusal. Tests only.
 
+### Fixed
+
+- **The vector-register proofs no longer fail when the runtime copies the
+  stack under them.** A collection can move a goroutine to a smaller stack,
+  and the copy goes through the vector registers. When it landed between a
+  window's clear and the test's dump, the dump showed stack words and the
+  proof failed, about once in 3,000 runs. The proofs now repeat an attempt
+  if, and only if, the stack is shown to have moved during it; residue with
+  the stack in place still fails at once. Tests only, in the core and
+  `secmem-crypto`.
+
 ## [1.0.0-rc.2] - 2026-11-14
 
 The second release candidate for 1.0: one fix on top of rc.1, for Linux

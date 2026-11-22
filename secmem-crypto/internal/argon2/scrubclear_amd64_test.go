@@ -27,9 +27,10 @@ import (
 //
 // The goroutine is pinned for the whole sequence so every dump reads the
 // thread that ran the code before it; nothing between a step and its dump
-// touches the vector registers. secmem's own scrub_vecclear_test.go proves
-// the clear in the abstract (planted pattern, controls without the clear,
-// panic unwind); this test only has to show it applies here.
+// touches the vector registers, with one exception the test accounts for
+// (zeroAfter). secmem's own scrub_vecclear_test.go proves the clear in the
+// abstract (planted pattern, controls without the clear, panic unwind); this
+// test only has to show it applies here.
 func TestScrubClearsVectorRegs(t *testing.T) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
@@ -49,20 +50,47 @@ func TestScrubClearsVectorRegs(t *testing.T) {
 	}
 
 	// 2. The worker's window.
-	secmem.Scrub(func() {
-		processBlock(&out, &s.in, &zeroBlock, &s)
+	zeroAfter(t, "the worker-shaped Scrub window", func() {
+		secmem.Scrub(func() {
+			processBlock(&out, &s.in, &zeroBlock, &s)
+		})
 	})
-	regprobe.DumpXMM(&got)
-	if !isZero(got[:]) {
-		t.Fatalf("vector registers hold residue after the worker-shaped Scrub window: %x", got)
-	}
 
 	// 3. The parent's windows, end to end.
 	ws := NewWorkspace(64, 2)
 	defer ws.Wipe()
-	Derive(make([]byte, 32), ModeID, []byte("password"), []byte("0123456789abcdef"), nil, nil, 1, ws)
-	regprobe.DumpXMM(&got)
-	if !isZero(got[:]) {
-		t.Fatalf("vector registers hold residue after Derive returned: %x", got)
+	dk := make([]byte, 32)
+	zeroAfter(t, "Derive", func() {
+		Derive(dk, ModeID, []byte("password"), []byte("0123456789abcdef"), nil, nil, 1, ws)
+	})
+}
+
+// zeroAfter runs step and requires X0–X15 all zero straight after it.
+//
+// The runtime may copy the goroutine's stack between the clear that ends
+// step's window and the dump, and the copy is a memmove through the vector
+// registers, so the dump then shows stack words in registers the clear had
+// zeroed (see regprobe.StackMark). Residue is therefore excused, and the
+// step repeated, if and only if the stack is shown to have moved while the
+// step ran. Residue with the stack in place fails at once, and so does the
+// last attempt's wherever the stack is: a clear that does not reach this
+// package's code fails every attempt, and the stack does not move in every
+// one.
+func zeroAfter(t *testing.T, what string, step func()) {
+	t.Helper()
+	const attempts = 5
+	var got [256]byte
+	for attempt := 1; ; attempt++ {
+		mark := regprobe.StackMark()
+		step()
+		regprobe.DumpXMM(&got)
+		if isZero(got[:]) {
+			return
+		}
+		now := regprobe.StackMark()
+		if now == mark || attempt == attempts {
+			t.Fatalf("vector registers hold residue after %s (attempt %d, stack mark %#x then %#x): %x", what, attempt, mark, now, got)
+		}
+		t.Logf("attempt %d discarded: the stack was copied during %s (mark %#x, then %#x); the dump showed %x", attempt, what, mark, now, got)
 	}
 }
