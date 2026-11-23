@@ -19,6 +19,18 @@ mark the stability commitment.
   7.0.0-44-generic on amd64, a kernel that charges `memfd_secret` per fault.
   Every stage passed, 3/3 proofs.
 
+### Fixed
+
+- **Linux: `Seal` works on kernels with pages larger than 16 KiB.** Sealing
+  keeps a 16 KiB prekey in locked memory, and the code required that to fill
+  its pages exactly. On a 64 KiB-page kernel (some arm64 and ppc64
+  distributions) it does not, so every `Seal` returned "seal prekey:
+  allocation is not page-exact". Nothing else was affected: buffers,
+  arenas and borrows work there, and the failure is an error, not a leak.
+  Affected: 0.8.0, 0.8.1 and the three 1.0 release candidates. Found by the
+  gauntlet on Ubuntu's 7.0.0-38-generic-64k; 4 KiB and 16 KiB pages were
+  never affected.
+
 ## [1.0.0-rc.3] - 2026-11-22
 
 The third release candidate for 1.0. One addition to the API, so that a
