@@ -18,8 +18,8 @@ mark the stability commitment.
 The third release candidate for 1.0. One addition to the API, so that a
 refused `Probe` reports the refusal, and no change to what the library does
 with a secret. The rest is a dependency bump, tests and documentation. A
-pre-release is never
-selected by `go get` on its own; ask for `@v1.0.0-rc.3` to try it.
+pre-release is never selected by `go get` on its own; ask for `@v1.0.0-rc.3`
+to try it.
 
 ### Added
 
