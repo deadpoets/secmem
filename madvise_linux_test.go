@@ -115,6 +115,36 @@ func vmFlagsFor(addr uintptr) (string, error) {
 	return smapsLineFor(addr, "VmFlags:")
 }
 
+// vmFlagsContaining returns the VmFlags line of the mapping that contains
+// addr, wherever that mapping starts. A fresh anonymous mapping is not
+// promised an entry of its own: the kernel merges it into a neighbour with
+// the same flags, and then no entry starts at its address. Seen under -race
+// on 7.0.0-44-generic, where PR_SET_MEMORY_MERGE also needs no privilege.
+func vmFlagsContaining(addr uintptr) (string, error) {
+	f, err := os.Open("/proc/self/smaps")
+	if err != nil {
+		return "", err
+	}
+	defer func() { _ = f.Close() }()
+
+	inTarget := false
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := sc.Text()
+		var start, end uintptr
+		if n, _ := fmt.Sscanf(line, "%x-%x ", &start, &end); n == 2 {
+			inTarget = start <= addr && addr < end
+		}
+		if inTarget && strings.HasPrefix(line, "VmFlags:") {
+			return line, nil
+		}
+	}
+	if err := sc.Err(); err != nil {
+		return "", err
+	}
+	return "", fmt.Errorf("no mapping containing %x in smaps", addr)
+}
+
 // hasVMFlag reports whether the two-letter flag is among the VmFlags tokens.
 // Token match, not substring: "lo" must not be found inside another flag.
 func hasVMFlag(vmFlags, flag string) bool {
@@ -299,7 +329,7 @@ func ksmMergeAnyChild(t *testing.T) {
 		t.Fatalf("control mmap: %v", err)
 	}
 	defer func() { _ = unix.Munmap(ctrl) }()
-	ctrlFlags, err := vmFlagsFor(uintptr(unsafe.Pointer(&ctrl[0])))
+	ctrlFlags, err := vmFlagsContaining(uintptr(unsafe.Pointer(&ctrl[0])))
 	if err != nil {
 		skipIfLockRefused(t, err)
 		t.Fatal(err)

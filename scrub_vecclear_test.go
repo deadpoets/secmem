@@ -2,7 +2,13 @@
 
 package secmem
 
-import "testing"
+import (
+	"fmt"
+	"strings"
+	"testing"
+
+	"github.com/deadpoets/secmem/internal/regprobe"
+)
 
 // allZero reports whether every byte of b is zero.
 func allZero(b []byte) bool {
@@ -63,11 +69,47 @@ func countEqual(a, b []byte) int {
 // Nothing between a fill and its dump is allowed to touch the vector
 // registers, so the probe calls are back to back with only the code under test
 // in between, and the pattern is prepared before the sequence starts.
+//
+// One thing outside the proof's control can touch them anyway: the runtime
+// copying the goroutine's stack (regprobe.StackMark). A dump taken after such
+// a copy shows stack words, not what the clear left, so an attempt that
+// fails is discarded and repeated if, and only if, the stack is shown to
+// have moved while it ran. A failure with the stack in place is reported at
+// once, and so is the last attempt's whatever happened to the stack: a clear
+// that does not work fails every attempt, and the stack does not move in
+// every one.
 func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fillable int) {
 	t.Helper()
 	if len(planted) != len(got) || fillable > len(got) {
 		t.Fatalf("probe geometry: planted %d, got %d, fillable %d", len(planted), len(got), fillable)
 	}
+	for attempt := 1; ; attempt++ {
+		mark := regprobe.StackMark()
+		failures := vecClearProofOnce(t, planted, got, fill, dump, fillable)
+		if len(failures) == 0 {
+			return
+		}
+		now := regprobe.StackMark()
+		if now == mark || attempt == vecClearAttempts {
+			for _, f := range failures {
+				t.Error(f)
+			}
+			if now != mark {
+				t.Errorf("the stack moved during the last of %d attempts as well; the failure above is reported regardless", vecClearAttempts)
+			}
+			return
+		}
+		t.Logf("attempt %d discarded: the goroutine's stack was copied while the proof ran (mark %#x, then %#x), and the copy goes through the vector registers. It had reported: %s", attempt, mark, now, strings.Join(failures, "; "))
+	}
+}
+
+// vecClearAttempts bounds the repeats runVecClearProof allows itself.
+const vecClearAttempts = 5
+
+// vecClearProofOnce runs the three parts once and returns what failed.
+func vecClearProofOnce(t *testing.T, planted, got []byte, fill, dump func(), fillable int) (failures []string) {
+	t.Helper()
+	fail := func(format string, args ...any) { failures = append(failures, fmt.Sprintf(format, args...)) }
 	for i := range planted {
 		planted[i] = byte(i%0xEE) + 0x11 // 0x11..0xFE: never zero, so a zero in a dump is a clear's doing
 	}
@@ -84,7 +126,8 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	dump()
 	for i := range got {
 		if got[i] != expected(i) {
-			t.Fatalf("probe sanity: byte %d read back %#x, want %#x — the probe cannot plant and observe a pattern, so nothing below can be trusted", i, got[i], expected(i))
+			fail("probe sanity: byte %d read back %#x, want %#x — the probe cannot plant and observe a pattern, so nothing below can be trusted", i, got[i], expected(i))
+			return failures
 		}
 	}
 
@@ -94,7 +137,8 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 		legacyWindowNoClear(fill)
 		dump()
 		if allZero(got) {
-			t.Fatal("control failed: no vector-register residue observed after the window's exit sequence without the clear, so the clear cannot be shown to reach anything")
+			fail("control failed: no vector-register residue observed after the window's exit sequence without the clear, so the clear cannot be shown to reach anything")
+			return failures
 		}
 		t.Logf("control (normal return): %d of %d planted bytes survive the window without the clear", countEqual(got[:fillable], planted[:fillable]), fillable)
 
@@ -105,7 +149,8 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 		dump()
 		survived := countEqual(got[:fillable], planted[:fillable])
 		if survived == 0 {
-			t.Fatal("control failed (panic path): no planted byte survives the unwind without the clear, so a clear cannot be shown to be what removes them")
+			fail("control failed (panic path): no planted byte survives the unwind without the clear, so a clear cannot be shown to be what removes them")
+			return failures
 		}
 		controlFootprint = make([]bool, len(got))
 		n := 0
@@ -125,7 +170,7 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	Scrub(fill)
 	dump()
 	if !allZero(got) {
-		t.Errorf("Scrub: vector registers hold residue after the window: %x", got)
+		fail("Scrub: vector registers hold residue after the window: %x", got)
 	}
 
 	if err := ScrubErr(func() error { fill(); return nil }); err != nil {
@@ -134,7 +179,7 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	}
 	dump()
 	if !allZero(got) {
-		t.Errorf("ScrubErr: vector registers hold residue after the window: %x", got)
+		fail("ScrubErr: vector registers hold residue after the window: %x", got)
 	}
 
 	// The unwind's footprint, measured with the real Scrub on every build: the
@@ -175,7 +220,7 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	if controlFootprint != nil {
 		for i := range got {
 			if unwindFootprint[i] && !controlFootprint[i] {
-				t.Errorf("unwind footprint: byte %d is non-zero after a panicking Scrub but the control saw the unwind leave it alone", i)
+				fail("unwind footprint: byte %d is non-zero after a panicking Scrub but the control saw the unwind leave it alone", i)
 				break
 			}
 		}
@@ -188,13 +233,14 @@ func runVecClearProof(t *testing.T, planted, got []byte, fill, dump func(), fill
 	dump()
 	for i := range got {
 		if got[i] != 0 && !unwindFootprint[i] {
-			t.Errorf("Scrub (panicking fn): byte %d = %#x after the unwind, outside the footprint the unwind itself writes (%x)", i, got[i], got)
+			fail("Scrub (panicking fn): byte %d = %#x after the unwind, outside the footprint the unwind itself writes (%x)", i, got[i], got)
 			break
 		}
 	}
 	if !allZero(got) {
 		t.Logf("after the panicking window the registers hold only what the unwind wrote after the clear: %x", got)
 	}
+	return failures
 }
 
 // widenToRegisters marks every byte of each 16-byte register that has any

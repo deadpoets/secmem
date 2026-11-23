@@ -161,7 +161,7 @@ func TestChaCha_NoHeap(t *testing.T) {
 		{"opensshChaChaOpen", func() { _ = opensshChaChaOpen(dst, src, tag, keyMaterial) }},
 		{"opensshChaChaOpen/mismatch", func() { _ = opensshChaChaOpen(dst, src, zero, keyMaterial) }},
 	} {
-		if got := testing.AllocsPerRun(50, tc.fn); got != 0 {
+		if got := testing.AllocsPerRun(50, tc.fn); got != 0 && !asanEnabled {
 			t.Errorf("%s: %v allocs/op, want 0", tc.name, got)
 		}
 	}

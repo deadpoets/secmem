@@ -1,4 +1,4 @@
-//go:build !race
+//go:build !race && !asan
 
 // Allocation counts and the memory profile are only meaningful without the
 // race detector's instrumentation, so the -race jobs do not compile this file.
