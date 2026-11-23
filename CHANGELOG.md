@@ -13,6 +13,17 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Fixed
+
+- **Linux: `Seal` works on kernels with pages larger than 16 KiB.** Sealing
+  keeps a 16 KiB prekey in locked memory, and the code required that to fill
+  its pages exactly. On a 64 KiB-page kernel (some arm64 and ppc64
+  distributions) it does not, so every `Seal` returned "seal prekey:
+  allocation is not page-exact". Nothing else was affected: buffers,
+  arenas and borrows work there, and the failure is an error, not a leak.
+  Affected: 0.8.0 and 0.8.1. Found on Ubuntu's 7.0.0-38-generic-64k (arm64);
+  4 KiB and 16 KiB pages were never affected.
+
 ## [0.8.1] - 2026-11-14
 
 A maintenance release from the `release/v0.8` branch: the one fix
