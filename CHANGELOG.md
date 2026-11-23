@@ -13,19 +13,15 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
-### Added
+## [1.0.0-rc.3] - 2026-11-22
 
-- **`secmem-crypto`: Argon2 that can be cancelled.**
-  `Argon2Pool.DeriveContext`, `Argon2Workspace.DeriveContext` and
-  `Argon2IntoContext` take a `context.Context`. A call waiting for a busy
-  workspace or an empty pool returns as soon as the context ends, which is
-  where a login queue spends its time once the client has gone. A derivation
-  already running is abandoned at the next slice boundary, four per pass, so
-  at most 1/(4·Time) of its work later; a slice in progress is never
-  interrupted. On cancellation the error wraps the context's, the output
-  buffer is untouched, and the workspace is wiped exactly as after a
-  completed derivation. The existing functions are unchanged and derive the
-  same bytes.
+The third release candidate for 1.0. One addition to the API, so that a
+refused `Probe` reports the refusal, and no change to what the library does
+with a secret. The rest is a dependency bump, tests and documentation. A
+pre-release is never
+selected by `go get` on its own; ask for `@v1.0.0-rc.3` to try it.
+
+### Added
 
 - **`Capabilities.ProbeErr`: a refused probe says it was refused.** When the
   allocation `Probe` makes is refused, at a zero `RLIMIT_MEMLOCK` or with the
@@ -39,6 +35,7 @@ mark the stability commitment.
 
 ### Changed
 
+- **`golang.org/x/sys` moves to v0.50.0.**
 - **`kernel-gauntlet.sh`: the run a `KERNELS.md` row records is now a
   script.** Its first run, on Ubuntu 26.04's 7.0.0-44-generic, found two
   things in the tests and nothing in the library: the KSM opt-out test looked
@@ -46,10 +43,6 @@ mark the stability commitment.
   that mapping into a neighbour, and the allocation-count proofs ran under
   `-asan`, where they count the sanitizer's allocations. Both are fixed; no
   CI lane runs `-asan`.
-- **`golang.org/x/sys` moves to v0.50.0**, in the core and in `secmem-crypto`.
-- **`secmem-crypto`: `golang.org/x/crypto` moves to v0.59.0.** Upstream did not
-  change the forked packages between v0.58.0 and v0.59.0; `forks.json` records
-  them unchanged through it.
 - **`ENVIRONMENTS.md`: rootless containers are measured, not reasoned.** The
   suites were run in rootless podman at its default memlock limit, where
   everything passes on `memfd_secret`, and at 64 KiB, where six small buffers
@@ -57,9 +50,9 @@ mark the stability commitment.
 - **Tests skip on a refused lock instead of failing.** The core and
   `secmem-crypto` tests now skip when the OS refuses to lock memory, so a
   host with a small lock budget reports skips with the kernel's reason and
-  not failures. CI is
-  unchanged: its lanes fail on any skip that is not allowlisted. Runnable
-  examples cannot skip and still exit on a refusal. Tests only.
+  not failures. CI is unchanged: its lanes fail on any skip that is not
+  allowlisted. Runnable examples cannot skip and still exit on a refusal.
+  Tests only.
 
 ### Fixed
 
@@ -71,6 +64,42 @@ mark the stability commitment.
   if, and only if, the stack is shown to have moved during it; residue with
   the stack in place still fails at once. Tests only, in the core and
   `secmem-crypto`.
+
+## [secmem-crypto/v0.11.0] - 2026-11-22
+
+Argon2 derivations can be cancelled. Minor: exported API was added; nothing
+existing changed. Still requires core v0.8.1, and builds against v1.0.0-rc.3
+as well.
+
+### Added
+
+- **Argon2 that can be cancelled.**
+  `Argon2Pool.DeriveContext`, `Argon2Workspace.DeriveContext` and
+  `Argon2IntoContext` take a `context.Context`. A call waiting for a busy
+  workspace or an empty pool returns as soon as the context ends, which is
+  where a login queue spends its time once the client has gone. A derivation
+  already running is abandoned at the next slice boundary, four per pass, so
+  at most 1/(4·Time) of its work later; a slice in progress is never
+  interrupted. On cancellation the error wraps the context's, the output
+  buffer is untouched, and the workspace is wiped exactly as after a
+  completed derivation. The existing functions are unchanged and derive the
+  same bytes.
+
+### Changed
+
+- **`golang.org/x/sys` moves to v0.50.0.**
+- **`golang.org/x/crypto` moves to v0.59.0.** Upstream did not change the
+  forked packages between v0.58.0 and v0.59.0; `forks.json` records them
+  unchanged through it.
+
+## [secmem-lint/v0.7.0] - 2026-11-22
+
+No change to the analyzer. Minor because the module's dependency floor
+rises, which is how `gorelease` classifies it.
+
+### Changed
+
+- **`golang.org/x/tools` moves to v0.53.0** (was v0.52.0).
 
 ## [1.0.0-rc.2] - 2026-11-14
 
@@ -3068,7 +3097,10 @@ First tagged release of the core `secmem` module.
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
 [secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.2...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.3...HEAD
+[1.0.0-rc.3]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.2...v1.0.0-rc.3
+[secmem-crypto/v0.11.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.11.0
+[secmem-lint/v0.7.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.7.0
 [1.0.0-rc.2]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.1...v1.0.0-rc.2
 [secmem-crypto/v0.10.2]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.2
 [secmem-lint/v0.6.2]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.6.2
