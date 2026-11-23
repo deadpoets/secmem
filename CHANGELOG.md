@@ -13,6 +13,12 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+### Changed
+
+- **`KERNELS.md`: the first row for 1.0.0-rc.3**, Ubuntu 26.04.1's
+  7.0.0-44-generic on amd64, a kernel that charges `memfd_secret` per fault.
+  Every stage passed, 3/3 proofs.
+
 ## [1.0.0-rc.3] - 2026-11-22
 
 The third release candidate for 1.0. One addition to the API, so that a
