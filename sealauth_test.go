@@ -8,6 +8,7 @@ import (
 	"encoding/binary"
 	"encoding/hex"
 	"errors"
+	"os"
 	"strings"
 	"testing"
 )
@@ -274,7 +275,7 @@ func TestSeal_PrekeyRegeneratesAfterWipe(t *testing.T) {
 		t.Fatal("prekey generation did not advance after the wipe")
 	}
 	sealKeys.mu.Lock()
-	allZero := bytes.Equal(sealKeys.region.inner, make([]byte, sealPrekeyLen))
+	allZero := bytes.Equal(sealKeys.region.inner[:sealPrekeyLen], make([]byte, sealPrekeyLen))
 	sealKeys.mu.Unlock()
 	if allZero {
 		t.Fatal("new prekey is zeros")
@@ -330,5 +331,52 @@ func TestSealComputeTag_KnownAnswer(t *testing.T) {
 	}
 	if n := testing.AllocsPerRun(50, func() { sealComputeTag(&got, prekey, id, &nonce, data) }); n != 0 {
 		t.Fatalf("sealComputeTag allocates %v times per call; the key must stay off the heap", n)
+	}
+}
+
+// TestSealKeyring_PrekeyOnPagesLargerThanItself gives the keyring a region
+// one page longer than the prekey, the shape every allocation has on a
+// kernel whose pages are larger than 16 KiB. The keyring used to refuse it
+// ("allocation is not page-exact"), so every Seal failed on a 64 KiB-page
+// kernel; found by the gauntlet on 7.0.0-38-generic-64k, arm64. The prekey
+// must be exactly sealPrekeyLen random bytes and the rest of the region
+// must stay zero.
+func TestSealKeyring_PrekeyOnPagesLargerThanItself(t *testing.T) {
+	var k sealKeyring
+	k.mu.Lock()
+	err := k.initWith(func(size int) (secRegion, []byte, allocInfo, error) {
+		region, data, info, err := allocSecretMem(size + os.Getpagesize())
+		if err != nil {
+			return region, data, info, err
+		}
+		return region, data[:size:size], info, nil
+	})
+	k.mu.Unlock()
+	if err != nil {
+		// A refused lock is the environment, not the keyring.
+		if msg := err.Error(); strings.Contains(msg, "mlock: ") || strings.Contains(msg, "VirtualLock: ") {
+			t.Skipf("the OS refused to lock memory: %v", err)
+		}
+		t.Fatalf("keyring refused a region larger than the prekey: %v", err)
+	}
+	defer func() { _ = emergencyJanitor.release(k.key, false) }()
+
+	if len(k.region.inner) <= sealPrekeyLen {
+		t.Fatalf("region is %d bytes; the test needs it longer than the %d-byte prekey", len(k.region.inner), sealPrekeyLen)
+	}
+	err = k.withPrekey(func(prekey []byte, _ uint64) error {
+		if len(prekey) != sealPrekeyLen {
+			t.Errorf("prekey is %d bytes, want %d whatever the page size", len(prekey), sealPrekeyLen)
+		}
+		if bytes.Equal(prekey, make([]byte, len(prekey))) {
+			t.Error("prekey is zeros")
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slack := k.region.inner[sealPrekeyLen:]; !bytes.Equal(slack, make([]byte, len(slack))) {
+		t.Error("bytes after the prekey are not zero")
 	}
 }

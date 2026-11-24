@@ -122,12 +122,16 @@ func (k *sealKeyring) withPrekey(fn func(prekey []byte, gen uint64) error) error
 		// region is being wiped by the same pass.
 		return ErrWiped
 	}
-	return fn(region.inner, gen)
+	return fn(region.inner[:sealPrekeyLen], gen)
 }
 
 // initLocked allocates and fills a prekey, releasing a wiped predecessor's
 // mapping first. Caller holds k.mu.
-func (k *sealKeyring) initLocked() error {
+func (k *sealKeyring) initLocked() error { return k.initWith(allocSecretMem) }
+
+// initWith is initLocked with the allocator as a parameter, so a test can
+// hand it a region whose pages are larger than the prekey.
+func (k *sealKeyring) initWith(alloc func(int) (secRegion, []byte, allocInfo, error)) error {
 	if k.lock != nil {
 		// The emergency wipe left the old region mapped and zero; reclaim it
 		// the way an owner's Destroy would. Nothing can be borrowing it: every
@@ -135,16 +139,21 @@ func (k *sealKeyring) initLocked() error {
 		_ = emergencyJanitor.release(k.key, false)
 		k.lock, k.region, k.wiped, k.key = nil, secRegion{}, nil, 0
 	}
-	region, data, _, err := allocSecretMem(sealPrekeyLen)
+	region, data, _, err := alloc(sealPrekeyLen)
 	if err != nil {
 		return fmt.Errorf("secmem: seal prekey: %w", err)
 	}
-	// Page-exact by construction, so there is no canary slack to arm; the
-	// janitor gets the empty layout.
-	if len(data) != len(region.inner) {
+	// The prekey is the first sealPrekeyLen bytes of the region. That is the
+	// whole region where 16 KiB is a page multiple, and less than it where
+	// pages are larger (64 KiB on some arm64 and ppc64 kernels); requiring
+	// the two to be equal made every Seal fail there. The bytes after the
+	// prekey stay zero and are never read. They carry no canary, so the
+	// janitor gets the empty layout: the region is read-only for its whole
+	// life, and a stray write to them faults.
+	if len(data) != sealPrekeyLen || len(region.inner) < sealPrekeyLen {
 		secureWipeSlice(region.inner)
 		_ = freeSecretMem(region)
-		return errors.New("secmem: seal prekey: allocation is not page-exact")
+		return errors.New("secmem: seal prekey: allocation is not the size asked for")
 	}
 	lock, wiped := newBufferRWLock(), new(atomic.Bool)
 	key, err := emergencyJanitor.register(region, canaryLayout{}, lock, nil, wiped)
@@ -156,7 +165,7 @@ func (k *sealKeyring) initLocked() error {
 	// Registered before it is filled, like every buffer (see fillInitial), so
 	// there is no instant at which a live prekey is unreachable by the wipe.
 	lock.lock()
-	if _, err := rand.Read(region.inner); err != nil {
+	if _, err := rand.Read(region.inner[:sealPrekeyLen]); err != nil {
 		lock.unlock()
 		_ = emergencyJanitor.release(key, false)
 		return fmt.Errorf("secmem: seal prekey: %w", err)
