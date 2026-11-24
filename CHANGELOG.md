@@ -13,6 +13,11 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [0.8.2] - 2026-11-23
+
+A maintenance release from the `release/v0.8` branch: the one fix
+below, on top of 0.8.1.
+
 ### Fixed
 
 - **Linux: `Seal` works on kernels with pages larger than 16 KiB.** Sealing
@@ -2758,6 +2763,7 @@ First tagged release of the core `secmem` module.
   cover all three types, both the pointer and (where a value copy is not
   itself a `go vet` copylocks violation) a dereferenced value.
 
+[0.8.2]: https://github.com/deadpoets/secmem/compare/v0.8.1...v0.8.2
 [0.8.1]: https://github.com/deadpoets/secmem/compare/v0.8.0...v0.8.1
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
