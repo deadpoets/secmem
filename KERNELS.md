@@ -30,6 +30,27 @@ security proofs beyond unit tests:
 blocked by lockdown) — i.e. the L4 path itself was exercised, not only the
 mmap+mlock (L3) fallback, whose guards and canaries every row verifies.
 
+## v1.0.0-rc.3 — verified kernels
+
+Run on a checkout of the tag (`88fd9fc`, which `secmem-crypto/v0.11.0` and
+`secmem-lint/v0.7.0` also tag) with `.github/scripts/kernel-gauntlet.sh` and
+go1.27.4. The script runs each stage the way CI runs its lane and fails a
+stage on any skip that lane's allowlist does not name. Beyond the gauntlet
+defined above it also runs the out-of-process key residue scan and the
+isolation, extraction and madvise proofs as root.
+
+| Date | Kernel | Arch | Environment | secretmem | Result |
+|---|---|---|---|---|---|
+| 2026-11-23 | 7.0.0-44-generic | amd64 | Local Hyper-V VM (Secure Boot, lockdown `integrity`), Ubuntu 26.04.1, Intel Core Ultra 7 265KF, 8 vCPU | live | PASS · 3/3 |
+
+7.0.0-44-generic is the first row on a kernel that charges `memfd_secret`
+pages when they are first faulted and answers a fault over `RLIMIT_MEMLOCK`
+with `SIGBUS`; an over-limit mapping probed on this machine maps and then
+faults. The run used the distribution's default limit, 8 MiB soft and hard,
+lifted only for the stages where CI lifts it. All twelve stages passed, and
+the only skips were the ones the Linux allowlist names: three in the core,
+one in `secmem-crypto`.
+
 ## v0.2.0 — verified kernels
 
 Validated against `f7fdf4e`, the library tree v0.2.0 tags; the only later
