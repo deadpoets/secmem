@@ -13,6 +13,13 @@ mark the stability commitment.
 > This repo holds three independently versioned Go modules; entries are tagged
 > by module. Untagged entries belong to the core `secmem` module.
 
+## [1.0.0-rc.4] - 2026-11-23
+
+The fourth release candidate for 1.0: one fix on top of rc.3, for Linux
+kernels with pages larger than 16 KiB. The same fix is in 0.8.2 for the 0.8
+line. A pre-release is never selected by `go get` on its own; ask for
+`@v1.0.0-rc.4` to try it.
+
 ### Changed
 
 - **`KERNELS.md`: the first row for 1.0.0-rc.3**, Ubuntu 26.04.1's
@@ -30,6 +37,16 @@ mark the stability commitment.
   Affected: 0.8.0, 0.8.1 and the three 1.0 release candidates. Found by the
   gauntlet on Ubuntu's 7.0.0-38-generic-64k; 4 KiB and 16 KiB pages were
   never affected.
+
+## [0.8.2] - 2026-11-23
+
+A maintenance release from the `release/v0.8` branch: the one fix below, on
+top of 0.8.1.
+
+### Fixed
+
+- **Linux: `Seal` works on kernels with pages larger than 16 KiB.** The fix
+  described under 1.0.0-rc.4 above, backported. Affected: 0.8.0 and 0.8.1.
 
 ## [1.0.0-rc.3] - 2026-11-22
 
@@ -3115,7 +3132,9 @@ First tagged release of the core `secmem` module.
 [0.8.0]: https://github.com/deadpoets/secmem/compare/v0.7.0...v0.8.0
 [secmem-crypto/v0.10.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.10.0
 [secmem-lint/v0.5.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.5.0
-[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.3...HEAD
+[Unreleased]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.4...HEAD
+[1.0.0-rc.4]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.3...v1.0.0-rc.4
+[0.8.2]: https://github.com/deadpoets/secmem/compare/v0.8.1...v0.8.2
 [1.0.0-rc.3]: https://github.com/deadpoets/secmem/compare/v1.0.0-rc.2...v1.0.0-rc.3
 [secmem-crypto/v0.11.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-crypto%2Fv0.11.0
 [secmem-lint/v0.7.0]: https://github.com/deadpoets/secmem/releases/tag/secmem-lint%2Fv0.7.0
